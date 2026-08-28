@@ -19,6 +19,7 @@ import {
   MUTATE_CATALOG_OPERATION_ID,
   OP_DATABASE,
   OperationSchema,
+  RAW_TEMPID_OPERATION_ID,
   RENAME_OPERATION_ID,
   SEED_MUTABLE_CATALOG_OPERATION_ID,
   SEED_UNDECLARED_CATALOG_OPERATION_ID,
@@ -181,16 +182,38 @@ export function registerOperationsContract(target: OperationsTarget): void {
       });
     });
 
-    test("no grant, hidden, nonexistent, and wrong-type targets are the same policy denial", async () => {
+    test("direct tempid field writes cannot bypass authoritative creation values", async () => {
+      const { policyUrl } = target.urls();
+      const rejected = await invokeOperation(
+        policyUrl,
+        RAW_TEMPID_OPERATION_ID,
+        undefined,
+        {},
+      );
+      expect(rejected.status).toBe(400);
+      const rows = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        query: '[:find ?e :where [?e :operation-created/title "raw tempid"]]',
+      });
+      expect(rows.body.result).toEqual([]);
+    });
+
+    test("unknown, ungranted, hidden, nonexistent, and wrong-type targets share one denial", async () => {
       const { policyUrl } = target.urls();
       const responses = await Promise.all([
+        invokeOperation(
+          policyUrl,
+          { ...RENAME_OPERATION_ID, localName: "missing-operation" },
+          aliceIssue,
+          { title: "x" },
+        ),
         invokeOperation(policyUrl, UNGRANTED_OPERATION_ID, aliceIssue, { title: "x" }),
         invokeOperation(policyUrl, RENAME_OPERATION_ID, bobIssue, { title: "x" }),
         invokeOperation(policyUrl, RENAME_OPERATION_ID, 999_999, { title: "x" }),
         invokeOperation(policyUrl, RENAME_OPERATION_ID, alice, { title: "x" }),
       ]);
-      expect(responses.map((response) => response.status)).toEqual([403, 403, 403, 403]);
+      expect(responses.map((response) => response.status)).toEqual([403, 403, 403, 403, 403]);
       expect(responses.map((response) => response.body)).toEqual([
+        responses[0]!.body,
         responses[0]!.body,
         responses[0]!.body,
         responses[0]!.body,

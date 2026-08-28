@@ -185,6 +185,16 @@ export const OperationCreated = Db.Entity(
           return { ok: true };
         },
       }),
+      rawTempid: Operation({
+        self: false,
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        run(op) {
+          const row = op.tempid("raw-operation-row");
+          op.set(OperationCreated, row, OperationCreated.title, "raw tempid");
+          return {};
+        },
+      }),
       forgeFixed: Operation({
         self: false,
         input: Schema.Struct({}),
@@ -274,6 +284,7 @@ const changeType = OperationIssue[Db.OwnedOperations].changeType;
 const clearTitle = OperationIssue[Db.OwnedOperations].clearTitle;
 const changeIdentity = OperationUser[Db.OwnedOperations].changeIdentity;
 const create = OperationCreated[Db.OwnedOperations].create;
+const rawTempid = OperationCreated[Db.OwnedOperations].rawTempid;
 const forgeFixed = OperationCreated[Db.OwnedOperations].forgeFixed;
 const inspectBound = OperationBound[Db.OwnedOperations].inspect;
 const destroyBound = OperationBound[Db.OwnedOperations].destroy;
@@ -300,6 +311,7 @@ const policy = Result.getOrThrow(
       invoke(clearTitle).when(allow),
       invoke(changeIdentity).when(allow),
       invoke(create).when(allow),
+      invoke(rawTempid).when(allow),
       invoke(forgeFixed).when(allow),
       invoke(inspectBound).when(allow),
       invoke(destroyBound).when(allow),
@@ -338,6 +350,7 @@ export const CLEAR_TITLE_OPERATION_ID = idOf("clearTitle");
 export const CHANGE_IDENTITY_OPERATION_ID = idOf("changeIdentity");
 export const UNGRANTED_OPERATION_ID = idOf("ungrantedRename");
 export const CREATE_OPERATION_ID = idOf("create");
+export const RAW_TEMPID_OPERATION_ID = idOf("rawTempid");
 export const FORGE_FIXED_OPERATION_ID = idOf("forgeFixed");
 export const INSPECT_BOUND_OPERATION_ID = idOf("inspect");
 export const DESTROY_BOUND_OPERATION_ID = idOf("destroy");

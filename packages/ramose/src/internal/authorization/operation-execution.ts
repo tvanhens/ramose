@@ -69,6 +69,20 @@ const sameAtom = (left: unknown, right: unknown): boolean => {
   return false;
 };
 
+const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze(child, seen);
+  return Object.freeze(value);
+};
+
+/** Isolate body-visible claims from the authorization snapshot. */
+export const immutableOperationClaims = (
+  claims: AuthorizationPrincipal["claims"],
+): Readonly<Record<string, unknown>> =>
+  deepFreeze(structuredClone(claims) as Record<string, unknown>);
+
 const principalTerm = (
   term: CanonicalValueTerm,
   principal: AuthorizationPrincipal,
@@ -883,7 +897,7 @@ const makeBodyOp = (args: {
     eid: args.principal.me?.eid ?? null,
     class: args.principal.classes[0] ?? "",
     sub: args.principal.subject,
-    claims: args.principal.claims,
+    claims: immutableOperationClaims(args.principal.claims),
   });
   const tentative = async (): Promise<Db> => {
     const plan = await buildPlan(

@@ -213,6 +213,9 @@ const operationBody = (
       : new BadRequest({ message: "body must be a JSON object" }),
   });
 
+const operationPolicyDenied = (): Response =>
+  json({ error: "unauthorized", code: "policy" }, 403, CORS);
+
 export const handle = (
   request: Request,
   env: RamoseEnv,
@@ -322,7 +325,7 @@ export const handle = (
       if (
         operation.catalog !== proof.catalogKey ||
         !deployed.operations.has(deployedOperationKey(operation))
-      ) return yield* new Unauthorized({});
+      ) return operationPolicyDenied();
       const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
       return yield* Effect.tryPromise({
         try: async () => {
@@ -342,6 +345,7 @@ export const handle = (
               })),
             },
           );
+          if (response.status === 403) return operationPolicyDenied();
           return new Response(response.body, {
             status: response.status,
             headers: { ...Object.fromEntries(response.headers), ...CORS },
