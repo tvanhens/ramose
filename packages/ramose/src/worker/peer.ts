@@ -165,9 +165,25 @@ export interface BasisFetch {
   behind: boolean;
 }
 
+export interface BasisFetchOptions {
+  /** Ignore request/env cache controls and fetch the authoritative replica basis. */
+  readonly bypassCache?: boolean;
+}
+
+export const basisCacheEnabled = (
+  request: Request,
+  env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">,
+  options: BasisFetchOptions = {},
+): boolean => options.bypassCache !== true && wantsBasisCache(request, env);
+
 /** Fetch a basis for `db`: isolate cache (per knobs) or the nearest replica's GET /basis. */
-export async function fetchBasisWithStats(env: RamoseEnv, db: string, request: Request): Promise<BasisFetch> {
-  const useCache = wantsBasisCache(request, env);
+export async function fetchBasisWithStats(
+  env: RamoseEnv,
+  db: string,
+  request: Request,
+  options: BasisFetchOptions = {},
+): Promise<BasisFetch> {
+  const useCache = basisCacheEnabled(request, env, options);
   const mode = cacheModeOf(request, env);
   const minT = minTOf(request);
   const key = `${db}|${hintOf(request, env) ?? ""}`;
@@ -211,8 +227,13 @@ export async function fetchBasisWithStats(env: RamoseEnv, db: string, request: R
   return { basis, hit: false, reason, calls, behind };
 }
 
-export async function fetchBasis(env: RamoseEnv, db: string, request: Request): Promise<Basis> {
-  return (await fetchBasisWithStats(env, db, request)).basis;
+export async function fetchBasis(
+  env: RamoseEnv,
+  db: string,
+  request: Request,
+  options: BasisFetchOptions = {},
+): Promise<Basis> {
+  return (await fetchBasisWithStats(env, db, request, options)).basis;
 }
 
 /** Diagnostic response headers describing how the basis was obtained. */

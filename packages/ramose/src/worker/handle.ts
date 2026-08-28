@@ -270,7 +270,9 @@ export const handle = (
       routeDatabase: DatabaseId.make(db),
       catalogKey: parsed.catalogKey,
       unitHash: parsed.unitHash,
-      currentDb: acquireCurrentDb(env, request),
+      currentDb: acquireCurrentDb(env, request, {
+        bypassBasisCache: rest === "/live",
+      }),
       view: parsed.view,
     };
     const mapReadError = (error: unknown): RamoseError => {

@@ -264,6 +264,16 @@ describe("diffAuthorizedResults", () => {
     expect(isSilentLiveDiff(diffAuthorizedResults(["Bug"], ["Bug"]))).toBe(true);
     expect(liveDiffFromPrevious(undefined, ["Bug"]).added).toEqual(["Bug"]);
     expect(liveDiffFromPrevious(undefined, [])).toEqual({ added: [], retracted: [] });
+    const reordered = diffAuthorizedResults(["A", "B"], ["B", "A"]);
+    expect(reordered).toEqual({ added: ["B", "A"], retracted: ["A", "B"] });
+    expect(applyLiveDiffs([reordered])).toEqual(["B", "A"]);
+    const inserted = diffAuthorizedResults(["A", "C"], ["A", "B", "C"]);
+    expect(inserted).toEqual({ added: ["A", "B", "C"], retracted: ["A", "C"] });
+    expect(applyLiveDiffs([{ added: ["A", "C"], retracted: [] }, inserted])).toEqual([
+      "A",
+      "B",
+      "C",
+    ]);
     expect(leakKeys(diff)).toEqual([]);
   });
 });
@@ -320,9 +330,10 @@ describe("executeAuthorizedLive equals one-shot and diffs visibility", () => {
       }),
     );
     expect(titlesOf(applyLiveDiffs([first]))).toEqual(["Bug", "Child"]);
-    expect(titlesOf(grant.added)).toEqual(["Other"]);
-    expect(grant.retracted).toEqual([]);
-    expect(titlesOf(revoke.retracted)).toEqual(["Bug"]);
+    expect(titlesOf(grant.added)).toContain("Other");
+    expect(titlesOf(applyLiveDiffs([first, grant]))).toEqual(["Bug", "Child", "Other"]);
+    expect(titlesOf(revoke.retracted)).toContain("Bug");
+    expect(titlesOf(applyLiveDiffs([first, grant, revoke]))).toEqual(["Child", "Other"]);
     expect(leakKeys([first, grant, revoke])).toEqual([]);
     expect(stringifyJson([first, grant, revoke])).not.toMatch(/:issue\/owner|:db\/id/);
     await Effect.runPromise(Fiber.interrupt(fiber));

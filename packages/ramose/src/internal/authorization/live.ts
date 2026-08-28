@@ -117,6 +117,21 @@ export const diffAuthorizedResults = (previous: unknown, next: unknown): LiveQue
   for (const [key, row] of prevKeys) {
     if (!nextKeys.has(key)) retracted.push(row);
   }
+
+  // A membership-only delta cannot represent a reorder or an insertion in
+  // the middle. Use the same wire shape as a full replacement when applying
+  // the minimal delta would not reproduce the exact one-shot row sequence.
+  const reconstructed = new Map(prevKeys);
+  for (const row of retracted) reconstructed.delete(stringifyJson(row));
+  for (const row of added) reconstructed.set(stringifyJson(row), row);
+  const reconstructedOrder = [...reconstructed.keys()];
+  const nextOrder = [...nextKeys.keys()];
+  if (
+    reconstructedOrder.length !== nextOrder.length ||
+    reconstructedOrder.some((key, index) => key !== nextOrder[index])
+  ) {
+    return { added: nextRows, retracted: prevRows };
+  }
   return { added, retracted };
 };
 
