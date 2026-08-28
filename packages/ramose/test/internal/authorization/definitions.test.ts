@@ -338,9 +338,32 @@ describe("catalog definition assembly", () => {
     )).toThrow(/invalid explicit value/);
   });
 
+  test("rejects field codecs with caller-owned callback captures", async () => {
+    let allow = true;
+    const Captured = EffectSchema.String.check(EffectSchema.makeFilter((value) =>
+      allow && value.length > 0 ? true : "blocked"
+    ));
+    const App = Schema({
+      item: Entity("item", { value: Field(Captured) }),
+    });
+    const definition = Catalog("callback-field", {
+      schema: App,
+      policy: await policy(App),
+    });
+
+    expect((await assembleFailure(definition)).message).toMatch(
+      /cannot be sealed without retaining executable callbacks/,
+    );
+    allow = false;
+  });
+
   test("compiled boundary ignores every original authoring mutation", async () => {
     const fieldInputs = { value: "field-original" };
     const bindingInputs = { value: "binding-original" };
+    const typedInputs = {
+      at: new Date("2024-02-03T04:05:06.000Z"),
+      data: new Uint8Array([4, 5, 6]),
+    };
     const fixedDate = new Date("2025-01-02T03:04:05.000Z");
     const fixedBytes = new Uint8Array([1, 2, 3]);
     const fixedTags = ["one", "two"];
@@ -391,6 +414,12 @@ describe("catalog definition assembly", () => {
       createdAt: timestamp({
         default: creationDefault({}, (_inputs, context) => context.now),
       }),
+      capturedAt: timestamp({
+        default: creationDefault(typedInputs, (inputs) => inputs.at),
+      }),
+      capturedData: bytes({
+        default: creationDefault(typedInputs, (inputs) => inputs.data),
+      }),
       checked: Field(MutableFieldSchema),
     }, {
       traits: [Bound(child)],
@@ -422,6 +451,10 @@ describe("catalog definition assembly", () => {
 
     fieldInputs.value = "field-mutated";
     bindingInputs.value = "binding-mutated";
+    typedInputs.at.setUTCFullYear(2040);
+    typedInputs.data[0] = 8;
+    Item.capturedAt.default!({ now: new Date(0) })!.setUTCFullYear(2050);
+    Item.capturedData.default!({ now: new Date(0) })![0] = 7;
     fixedDate.setUTCFullYear(2035);
     fixedBytes[0] = 9;
     fixedTags[0] = "mutated";
@@ -480,6 +513,8 @@ describe("catalog definition assembly", () => {
     )).toEqual({
       title: "field-original",
       createdAt: new Date(0),
+      capturedAt: new Date("2024-02-03T04:05:06.000Z"),
+      capturedData: new Uint8Array([4, 5, 6]),
       checked: "still-a-string",
       at: new Date("2025-01-02T03:04:05.000Z"),
       data: new Uint8Array([1, 2, 3]),
@@ -591,6 +626,25 @@ describe("catalog definition assembly", () => {
       /references undeclared identifier 'undeclared'/,
     );
     undeclared = "mutated";
+
+    let forgedCapture = "forged-original";
+    const forged = () => forgedCapture;
+    Object.defineProperty(
+      forged,
+      Symbol.for("ramose.creation-default.identity"),
+      { value: { inputs: {}, source: "() => forgedCapture" } },
+    );
+    const ForgedSchema = Schema({ item: Entity("item", {
+      value: string({ default: forged }),
+    }) });
+    const forgedCatalog = Catalog("forged-default", {
+      schema: ForgedSchema,
+      policy: await policy(ForgedSchema),
+    });
+    expect((await assembleFailure(forgedCatalog)).message).toMatch(
+      /must declare canonical captured inputs with creationDefault/,
+    );
+    forgedCapture = "forged-mutated";
   });
 
   test("preserves own __proto__ default inputs in evaluation and identity", async () => {
@@ -622,6 +676,38 @@ describe("catalog definition assembly", () => {
     expect(left.resolveCreationValues("item", {}, { now: new Date(0) }))
       .toEqual({ value: "left" });
     expect(right.unitHash).not.toBe(left.unitHash);
+  });
+
+  test("gives typed default inputs unambiguous canonical identities", async () => {
+    const make = (
+      value: Date | { readonly _tag: string; readonly value: string },
+    ) => creationDefault({ value }, () => "same");
+    const schemaFor = (
+      value: Date | { readonly _tag: string; readonly value: string },
+    ) => Schema({
+      item: Entity("item", { value: string({ default: make(value) }) }),
+    });
+    const instant = new Date("2024-01-02T03:04:05.000Z");
+    const lookalike = {
+      _tag: "instant",
+      value: "2024-01-02T03:04:05.000Z",
+    };
+    const TypedSchema = schemaFor(instant);
+    const JsonSchema = schemaFor(lookalike);
+    const typed = Result.getOrThrow(
+      (await assemble(Catalog("typed-input", {
+        schema: TypedSchema,
+        policy: await policy(TypedSchema),
+      }))).require(CatalogId.make("typed-input")),
+    );
+    const json = Result.getOrThrow(
+      (await assemble(Catalog("typed-input", {
+        schema: JsonSchema,
+        policy: await policy(JsonSchema),
+      }))).require(CatalogId.make("typed-input")),
+    );
+
+    expect(typed.unitHash).not.toBe(json.unitHash);
   });
 
   test("normalizes negative zero in defaults and fixed bindings", async () => {

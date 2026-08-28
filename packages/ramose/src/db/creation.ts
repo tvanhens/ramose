@@ -18,6 +18,7 @@ import {
   type CreationDefaultInputs,
 } from "./Field.ts";
 import type { AnyEntity } from "./Entity.ts";
+import { snapshotSchema } from "./schemaSnapshot.ts";
 import { traitsOf, type ComposerLike } from "./compose.ts";
 
 export class BindingConflictError extends Error {
@@ -103,7 +104,7 @@ const declaredDefault = (
   return Object.freeze({
     source: identity.source,
     inputs: identity.inputs,
-    evaluate: get,
+    evaluate: identity.evaluate,
     path: Object.freeze([...path]),
   });
 };
@@ -210,7 +211,7 @@ export const compositionValueMetadataFromBindings = (
   for (const field of Object.values(entity.fields)) {
     encoders.set(
       field.ident,
-      Schema.encodeUnknownSync(field.schema as Schema.Encoder<unknown>),
+      snapshotSchema(field.schema).codec.encode,
     );
   }
 

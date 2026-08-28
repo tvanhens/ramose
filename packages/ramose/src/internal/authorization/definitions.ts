@@ -252,6 +252,35 @@ const jsonValue = (value: unknown): JsonValue => {
   throw new Error("catalog fixed values must encode as finite stored data");
 };
 
+/** Type-explicit encoding prevents Date/bytes from colliding with JSON lookalikes. */
+const creationInputHashValue = (value: unknown): JsonValue => {
+  if (value === null) return { _tag: "null" };
+  if (typeof value === "string") return { _tag: "string", value };
+  if (typeof value === "boolean") return { _tag: "boolean", value };
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return { _tag: "number", value: Object.is(value, -0) ? 0 : value };
+  }
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return { _tag: "instant", value: value.toISOString() };
+  }
+  if (value instanceof Uint8Array) {
+    return { _tag: "bytes", value: [...value] };
+  }
+  if (Array.isArray(value)) {
+    return { _tag: "array", value: value.map(creationInputHashValue) };
+  }
+  if (typeof value === "object" && value !== null) {
+    return {
+      _tag: "object",
+      value: Object.keys(value).sort(compareText).map((key) => [
+        key,
+        creationInputHashValue((value as Record<string, unknown>)[key]),
+      ]),
+    };
+  }
+  throw new Error("creation default inputs must encode as supported canonical data");
+};
+
 /** Canonical identity derived from the same copied records as the runtime plan. */
 const creationHashMaterial = (
   artifactHash: DigestHex,
@@ -268,7 +297,7 @@ const creationHashMaterial = (
           field: field.ident,
           default: {
             source: field.fieldDefault!.source,
-            inputs: jsonValue(field.fieldDefault!.inputs),
+            inputs: creationInputHashValue(field.fieldDefault!.inputs),
           },
         })),
       fixed: plan.fields
@@ -282,7 +311,7 @@ const creationHashMaterial = (
           field: field.ident,
           defaults: field.defaults.map((entry) => ({
             source: entry.source,
-            inputs: jsonValue(entry.inputs),
+            inputs: creationInputHashValue(entry.inputs),
           })),
         })),
       bindings: plan.bindings,

@@ -270,6 +270,35 @@ describe("owned operation lowering", () => {
       .toThrow();
   });
 
+  test("rejects operation codecs with caller-owned callback captures", async () => {
+    let allow = true;
+    const Captured = Schema.String.check(Schema.makeFilter((value) =>
+      allow && value.length > 0 ? true : "blocked"
+    ));
+    const Worker = Entity("callbackWorker", {}, {
+      operations: (Operation) => ({
+        run: Operation({
+          self: false,
+          input: Schema.Struct({ value: Captured }),
+          output: Schema.Struct({}),
+          run: () => ({}),
+        }),
+      }),
+    });
+    const failure = await Effect.runPromise(Effect.flip(
+      lowerOwnedOperations(
+        catalog,
+        CatalogSchema({ callbackWorker: Worker }),
+        artifactHash,
+      ),
+    ));
+
+    expect(failure.message).toMatch(
+      /cannot be sealed without retaining executable callbacks/,
+    );
+    allow = false;
+  });
+
   test("keeps trait ownership once and derives direct plus transitive composers", async () => {
     const { App } = fixture();
     const lowered = await Effect.runPromise(

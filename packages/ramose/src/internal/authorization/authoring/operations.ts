@@ -10,7 +10,6 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
-import * as SchemaRepresentation from "effect/SchemaRepresentation";
 import {
   isOwnedOperation,
   OwnedOperations,
@@ -26,6 +25,7 @@ import {
 import type { AnyEntity } from "../../../db/Entity.ts";
 import type { AnySchema } from "../../../db/Schema.ts";
 import type { AnyTrait } from "../../../db/Trait.ts";
+import { snapshotSchema } from "../../../db/schemaSnapshot.ts";
 import {
   isSelfRefSchema,
   refTargetOf,
@@ -473,36 +473,16 @@ const shapeContainsSelf = (shape: OperationInputShape): boolean => {
   }
 };
 
-const callbackSources = (root: object): readonly string[] => {
-  const seen = new WeakSet<object>();
-  const sources: string[] = [];
-  const visit = (value: unknown, path: string): void => {
-    if (typeof value === "function") {
-      sources.push(`${path}\0${Function.prototype.toString.call(value)}`);
-      return;
-    }
-    if (typeof value !== "object" || value === null || seen.has(value)) return;
-    seen.add(value);
-    for (const key of Object.keys(value).sort(compareText)) {
-      visit((value as Record<string, unknown>)[key], `${path}.${key}`);
-    }
-  };
-  visit(root, "schema");
-  return sources;
-};
-
 const schemaHashMaterial = (
   catalog: CatalogId,
   schema: Schema.Top,
+  representation: JsonValue,
   artifactHash: DigestHex,
 ): Result.Result<JsonValue, InvalidIR> => {
   try {
     return Result.succeed({
-      representation: SchemaRepresentation.toJson(
-        SchemaRepresentation.toRepresentation(schema.ast),
-      ),
+      representation,
       ramoseShape: lowerOperationSchema(catalog, schema),
-      callbacks: callbackSources(schema.ast),
       artifactHash,
     } as JsonValue);
   } catch (cause) {
@@ -544,25 +524,6 @@ const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   return Object.freeze(value);
 };
 
-const snapshotOperationCodec = (
-  schema: Schema.Top,
-): Result.Result<DeployedOperationCodec, InvalidIR> => {
-  try {
-    return Result.succeed(freeze({
-      decode: Schema.decodeUnknownSync(schema as Schema.Decoder<unknown>),
-      encode: Schema.encodeUnknownSync(schema as Schema.Encoder<unknown>),
-    }));
-  } catch (cause) {
-    return Result.fail(
-      invalid(
-        `operation codec compilation failed: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
-      ),
-    );
-  }
-};
-
 export const snapshotOwnedOperations = (
   catalog: CatalogId,
   schemas: readonly AnySchema[],
@@ -579,14 +540,28 @@ export const snapshotOwnedOperations = (
         localName: draft.localName,
         target: operation.self ? "required" : "none",
       });
+      let inputSchemaSnapshot: ReturnType<typeof snapshotSchema>;
+      let outputSchemaSnapshot: ReturnType<typeof snapshotSchema>;
+      try {
+        inputSchemaSnapshot = snapshotSchema(operation.input);
+        outputSchemaSnapshot = snapshotSchema(operation.output);
+      } catch (cause) {
+        return yield* Result.fail(invalid(
+          `operation schema snapshot failed for '${draft.owner.ns}.${draft.localName}': ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`,
+        ));
+      }
       const inputSchemaMaterial = yield* schemaHashMaterial(
         catalog,
         operation.input,
+        inputSchemaSnapshot.representation as JsonValue,
         artifactHash,
       );
       const outputSchemaMaterial = yield* schemaHashMaterial(
         catalog,
         operation.output,
+        outputSchemaSnapshot.representation as JsonValue,
         artifactHash,
       );
       const inputShape = lowerOperationSchema(catalog, operation.input);
@@ -619,8 +594,8 @@ export const snapshotOwnedOperations = (
         outputShape: deepFreeze(outputShape),
         inputSchemaMaterial: deepFreeze(inputSchemaMaterial),
         outputSchemaMaterial: deepFreeze(outputSchemaMaterial),
-        inputCodec: yield* snapshotOperationCodec(operation.input),
-        outputCodec: yield* snapshotOperationCodec(operation.output),
+        inputCodec: inputSchemaSnapshot.codec,
+        outputCodec: outputSchemaSnapshot.codec,
         doc: operation.doc,
         bodySource: capturedBodySource,
         bodyHashMaterial: deepFreeze({

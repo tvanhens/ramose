@@ -28,17 +28,23 @@ export interface CreationDefaultContext {
   readonly now: Date;
 }
 
-/** Canonical data that identifies values captured by a creation default. */
+/** Canonical captured data; Date and bytes receive distinct sealed encodings. */
 export type CreationDefaultInputs =
   | null
   | string
   | number
   | boolean
+  | Date
+  | Uint8Array
   | readonly CreationDefaultInputs[]
   | { readonly [key: string]: CreationDefaultInputs };
 
 export type ImmutableCreationDefaultInputs<T extends CreationDefaultInputs> =
-  T extends null | string | number | boolean
+  T extends Date
+    ? Date
+    : T extends Uint8Array
+      ? Uint8Array
+      : T extends null | string | number | boolean
     ? T
     : T extends readonly (infer Item extends CreationDefaultInputs)[]
       ? readonly ImmutableCreationDefaultInputs<Item>[]
@@ -49,18 +55,18 @@ export type ImmutableCreationDefaultInputs<T extends CreationDefaultInputs> =
 type CreationDefaultIdentity = {
   readonly inputs: CreationDefaultInputs;
   readonly source: string;
+  readonly evaluate: (context: CreationDefaultContext) => unknown;
 };
 
-const CREATION_DEFAULT_IDENTITY: unique symbol = Symbol.for(
-  "ramose.creation-default.identity",
-);
+const creationDefaultIdentities = new WeakMap<
+  CreationDefault<unknown>,
+  CreationDefaultIdentity
+>();
 
 /** Synchronous creation-time value computation. `undefined` means missing. */
 export type CreationDefault<A> = ((
   context: CreationDefaultContext,
-) => A | undefined) & {
-  readonly [CREATION_DEFAULT_IDENTITY]?: CreationDefaultIdentity;
-};
+) => A | undefined);
 
 const snapshotInputs = (
   value: CreationDefaultInputs,
@@ -79,6 +85,13 @@ const snapshotInputs = (
     }
     return Object.is(value, -0) ? 0 : value;
   }
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) {
+      throw new Error("ramose/default: inputs must contain only valid dates");
+    }
+    return new Date(value.getTime());
+  }
+  if (value instanceof Uint8Array) return new Uint8Array(value);
   if (seen.has(value)) {
     throw new Error("ramose/default: inputs must not contain cycles");
   }
@@ -450,17 +463,24 @@ const compileEvaluator = <Inputs extends CreationDefaultInputs, A>(
     expression = node(returned.argument, "return value");
   }
   validateEvaluatorNode(expression, new Set(names));
-  return (context) => evaluateNode(expression, Object.freeze({
-    ...(names[0] === undefined ? {} : { [names[0]]: snapshot }),
-    ...(names[1] === undefined ? {} : { [names[1]]: context }),
-  })) as A | undefined;
+  return (context) => {
+    const value = evaluateNode(expression, Object.freeze({
+      ...(names[0] === undefined ? {} : { [names[0]]: snapshot }),
+      ...(names[1] === undefined ? {} : { [names[1]]: context }),
+    }));
+    return value === undefined
+      ? undefined
+      : snapshotInputs(value as CreationDefaultInputs) as A;
+  };
 };
 
 /**
  * Snapshot every runtime/config input used by a default as immutable canonical
  * data. The evaluator is parsed as a declarative expression and may read only
  * its snapshot and authoritative context parameters. Calls, mutation, dynamic
- * property names, and undeclared identifiers are rejected.
+ * property names, and undeclared identifiers are rejected. Capture Date and
+ * Uint8Array values in `inputs`; constructing them inside the evaluator is not
+ * supported.
  */
 export const creationDefault = <
   A,
@@ -475,21 +495,19 @@ export const creationDefault = <
   const snapshot = snapshotInputs(inputs) as ImmutableCreationDefaultInputs<Inputs>;
   const source = Function.prototype.toString.call(get);
   const run = compileEvaluator<Inputs, A>(source, snapshot);
-  Object.defineProperty(run, CREATION_DEFAULT_IDENTITY, {
-    value: Object.freeze({
-      inputs: snapshot,
-      source,
-    }),
-    enumerable: false,
-  });
-  return Object.freeze(run) as CreationDefault<A>;
+  const declared = Object.freeze(run) as CreationDefault<A>;
+  creationDefaultIdentities.set(
+    declared as CreationDefault<unknown>,
+    Object.freeze({ inputs: snapshot, source, evaluate: declared }),
+  );
+  return declared;
 };
 
 /** @internal Immutable identity retained on a declared default. */
 export const creationDefaultIdentityOf = (
   get: CreationDefault<unknown>,
 ): CreationDefaultIdentity | undefined =>
-  get[CREATION_DEFAULT_IDENTITY];
+  creationDefaultIdentities.get(get);
 
 /**
  * Field options. Cardinality, uniqueness and ownership live on
