@@ -29,10 +29,12 @@ export const PEER_BINDINGS = {
   store: "STORE",
   transactor: "TRANSACTOR",
   replica: "REPLICA",
+  versionMetadata: "CF_VERSION_METADATA",
 } as const satisfies {
   store: keyof RamoseEnv;
   transactor: keyof RamoseEnv;
   replica: keyof RamoseEnv;
+  versionMetadata: keyof RamoseEnv;
 };
 
 /** Durable Object `className`s the `ramose/worker` entry exports. */
@@ -127,12 +129,13 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const workerProps = (
   worker: unknown,
-): { main?: unknown; env?: unknown; Type?: unknown } | undefined => {
+): { main?: unknown; env?: unknown; compatibility?: unknown; Type?: unknown } | undefined => {
   if (!isRecord(worker)) return undefined;
   const props = isRecord(worker.Props) ? worker.Props : worker;
   return {
     main: props.main,
     env: props.env,
+    compatibility: props.compatibility,
     Type: worker.Type,
   };
 };
@@ -160,6 +163,12 @@ const envOf = (worker: unknown): Record<string, unknown> | undefined => {
   return isRecord(env) ? env : undefined;
 };
 
+const isVersionMetadataBinding = (value: unknown): boolean =>
+  Cloudflare.Workers.isVersionMetadata(value) ||
+  (isRecord(value) &&
+    value.kind === "Cloudflare.Workers.VersionMetadata" &&
+    value.name === PEER_BINDINGS.versionMetadata);
+
 /**
  * @internal The Worker's env bag, or `undefined` when the value is a URL
  * (nothing to compare or validate).
@@ -182,11 +191,28 @@ export const validatePeerWiring = (worker: unknown): string | undefined => {
   }
 
   const missing: string[] = [];
-  for (const key of [PEER_BINDINGS.store, PEER_BINDINGS.transactor, PEER_BINDINGS.replica]) {
+  for (const key of [
+    PEER_BINDINGS.store,
+    PEER_BINDINGS.transactor,
+    PEER_BINDINGS.replica,
+    PEER_BINDINGS.versionMetadata,
+  ]) {
     if (env[key] === undefined) missing.push(key);
   }
   if (missing.length > 0) {
-    return `ramose: the server Worker is missing env binding${missing.length === 1 ? "" : "s"} ${missing.join(", ")} — those names are fixed (STORE / TRANSACTOR / REPLICA)`;
+    return `ramose: the server Worker is missing env binding${missing.length === 1 ? "" : "s"} ${missing.join(", ")} — those names are fixed (STORE / TRANSACTOR / REPLICA / CF_VERSION_METADATA)`;
+  }
+
+  if (!isVersionMetadataBinding(env[PEER_BINDINGS.versionMetadata])) {
+    return "ramose: CF_VERSION_METADATA must be Cloudflare.Workers.VersionMetadata() so live-query renewals can fence deployments";
+  }
+
+  const compatibility = workerProps(worker)?.compatibility;
+  const flags = isRecord(compatibility) && Array.isArray(compatibility.flags)
+    ? compatibility.flags
+    : [];
+  if (!flags.includes("global_fetch_strictly_public")) {
+    return 'ramose: the server Worker compatibility flags must include "global_fetch_strictly_public" so live-query renewal probes re-enter the public Worker route';
   }
 
   const transactor = classNameOf(env[PEER_BINDINGS.transactor]);
@@ -276,7 +302,7 @@ export const declareOwnedPeer = (options: OwnedPeerOptions & {
         [PEER_BINDINGS.store]: storageDecl(options.storage),
         [PEER_BINDINGS.transactor]: dos.transactor,
         [PEER_BINDINGS.replica]: dos.replica,
-        CF_VERSION_METADATA: Cloudflare.Workers.VersionMetadata(),
+        [PEER_BINDINGS.versionMetadata]: Cloudflare.Workers.VersionMetadata(),
         ...options.env,
         ...options.authEnv,
       },

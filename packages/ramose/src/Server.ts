@@ -467,7 +467,8 @@ const ServerResource = Resource<Server>("Ramose.Server");
  * Without `worker`, Server declares the peer (R2, both DO classes, the
  * Worker, {@link import("./peer.ts").PEER_COMPAT}, fixed bindings) and
  * applies `auth` onto its env. With `worker`, that
- * form is validated — bindings, DO classes, `main`, and `auth`
+ * form is validated — bindings (including version metadata), compatibility,
+ * DO classes, `main`, and `auth`
  * against the Worker env — and kept as the escape hatch.
  */
 const ownedPeers = new WeakSet<object>();

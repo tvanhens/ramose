@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import * as Cloudflare from "alchemy/Cloudflare";
 import * as Redacted from "effect/Redacted";
 import { OperationsCoverageError } from "../src/db/Errors.ts";
 import { Database, isDatabase } from "../src/Database.ts";
@@ -130,7 +131,12 @@ describe("PEER_COMPAT", () => {
       date: "2026-03-17",
       flags: ["nodejs_compat", "global_fetch_strictly_public"],
     });
-    expect(PEER_BINDINGS).toEqual({ store: "STORE", transactor: "TRANSACTOR", replica: "REPLICA" });
+    expect(PEER_BINDINGS).toEqual({
+      store: "STORE",
+      transactor: "TRANSACTOR",
+      replica: "REPLICA",
+      versionMetadata: "CF_VERSION_METADATA",
+    });
     expect(PEER_DO_CLASSES).toEqual({ transactor: "TransactorDO", replica: "QueryReplicaDO" });
   });
 
@@ -146,13 +152,14 @@ describe("PEER_COMPAT", () => {
 describe("escape-hatch wiring", () => {
   const peer = (env: Record<string, unknown>, main = workerEntry()) => ({
     Type: "Cloudflare.Worker",
-    Props: { main, env },
+    Props: { main, env, compatibility: PEER_COMPAT },
   });
 
   const dos = {
     STORE: { Type: "Cloudflare.R2.Bucket" },
     TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
     REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
+    CF_VERSION_METADATA: Cloudflare.Workers.VersionMetadata(),
   };
 
   test("a URL worker has nothing to validate", () => {
@@ -181,6 +188,7 @@ describe("escape-hatch wiring", () => {
             name: "Rep",
             Props: { className: "QueryReplicaDO" },
           },
+          CF_VERSION_METADATA: Cloudflare.Workers.VersionMetadata(),
         }),
       ),
     ).toBeUndefined();
@@ -189,6 +197,23 @@ describe("escape-hatch wiring", () => {
   test("a missing binding is a deploy error", () => {
     const { REPLICA: _r, ...partial } = dos;
     expect(validatePeerWiring(peer(partial))).toMatch(/missing env binding.*REPLICA/);
+  });
+
+  test("live renewal requirements fail at deploy time", () => {
+    const { CF_VERSION_METADATA: _version, ...withoutVersion } = dos;
+    expect(validatePeerWiring(peer(withoutVersion))).toMatch(
+      /missing env binding CF_VERSION_METADATA/,
+    );
+    expect(
+      validatePeerWiring(peer({ ...dos, CF_VERSION_METADATA: "not-a-binding" })),
+    ).toMatch(/Cloudflare\.Workers\.VersionMetadata/);
+    const configured = peer(dos);
+    expect(
+      validatePeerWiring({
+        ...configured,
+        Props: { ...configured.Props, compatibility: { flags: ["nodejs_compat"] } },
+      }),
+    ).toMatch(/global_fetch_strictly_public/);
   });
 
   test("a typo'd className is a deploy error", () => {

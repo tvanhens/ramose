@@ -10,11 +10,13 @@
 
 import { afterAll, beforeEach, describe, expect } from "bun:test";
 import * as Alchemy from "alchemy";
+import * as Cloudflare from "alchemy/Cloudflare";
 import * as Test from "alchemy/Test/Bun";
 import * as Effect from "effect/Effect";
 import * as net from "node:net";
 import { OperationsCoverageError } from "../src/db/Errors.ts";
 import { Database } from "../src/Database.ts";
+import { PEER_COMPAT } from "../src/peer.ts";
 import { providers } from "../src/Providers.ts";
 import { Server } from "../src/Server.ts";
 import { workerEntry } from "../src/workerEntry.ts";
@@ -243,10 +245,12 @@ describe("Ramose.Server", () => {
         workerName: "ramose-peer",
         Props: {
           main: workerEntry(),
+          compatibility: PEER_COMPAT,
           env: {
             STORE: { Type: "Cloudflare.R2.Bucket" },
             TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
             REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
+            CF_VERSION_METADATA: Cloudflare.Workers.VersionMetadata(),
             ...env,
           },
         },
