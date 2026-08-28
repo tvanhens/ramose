@@ -16,18 +16,21 @@ import {
 import { Ref as RefSchema } from "../../src/db/valueTypes.ts";
 
 const Slugged = Trait("slugged", { slug: string() });
+const Other = Entity("other", { note: string() });
 
 const Taggable = Trait(
   "taggable",
   { tags: Field.many(string()) },
   {
     traits: [Slugged],
-    operations: {
+    operations: (Operation) => ({
       addTag: Operation({
         input: Schema.Struct({ tag: Schema.String }),
         output: Schema.Struct({}),
         run(op, { tag }) {
           op.self.set(Taggable.tags, tag);
+          // @ts-expect-error trait operations cannot write an unrelated owner field
+          op.self.set(Other.note, tag);
           return {};
         },
       }),
@@ -39,7 +42,7 @@ const Taggable = Trait(
           return {};
         },
       }),
-    },
+    }),
   },
 );
 
@@ -48,12 +51,14 @@ const Issue = Entity(
   { title: string() },
   {
     traits: [Taggable],
-    operations: {
+    operations: (Operation) => ({
       create: Operation({
         self: false,
         input: Schema.Struct({ title: Schema.String, slug: Schema.String }),
         output: Schema.Struct({ id: EntityId }),
         run(op, input) {
+          // @ts-expect-error targetless create requires every entity field
+          op.create({ slug: input.slug });
           return { id: op.create({ title: input.title, slug: input.slug }) };
         },
       }),
@@ -62,10 +67,21 @@ const Issue = Entity(
         output: Schema.Struct({}),
         run(op, { title }) {
           op.self.set(Issue.title, title);
+          // @ts-expect-error entity operations cannot write an unrelated owner field
+          op.self.set(Other.note, title);
           return {};
         },
       }),
-    },
+      dynamic: Operation({
+        self: Math.random() > 0.5,
+        input: Schema.Struct({ title: Schema.String }),
+        output: Schema.Struct({}),
+        run(op, { title }) {
+          if (op.self !== undefined) op.self.set(Issue.title, title);
+          return {};
+        },
+      }),
+    }),
   },
 );
 
@@ -103,6 +119,13 @@ type Rename = typeof Issue.operations.rename;
 type RenameContext = Parameters<Rename["run"]>[0];
 export type _entityTargeted = Expect<Equal<Rename["self"], true>>;
 export type _targetedNoCreate = Expect<Equal<RenameContext["create"], undefined>>;
+
+type Dynamic = typeof Issue.operations.dynamic;
+type DynamicContext = Parameters<Dynamic["run"]>[0];
+export type _dynamicSelfFlag = Expect<Equal<Dynamic["self"], boolean>>;
+export type _dynamicSelfHandle = Expect<
+  Equal<undefined extends DynamicContext["self"] ? true : false, true>
+>;
 
 Operation({
   self: false,

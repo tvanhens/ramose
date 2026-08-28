@@ -213,12 +213,44 @@ export type AnyOpHandle<C extends AnySchema = AnySchema> = OpHandle<C, any>;
 /** Entity or trait that canonically owns an operation. */
 export type OperationOwner = AnyEntity | AnyTrait;
 
+type OperationOwnerShape = {
+  readonly _tag: "Entity" | "Trait";
+  readonly ns: string;
+  readonly fields: object;
+};
+
+type OwnerField<Owner extends OperationOwnerShape> = Extract<
+  Owner["fields"][keyof Owner["fields"] & string],
+  { readonly ident: string }
+>;
+
+/** A targeted handle only accepts fields carried by its canonical owner. */
+export type OwnedTargetHandle<Owner extends OperationOwnerShape> = Omit<
+  OpHandle<AnySchema>,
+  "set" | "remove"
+> & {
+  set<const A extends OwnerField<Owner>>(field: A, value: OpValue<AnySchema, A>): void;
+  remove<const A extends OwnerField<Owner>>(
+    field: A,
+    value?: OpValue<AnySchema, A>,
+  ): void;
+};
+
 /** Complete create input for an entity owner, including flattened trait fields. */
-type OwnerCreateAttrs<Owner extends OperationOwner> = Owner extends AnyEntity
+type OwnerCreateAttrs<Owner extends OperationOwnerShape> = Owner extends {
+  readonly _tag: "Entity";
+  readonly fields: AnyEntity["fields"];
+}
   ? PutCreateAttrs<
-      CatalogSchema<{ readonly [K in Owner["ns"]]: Owner }>,
-      Owner,
-      AnyOpHandle<CatalogSchema<{ readonly [K in Owner["ns"]]: Owner }>>
+      CatalogSchema<{
+        readonly [K in Owner["ns"]]: Owner & Pick<AnyEntity, "id">;
+      }>,
+      Owner & Pick<AnyEntity, "id">,
+      AnyOpHandle<
+        CatalogSchema<{
+          readonly [K in Owner["ns"]]: Owner & Pick<AnyEntity, "id">;
+        }>
+      >
     >
   : never;
 
@@ -227,12 +259,12 @@ type OwnerCreateAttrs<Owner extends OperationOwner> = Owner extends AnyEntity
  * Targetless entity operations gain `create`; targeted operations gain `self`.
  */
 export type OwnedOp<
-  Owner extends OperationOwner,
+  Owner extends OperationOwnerShape,
   Self extends boolean,
 > = Omit<Op<AnySchema, undefined>, "self"> & {
-  readonly self: Self extends true ? OpHandle<AnySchema> : undefined;
+  readonly self: Self extends true ? OwnedTargetHandle<Owner> : undefined;
   readonly create: Self extends false
-    ? Owner extends AnyEntity
+    ? Owner extends { readonly _tag: "Entity" }
       ? (attrs: OwnerCreateAttrs<Owner>) => OpHandle<AnySchema>
       : undefined
     : undefined;
@@ -240,9 +272,9 @@ export type OwnedOp<
 
 /** Context available while an operation is still waiting for its owner map. */
 type UnboundOwnedOp<Self extends boolean> = Omit<Op<AnySchema, undefined>, "self"> & {
-  readonly self: Self extends true ? OpHandle<AnySchema> : undefined;
+  readonly self: Self extends true ? unknown : undefined;
   readonly create: Self extends false
-    ? (attrs: Record<string, unknown>) => OpHandle<AnySchema>
+    ? ((...args: never[]) => OpHandle<AnySchema>) | undefined
     : undefined;
 };
 
@@ -363,6 +395,31 @@ export type AnyOperation = Operation<string, any, any, any, any>;
 
 type CodecType<S> = S extends { readonly Type: infer T } ? T : unknown;
 
+type NormalizeOwnedSelf<Self extends boolean> = boolean extends Self
+  ? boolean
+  : Self extends false
+    ? false
+    : true;
+
+type OwnedRun<
+  Owner extends OperationOwnerShape,
+  ICodec extends Schema.Top,
+  OCodec extends Schema.Top,
+  Self extends boolean,
+> = (
+  op: OwnedOp<Owner, Self>,
+  input: CodecType<ICodec>,
+) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
+
+type UnboundOwnedRun<
+  ICodec extends Schema.Top,
+  OCodec extends Schema.Top,
+  Self extends boolean,
+> = (
+  op: UnboundOwnedOp<Self>,
+  input: CodecType<ICodec>,
+) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
+
 /** Owner-map authoring form before Entity/Trait supplies canonical ownership. */
 export interface UnboundOperation<
   ICodec extends Schema.Top = Schema.Top,
@@ -375,10 +432,7 @@ export interface UnboundOperation<
   /** `true` by default; `false` removes both the invocation target and `op.self`. */
   readonly self: Self;
   readonly doc: string | undefined;
-  readonly run: (
-    op: UnboundOwnedOp<Self>,
-    input: CodecType<ICodec>,
-  ) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
+  readonly run: UnboundOwnedRun<ICodec, OCodec, Self>;
 }
 
 export type AnyUnboundOperation = UnboundOperation<Schema.Top, Schema.Top, boolean>;
@@ -398,10 +452,7 @@ export interface OwnedOperation<
   readonly output: OCodec;
   readonly self: Self;
   readonly doc: string | undefined;
-  readonly run: (
-    op: OwnedOp<Owner, Self>,
-    input: CodecType<ICodec>,
-  ) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
+  readonly run: OwnedRun<Owner, ICodec, OCodec, Self>;
 }
 
 export type AnyOwnedOperation = OwnedOperation<
@@ -541,25 +592,42 @@ type OwnedOperationSpec<
   ICodec extends Schema.Top,
   OCodec extends Schema.Top,
   Self extends boolean,
+  Context,
 > = {
   readonly input: ICodec;
   readonly output: OCodec;
   readonly self?: Self;
   readonly doc?: string;
-  readonly run: (
-    op: UnboundOwnedOp<Self extends false ? false : true>,
-    input: CodecType<ICodec>,
-  ) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
+  readonly run: [Context] extends [never]
+    ? UnboundOwnedRun<ICodec, OCodec, NormalizeOwnedSelf<Self>>
+    : Context extends OperationOwnerShape
+      ? OwnedRun<Context, ICodec, OCodec, NormalizeOwnedSelf<Self>>
+      : never;
 };
 
-/** Owner-map form. Identity and exact owner context are supplied by Entity/Trait. */
+/**
+ * Owner-bound constructor supplied to an Entity/Trait `operations` authoring
+ * callback. Binding before the inner call is what lets TypeScript validate
+ * `op.self` fields and complete entity creates against the canonical owner.
+ */
+export interface OwnedOperationAuthor<Owner extends OperationOwnerShape> {
+  <
+    const ICodec extends Schema.Top,
+    const OCodec extends Schema.Top,
+    const Self extends boolean = true,
+  >(
+    spec: OwnedOperationSpec<ICodec, OCodec, Self, Owner>,
+  ): UnboundOperation<ICodec, OCodec, NormalizeOwnedSelf<Self>>;
+}
+
+/** Unbound form; Entity/Trait supply an owner-bound constructor when needed. */
 function defineOperation<
   const ICodec extends Schema.Top,
   const OCodec extends Schema.Top,
   const Self extends boolean = true,
 >(
-  spec: OwnedOperationSpec<ICodec, OCodec, Self>,
-): UnboundOperation<ICodec, OCodec, Self extends false ? false : true>;
+  spec: OwnedOperationSpec<ICodec, OCodec, Self, never>,
+): UnboundOperation<ICodec, OCodec, NormalizeOwnedSelf<Self>>;
 /** Standalone form retained for the pre-authoritative local peer fixtures. */
 function defineOperation<
   Name extends string,
@@ -573,7 +641,7 @@ function defineOperation<
   body: (op: Op<C, N>, input: I) => Promise<OutputDraft<O>> | OutputDraft<O>,
 ): Operation<Name, I, O, N, C>;
 function defineOperation(
-  nameOrSpec: string | OwnedOperationSpec<Schema.Top, Schema.Top, boolean>,
+  nameOrSpec: string | OwnedOperationSpec<Schema.Top, Schema.Top, boolean, never>,
   schemas?: OperationSchemas<unknown, unknown, AnyEntity | undefined, AnySchema>,
   body?: (op: Op<AnySchema, AnyEntity | undefined>, input: unknown) => unknown,
 ): AnyOperation | AnyUnboundOperation {
@@ -742,6 +810,12 @@ export const isOwnedOperation = (value: unknown): value is AnyOwnedOperation =>
   typeof value === "object" &&
   value !== null &&
   (value as { readonly _tag?: unknown })._tag === "OwnedOperation";
+
+/** @internal Build the owner-specialized constructor passed by Entity/Trait. */
+export const ownedOperationAuthor = <
+  Owner extends OperationOwnerShape,
+>(): OwnedOperationAuthor<Owner> =>
+  defineOperation as unknown as OwnedOperationAuthor<Owner>;
 
 /** Define one named operation. `Operation.for(catalog)` bakes `schema:` in. */
 export const Operation: typeof defineOperation & {

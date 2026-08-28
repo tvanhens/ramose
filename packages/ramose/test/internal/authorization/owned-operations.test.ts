@@ -19,17 +19,19 @@ import {
 } from "../../../src/internal/authorization/authoring/index.ts";
 import {
   CatalogId,
+  DigestHex,
   EntityId,
 } from "../../../src/internal/authorization/identities.ts";
 
 const catalog = CatalogId.make("app");
+const artifactHash = DigestHex.make("a".repeat(64));
 
 const fixture = () => {
   const Slugged = Trait(
     "slugged",
     { slug: string() },
     {
-      operations: {
+      operations: (Operation) => ({
         refresh: Operation({
           input: Schema.Struct({}),
           output: Schema.Struct({ ok: Schema.Boolean }),
@@ -37,7 +39,7 @@ const fixture = () => {
             return { ok: true };
           },
         }),
-      },
+      }),
     },
   );
   const Taggable = Trait(
@@ -45,7 +47,7 @@ const fixture = () => {
     { tags: Field.many(string()) },
     {
       traits: [Slugged],
-      operations: {
+      operations: (Operation) => ({
         addTag: Operation({
           input: Schema.Struct({ tag: Schema.String }),
           output: Schema.Struct({}),
@@ -63,7 +65,7 @@ const fixture = () => {
             return {};
           },
         }),
-      },
+      }),
     },
   );
   const User = Entity("user", { name: string() });
@@ -72,7 +74,7 @@ const fixture = () => {
     { title: string() },
     {
       traits: [Taggable],
-      operations: {
+      operations: (Operation) => ({
         create: Operation({
           self: false,
           input: Schema.Struct({ title: Schema.String, slug: Schema.String }),
@@ -89,7 +91,7 @@ const fixture = () => {
             return {};
           },
         }),
-      },
+      }),
     },
   );
   const Doc = Entity("doc", { body: string() }, { traits: [Slugged] });
@@ -129,10 +131,23 @@ describe("owned operation authoring", () => {
 describe("owned operation lowering", () => {
   test("produces deterministic catalog-local identities and inert descriptors", async () => {
     const { App, Issue } = fixture();
-    const first = await Effect.runPromise(lowerOwnedOperations(catalog, App));
-    const second = await Effect.runPromise(lowerOwnedOperations(catalog, App));
+    const first = await Effect.runPromise(
+      lowerOwnedOperations(catalog, App, artifactHash),
+    );
+    const second = await Effect.runPromise(
+      lowerOwnedOperations(catalog, App, artifactHash),
+    );
+    const otherArtifact = await Effect.runPromise(
+      lowerOwnedOperations(catalog, App, DigestHex.make("b".repeat(64))),
+    );
 
     expect(second.descriptors).toEqual(first.descriptors);
+    expect(otherArtifact.descriptors.map((entry) => entry.bodyHash)).not.toEqual(
+      first.descriptors.map((entry) => entry.bodyHash),
+    );
+    expect(
+      otherArtifact.descriptors.map((entry) => entry.inputSchemaHash),
+    ).not.toEqual(first.descriptors.map((entry) => entry.inputSchemaHash));
     expect(first.descriptors.map((entry) =>
       `${entry.id.owner.kind}:${entry.id.owner.name}.${entry.id.localName}:${entry.id.target}`
     )).toEqual([
@@ -164,7 +179,9 @@ describe("owned operation lowering", () => {
 
   test("keeps trait ownership once and derives direct plus transitive composers", async () => {
     const { App } = fixture();
-    const lowered = await Effect.runPromise(lowerOwnedOperations(catalog, App));
+    const lowered = await Effect.runPromise(
+      lowerOwnedOperations(catalog, App, artifactHash),
+    );
     const refresh = lowered.descriptors.find((entry) => entry.id.localName === "refresh")!;
     const addTag = lowered.descriptors.find((entry) => entry.id.localName === "addTag")!;
     const rebuild = lowered.descriptors.find((entry) => entry.id.localName === "rebuild")!;
@@ -217,14 +234,16 @@ describe("owned operation lowering", () => {
 
   test("is idempotent across repeated schema components and rejects conflicts", async () => {
     const { App } = fixture();
-    const repeated = await Effect.runPromise(lowerOwnedOperations(catalog, [App, App]));
+    const repeated = await Effect.runPromise(
+      lowerOwnedOperations(catalog, [App, App], artifactHash),
+    );
     expect(repeated.descriptors).toHaveLength(5);
 
     const OtherIssue = Entity(
       "issue",
       {},
       {
-        operations: {
+        operations: (Operation) => ({
           create: Operation({
             self: false,
             input: Schema.Struct({}),
@@ -233,12 +252,12 @@ describe("owned operation lowering", () => {
               return {};
             },
           }),
-        },
+        }),
       },
     );
     const conflicting = CatalogSchema({ issue: OtherIssue });
     const failure = await Effect.runPromise(
-      Effect.flip(lowerOwnedOperations(catalog, [App, conflicting])),
+      Effect.flip(lowerOwnedOperations(catalog, [App, conflicting], artifactHash)),
     );
     expect(failure.message).toBe("duplicate entity definition 'issue'");
   });
@@ -248,7 +267,7 @@ describe("owned operation lowering", () => {
       "invalid",
       {},
       {
-        operations: {
+        operations: (Operation) => ({
           inspect: Operation({
             self: false,
             input: Schema.Struct({ nested: Schema.Array(RefSchema.self) }),
@@ -257,11 +276,17 @@ describe("owned operation lowering", () => {
               return {};
             },
           }),
-        },
+        }),
       },
     );
     const failure = await Effect.runPromise(
-      Effect.flip(lowerOwnedOperations(catalog, CatalogSchema({ invalid: Invalid }))),
+      Effect.flip(
+        lowerOwnedOperations(
+          catalog,
+          CatalogSchema({ invalid: Invalid }),
+          artifactHash,
+        ),
+      ),
     );
     expect(failure.message).toBe(
       "targetless operation 'invalid.inspect' cannot reference self",

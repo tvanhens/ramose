@@ -32,6 +32,7 @@ import {
 import { InvalidIR } from "../failures.ts";
 import {
   CatalogId,
+  type DigestHex,
   EntityId,
   OperationId,
   TraitId,
@@ -45,7 +46,6 @@ import {
 } from "../catalog.ts";
 import {
   hashDomainSeparatedCanonicalJson,
-  hashDomainSeparatedCanonicalText,
 } from "../decode.ts";
 import type { JsonValue } from "../json.ts";
 
@@ -315,6 +315,7 @@ const callbackSources = (root: object): readonly string[] => {
 const schemaHashMaterial = (
   catalog: CatalogId,
   schema: Schema.Top,
+  artifactHash: DigestHex,
 ): Result.Result<JsonValue, InvalidIR> => {
   try {
     return Result.succeed({
@@ -323,6 +324,7 @@ const schemaHashMaterial = (
       ),
       ramoseShape: lowerOperationSchema(catalog, schema),
       callbacks: callbackSources(schema.ast),
+      artifactHash,
     } as JsonValue);
   } catch (cause) {
     return Result.fail(
@@ -332,8 +334,10 @@ const schemaHashMaterial = (
 };
 
 const hashOperationSchema = Effect.fn("Authorization.hashOperationSchema")(
-  function* (catalog: CatalogId, schema: Schema.Top) {
-    const material = yield* Effect.fromResult(schemaHashMaterial(catalog, schema));
+  function* (catalog: CatalogId, schema: Schema.Top, artifactHash: DigestHex) {
+    const material = yield* Effect.fromResult(
+      schemaHashMaterial(catalog, schema, artifactHash),
+    );
     return yield* hashDomainSeparatedCanonicalJson(
       OPERATION_SCHEMA_HASH_DOMAIN_V1,
       material,
@@ -356,12 +360,15 @@ const freeze = <T extends object>(value: T): Readonly<T> => Object.freeze(value)
 /**
  * Deterministically lower every operation reachable from one catalog's schema
  * components. Repeated reachability of the same definition is idempotent;
- * owner/local collisions between different definitions fail.
+ * owner/local collisions between different definitions fail. `artifactHash`
+ * must identify the immutable deployed bundle so captured constants and schema
+ * callback closures cannot reuse a fingerprint across distinct artifacts.
  */
 export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperations")(
   function* (
     catalog: CatalogId,
     input: AnySchema | readonly AnySchema[],
+    artifactHash: DigestHex,
   ): Effect.fn.Return<LoweredOwnedOperations, InvalidIR> {
     const schemas = Array.isArray(input) ? input : [input as AnySchema];
     const drafts = yield* Effect.fromResult(collectDrafts(schemas));
@@ -377,12 +384,15 @@ export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperation
         target: operation.self ? "required" : "none",
       });
       const [inputSchemaHash, outputSchemaHash, bodyHash] = yield* Effect.all([
-        hashOperationSchema(catalog, operation.input),
-        hashOperationSchema(catalog, operation.output),
+        hashOperationSchema(catalog, operation.input, artifactHash),
+        hashOperationSchema(catalog, operation.output, artifactHash),
         Effect.flatMap(
           Effect.fromResult(bodySource(operation.run)),
           (source) =>
-            hashDomainSeparatedCanonicalText(OPERATION_BODY_HASH_DOMAIN_V1, source),
+            hashDomainSeparatedCanonicalJson(OPERATION_BODY_HASH_DOMAIN_V1, {
+              artifactHash,
+              source,
+            }),
         ),
       ]);
       const inputShape = lowerOperationSchema(catalog, operation.input);

@@ -28,8 +28,10 @@ import {
 import type { AnyTrait } from "./Trait.ts";
 import {
   bindOwnedOperations,
+  ownedOperationAuthor,
   type AnyUnboundOperation,
   type BoundOwnerOperations,
+  type OwnedOperationAuthor,
   type ValidOwnedOperationMap,
 } from "./Operation.ts";
 
@@ -200,7 +202,9 @@ export type EntityOptions<
   >,
 > = {
   readonly traits?: Traits;
-  readonly operations?: ValidOwnedOperationMap<Ops> & Ops;
+  readonly operations?:
+    | (ValidOwnedOperationMap<Ops> & Ops)
+    | ((Operation: OwnedOperationAuthor<any>) => ValidOwnedOperationMap<Ops> & Ops);
 };
 
 export declare namespace Entity {
@@ -300,6 +304,16 @@ type EntityWithTraits<
     >;
   };
 
+type EntityOperationContext<
+  Name extends string,
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+> = {
+  readonly _tag: "Entity";
+  readonly ns: Name;
+  readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+};
+
 /** Group fields under one ident prefix. */
 export function Entity<const Name extends string, Fields extends FieldMap>(
   name: ValidIdentName<Name>,
@@ -313,8 +327,25 @@ export function Entity<
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options: EntityOptions<Traits, Ops> & ValidTraitCompose<Fields, Traits>,
+  options: {
+    readonly traits?: Traits;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<EntityOperationContext<Name, Fields, Traits>>,
+    ) => ValidOwnedOperationMap<Ops> & Ops;
+  } & ValidTraitCompose<Fields, Traits>,
 ): EntityWithTraits<Name, Fields, Traits, Ops>;
+export function Entity<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Traits extends readonly AnyTrait[],
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: {
+    readonly traits?: Traits;
+    readonly operations?: never;
+  } & ValidTraitCompose<Fields, Traits>,
+): EntityWithTraits<Name, Fields, Traits, {}>;
 export function Entity<
   const Name extends string,
   Fields extends FieldMap,
@@ -358,12 +389,20 @@ export function Entity<
     id: idField,
     ...merged,
   };
+  const operationSpecs =
+    typeof options?.operations === "function"
+      ? options.operations(
+          ownedOperationAuthor<
+            EntityOperationContext<Name, Fields, Traits>
+          >(),
+        )
+      : options?.operations;
   (entity as { operations: unknown }).operations = bindOwnedOperations(
     entity as unknown as Entity<Name, Fields, Ops> & {
       readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
       readonly traits: Traits;
     },
-    options?.operations,
+    operationSpecs,
   );
   return entity as unknown as
     | Entity<Name, Fields, Ops>
