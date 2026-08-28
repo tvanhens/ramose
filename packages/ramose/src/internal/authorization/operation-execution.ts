@@ -284,7 +284,7 @@ const makeBodyOp = (args: {
       sync(tx.set(values[offset] as never, values[offset + 1] as never, values[offset + 2] as never));
     }) as Op<any, any>["set"],
     remove: ((...values: unknown[]) => {
-      const offset = values.length >= 4 ? 1 : 0;
+      const offset = bodyWritableEntities.includes(values[0] as AnyEntity) ? 1 : 0;
       assertMutableField(values[offset + 1]);
       sync(tx.remove(values[offset] as never, values[offset + 1] as never, values[offset + 2] as never));
     }) as Op<any, any>["remove"],
@@ -358,11 +358,10 @@ const validateProducedDatoms = async (
     ...fieldIdentSet(writableEntities),
     ...Object.values(definition.owner.fields).map((field) => field.ident),
   ]);
-  const fixedFields = new Map<string, unknown>();
+  const writableTypes = new Set(writableEntities.map((entity) => entity.ns));
+  const fixedFieldsByType = new Map<string, ReadonlyMap<string, { readonly value: unknown }>>();
   for (const entity of [...writableEntities, ...definition.composers]) {
-    for (const [ident, entry] of compositionValueMetadata(entity).fixed) {
-      fixedFields.set(ident, entry.value);
-    }
+    fixedFieldsByType.set(entity.ns, compositionValueMetadata(entity).fixed);
   }
   const principalField = deployed.unit.policy.principal.entity;
   const principalIdent = principalField === undefined
@@ -379,6 +378,13 @@ const validateProducedDatoms = async (
     if (!datom.op) {
       if (await report.dbAfter.exists(datom.e)) {
         throw new InvalidRequest({ message: "operation produced an invalid canonical type retraction" });
+      }
+      const deletedType = await targetType(report.dbBefore, datom.e);
+      if (
+        deletedType === undefined ||
+        (!writableTypes.has(deletedType) && !targetFits(deployed, definition.id, deletedType))
+      ) {
+        throw new InvalidRequest({ message: "operation cannot delete this entity type" });
       }
       continue;
     }
@@ -398,6 +404,19 @@ const validateProducedDatoms = async (
     if (ident.startsWith(":db/") || ident.startsWith(":ramose/")) {
       throw new InvalidRequest({ message: "operation cannot mutate control-plane data" });
     }
+    const rowExistsAfter = await report.dbAfter.exists(datom.e);
+    const rowDb = rowExistsAfter ? report.dbAfter : report.dbBefore;
+    const rowType = await targetType(rowDb, datom.e);
+    if (principalIdent === ident) {
+      throw new InvalidRequest({ message: "operation cannot mutate principal identity" });
+    }
+    const wholeEntityDeletion = !datom.op && !rowExistsAfter;
+    if (
+      wholeEntityDeletion && rowType !== undefined &&
+      (writableTypes.has(rowType) || targetFits(deployed, definition.id, rowType))
+    ) {
+      continue;
+    }
     if (!allowedFields.has(ident)) {
       throw new InvalidRequest({ message: `operation cannot write ${ident}` });
     }
@@ -407,8 +426,6 @@ const validateProducedDatoms = async (
     if (descriptor === undefined) {
       throw new InvalidRequest({ message: `operation cannot write unknown catalog field ${ident}` });
     }
-    const rowDb = await report.dbAfter.exists(datom.e) ? report.dbAfter : report.dbBefore;
-    const rowType = await targetType(rowDb, datom.e);
     const fieldFits = rowType !== undefined && (
       descriptor.id.owner.kind === "entity"
         ? descriptor.id.owner.name === rowType
@@ -417,11 +434,13 @@ const validateProducedDatoms = async (
     if (!fieldFits) {
       throw new InvalidRequest({ message: `operation cannot write ${ident} on this entity` });
     }
-    const fixed = fixedFields.get(ident);
-    if (fixedFields.has(ident)) {
-      const expected = fixed instanceof Date && datom.vt === ValueTag.Inst
-        ? fixed.getTime()
-        : fixed;
+    const fixed = rowType === undefined
+      ? undefined
+      : fixedFieldsByType.get(rowType)?.get(ident);
+    if (fixed !== undefined) {
+      const expected = fixed.value instanceof Date && datom.vt === ValueTag.Inst
+        ? fixed.value.getTime()
+        : fixed.value;
       const allowedCreationValue = createdTypes.has(datom.e) &&
         !(await report.dbBefore.exists(datom.e)) && datom.op &&
         (Array.isArray(expected)
@@ -430,9 +449,6 @@ const validateProducedDatoms = async (
       if (!allowedCreationValue) {
         throw new InvalidRequest({ message: `operation cannot mutate fixed field ${ident}` });
       }
-    }
-    if (principalIdent === ident) {
-      throw new InvalidRequest({ message: "operation cannot mutate principal identity" });
     }
     const attr = report.dbAfter.schema.attr(datom.a);
     if (datom.op && attr?.valueType === ValueTag.Ref) {

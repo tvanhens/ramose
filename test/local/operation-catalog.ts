@@ -52,7 +52,7 @@ export const OperationIssue = Db.Entity(
   "operation-issue",
   {
     owner: Db.Ref(OperationUser),
-    title: Db.string(),
+    title: Db.string({ optional: true }),
   },
   {
     operations: (Operation) => ({
@@ -80,6 +80,14 @@ export const OperationIssue = Db.Entity(
           return {};
         },
       }),
+      clearTitle: Operation({
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        run(op) {
+          op.remove(OperationIssue, op.self.eid, OperationIssue.title);
+          return {};
+        },
+      }),
     }),
   },
 );
@@ -97,6 +105,14 @@ const OperationBound = Db.Trait(
           return { ok: true };
         },
       }),
+      destroy: Operation({
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        run(op) {
+          op.self.delete();
+          return {};
+        },
+      }),
     }),
   },
 );
@@ -104,6 +120,16 @@ const operationBinding = {
   key: "authoritative",
   schema: Db.Schema({}),
 };
+const otherOperationBinding = {
+  key: "other-authoritative",
+  schema: Db.Schema({}),
+};
+
+export const OperationCreatedOther = Db.Entity(
+  "operation-created-other",
+  { title: Db.string({ default: () => "other default" }) },
+  { traits: [OperationBound(otherOperationBinding)] },
+);
 
 export const OperationCreated = Db.Entity(
   "operation-created",
@@ -130,6 +156,17 @@ export const OperationCreated = Db.Entity(
           return {};
         },
       }),
+      createBoth: Operation({
+        self: false,
+        writes: [OperationCreatedOther],
+        input: Schema.Struct({}),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run(op) {
+          op.create({});
+          op.put(OperationCreatedOther, {});
+          return { ok: true };
+        },
+      }),
     }),
   },
 );
@@ -138,6 +175,7 @@ export const OperationSchema = Db.Schema({
   "operation-user": OperationUser,
   "operation-issue": OperationIssue,
   "operation-created": OperationCreated,
+  "operation-created-other": OperationCreatedOther,
 });
 
 const entity = (name: string) => EntityId.make({ catalog: OP_CATALOG, name });
@@ -173,6 +211,10 @@ const descriptorTables: Omit<CatalogDescriptor, "fingerprint"> = {
       id: entity(OperationCreated.ns),
       traits: [operationBoundId],
     },
+    {
+      id: entity(OperationCreatedOther.ns),
+      traits: [operationBoundId],
+    },
     { id: entity(OperationUser.ns), traits: [] },
   ],
   traits: [
@@ -184,6 +226,14 @@ const descriptorTables: Omit<CatalogDescriptor, "fingerprint"> = {
   fields: [
     {
       id: createdTitleId,
+      valueType: "string",
+      cardinality: "one",
+      index: false,
+      optional: false,
+      owned: false,
+    },
+    {
+      id: field(OperationCreatedOther.ns, "title"),
       valueType: "string",
       cardinality: "one",
       index: false,
@@ -212,7 +262,7 @@ const descriptorTables: Omit<CatalogDescriptor, "fingerprint"> = {
       valueType: "string",
       cardinality: "one",
       index: false,
-      optional: false,
+      optional: true,
       owned: false,
     },
     {
@@ -232,6 +282,11 @@ const descriptorTables: Omit<CatalogDescriptor, "fingerprint"> = {
       trait: operationBoundId,
       transitive: [operationBoundId],
     },
+    {
+      composer: entity(OperationCreatedOther.ns),
+      trait: operationBoundId,
+      transitive: [operationBoundId],
+    },
   ],
 };
 
@@ -244,10 +299,13 @@ const descriptor: CatalogDescriptor = {
 
 const rename = OperationIssue[Db.OwnedOperations].rename;
 const changeType = OperationIssue[Db.OwnedOperations].changeType;
+const clearTitle = OperationIssue[Db.OwnedOperations].clearTitle;
 const changeIdentity = OperationUser[Db.OwnedOperations].changeIdentity;
 const create = OperationCreated[Db.OwnedOperations].create;
 const forgeFixed = OperationCreated[Db.OwnedOperations].forgeFixed;
 const inspectBound = OperationBound[Db.OwnedOperations].inspect;
+const destroyBound = OperationBound[Db.OwnedOperations].destroy;
+const createBoth = OperationCreated[Db.OwnedOperations].createBoth;
 const policy = Result.getOrThrow(
   compileReadAuthorizationResult({
     schema: OperationSchema,
@@ -257,12 +315,16 @@ const policy = Result.getOrThrow(
       read(OperationUser).when(eq(OperationUser.authId, subject)),
       read(OperationIssue).when(eq(OperationIssue.owner, me)),
       read(OperationCreated).when(allow),
+      read(OperationCreatedOther).when(allow),
       invoke(rename).when(allow),
       invoke(changeType).when(allow),
+      invoke(clearTitle).when(allow),
       invoke(changeIdentity).when(allow),
       invoke(create).when(allow),
       invoke(forgeFixed).when(allow),
       invoke(inspectBound).when(allow),
+      invoke(destroyBound).when(allow),
+      invoke(createBoth).when(allow),
     ],
   }),
 );
@@ -287,8 +349,11 @@ const idOf = (localName: string) =>
   lowered.definitions.find((definition) => definition.localName === localName)!.id;
 export const RENAME_OPERATION_ID = idOf("rename");
 export const CHANGE_TYPE_OPERATION_ID = idOf("changeType");
+export const CLEAR_TITLE_OPERATION_ID = idOf("clearTitle");
 export const CHANGE_IDENTITY_OPERATION_ID = idOf("changeIdentity");
 export const UNGRANTED_OPERATION_ID = idOf("ungrantedRename");
 export const CREATE_OPERATION_ID = idOf("create");
 export const FORGE_FIXED_OPERATION_ID = idOf("forgeFixed");
 export const INSPECT_BOUND_OPERATION_ID = idOf("inspect");
+export const DESTROY_BOUND_OPERATION_ID = idOf("destroy");
+export const CREATE_BOTH_OPERATION_ID = idOf("createBoth");

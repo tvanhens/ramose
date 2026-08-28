@@ -9,7 +9,10 @@ import { schemaTx } from "../../packages/ramose/src/db/internal.ts";
 import {
   CHANGE_IDENTITY_OPERATION_ID,
   CHANGE_TYPE_OPERATION_ID,
+  CLEAR_TITLE_OPERATION_ID,
+  CREATE_BOTH_OPERATION_ID,
   CREATE_OPERATION_ID,
+  DESTROY_BOUND_OPERATION_ID,
   FORGE_FIXED_OPERATION_ID,
   INSPECT_BOUND_OPERATION_ID,
   OP_DATABASE,
@@ -256,6 +259,70 @@ export function registerOperationsContract(target: OperationsTarget): void {
       expect(accepted.status).toBe(200);
       expect(accepted.body.result).toEqual({ ok: true });
       expect(wrongType.status).toBe(403);
+    });
+
+    test("the definition overload supports a valueless field removal", async () => {
+      const { policyUrl } = target.urls();
+      const removed = await invokeOperation(
+        policyUrl,
+        CLEAR_TITLE_OPERATION_ID,
+        aliceIssue,
+        {},
+      );
+      expect(removed.status).toBe(200);
+      const issue = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        entity: aliceIssue,
+      }, { "x-ramose-min-t": String(removed.body.t) });
+      expect(issue.body.entity[":operation-issue/title"]).toBeUndefined();
+    });
+
+    test("fixed bindings validate against each created concrete type", async () => {
+      const { policyUrl } = target.urls();
+      const created = await invokeOperation(
+        policyUrl,
+        CREATE_BOTH_OPERATION_ID,
+        undefined,
+        {},
+      );
+      expect(created.status).toBe(200);
+      const rows = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        query: "[:find ?e ?type ?catalog :where [?e :ramose/type ?type] [?e :operation-bound/catalog ?catalog]]",
+      }, { "x-ramose-min-t": String(created.body.t) });
+      expect(rows.body.result).toContainEqual([
+        expect.any(Number),
+        ":operation-created",
+        "authoritative",
+      ]);
+      expect(rows.body.result).toContainEqual([
+        expect.any(Number),
+        ":operation-created-other",
+        "other-authoritative",
+      ]);
+    });
+
+    test("whole-entity deletion may retract engine-owned fixed bindings", async () => {
+      const { policyUrl } = target.urls();
+      const created = await invokeOperation(
+        policyUrl,
+        CREATE_OPERATION_ID,
+        undefined,
+        {},
+      );
+      const rows = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        query: '[:find ?e :where [?e :ramose/type ":operation-created"]]',
+      }, { "x-ramose-min-t": String(created.body.t) });
+      const createdEid = rows.body.result[0][0];
+      const destroyed = await invokeOperation(
+        policyUrl,
+        DESTROY_BOUND_OPERATION_ID,
+        createdEid,
+        {},
+      );
+      expect(destroyed.status).toBe(200);
+      const missing = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        entity: createdEid,
+      }, { "x-ramose-min-t": String(destroyed.body.t) });
+      expect(missing.body.entity).toBeNull();
     });
 
     test("raw application transactions remain closed", async () => {
