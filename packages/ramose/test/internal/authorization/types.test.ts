@@ -142,6 +142,8 @@ export type _noPublicAuthorization = Expect<
       | "uniqueCanonicalTypeName"
       | "DeployedCatalogs"
       | "CatalogVersionMismatch"
+      | "requireCatalogKey"
+      | "requireDatabase"
       | "requireUnitHash"
       | "opaqueCatalogDenial"
       | "compareAndSwapCatalogUnit"
@@ -354,6 +356,14 @@ export type _uniqueCanonicalTypeNameOnBarrel = Expect<
   Extends<"uniqueCanonicalTypeName", keyof AuthExports>
 >;
 export type _requireUnitHashOnBarrel = Expect<Extends<"requireUnitHash", keyof AuthExports>>;
+export type _requireCatalogKeyOnBarrel = Expect<Extends<"requireCatalogKey", keyof AuthExports>>;
+type DeployedCatalogsType = import("../../../src/internal/authorization/index.ts").DeployedCatalogs;
+export type _requireDatabaseIsDatabaseKeyed = Expect<
+  Extends<"requireDatabase", keyof DeployedCatalogsType>
+>;
+export type _noKeyFirstCatalogRequire = Expect<
+  Equal<Extract<keyof DeployedCatalogsType, "require" | "keys">, never>
+>;
 export type _catalogVersionMismatchOnBarrel = Expect<
   Extends<"CatalogVersionMismatch", keyof AuthExports>
 >;
@@ -1066,6 +1076,7 @@ describe("legacy authorization names cannot be imported", () => {
     expect("assembleDeployedCatalogs" in ir).toBe(true);
     expect("compileReadFilter" in ir).toBe(true);
     expect("uniqueCanonicalTypeName" in ir).toBe(true);
+    expect("requireCatalogKey" in ir).toBe(true);
     expect("requireUnitHash" in ir).toBe(true);
     expect("CatalogVersionMismatch" in ir).toBe(true);
     expect("opaqueCatalogDenial" in ir).toBe(true);
@@ -1089,6 +1100,7 @@ describe("legacy authorization names cannot be imported", () => {
     expect("uniqueCanonicalTypeName" in root).toBe(false);
     expect("DeployedCatalogs" in root).toBe(false);
     expect("CatalogVersionMismatch" in root).toBe(false);
+    expect("requireCatalogKey" in root).toBe(false);
     expect("requireUnitHash" in root).toBe(false);
     expect("opaqueCatalogDenial" in root).toBe(false);
     expect("sealInstalledCatalogUnit" in root).toBe(false);

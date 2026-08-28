@@ -96,6 +96,8 @@ const KILLED = [
   "assembleDeployedCatalogs",
   "DeployedCatalogs",
   "CatalogVersionMismatch",
+  "requireCatalogKey",
+  "requireDatabase",
   "requireUnitHash",
   "opaqueCatalogDenial",
   "compareAndSwapCatalogUnit",

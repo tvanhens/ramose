@@ -1,9 +1,12 @@
 /**
  * Immutable deployed-catalog registry.
  *
- * Assembled once at startup from reachable code definitions. The sealed
- * {@link InstalledCatalogUnitV1} is the sole runtime authority. Not a
- * module-global mutable map and not import-order registration.
+ * Assembled once at startup from reachable code definitions. The registry
+ * is `DatabaseId -> DeployedCatalog`: each database has exactly one
+ * request-addressable sealed {@link InstalledCatalogUnitV1}. Lookup starts
+ * from the trusted database; a request may then prove catalog-key and
+ * unit-hash agreement with that unit. Not a module-global mutable map and
+ * not import-order registration.
  */
 
 import * as Effect from "effect/Effect";
@@ -21,19 +24,23 @@ import { installAuthorization, type InstallFailure } from "./install.ts";
 import type { CatalogBindingTarget, PolicyTemplateIR } from "./ir.ts";
 
 export type CatalogBoundRef = {
+  readonly database: DatabaseId;
   readonly catalogKey: CatalogId;
   readonly unitHash: CatalogUnitHash;
 };
 
 export type DeployedCatalog = {
+  readonly database: DatabaseId;
   readonly catalogKey: CatalogId;
   readonly unitHash: CatalogUnitHash;
   readonly unit: InstalledCatalogUnitV1;
 };
 
 export type DeployedCatalogs = {
-  readonly require: (catalogKey: CatalogId) => Result.Result<DeployedCatalog, CatalogMismatch>;
-  readonly keys: () => readonly CatalogId[];
+  readonly requireDatabase: (
+    database: DatabaseId,
+  ) => Result.Result<DeployedCatalog, CatalogMismatch>;
+  readonly databases: () => readonly DatabaseId[];
 };
 
 export type CatalogAssemblyUnit = {
@@ -69,6 +76,9 @@ const invalid = (message: string): Result.Result<never, InvalidIR> =>
 const formatPath = (path: readonly CatalogId[]): string => path.join(" → ");
 
 const compareCatalogId = (left: CatalogId, right: CatalogId): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+const compareDatabaseId = (left: DatabaseId, right: DatabaseId): number =>
   left < right ? -1 : left > right ? 1 : 0;
 
 const catalogTargetOf = (descriptor: CatalogDescriptor): CatalogBindingTarget => ({
@@ -108,6 +118,7 @@ const assembleOne = Effect.fn("Authorization.assembleOneDeployedCatalog")(
     });
     const sealed = yield* sealInstalledCatalogUnit(descriptor, policy);
     return freezePlain({
+      database: unit.database,
       catalogKey: unit.catalog,
       unitHash: sealed.unitHash,
       unit: sealed,
@@ -116,27 +127,45 @@ const assembleOne = Effect.fn("Authorization.assembleOneDeployedCatalog")(
 );
 
 const buildRegistry = (
-  byKey: ReadonlyMap<CatalogId, DeployedCatalog>,
+  byDatabase: ReadonlyMap<DatabaseId, DeployedCatalog>,
 ): DeployedCatalogs => {
-  const require = (catalogKey: CatalogId): Result.Result<DeployedCatalog, CatalogMismatch> => {
-    const deployed = byKey.get(catalogKey);
+  const requireDatabase = (
+    database: DatabaseId,
+  ): Result.Result<DeployedCatalog, CatalogMismatch> => {
+    const deployed = byDatabase.get(database);
     if (deployed === undefined) {
       return Result.fail(
         new CatalogMismatch({
           message: "catalog mismatch",
-          expected: catalogKey,
+          expectedDatabase: database,
         }),
       );
     }
     return Result.succeed(deployed);
   };
 
-  const keys = (): readonly CatalogId[] => Object.freeze([...byKey.keys()].sort(compareCatalogId));
+  const databases = (): readonly DatabaseId[] =>
+    Object.freeze([...byDatabase.keys()].sort(compareDatabaseId));
 
   return Object.freeze({
-    require,
-    keys,
+    requireDatabase,
+    databases,
   });
+};
+
+/** Exact catalog-key agreement with a database-selected unit. Pure Result. */
+export const requireCatalogKey = (
+  actual: CatalogId,
+  expected: CatalogId,
+): Result.Result<void, CatalogMismatch> => {
+  if (actual === expected) return Result.succeed(undefined);
+  return Result.fail(
+    new CatalogMismatch({
+      message: "catalog mismatch",
+      expected,
+      actual,
+    }),
+  );
 };
 
 /** Exact unit-hash agreement. Pure Result; no Effect or Context lookup. */
@@ -150,16 +179,17 @@ export const requireUnitHash = (
 };
 
 /**
- * Two-step contract: `require(catalogKey)` then `requireUnitHash`.
- * Composes the primitives; does not allocate Effects.
+ * Database-first contract: `requireDatabase` then catalog-key and unit-hash
+ * agreement with that unit. Composes the primitives; does not allocate Effects.
  */
 export const resolveDeployedCatalog = (
   catalogs: DeployedCatalogs,
   ref: CatalogBoundRef,
 ): Result.Result<DeployedCatalog, CatalogMismatch | CatalogVersionMismatch> =>
   Result.gen(function* () {
-    const deployed = yield* catalogs.require(ref.catalogKey);
-    yield* requireUnitHash(ref.unitHash, deployed.unitHash, ref.catalogKey);
+    const deployed = yield* catalogs.requireDatabase(ref.database);
+    yield* requireCatalogKey(ref.catalogKey, deployed.catalogKey);
+    yield* requireUnitHash(ref.unitHash, deployed.unitHash, deployed.catalogKey);
     return deployed;
   });
 
@@ -246,6 +276,30 @@ export const assembleDeployedCatalogs = Effect.fn("Authorization.assembleDeploye
       byKey.set(key, assembled[0]!);
     }
 
-    return buildRegistry(Object.freeze(byKey));
+    const byDatabase = new Map<DatabaseId, DeployedCatalog>();
+    const deployedUnits = [...byKey.values()].sort((left, right) =>
+      compareCatalogId(left.catalogKey, right.catalogKey),
+    );
+    for (const deployed of deployedUnits) {
+      const existing = byDatabase.get(deployed.database);
+      if (existing === undefined) {
+        byDatabase.set(deployed.database, deployed);
+        continue;
+      }
+      if (
+        existing.catalogKey === deployed.catalogKey &&
+        existing.unitHash === deployed.unitHash
+      ) {
+        continue;
+      }
+      const catalogPaths = [existing.catalogKey, deployed.catalogKey]
+        .map((key) => (reachable.get(key) ?? []).map(formatPath).join("; "))
+        .join("; ");
+      return yield* new InvalidIR({
+        message: `distinct catalog units '${existing.catalogKey}' and '${deployed.catalogKey}' claim database '${deployed.database}' (paths: ${catalogPaths})`,
+      });
+    }
+
+    return buildRegistry(Object.freeze(byDatabase));
   },
 );

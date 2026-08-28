@@ -1,5 +1,5 @@
 /**
- * Deployed catalog registry: assembly, require, and exact unit-hash agreement.
+ * Deployed catalog registry: one request-addressable unit per database.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -10,12 +10,13 @@ import {
   CatalogId,
   CatalogUnitHash,
   CatalogVersionMismatch,
+  DatabaseId,
   EntityId,
-  FieldId,
   SchemaFingerprint,
   assembleDeployedCatalogs,
   hashCatalogSchemaFingerprint,
   opaqueCatalogDenial,
+  requireCatalogKey,
   requireUnitHash,
   resolveDeployedCatalog,
   type CatalogAssemblyUnit,
@@ -29,6 +30,9 @@ import {
   childTemplate,
   database,
   issueOwner,
+  otherCatalog,
+  otherCatalogDescriptor,
+  otherDatabase,
   scalarField,
   templateOf,
   version,
@@ -50,6 +54,24 @@ const appUnit = (extras: Partial<CatalogAssemblyUnit> = {}): CatalogAssemblyUnit
   ...extras,
 });
 
+const libUnit = (extras: Partial<CatalogAssemblyUnit> = {}): CatalogAssemblyUnit => ({
+  catalog: CatalogId.make("lib"),
+  database,
+  version,
+  descriptor: childCatalogDescriptor(),
+  policy: childTemplate(),
+  ...extras,
+});
+
+const crmUnit = (extras: Partial<CatalogAssemblyUnit> = {}): CatalogAssemblyUnit => ({
+  catalog: otherCatalog,
+  database: otherDatabase,
+  version,
+  descriptor: otherCatalogDescriptor(),
+  policy: childTemplate(),
+  ...extras,
+});
+
 const enumerablePayload = (value: object): Record<string, unknown> => {
   const payload: Record<string, unknown> = {};
   for (const key of Object.keys(value)) {
@@ -59,22 +81,33 @@ const enumerablePayload = (value: object): Record<string, unknown> => {
 };
 
 describe("assembleDeployedCatalogs", () => {
-  test("assembles a branded unit; require(key) returns it; keys() lists the root", async () => {
+  test("trusted database lookup returns the sealed unit; databases() lists it", async () => {
     const catalogs = await assemble({ root: catalog, units: [appUnit()] });
-    const deployed = Result.getOrThrow(catalogs.require(catalog));
+    const deployed = Result.getOrThrow(catalogs.requireDatabase(database));
+    expect(deployed.database).toBe(database);
     expect(deployed.catalogKey).toBe(catalog);
     expect(deployed.unitHash).toMatch(/^[0-9a-f]{64}$/);
     expect(deployed.unit._tag).toBe("InstalledCatalogUnit");
     expect(deployed.unit.unitHash).toBe(deployed.unitHash);
-    expect(catalogs.keys()).toEqual([catalog]);
+    expect(deployed.unit.catalog.database).toBe(database);
+    expect(catalogs.databases()).toEqual([database]);
   });
 
-  test("requireUnitHash succeeds on match and CatalogVersionMismatch on a wrong hash", async () => {
+  test("requireCatalogKey and requireUnitHash agree with the database-selected unit", async () => {
     const catalogs = await assemble({ root: catalog, units: [appUnit()] });
-    const deployed = Result.getOrThrow(catalogs.require(catalog));
+    const deployed = Result.getOrThrow(catalogs.requireDatabase(database));
+    expect(Result.isSuccess(requireCatalogKey(deployed.catalogKey, catalog))).toBe(true);
     expect(Result.isSuccess(requireUnitHash(deployed.unitHash, deployed.unitHash, catalog))).toBe(
       true,
     );
+
+    const wrongKey = requireCatalogKey(CatalogId.make("other"), deployed.catalogKey);
+    expect(Result.isFailure(wrongKey)).toBe(true);
+    if (Result.isFailure(wrongKey)) {
+      expect(wrongKey.failure._tag).toBe("CatalogMismatch");
+      expect(wrongKey.failure.expected).toBe(deployed.catalogKey);
+      expect(wrongKey.failure.actual).toBe(CatalogId.make("other"));
+    }
 
     const wrongHash = CatalogUnitHash.make(digestHex(0xab));
     const mismatch = requireUnitHash(wrongHash, deployed.unitHash, catalog);
@@ -88,40 +121,71 @@ describe("assembleDeployedCatalogs", () => {
     }
   });
 
-  test("resolveDeployedCatalog composes require and requireUnitHash", async () => {
+  test("resolveDeployedCatalog starts from the trusted database", async () => {
     const catalogs = await assemble({ root: catalog, units: [appUnit()] });
-    const deployed = Result.getOrThrow(catalogs.require(catalog));
-    const agreed = Result.getOrThrow(
-      requireUnitHash(deployed.unitHash, deployed.unitHash, catalog),
-    );
-    expect(agreed).toBeUndefined();
-
+    const deployed = Result.getOrThrow(catalogs.requireDatabase(database));
     const resolved = resolveDeployedCatalog(catalogs, {
+      database,
       catalogKey: catalog,
       unitHash: deployed.unitHash,
     });
     expect(Result.getOrThrow(resolved).unitHash).toBe(deployed.unitHash);
     expect(Result.getOrThrow(resolved).unit).toBe(deployed.unit);
+    expect(Result.getOrThrow(resolved).database).toBe(database);
 
-    const wrong = resolveDeployedCatalog(catalogs, {
+    const wrongDatabase = resolveDeployedCatalog(catalogs, {
+      database: otherDatabase,
+      catalogKey: catalog,
+      unitHash: deployed.unitHash,
+    });
+    expect(Result.isFailure(wrongDatabase)).toBe(true);
+    if (Result.isFailure(wrongDatabase)) {
+      expect(wrongDatabase.failure._tag).toBe("CatalogMismatch");
+    }
+
+    const wrongKey = resolveDeployedCatalog(catalogs, {
+      database,
+      catalogKey: CatalogId.make("other"),
+      unitHash: deployed.unitHash,
+    });
+    expect(Result.isFailure(wrongKey)).toBe(true);
+    if (Result.isFailure(wrongKey)) {
+      expect(wrongKey.failure._tag).toBe("CatalogMismatch");
+    }
+
+    const wrongHash = resolveDeployedCatalog(catalogs, {
+      database,
       catalogKey: catalog,
       unitHash: CatalogUnitHash.make(digestHex(0xab)),
     });
-    expect(Result.isFailure(wrong)).toBe(true);
-    if (Result.isFailure(wrong)) {
-      expect(wrong.failure._tag).toBe("CatalogVersionMismatch");
+    expect(Result.isFailure(wrongHash)).toBe(true);
+    if (Result.isFailure(wrongHash)) {
+      expect(wrongHash.failure._tag).toBe("CatalogVersionMismatch");
     }
   });
 
-  test("missing key is CatalogMismatch", async () => {
+  test("missing database is CatalogMismatch", async () => {
     const catalogs = await assemble({ root: catalog, units: [appUnit()] });
-    const missing = catalogs.require(CatalogId.make("other"));
+    const missing = catalogs.requireDatabase(DatabaseId.make("other"));
     expect(Result.isFailure(missing)).toBe(true);
     if (Result.isFailure(missing)) {
       expect(missing.failure._tag).toBe("CatalogMismatch");
       expect(missing.failure.message).toBe("catalog mismatch");
-      expect(missing.failure.expected).toBe(CatalogId.make("other"));
+      expect(missing.failure.expectedDatabase).toBe(DatabaseId.make("other"));
     }
+  });
+
+  test("distinct catalog units claiming the same DatabaseId fail startup", async () => {
+    const failure = await assembleFail({
+      root: catalog,
+      units: [appUnit({ children: [CatalogId.make("lib")] }), libUnit()],
+    });
+    expect(failure._tag).toBe("InvalidIR");
+    expect(failure.message).toContain("todos");
+    expect(failure.message).toContain("app");
+    expect(failure.message).toContain("lib");
+    expect(failure.message.toLowerCase()).toMatch(/distinct|claim/);
+    expect(failure.message).toMatch(/path/);
   });
 
   test("duplicate CatalogId with different definitions fails with reachability diagnostics", async () => {
@@ -148,6 +212,33 @@ describe("assembleDeployedCatalogs", () => {
     expect(failure.message).toMatch(/path/);
   });
 
+  test("two databases with different catalog units assemble; local names may repeat", async () => {
+    const catalogs = await assemble({
+      root: catalog,
+      units: [appUnit({ children: [otherCatalog] }), crmUnit()],
+    });
+    const todos = Result.getOrThrow(catalogs.requireDatabase(database));
+    const crm = Result.getOrThrow(catalogs.requireDatabase(otherDatabase));
+    expect(todos.catalogKey).toBe(catalog);
+    expect(crm.catalogKey).toBe(otherCatalog);
+    expect(todos.unitHash).not.toBe(crm.unitHash);
+    expect(todos.unit.catalog.entities.some((entity) => entity.id.name === "user")).toBe(true);
+    expect(crm.unit.catalog.entities.some((entity) => entity.id.name === "user")).toBe(true);
+    expect(todos.unit.catalog.fields.some((field) => field.id.localName === "authId")).toBe(true);
+    expect(crm.unit.catalog.fields.some((field) => field.id.localName === "authId")).toBe(true);
+    expect([...catalogs.databases()]).toEqual([otherDatabase, database].slice().sort());
+  });
+
+  test("repeated reachability of one identical unit does not create a second registration", async () => {
+    const catalogs = await assemble({
+      root: catalog,
+      units: [appUnit(), appUnit()],
+    });
+    const deployed = Result.getOrThrow(catalogs.requireDatabase(database));
+    expect(deployed.catalogKey).toBe(catalog);
+    expect(catalogs.databases()).toEqual([database]);
+  });
+
   test("missing child catalog referenced from root.children fails", async () => {
     const failure = await assembleFail({
       root: catalog,
@@ -156,64 +247,6 @@ describe("assembleDeployedCatalogs", () => {
     expect(failure._tag).toBe("InvalidIR");
     expect(failure.message).toContain("lib");
     expect(failure.message).toContain("app");
-  });
-
-  test("diamond reachability: same child via two parents, identical definition, one unit", async () => {
-    const lib = CatalogId.make("lib");
-    const mid = CatalogId.make("mid");
-    const midTables = {
-      ...childCatalogDescriptor(),
-      id: mid,
-      entities: [{ id: EntityId.make({ catalog: mid, name: "user" }), traits: [] }],
-      fields: [
-        {
-          id: FieldId.make({
-            catalog: mid,
-            owner: { kind: "entity", name: "user" },
-            localName: "authId",
-          }),
-          valueType: "string" as const,
-          cardinality: "one" as const,
-          unique: "upsert" as const,
-          index: true,
-          optional: false,
-          owned: false,
-        },
-      ],
-    };
-    const midFingerprint = SchemaFingerprint.make(
-      await Effect.runPromise(
-        hashCatalogSchemaFingerprint({
-          ...midTables,
-          fingerprint: SchemaFingerprint.make("placeholder"),
-        }),
-      ),
-    );
-    const midDescriptor: CatalogDescriptor = { ...midTables, fingerprint: midFingerprint };
-    const catalogs = await assemble({
-      root: catalog,
-      units: [
-        appUnit({ children: [lib, mid] }),
-        {
-          catalog: lib,
-          database,
-          version,
-          descriptor: childCatalogDescriptor(),
-          policy: childTemplate(),
-        },
-        {
-          catalog: mid,
-          database,
-          version,
-          children: [lib],
-          descriptor: midDescriptor,
-          policy: childTemplate(),
-        },
-      ],
-    });
-    const deployed = Result.getOrThrow(catalogs.require(lib));
-    expect(deployed.catalogKey).toBe(lib);
-    expect([...catalogs.keys()]).toEqual([catalog, lib, mid].slice().sort());
   });
 
   test("cross-catalog identity on a descriptor fails at install/seal", async () => {
@@ -249,19 +282,9 @@ describe("assembleDeployedCatalogs", () => {
   });
 
   test("unused unreachable unit is InvalidIR", async () => {
-    const lib = CatalogId.make("lib");
     const failure = await assembleFail({
       root: catalog,
-      units: [
-        appUnit(),
-        {
-          catalog: lib,
-          database,
-          version,
-          descriptor: childCatalogDescriptor(),
-          policy: childTemplate(),
-        },
-      ],
+      units: [appUnit(), libUnit()],
     });
     expect(failure._tag).toBe("InvalidIR");
     expect(failure.message).toContain("lib");
@@ -269,8 +292,8 @@ describe("assembleDeployedCatalogs", () => {
 
   test("opaqueCatalogDenial yields Unauthorized with no catalog or hash payload", async () => {
     const catalogs = await assemble({ root: catalog, units: [appUnit()] });
-    const deployed = Result.getOrThrow(catalogs.require(catalog));
-    const missing = catalogs.require(CatalogId.make("other"));
+    const deployed = Result.getOrThrow(catalogs.requireDatabase(database));
+    const missing = catalogs.requireDatabase(DatabaseId.make("other"));
     expect(Result.isFailure(missing)).toBe(true);
     if (Result.isFailure(missing)) {
       const denied = opaqueCatalogDenial(missing.failure);
@@ -283,6 +306,18 @@ describe("assembleDeployedCatalogs", () => {
       expect(json.toLowerCase()).not.toContain("hash");
       const keys = Object.keys(enumerablePayload(denied));
       expect(keys.some((key) => /catalog|hash|expected|actual/i.test(key))).toBe(false);
+    }
+
+    const keyMismatch = requireCatalogKey(CatalogId.make("other"), deployed.catalogKey);
+    expect(Result.isFailure(keyMismatch)).toBe(true);
+    if (Result.isFailure(keyMismatch)) {
+      const denied = opaqueCatalogDenial(keyMismatch.failure);
+      expect(denied).toBeInstanceOf(Unauthorized);
+      expect(denied._tag).toBe("Unauthorized");
+      const json = JSON.stringify(denied);
+      expect(json).not.toContain("other");
+      expect(json).not.toContain("app");
+      expect(json.toLowerCase()).not.toContain("catalog");
     }
 
     const mismatch = requireUnitHash(

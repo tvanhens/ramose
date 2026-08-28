@@ -200,6 +200,48 @@ export const childCatalogDescriptor = (): CatalogDescriptor => ({
   fingerprint: childFingerprint,
 });
 
+export const otherCatalog = CatalogId.make("crm");
+export const otherDatabase = DatabaseId.make("crm");
+
+export const otherCatalogTables = (): Omit<CatalogDescriptor, "fingerprint"> => ({
+  id: otherCatalog,
+  database: otherDatabase,
+  version,
+  entities: [{ id: EntityId.make({ catalog: otherCatalog, name: "user" }), traits: [] }],
+  traits: [],
+  fields: [
+    {
+      id: FieldId.make({
+        catalog: otherCatalog,
+        owner: { kind: "entity", name: "user" },
+        localName: "authId",
+      }),
+      valueType: "string",
+      cardinality: "one",
+      unique: "upsert",
+      index: true,
+      optional: false,
+      owned: false,
+    },
+  ],
+  operations: [],
+  traitComposition: [],
+});
+
+const otherFingerprint = SchemaFingerprint.make(
+  await Effect.runPromise(
+    hashCatalogSchemaFingerprint({
+      ...otherCatalogTables(),
+      fingerprint: SchemaFingerprint.make("placeholder"),
+    }),
+  ),
+);
+
+export const otherCatalogDescriptor = (): CatalogDescriptor => ({
+  ...otherCatalogTables(),
+  fingerprint: otherFingerprint,
+});
+
 export const childTemplate = (): PolicyTemplateIR => ({
   _tag: "PolicyTemplateIR",
   version: POLICY_TEMPLATE_IR_VERSION,

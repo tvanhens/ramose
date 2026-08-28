@@ -174,12 +174,18 @@ catalog. Cross-catalog handles, stale catalog versions, and identity
 collisions fail closed.
 
 **CAT-4.** Catalogs are assembled and validated at deployment from
-reachable code definitions into immutable `InstalledCatalogUnit`s. They
-are not published as database-resident units. A failed assembly leaves no
-partial registry.
+reachable code definitions into immutable `InstalledCatalogUnit`s. The
+deployed registry maps each database to exactly one request-addressable
+unit. Distinct units claiming the same database fail assembly. Child
+catalogs, traits, and catalog DAG libraries are authoring-time composition
+inputs folded into that unit before registry assembly; they are not
+separately request-addressable. Catalogs are not published as
+database-resident units. A failed assembly leaves no partial registry.
 
-**CAT-5.** Policy and operation state MUST NOT be observed without exact
-catalog-key and unit-hash agreement with the currently deployed unit.
+**CAT-5.** The trusted route database selects the deployed unit. Policy
+and operation state MUST NOT be observed without exact catalog-key and
+unit-hash agreement with that database-selected unit. A request MUST NOT
+choose among catalogs or policies within one database.
 
 **CAT-6.** Client-side occupancy or install checks are diagnostic only.
 The transactor repeats every security-relevant check.
