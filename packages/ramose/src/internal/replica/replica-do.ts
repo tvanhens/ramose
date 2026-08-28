@@ -50,6 +50,15 @@ import { checkpoint, handleIsolateTestAdmin, resetTestHooks } from "../test-hook
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
 
+const DEPLOYMENT_HEADER = "x-ramose-deployment";
+const LIVE_DEPLOYMENT_INTERVAL_MS = 4_000;
+
+type BasisWatchAttachment = {
+  readonly kind: "basis-watch";
+  readonly expectedDeployment: string;
+  readonly healthUrl: string;
+};
+
 /** Client read fence (`x-ramose-min-t` or `?minT=`). */
 function requestedMinT(raw: string | null | undefined): number | undefined {
   if (raw === null || raw === undefined || raw === "") return undefined;
@@ -512,11 +521,55 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     }
   }
 
+  private basisWatchOf(ws: WebSocket): BasisWatchAttachment | undefined {
+    try {
+      const raw = ws.deserializeAttachment?.() as Partial<BasisWatchAttachment> | undefined;
+      if (
+        raw?.kind === "basis-watch" &&
+        typeof raw.expectedDeployment === "string" &&
+        raw.expectedDeployment.length > 0 &&
+        typeof raw.healthUrl === "string"
+      ) {
+        return raw as BasisWatchAttachment;
+      }
+    } catch {
+      /* malformed attachments are ordinary sessions and fail closed there */
+    }
+    return undefined;
+  }
+
+  private basisWatches(): readonly [WebSocket, BasisWatchAttachment][] {
+    const watches: [WebSocket, BasisWatchAttachment][] = [];
+    for (const ws of this.ctx.getWebSockets() as WebSocket[]) {
+      const attachment = this.basisWatchOf(ws);
+      if (attachment !== undefined) watches.push([ws, attachment]);
+    }
+    return watches;
+  }
+
+  private async armDeploymentWatch(): Promise<void> {
+    const next = Date.now() + LIVE_DEPLOYMENT_INTERVAL_MS;
+    const armed = await this.ctx.storage.getAlarm();
+    if (armed === null || armed > next) await this.ctx.storage.setAlarm(next);
+  }
+
   private async notifySessions(e: LogEntry): Promise<void> {
     const entry: SessionLogEntry = { t: e.t, datoms: e.datoms.map(toWireDatom) };
     const rootT = this.root?.t ?? 0;
     const sockets = this.ctx.getWebSockets() as WebSocket[];
     for (const ws of sockets) {
+      if (this.basisWatchOf(ws) !== undefined) {
+        try {
+          ws.send(JSON.stringify({ kind: "basis", t: e.t }));
+        } catch {
+          try {
+            ws.close(1011, "basis notification failed");
+          } catch {
+            /* already gone */
+          }
+        }
+        continue;
+      }
       const s = this.sessionOf(ws);
       try {
         await s.applyEntry(entry, rootT);
@@ -586,14 +639,59 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  private async upgradeBasisWatch(request: Request): Promise<Response> {
+    if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
+      return json({ error: "expected websocket" }, 426);
+    }
+    const expectedDeployment = request.headers.get("x-ramose-live-deployment") ?? "";
+    const healthUrl = request.headers.get("x-ramose-live-health") ?? "";
+    let health: URL;
+    try {
+      health = new URL(healthUrl);
+    } catch {
+      return json({ error: "invalid deployment watch" }, 400);
+    }
+    if (
+      expectedDeployment.length === 0 ||
+      (health.protocol !== "https:" && health.protocol !== "http:") ||
+      health.pathname !== "/health" ||
+      health.username !== "" ||
+      health.password !== ""
+    ) {
+      return json({ error: "invalid deployment watch" }, 400);
+    }
+    await this.sync();
+    const pair = new WebSocketPair();
+    const [client, server] = [pair[0], pair[1]];
+    this.ctx.acceptWebSocket(server);
+    server.serializeAttachment?.({
+      kind: "basis-watch",
+      expectedDeployment,
+      healthUrl: health.href,
+    } satisfies BasisWatchAttachment);
+    server.send(JSON.stringify({ kind: "ready", t: this.basisT }));
+    this.armWatch();
+    await this.armDeploymentWatch();
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     await this.init();
+    if (this.basisWatchOf(ws) !== undefined) return;
     const s = this.sessionOf(ws);
     await s.onMessage(message);
     this.persist(ws, s);
   }
 
   override async webSocketClose(ws: WebSocket, code: number): Promise<void> {
+    if (this.basisWatchOf(ws) !== undefined) {
+      try {
+        ws.close(code, "bye");
+      } catch {
+        /* already gone */
+      }
+      return;
+    }
     const s = this.live.get(ws);
     s?.close();
     this.live.delete(ws);
@@ -602,6 +700,44 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     } catch {
       /* already gone */
     }
+  }
+
+  /**
+   * Deployment probes run as separate Durable Object alarm invocations, so a
+   * long-lived Worker response never accumulates one subrequest per lease.
+   * Any failed or mismatched probe closes the internal watch and therefore
+   * fails the live response closed before its next five-second lease.
+   */
+  override async alarm(): Promise<void> {
+    await this.init();
+    const watches = this.basisWatches();
+    if (watches.length === 0) return;
+    let currentDeployment: string | undefined;
+    try {
+      // Every accepted origin routes this same Worker. One public probe fences
+      // every co-located watcher and keeps the alarm invocation at one
+      // subrequest regardless of subscriber count.
+      const health = new URL(watches[0]![1].healthUrl);
+      health.searchParams.set("live-renew", crypto.randomUUID());
+      const response = await fetch(health, {
+        method: "GET",
+        headers: { "cache-control": "no-cache" },
+        redirect: "error",
+      });
+      const value = response.headers.get(DEPLOYMENT_HEADER);
+      if (response.ok && value !== null && value.length > 0) currentDeployment = value;
+    } catch {
+      /* an ambiguous deployment probe fails every watch closed */
+    }
+    for (const [ws, watch] of watches) {
+      if (currentDeployment === watch.expectedDeployment) continue;
+      try {
+        ws.close(1000, "deployment changed");
+      } catch {
+        /* already gone */
+      }
+    }
+    if (this.basisWatches().length > 0) await this.armDeploymentWatch();
   }
 
   // ---------------------------------------------------------------------------
@@ -623,6 +759,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     }
     if (!this.dbName) return json({ error: "missing ?db=" }, 400);
     if (url.pathname === "/session") return this.upgradeSession(request);
+    if (url.pathname === "/watch") return this.upgradeBasisWatch(request);
     // Route dispatch as an Effect program: the routes stay plain async/await,
     // failures are classified into tagged errors (errors.ts) and mapped back to
     // exactly the statuses/bodies this endpoint returned before.

@@ -13,7 +13,6 @@ import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
@@ -44,6 +43,8 @@ export type LiveQueryDiff = {
   readonly retracted: readonly unknown[];
 };
 
+export type LiveBasisEvent = "ready" | "change";
+
 export type AuthorizedLiveInput<R = never, EDb = unknown> = AuthorizedRequestInput<R, EDb> & {
   /** Already-authorized result used as the first diff baseline. */
   readonly previous?: unknown;
@@ -53,9 +54,8 @@ export type AuthorizedLiveInput<R = never, EDb = unknown> = AuthorizedRequestInp
   readonly revoked?: Deferred.Deferred<void>;
   /** Revalidate deployment-scoped authority before starting another lease. */
   readonly renew?: Effect.Effect<void, Unauthorized, R>;
-  /** Poll `currentDb` for `basisT` changes. Worker live output sets this. */
-  readonly watchBasis?: boolean;
-  readonly pollEvery?: Duration.Input;
+  /** Push-only basis notifications from the real replica topology. */
+  readonly basisChanges?: Stream.Stream<LiveBasisEvent, Unauthorized, R>;
 };
 
 type QueuedSnapshot = {
@@ -226,6 +226,7 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
     (out) =>
       Effect.gen(function* () {
         const wakes = yield* Queue.dropping<void>(1);
+        const basisReady = yield* Deferred.make<void>();
         const epoch = yield* Ref.make(0);
         const lastSent = yield* Ref.make<unknown | Absent>(
           input.previous === undefined ? ABSENT : input.previous,
@@ -241,26 +242,6 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
           const external = input.wakes;
           yield* Effect.forkChild(
             Effect.forever(Queue.take(external).pipe(Effect.andThen(signalBasisChange))),
-          );
-        }
-        if (input.watchBasis === true) {
-          const pollEvery = Duration.fromInputUnsafe(input.pollEvery ?? 250);
-          yield* Effect.forkChild(
-            Effect.gen(function* () {
-              let lastT = Number.NaN;
-              while (true) {
-                const snapshot = yield* input.currentDb(input.routeDatabase).pipe(Effect.option);
-                if (Option.isSome(snapshot)) {
-                  const nextT = snapshot.value.basisT;
-                  if (lastT !== nextT) {
-                    const first = Number.isNaN(lastT);
-                    lastT = nextT;
-                    if (!first) yield* signalBasisChange;
-                  }
-                }
-                yield* Effect.sleep(pollEvery);
-              }
-            }).pipe(Effect.ignoreCause),
           );
         }
         const revoked =
@@ -302,6 +283,7 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
 
         const leaseLoop = Effect.gen(function* () {
           let firstLease = true;
+          let basisChanged = true;
           while (true) {
             if (!firstLease && input.renew !== undefined) {
               const currentDeployment = yield* input.renew.pipe(
@@ -319,26 +301,43 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
             const nowMs = yield* Clock.currentTimeMillis;
             const lease = yield* Effect.fromResult(callerLease(caller, nowMs, limit));
             const id = yield* Ref.updateAndGet(epoch, (n) => n + 1);
-            while (true) {
-              const tickNow = yield* Clock.currentTimeMillis;
-              if (tickNow >= lease.expiresAtMs) break;
+            const tickNow = yield* Clock.currentTimeMillis;
+            if (tickNow < lease.expiresAtMs && basisChanged) {
               yield* recompute(caller, id, lease.expiresAtMs);
-              const after = yield* Clock.currentTimeMillis;
-              if (after >= lease.expiresAtMs) break;
-              const basisChanged = yield* waitWakeOrLease(
+            }
+            const after = yield* Clock.currentTimeMillis;
+            basisChanged = after < lease.expiresAtMs
+              ? yield* waitWakeOrLease(
                 wakes,
                 remainingOf(lease.expiresAtMs, after),
-              );
-              if (basisChanged) break;
-            }
+              )
+              : false;
             yield* invalidate;
             firstLease = false;
           }
         });
 
+        const basisWatch = input.basisChanges === undefined
+          ? Effect.never
+          : Stream.runForEach(input.basisChanges, (event) =>
+            event === "ready"
+              ? Deferred.succeed(basisReady, undefined).pipe(Effect.asVoid)
+              : signalBasisChange).pipe(
+            Effect.mapError(() => deny()),
+            Effect.andThen(Effect.fail(deny())),
+          );
+        const authorizedLoop = input.basisChanges === undefined
+          ? Effect.raceFirst(leaseLoop, revoked)
+          : Effect.raceFirst(
+            basisWatch,
+            Deferred.await(basisReady).pipe(
+              Effect.andThen(Effect.raceFirst(leaseLoop, revoked)),
+            ),
+          );
+
         // Always end the callback queue. A failed producer fiber otherwise
         // leaves Stream.callback open, so consumers hang until the test timeout.
-        yield* Effect.raceFirst(leaseLoop, revoked).pipe(
+        yield* authorizedLoop.pipe(
           Effect.result,
           Effect.andThen(invalidate),
           Effect.andThen(close),

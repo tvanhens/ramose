@@ -50,6 +50,7 @@ import {
   toHttp,
 } from "./errors.ts";
 import { JwtVerifier, fromEnv } from "./jwt.ts";
+import { watchBasisChanges } from "./peer.ts";
 
 export interface ServerOptions {
   readonly operations?: AnyOperations;
@@ -105,35 +106,6 @@ const DEPLOYMENT_HEADER = "x-ramose-deployment";
 const deploymentVersion = (env: RamoseEnv): string | undefined => {
   const id = env.CF_VERSION_METADATA?.id;
   return typeof id === "string" && id.length > 0 ? id : undefined;
-};
-
-/**
- * Re-enter the public route without credentials so a long-lived request can
- * observe the deployment Cloudflare currently routes. Any ambiguity fails
- * closed at the lease boundary.
- */
-export const renewCurrentDeployment = (
-  request: Request,
-  env: RamoseEnv,
-): Effect.Effect<void, Unauthorized> => {
-  const expected = deploymentVersion(env);
-  if (expected === undefined) return Effect.fail(new Unauthorized({}));
-  const health = new URL("/health", request.url);
-  health.searchParams.set("live-renew", crypto.randomUUID());
-  return Effect.tryPromise({
-    try: () => fetch(health, {
-      method: "GET",
-      headers: { "cache-control": "no-cache" },
-      redirect: "error",
-    }),
-    catch: () => new Unauthorized({}),
-  }).pipe(
-    Effect.filterOrFail(
-      (response) => response.ok && response.headers.get(DEPLOYMENT_HEADER) === expected,
-      () => new Unauthorized({}),
-    ),
-    Effect.asVoid,
-  );
 };
 
 export interface RequestInfo {
@@ -310,7 +282,7 @@ export const handle = (
         rest === "/live"
           ? authenticateRequest(request).pipe(Effect.map(callerFromVerified))
           : Effect.succeed(callerFromVerified(verified)),
-      ...(rest === "/live" ? { renew: renewCurrentDeployment(request, env) } : {}),
+      ...(rest === "/live" ? { basisChanges: watchBasisChanges(env, db, request) } : {}),
       catalogs: peer.catalogs,
       routeDatabase: DatabaseId.make(db),
       catalogKey: parsed.catalogKey,

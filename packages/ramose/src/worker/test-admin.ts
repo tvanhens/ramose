@@ -180,8 +180,27 @@ export const handleTestAdmin = async (
   enableTestHooks();
   const parsed = parseTestAdminPath(url.pathname);
   if (parsed === undefined) throw new NotFound({ message: "unknown test admin path" });
-  if (request.method !== "POST") throw new BadRequest({ message: "test admin is POST" });
   const { db, rest } = parsed;
+  if (rest === "/watch") {
+    if (request.method !== "GET") throw new BadRequest({ message: "test watch is GET" });
+    const expectedDeployment = env.CF_VERSION_METADATA?.id;
+    if (typeof expectedDeployment !== "string" || expectedDeployment.length === 0) {
+      throw new Internal({ message: "missing deployment metadata" });
+    }
+    const health = new URL("/health", request.url);
+    if (health.protocol === "ws:") health.protocol = "http:";
+    if (health.protocol === "wss:") health.protocol = "https:";
+    return nearestReplica(env, db, request).fetch(`https://replica/watch?db=${encodeURIComponent(db)}`, {
+      headers: {
+        Upgrade: "websocket",
+        ...coloHeader(request),
+        ...internalHeaders(env),
+        "x-ramose-live-deployment": expectedDeployment,
+        "x-ramose-live-health": health.href,
+      },
+    });
+  }
+  if (request.method !== "POST") throw new BadRequest({ message: "test admin is POST" });
   if (rest === "/r2") return handleR2(request, env, db);
   if (rest === "/checkpoint") {
     const raw = await request.text();

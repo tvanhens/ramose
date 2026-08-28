@@ -428,6 +428,62 @@ describe("executeAuthorizedLive equals one-shot and diffs visibility", () => {
     expect(authentications).toBe(1);
   });
 
+  test("idle lease renewal reauthenticates without polling the database", async () => {
+    const world = await seedWorld();
+    const catalogs = await ownerPolicy();
+    let authentications = 0;
+    let databaseReads = 0;
+    const caller = {
+      claims: { sub: "alice-sub", org: "acme" },
+      classes: ["member"],
+      exp: nowSeconds() + 300,
+    };
+    const input = inputOf(catalogs, await sign(), world.conn, {
+      authenticate: Effect.sync(() => {
+        authentications += 1;
+        return caller;
+      }),
+      currentDb: () => Effect.sync(() => {
+        databaseReads += 1;
+        return world.conn.db();
+      }),
+      interruptAfter: "20 millis",
+    });
+    const seen = await Effect.runPromise(Queue.unbounded<LiveQueryDiff>());
+    const fiber = Effect.runFork(
+      executeAuthorizedLive(input, titlesQuery).pipe(
+        Stream.runForEach((diff) => Queue.offer(seen, diff)),
+      ),
+    );
+    await Effect.runPromise(Queue.take(seen).pipe(Effect.timeout("2 seconds")));
+    for (let i = 0; i < 100 && authentications < 3; i++) await Bun.sleep(5);
+    expect(authentications).toBeGreaterThanOrEqual(3);
+    expect(databaseReads).toBe(1);
+    await Effect.runPromise(Fiber.interrupt(fiber));
+  });
+
+  test("initial recompute waits until the replica basis watch is attached", async () => {
+    const world = await seedWorld();
+    const catalogs = await ownerPolicy();
+    const input = inputOf(catalogs, await sign(), world.conn);
+    const basisEvents = await Effect.runPromise(Queue.unbounded<"ready" | "change">());
+    const seen = await Effect.runPromise(Queue.unbounded<LiveQueryDiff>());
+    const fiber = Effect.runFork(
+      executeAuthorizedLive(
+        { ...input, basisChanges: Stream.fromQueue(basisEvents) },
+        titlesQuery,
+      ).pipe(Stream.runForEach((diff) => Queue.offer(seen, diff))),
+    );
+    const beforeReady = await Effect.runPromise(
+      Queue.take(seen).pipe(Effect.timeoutOption("30 millis")),
+    );
+    expect(beforeReady._tag).toBe("None");
+    await Effect.runPromise(Queue.offer(basisEvents, "ready"));
+    const first = await Effect.runPromise(Queue.take(seen).pipe(Effect.timeout("2 seconds")));
+    expect(titlesOf(first.added)).toEqual(["Bug", "Child"]);
+    await Effect.runPromise(Fiber.interrupt(fiber));
+  });
+
   test("cancellation interrupts the live scope", async () => {
     const world = await seedWorld();
     const catalogs = await ownerPolicy();

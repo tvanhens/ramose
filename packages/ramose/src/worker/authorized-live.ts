@@ -12,7 +12,7 @@ import {
   executeAuthorizedLive,
   executeAuthorizedRead,
   OneShotReadError,
-  type AuthorizedRequestInput,
+  type AuthorizedLiveInput,
   type LiveQueryDiff,
   type OneShotRead,
   type OneShotReadOptions,
@@ -25,10 +25,8 @@ const encodeDiff = (diff: LiveQueryDiff): Uint8Array =>
   encoder.encode(`${stringifyJson(diff)}\n`);
 
 export const liveNdjsonStream = <R, EDb>(
-  input: AuthorizedRequestInput<R, EDb> & {
-    readonly previous?: unknown;
+  input: AuthorizedLiveInput<R, EDb> & {
     readonly wakes?: Queue.Dequeue<unknown>;
-    readonly watchBasis?: boolean;
   },
   read: OneShotRead,
   opts: OneShotReadOptions,
@@ -48,7 +46,7 @@ export const liveNdjsonStream = <R, EDb>(
  * body without a reason frame.
  */
 export const authorizedLiveResponse = <R, EDb>(
-  input: AuthorizedRequestInput<R, EDb>,
+  input: AuthorizedLiveInput<R, EDb>,
   read: OneShotRead,
   opts: OneShotReadOptions,
   headers: Record<string, string>,
@@ -59,12 +57,7 @@ export const authorizedLiveResponse = <R, EDb>(
     // this value under its own lease at the downstream emission boundary.
     yield* executeAuthorizedRead(input, read, opts);
     const context = yield* Effect.context<R>();
-    const body = liveNdjsonStream(
-      { ...input, watchBasis: true },
-      read,
-      opts,
-      context,
-    );
+    const body = liveNdjsonStream(input, read, opts, context);
     return new Response(body, {
       status: 200,
       headers: {

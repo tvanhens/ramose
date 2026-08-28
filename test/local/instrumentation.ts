@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { recordingTransport } from "../support/recorder.ts";
-import { json, localUrls, testAdmin, uniqueDb, type LocalUrls } from "./fixtures.ts";
+import { attr, json, localUrls, testAdmin, uniqueDb, type LocalUrls } from "./fixtures.ts";
 
 const fetchPastProxyBlip = async (
   rec: ReturnType<typeof recordingTransport>,
@@ -104,6 +104,46 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       expect(released.status).toBe(200);
       const after = await testAdmin(urls.openUrl, db, "/checkpoint", { action: "status" });
       expect(after.body.checkpoints["session.open"]).toBeUndefined();
+    });
+
+    test("replica watch pushes a real committed basis without polling", async () => {
+      const urls = localUrls();
+      const db = uniqueDb("watch");
+      const schema = await testAdmin(urls.openUrl, db, "/transact", {
+        tx: [attr(":watch/value", "string")],
+      });
+      expect(schema.status).toBe(200);
+      const socketUrl = new URL(
+        `/__test__/db/${encodeURIComponent(db)}/watch`,
+        urls.openUrl,
+      );
+      socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
+      const rec = recordingTransport();
+      const socket = new rec.webSocket(socketUrl);
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener("error", () => reject(new Error("watch failed to open")), {
+          once: true,
+        });
+      });
+      const frame = new Promise<{ kind?: unknown; t?: unknown }>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("basis notification timed out")), 5_000);
+        socket.addEventListener("message", (event) => {
+          const parsed = JSON.parse(String(event.data)) as { kind?: unknown; t?: unknown };
+          if (parsed.kind !== "basis") return;
+          clearTimeout(timer);
+          resolve(parsed);
+        });
+      });
+      const committed = await testAdmin(urls.openUrl, db, "/transact", {
+        tx: [{ ":watch/value": "pushed" }],
+      });
+      expect(committed.status).toBe(200);
+      const pushed = await frame;
+      expect(pushed).toEqual({ kind: "basis", t: committed.body.t });
+      expect(rec.frames.some((recorded) => recorded.direction === "recv" &&
+        (recorded.payload as { kind?: unknown }).kind === "basis")).toBe(true);
+      socket.close(1000, "done");
     });
 
     test("transactor-scope checkpoint arms on the real DO isolate", async () => {

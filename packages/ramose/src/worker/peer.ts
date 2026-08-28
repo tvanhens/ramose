@@ -10,6 +10,12 @@
 import { R2NodeStore, cacheApiTier, dbPrefix, prefixedBucket } from "../internal/storage/index.ts";
 import { type RamoseEnv, internalHeaders } from "../internal/transactor/index.ts";
 import type { Basis } from "../internal/replica/index.ts";
+import type { LiveBasisEvent } from "../internal/authorization/live.ts";
+import { Unauthorized } from "../db/Errors.ts";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import { UpstreamError } from "./errors.ts";
 
 const sources = new Map<string, R2NodeStore>();
@@ -116,6 +122,72 @@ export function nearestReplica(env: RamoseEnv, db: string, request: Request): Du
   const hint = hintOf(request, env);
   return env.REPLICA.get(replicaId(env, db, region, 1, hint), { locationHint: hint } as any);
 }
+
+/**
+ * One internal WebSocket carries every basis change for a live request. The
+ * replica also owns deployment-version probes in separate alarm invocations,
+ * closing this socket when the public route no longer selects this Worker.
+ */
+export const watchBasisChanges = (
+  env: RamoseEnv,
+  db: string,
+  request: Request,
+): Stream.Stream<LiveBasisEvent, Unauthorized> =>
+  Stream.callback<LiveBasisEvent, Unauthorized>((out) =>
+    Effect.gen(function* () {
+      const expectedDeployment = env.CF_VERSION_METADATA?.id;
+      if (typeof expectedDeployment !== "string" || expectedDeployment.length === 0) {
+        return yield* new Unauthorized({});
+      }
+      const health = new URL("/health", request.url);
+      const stub = nearestReplica(env, db, request);
+      const response = yield* Effect.tryPromise({
+        try: () => stub.fetch(`https://replica/watch?db=${encodeURIComponent(db)}`, {
+          headers: {
+            Upgrade: "websocket",
+            ...coloHeader(request),
+            ...internalHeaders(env),
+            "x-ramose-live-deployment": expectedDeployment,
+            "x-ramose-live-health": health.href,
+          },
+        }),
+        catch: () => new Unauthorized({}),
+      });
+      const ws = response.webSocket;
+      if (response.status !== 101 || ws === null) {
+        return yield* new Unauthorized({});
+      }
+      const fail = () => {
+        Queue.failCauseUnsafe(out, Cause.fail(new Unauthorized({})));
+        try {
+          ws.close(1011, "live watch failed");
+        } catch {
+          /* already gone */
+        }
+      };
+      ws.addEventListener("message", (event) => {
+        try {
+          const frame = JSON.parse(String(event.data)) as { kind?: unknown; t?: unknown };
+          if (!Number.isSafeInteger(frame.t)) return fail();
+          if (frame.kind === "ready") Queue.offerUnsafe(out, "ready");
+          else if (frame.kind === "basis") Queue.offerUnsafe(out, "change");
+          else fail();
+        } catch {
+          fail();
+        }
+      });
+      ws.addEventListener("close", fail);
+      ws.addEventListener("error", fail);
+      ws.accept();
+      yield* Effect.addFinalizer(() => Effect.sync(() => {
+        try {
+          ws.close(1000, "live response closed");
+        } catch {
+          /* already gone */
+        }
+      }));
+    }),
+  );
 
 export function wantsBasisCache(request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">): boolean {
   const h = request.headers.get("x-ramose-cache-basis") ?? env?.RAMOSE_CACHE_BASIS ?? "1";
