@@ -1,13 +1,13 @@
 ---
 // How a write becomes a read: your app → the Ramose server → the writer →
 // object storage → read copies → every open tab. Inline SVG; strokes follow
-// the text colour, one accent (--rg-green). See blueprint §1.5.
+// the text colour, one orange accent. See blueprint §1.5.
 interface Props {
   size?: "small" | "large";
 }
 const { size = "large" } = Astro.props;
 const maxWidth = size === "small" ? "36rem" : "100%";
-const accent = "var(--rg-green, #42d37a)";
+const accent = "var(--rg-green, #ff6500)";
 ---
 
 <figure class="rg-diagram" style={`max-width:${maxWidth}`}>
@@ -102,7 +102,7 @@ const accent = "var(--rg-green, #42d37a)";
   </div>
   <div class="rg-diagram-fade" aria-hidden="true"></div>
   <figcaption>
-    Green is the write path; grey is the fan-out that follows. On a narrow
+    Orange is the write path; grey is the fan-out that follows. On a narrow
     screen, scroll the picture sideways.
   </figcaption>
 </figure>

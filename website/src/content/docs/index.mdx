@@ -1,275 +1,208 @@
 ---
-title: Ramose — the typed, realtime database for Cloudflare
-description: Describe your data in TypeScript. Queries update themselves in every open tab. Users see only what your rules allow. One deploy, into your Cloudflare account.
+title: Ramose — the database optimized for humans and agents
+description: One offline-first database for your app and its agents, with generated MCP tools and exactly the same permissions for both.
 template: splash
 head:
   - tag: title
-    content: Ramose — the typed, realtime database for Cloudflare
+    content: Ramose — the database optimized for humans and agents
   - tag: meta
     attrs:
       property: og:type
       content: website
-hero:
-  tagline: Describe your data in TypeScript. Queries update themselves in every open tab. Each user sees only what your rules allow. One deploy, into your own Cloudflare account.
-  actions:
-    - text: Get started
-      link: /getting-started/quickstart/
-      variant: primary
-    - text: See a real app
-      link: /getting-started/tour-of-reef/
-      variant: secondary
-  image:
-    html: |
-      <figure class="rg-shot rg-hero-shot">
-        <img src="/reef/board.png" width="2880" height="1560" alt="Reef's board: four columns of issue cards, labels, assignees, and a live pill." loading="eager" decoding="async" fetchpriority="high">
-        <figcaption>Reef, the example app this site is built around: a multi-tenant, realtime issue tracker. Its whole backend — schema, rules, queries, deploy — is under 700 lines. <a href="/getting-started/tour-of-reef/">Tour of Reef →</a></figcaption>
-      </figure>
 ---
-import Shot from "../../components/Shot.astro";
+import HeroMesh from "../../components/HeroMesh.astro";
+import FeatureConsole from "../../components/FeatureConsole.astro";
+import InstantSyncDemo from "../../components/InstantSyncDemo.astro";
+import AgentCommandDemo from "../../components/AgentCommandDemo.astro";
+import HistoryRecoveryDemo from "../../components/HistoryRecoveryDemo.astro";
 
-<div class="rg-band">
-
-<h2 id="built-for-react-apps-on-cloudflare" class="rg-h2">Built for React apps on Cloudflare</h2>
-<p class="rg-lede">You know React and TypeScript. You want a backend you don't have to write.</p>
-
-<div class="rg-benefits rg-benefits--four">
-  <a class="rg-benefit" href="/guides/catalog/">
-    <h3>Typed end to end</h3>
-    <p>The schema is a TypeScript file; a wrong write is a red squiggle, not a bad row.</p>
-  </a>
-  <a class="rg-benefit" href="/guides/live-queries/">
-    <h3>Realtime without plumbing</h3>
-    <p><code>useLive(db, query)</code>; the screen updates when the data does. Reef has no refetch code.</p>
-  </a>
-  <a class="rg-benefit" href="/guides/permissions/">
-    <h3>Permissions in the database</h3>
-    <p>Who may read or write each field, checked on the server, deny by default.</p>
-  </a>
-  <a class="rg-benefit" href="/guides/workspaces/">
-    <h3>A database per customer</h3>
-    <p><code>ramose.db("acme")</code> is a function call, not a provisioning step.</p>
-  </a>
-</div>
-
-</div>
-
-<div class="rg-moment">
-  <div class="rg-moment-copy">
-    <h2 id="the-schema-is-typescript">The schema is TypeScript</h2>
-    <p>Reef's whole data model is one file. Fields have types, references point at other records, and a list is just <code>Field.many</code>. Your app, your rules and your deploy import it — no codegen, no migration step.</p>
-    <p class="rg-cta"><a href="/guides/catalog/">Define your data →</a></p>
+<section class="rg-proto-hero">
+  <HeroMesh />
+  <h1>The database optimized for <em>humans</em> and <em>agents</em>.</h1>
+  <div class="rg-proto-hero-grid">
+    <p class="rg-proto-intro">Right now those are two jobs: the app you shipped, and the MCP server, auth path, and permission model you bolt on beside it for agents. Ramose makes them one. Declare your schema and rules once — your UI gets offline-first writes and live queries, your agents get generated MCP tools, and both read through exactly the same permissions.</p>
+    <div class="rg-proto-hero-cta">
+      <div class="rg-proto-actions">
+        <a class="rg-proto-button primary" href="/getting-started/quickstart/">Start in 15 minutes →</a>
+        <a class="rg-proto-button secondary" href="#mcp">See the MCP path</a>
+      </div>
+      <div class="rg-proto-proof">
+        <span>◆ Nothing to keep in sync</span>
+        <span>◆ Works offline</span>
+        <span>◆ No SQL to inject</span>
+        <span>◆ Your Cloudflare account</span>
+      </div>
+    </div>
   </div>
-  <div class="rg-moment-code">
+</section>
 
-```ts title="examples/reef/src/domain/schema.ts#issue-entity"
-export const Issue = Ramose.Entity("issue", {
+<section class="rg-feature-console" aria-label="Ramose capabilities" data-feature-console>
+  <div class="rg-feature-code">
+    <div class="rg-feature-sample active" data-feature-sample>
+      <p class="rg-console-label">schema.ts</p>
+
+```ts
+const Issue = Ramose.Entity("issue", {
   title: Ramose.string(),
-  description: Ramose.string({ optional: true }),
-  status: Ramose.Enum(["backlog", "todo", "doing", "done"]),
-  priority: Ramose.Enum(["none", "low", "medium", "high", "urgent"]),
-  /** Fractional order inside a column; drag-and-drop writes midpoints. */
-  rank: Ramose.float(),
-  createdAt: Ramose.timestamp(),
+  status: Ramose.Enum(["todo", "doing", "done"]),
   creator: Ramose.Ref(User),
-  assignee: Ramose.Ref(User, { optional: true }),
-  labels: Ramose.Field.many(Ramose.Ref(Label)),
-  /** Admin-only field — the policy narrows its `read` (see policy.ts). */
-  privateNote: Ramose.string({
-    optional: true,
-    doc: "visible to the owner class only",
-  }),
+  privateNote: Ramose.string({ optional: true }),
 });
 ```
 
-  </div>
-</div>
+    </div>
+    <div class="rg-feature-sample" data-feature-sample aria-hidden="true">
+      <p class="rg-console-label">IssueList.tsx</p>
 
-<div class="rg-moment rg-moment--flip">
-  <div class="rg-moment-copy">
-    <h2 id="one-query-always-current">One query, always current</h2>
-    <p>The board is one query, read with <code>useLive</code>. Drag a card in one window and every other window moves it too — no WebSocket code, no refetch anywhere in Reef.</p>
-    <p>Writes are named operations: <code>await db.run(…)</code>. Nothing refetches after a write.</p>
-    <p class="rg-cta"><a href="/guides/live-queries/">Live queries →</a></p>
-  </div>
-  <div class="rg-moment-code">
-    <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged to Done in the top window moves in the bottom one too" caption="The live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx#use-live-board" />
-
-```ts title="examples/reef/src/domain/queries.ts#board-query · examples/reef/src/app/screens/BoardScreen.tsx#use-db · examples/reef/src/app/screens/BoardScreen.tsx#use-live-board"
-export const boardQuery = Query.from(Issue)
-  .select(boardShape)
-  .orderBy(Issue.rank, "asc");
-
-  const db = useDb(slug, Reef);
-
-  const board = useLiveQuery(db, boardQuery);
-  const people = useLiveQuery(db, peopleQuery);
-  const labels = useLiveQuery(db, labelsQuery);
+```tsx
+const issues = useLiveQuery(
+  db,
+  Query.from(Issue).where({
+    status: { not: "done" },
+  }),
+);
 ```
 
-  </div>
-</div>
+    </div>
+    <div class="rg-feature-sample" data-feature-sample aria-hidden="true">
+      <p class="rg-console-label">policy.ts</p>
 
-<div class="rg-moment">
-  <div class="rg-moment-copy">
-    <h2 id="permissions-are-part-of-the-database">Permissions are part of the database</h2>
-    <p>One policy says who may read each fact and who may run each named write. The buttons are just polite — the server refuses the operation.</p>
-    <p>Because the policy and the shapes your screens read are both values, <code>Ramose.Policy.compile(policy, &#123; pulls &#125;)</code> checks them against each other at deploy time — tighten a rule a screen depends on and the deploy fails, rather than that screen quietly emptying for one customer.</p>
-    <p>Ramose verifies sign-in tokens; it never issues them. Bring Better Auth (Reef does), Clerk, Auth0, WorkOS — any provider that publishes signing keys.</p>
-    <p class="rg-cta"><a href="/guides/permissions/">Permissions →</a></p>
-  </div>
-  <div class="rg-moment-code">
-
-```ts title="examples/reef/src/domain/policy.ts#policy-issue"
-    issue: {
-      read: true,
-      attrs: [
-        // Narrows the namespace `read`: members and viewers never see this
-        // datom — pulls must ask for it as `.optional` (compile() checks).
-        P.field(Issue.privateNote, { read: P.class("owner") }),
-      ],
-    },
+```ts
+const policy = Ramose.Policy({
+  issue: {
+    read: P.class("member"),
+    privateNote: P.class("owner"),
+  },
+});
 ```
 
-    <Shot src="/reef/denied-toast.png" alt="A viewer's board: red toast Unauthorized; the card snapped back" caption="A viewer forced a drag. The server answered Unauthorized; the card snapped back." code="examples/reef/src/app/screens/BoardScreen.tsx#use-operation" />
+    </div>
+    <div class="rg-feature-sample" data-feature-sample aria-hidden="true">
+      <p class="rg-console-label">agent.ts</p>
 
-  </div>
-</div>
-
-<div class="rg-band">
-
-<h2 id="also-built-in" class="rg-h2">Also built in</h2>
-
-<div class="rg-also">
-  <div>
-    <h3>One database per customer, for free</h3>
-    <p>Typing a workspace name in Reef creates a fresh, isolated database from the browser. No deploy, no migration, no per-customer server.</p>
-    <Shot src="/reef/workspaces.png" alt="Reef's workspaces screen with a New workspace form" caption="One install, one write, one new database." code="examples/reef/src/app/mutations.ts:29-32" />
-    <p class="rg-cta"><a href="/guides/workspaces/">One database per customer →</a></p>
-  </div>
-  <div>
-    <h3>Nothing is overwritten</h3>
-    <p>Drag the slider and the board becomes what it was after write number <code>t</code>. Same query, one extra argument, nothing copied.</p>
-    <Shot src="/reef/time-travel.png" alt="Reef's board with the time-travel slider open" caption="Pick a version; the board re-reads at it." code="examples/reef/src/app/screens/BoardScreen.tsx#use-basis" />
-    <p class="rg-cta"><a href="/concepts/time-travel/">Time travel →</a></p>
-  </div>
-</div>
-
-</div>
-
-<div class="rg-section">
-
-<h2 id="instead-of-what" class="rg-h2">Instead of what?</h2>
-<p class="rg-lede">The honest trade against what you'd use otherwise:</p>
-
-<div class="rg-vs">
-<table>
-  <thead>
-    <tr><th>Instead of</th><th>Same idea</th><th>What's different, and what you give up</th></tr>
-  </thead>
-  <tbody>
-    <tr><th>Convex</th><td>queries that re-run themselves</td><td>runs in <em>your</em> Cloudflare account; a database per customer is a function call. No hosted dashboard, scheduled functions or file storage.</td></tr>
-    <tr><th>Supabase</th><td>rules enforced by the database</td><td>rules per field, deny by default, checked against your screens at deploy. No SQL; bring your own sign-in and file storage.</td></tr>
-    <tr><th>Instant / Firebase</th><td>read and write from the browser, it stays live, per-user rules</td><td>typed schema in TypeScript; one deploy you own. No console, no managed infra, no offline SDK.</td></tr>
-    <tr><th>D1 + Drizzle, or a Durable Object + SQLite</th><td>the same Cloudflare primitives, your account</td><td>already assembled: live fan-out, per-customer routing, permissions, history. You give up SQL.</td></tr>
-    <tr><th>Postgres + an ORM</th><td>typed access</td><td>no migration rewrites old data; live queries and history come standard. No SQL, no planner, no cross-database joins.</td></tr>
-  </tbody>
-</table>
-</div>
-
-<div class="rg-limits">
-  <strong>What Ramose does not have:</strong> SQL, or joins across databases · a hosted dashboard · its own sign-in · file storage · scheduled jobs.
-  <p><a href="/getting-started/compare/">Full comparison →</a></p>
-</div>
-
-</div>
-
-<div class="rg-band">
-
-<h2 id="how-it-works" class="rg-h2">How it works</h2>
-<p class="rg-lede">Three parts, one deploy.</p>
-
-<div class="rg-how">
-  <div class="rg-how-box">
-    <span class="rg-step">writes</span>
-    <h3>One writer per database</h3>
-    <p>Writes commit in order; no conflicts, no "eventually".</p>
-  </div>
-  <div class="rg-how-box">
-    <span class="rg-step">storage</span>
-    <h3>Storage keeps every version</h3>
-    <p>A write is durable before your call returns; nothing is rewritten, so yesterday is still readable.</p>
-  </div>
-  <div class="rg-how-box">
-    <span class="rg-step">reads</span>
-    <h3>Reads run next to your users</h3>
-    <p>On copies, so a slow read never blocks a write.</p>
-  </div>
-</div>
-
-<p class="rg-how-link"><a href="/concepts/architecture/">How Ramose works →</a></p>
-
-</div>
-
-<p class="rg-trust"><span>Pre-release</span><span class="rg-trust-sep">·</span><span>no Ramose bill: it runs in your Cloudflare account, so you pay Cloudflare for what you use</span><span class="rg-trust-sep">·</span><span>669 tests run on every pull request and on master</span><span class="rg-trust-sep">·</span><span>built in the open — <a href="https://github.com/tvanhens/ramose">GitHub</a></span></p>
-
-<div class="rg-closing">
-  <p class="rg-eyebrow">Try it in two lines</p>
-  <p class="rg-big">Install it, describe your data, watch every tab keep up.</p>
-  <div class="rg-closing-code">
-
-```sh title="Try it" frame="terminal"
-mkdir my-todos && cd my-todos
-bun add ramose react react-dom
+```ts
+const openIssues = await mcp.callTool({
+  name: "query.issue",
+  arguments: {
+    where: { status: { not: "done" } },
+    select: ["title", "assignee"],
+  },
+});
 ```
 
+    </div>
   </div>
-  <p class="rg-closing-note"><strong>Fifteen minutes</strong> from an empty folder to a realtime todo app running on your laptop — no Cloudflare account needed. <a href="/getting-started/quickstart/">Getting started</a> writes every file with you. Want to read a finished app instead? <a href="/getting-started/tour-of-reef/">Reef</a> is an issue tracker in 680 lines.</p>
-  <div class="rg-actions">
-    <a class="rg-button primary" href="/getting-started/quickstart/">Get started</a>
-    <a class="rg-button secondary" href="/getting-started/tour-of-reef/">See a real app</a>
+  <div class="rg-feature-output">
+    <div class="rg-feature-tabs" role="tablist" aria-label="Ramose capabilities">
+      <button class="active" type="button" role="tab" aria-selected="true" aria-controls="feature-typed" data-feature-tab>Typed client</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="feature-live" tabindex="-1" data-feature-tab>Live queries</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="feature-permissions" tabindex="-1" data-feature-tab>Permissions</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="feature-mcp" tabindex="-1" data-feature-tab>MCP endpoint</button>
+    </div>
+    <div class="rg-feature-cards">
+      <div class="rg-feature-card active" id="feature-typed" role="tabpanel" data-feature-card>
+        <p class="rg-console-label">Typed client</p>
+        <h2>Type-safe reads and writes</h2>
+        <p>Ask for a field that does not exist, or write the wrong shape, and TypeScript stops you before production does.</p>
+        <div class="rg-feature-result">
+          <span>You get</span>
+          <code>useLiveQuery(db, Query.from(Issue))</code>
+        </div>
+      </div>
+      <div class="rg-feature-card" id="feature-live" role="tabpanel" data-feature-card aria-hidden="true">
+        <p class="rg-console-label">Live queries</p>
+        <h2>Every open view keeps itself current</h2>
+        <p>The query is the subscription. Local writes render immediately, then every connected client converges without cache keys or refetch calls.</p>
+        <div class="rg-feature-result">
+          <span>One query</span>
+          <code>db.live(Query.from(Issue).where(&#123; status: "doing" &#125;))</code>
+        </div>
+      </div>
+      <div class="rg-feature-card" id="feature-permissions" role="tabpanel" data-feature-card aria-hidden="true">
+        <p class="rg-console-label">Permissions</p>
+        <h2>One policy for every caller</h2>
+        <p>Field-level rules are enforced by the Ramose server for your UI and your agents, so neither path can quietly see more than the other.</p>
+        <div class="rg-feature-result">
+          <span>Enforced rule</span>
+          <code>Issue.privateNote → owner only</code>
+        </div>
+      </div>
+      <div class="rg-feature-card" id="feature-mcp" role="tabpanel" data-feature-card aria-hidden="true">
+        <p class="rg-console-label">MCP endpoint</p>
+        <h2>Your schema becomes agent tools</h2>
+        <p>Entities become query tools and named operations become action tools, generated from the same model your application already uses.</p>
+        <div class="rg-feature-result">
+          <span>Generated tools</span>
+          <code>query.issue · op.issue/set-status</code>
+        </div>
+      </div>
+    </div>
+    <div class="rg-feature-progress"><i data-feature-progress></i><span data-feature-counter>1 / 4</span></div>
   </div>
-</div>
+  <FeatureConsole />
+</section>
 
-<nav class="rg-sitenav" aria-label="Documentation" data-pagefind-ignore>
-  <div>
-    <h2>Start</h2>
-    <ul>
-      <li><a href="/getting-started/introduction/">What is Ramose</a></li>
-      <li><a href="/getting-started/quickstart/">Getting started</a></li>
-      <li><a href="/getting-started/tour-of-reef/">Tour of Reef</a></li>
-    </ul>
+<section class="rg-proto-section rg-instant">
+  <p class="rg-proto-kicker">01 — Instant by default</p>
+  <h2>That snappy, no-spinner feel? You get it on day one.</h2>
+  <p class="rg-proto-lede">The apps people call fast never wait on a round trip. Ramose gives you that architecture by default: writes commit to the local store and render immediately, sync catches up behind them, and every other client and agent converges on its own. Pull the plug; reads and writes keep working.</p>
+  <InstantSyncDemo />
+</section>
+
+<section id="mcp" class="rg-proto-section rg-mcp">
+  <div class="rg-proto-copy">
+    <p class="rg-proto-kicker">02 — Agents</p>
+    <h2>Everything a user can do an agent can do.</h2>
+    <p class="rg-proto-lede">Ramose turns the capabilities already in your app into MCP tools. Agents query live data and run the same named operations as your UI, under the same field-level permissions. No shadow database, glue server, or second authorization model to keep aligned.</p>
   </div>
-  <div>
-    <h2>Build</h2>
-    <ul>
-      <li><a href="/guides/catalog/">Define your data</a></li>
-      <li><a href="/guides/queries/">Read data</a></li>
-      <li><a href="/guides/live-queries/">Live queries</a></li>
-      <li><a href="/guides/permissions/">Permissions</a></li>
-    </ul>
+  <AgentCommandDemo />
+</section>
+
+<section class="rg-proto-section rg-history">
+  <div class="rg-proto-copy">
+    <p class="rg-proto-kicker">03 — History</p>
+    <h2>Data is never lost.</h2>
+    <p class="rg-proto-lede">Mistakes happen. A person clicks the wrong thing, an agent runs the wrong command, or a bug reaches production. Ramose keeps every committed version, so recovery is an elegant rewind instead of a restore drill. Move back to the moment before the mistake, verify the state, and continue.</p>
+    <p class="rg-proto-link"><a href="/concepts/time-travel/">Read about time travel →</a></p>
   </div>
-  <div>
-    <h2>Ship</h2>
-    <ul>
-      <li><a href="/guides/deploy/">Deploy</a></li>
-      <li><a href="/guides/before-production/">Before production</a></li>
-      <li><a href="/guides/troubleshooting/">Troubleshooting and FAQ</a></li>
-    </ul>
+  <HistoryRecoveryDemo />
+</section>
+
+<section class="rg-proto-section rg-cloudflare">
+  <div class="rg-proto-copy">
+    <p class="rg-proto-kicker">04 — Backends</p>
+    <h2>Cloudflare today, your provider tomorrow</h2>
+    <p class="rg-proto-lede">Ramose runs on Cloudflare today, but your application is defined against Ramose — not a provider console. AWS and self-hosted backends are planned behind the same schema, policy, sync, and MCP surface, so changing infrastructure does not mean rewriting the app.</p>
+    <p class="rg-proto-link"><a href="/guides/deploy/">See the deployment →</a></p>
   </div>
-  <div>
-    <h2>Concepts</h2>
-    <ul>
-      <li><a href="/concepts/architecture/">How Ramose works</a></li>
-      <li><a href="/concepts/time-travel/">Time travel</a></li>
-      <li><a href="/concepts/glossary/">Glossary</a></li>
-    </ul>
+  <div class="rg-stack-card rg-provider-card">
+    <div class="rg-provider-row implemented">
+      <div><strong>Cloudflare</strong><code>Workers · Durable Objects · R2 · Analytics Engine</code></div>
+      <span>Implemented</span>
+    </div>
+    <div class="rg-provider-row">
+      <div><strong>AWS</strong><code>Lambda · DynamoDB · S3</code></div>
+      <span>Planned</span>
+    </div>
+    <div class="rg-provider-row">
+      <div><strong>Self-hosted</strong><code>Your compute · your object store · your network</code></div>
+      <span>Planned</span>
+    </div>
   </div>
-  <div>
-    <h2>Reference</h2>
-    <ul>
-      <li><a href="/reference/client-api/">Client API</a></li>
-      <li><a href="/reference/react/">React hooks</a></li>
-      <li><a href="/reference/server/">The server</a></li>
-    </ul>
+</section>
+
+<section class="rg-proto-close">
+  <p class="rg-proto-kicker">Apache-2.0 · self-hosted · pre-release</p>
+  <h2>Read the source. Run it in your own account.</h2>
+  <p>One npm package, one Alchemy stack, no managed service in the path between your app and your data.</p>
+  <div class="rg-proto-actions">
+    <a class="rg-proto-button primary" href="/getting-started/quickstart/">Quickstart →</a>
+    <a class="rg-proto-button secondary" href="https://github.com/tvanhens/ramose">GitHub</a>
   </div>
+  <div class="rg-command-row"><code>bun add ramose</code><code>bun alchemy dev</code><code>bun alchemy deploy</code></div>
+</section>
+
+<nav class="rg-proto-footer" aria-label="Documentation" data-pagefind-ignore>
+  <span>ramose.ai — the offline-first database your agents can call</span>
+  <span><a href="/getting-started/introduction/">Docs</a> · <a href="/getting-started/tour-of-reef/">Example</a> · <a href="/getting-started/compare/">Compare</a></span>
 </nav>

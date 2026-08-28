@@ -1,5 +1,6 @@
 // @ts-check
 import starlight from "@astrojs/starlight";
+import { wgslVitePlugin } from "vgpu/client";
 import { defineConfig } from "astro/config";
 import remarkExtractSnippets from "./scripts/remark-extract-snippets.mjs";
 
@@ -10,6 +11,9 @@ const site = "https://ramose.ai";
 
 export default defineConfig({
   site,
+  vite: {
+    plugins: [wgslVitePlugin()],
+  },
   markdown: {
     remarkPlugins: [remarkExtractSnippets],
   },
@@ -37,7 +41,7 @@ export default defineConfig({
       // Default meta description for any page without its own (today: /404).
       // Keep it under 160 characters — Google truncates around there.
       description:
-        "The typed, realtime database for Cloudflare. Describe your data in TypeScript, queries update themselves in every tab, users see only what your rules allow.",
+        "One offline-first database for your app and its agents, with generated MCP tools and exactly the same permissions for both.",
       favicon: "/favicon.svg",
       head: [
         {
@@ -54,7 +58,7 @@ export default defineConfig({
           attrs: {
             property: "og:image:alt",
             content:
-              "Ramose — the typed, realtime database for Cloudflare",
+              "Ramose — the database optimized for humans and agents",
           },
         },
         {
@@ -77,6 +81,8 @@ export default defineConfig({
       },
       customCss: [
         "@fontsource-variable/manrope",
+        "@fontsource-variable/space-grotesk",
+        "@fontsource-variable/jetbrains-mono",
         "./src/styles/theme.css",
       ],
       components: {
@@ -85,23 +91,21 @@ export default defineConfig({
         ThemeSelect: "./src/components/ThemeSelect.astro",
       },
       expressiveCode: {
-        // `vesper` — a near-monochrome black theme whose one chromatic accent
-        // is mint/green on white text. It reads as the ramose.ai palette
-        // (deep black surface, green signal) rather than GitHub's blues.
-        // Backgrounds are pinned to the brand's black / dark forest below so
+        // `vesper` gives us a restrained, near-monochrome base. Frame chrome
+        // is pinned to the brand's black / graphite / orange palette below so
         // code blocks sit on the same surfaces as the rest of the page.
         themes: ["vesper"],
         styleOverrides: {
           borderRadius: "0.625rem",
-          borderColor: "#1c2a21",
+          borderColor: "#282523",
           frames: {
             editorBackground: "#0d0d0d",
             terminalBackground: "#0d0d0d",
-            terminalTitlebarBackground: "#0b1a10",
-            editorTabBarBackground: "#0b1a10",
+            terminalTitlebarBackground: "#111111",
+            editorTabBarBackground: "#111111",
             editorActiveTabBackground: "#0d0d0d",
-            editorActiveTabIndicatorTopColor: "#42d37a",
-            editorTabBarBorderBottomColor: "#1c2a21",
+            editorActiveTabIndicatorTopColor: "#ff6500",
+            editorTabBarBorderBottomColor: "#282523",
             frameBoxShadowCssValue: "none",
           },
           codeBackground: "#0d0d0d",

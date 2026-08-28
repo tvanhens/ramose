@@ -1,0 +1,93 @@
+<canvas
+  class="rg-hero-mesh"
+  data-hero-mesh
+  aria-hidden="true"
+></canvas>
+
+<script>
+  import { clock, effect, frameLoop, init, surface } from "vgpu";
+  import meshShader from "./hero-mesh.wgsl";
+
+  async function startMesh(canvas: HTMLCanvasElement) {
+    if (canvas.dataset.meshState || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
+    canvas.dataset.meshState = "loading";
+    const hero = canvas.closest<HTMLElement>(".rg-proto-hero");
+    if (!hero || !("gpu" in navigator)) {
+      canvas.dataset.meshState = "fallback";
+      return;
+    }
+
+    try {
+      const gpu = await init();
+      if (!canvas.isConnected) {
+        gpu.dispose();
+        return;
+      }
+
+      const target = surface(gpu, canvas, {
+        dpr: [1, 1.35],
+        clearColor: [0.006, 0.0045, 0.0035, 1],
+      });
+      const pointer = { current: [0, 0], target: [0, 0] };
+      const mesh = effect(gpu, meshShader, {
+        set: {
+          params: {
+            time: 0,
+            aspect: Math.max(1, canvas.clientWidth / Math.max(1, canvas.clientHeight)),
+            pointer: pointer.current,
+          },
+        },
+      });
+      const time = clock(gpu);
+
+      target.onResize(() => {
+        mesh.set({
+          params: {
+            aspect: Math.max(1, canvas.clientWidth / Math.max(1, canvas.clientHeight)),
+          },
+        });
+      });
+
+      const onPointerMove = (event: PointerEvent) => {
+        const bounds = hero.getBoundingClientRect();
+        pointer.target = [
+          ((event.clientX - bounds.left) / bounds.width - 0.5) * 2,
+          ((event.clientY - bounds.top) / bounds.height - 0.5) * 2,
+        ];
+      };
+      const onPointerLeave = () => {
+        pointer.target = [0, 0];
+      };
+      hero.addEventListener("pointermove", onPointerMove, { passive: true });
+      hero.addEventListener("pointerleave", onPointerLeave, { passive: true });
+
+      const loop = frameLoop(gpu, (frame) => {
+        pointer.current[0] += (pointer.target[0] - pointer.current[0]) * 0.035;
+        pointer.current[1] += (pointer.target[1] - pointer.current[1]) * 0.035;
+        mesh.set({ params: { time: time.time, pointer: pointer.current } });
+        frame.pass(target, mesh);
+      }, { fps: 30 });
+
+      canvas.dataset.meshState = "ready";
+      hero.classList.add("rg-mesh-ready");
+
+      const cleanup = () => {
+        loop.stop();
+        hero.removeEventListener("pointermove", onPointerMove);
+        hero.removeEventListener("pointerleave", onPointerLeave);
+        gpu.dispose();
+      };
+      document.addEventListener("astro:before-swap", cleanup, { once: true });
+    } catch (error) {
+      canvas.dataset.meshState = "fallback";
+      console.warn("Ramose hero mesh fell back to its static artwork.", error);
+    }
+  }
+
+  document.querySelectorAll<HTMLCanvasElement>("[data-hero-mesh]").forEach((canvas) => {
+    void startMesh(canvas);
+  });
+</script>

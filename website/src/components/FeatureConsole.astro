@@ -1,0 +1,102 @@
+<script>
+  const AUTOPLAY_MS = 5000;
+
+  function enhanceFeatureConsole(console: HTMLElement) {
+    if (console.dataset.enhanced) return;
+    console.dataset.enhanced = "true";
+
+    const tabs = Array.from(console.querySelectorAll<HTMLButtonElement>("[data-feature-tab]"));
+    const samples = Array.from(console.querySelectorAll<HTMLElement>("[data-feature-sample]"));
+    const cards = Array.from(console.querySelectorAll<HTMLElement>("[data-feature-card]"));
+    const counter = console.querySelector<HTMLElement>("[data-feature-counter]");
+    const progress = console.querySelector<HTMLElement>("[data-feature-progress]");
+    if (tabs.length === 0 || samples.length !== tabs.length || cards.length !== tabs.length || !counter || !progress) return;
+
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let active = 0;
+    let timer = 0;
+    let visible = false;
+    let paused = false;
+
+    const restartProgress = () => {
+      progress.classList.remove("running");
+      void progress.offsetWidth;
+      progress.classList.add("running");
+    };
+
+    const render = (next: number, focus = false) => {
+      active = (next + tabs.length) % tabs.length;
+      tabs.forEach((tab, index) => {
+        const selected = index === active;
+        tab.classList.toggle("active", selected);
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+      });
+      samples.forEach((sample, index) => {
+        const selected = index === active;
+        sample.classList.toggle("active", selected);
+        sample.setAttribute("aria-hidden", String(!selected));
+      });
+      cards.forEach((card, index) => {
+        const selected = index === active;
+        card.classList.toggle("active", selected);
+        card.setAttribute("aria-hidden", String(!selected));
+      });
+      counter.textContent = `${active + 1} / ${tabs.length}`;
+      if (!reducedMotion) restartProgress();
+      if (focus) tabs[active]?.focus();
+    };
+
+    const stop = () => {
+      window.clearInterval(timer);
+      timer = 0;
+      progress.classList.add("paused");
+    };
+
+    const start = () => {
+      stop();
+      if (reducedMotion || paused || !visible) return;
+      progress.classList.remove("paused");
+      restartProgress();
+      timer = window.setInterval(() => render(active + 1), AUTOPLAY_MS);
+    };
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => {
+        render(index);
+        start();
+      });
+      tab.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowRight") render(active + 1, true);
+        else if (event.key === "ArrowLeft") render(active - 1, true);
+        else if (event.key === "Home") render(0, true);
+        else if (event.key === "End") render(tabs.length - 1, true);
+        else return;
+        event.preventDefault();
+        start();
+      });
+    });
+
+    console.addEventListener("focusin", () => {
+      paused = true;
+      stop();
+    });
+    console.addEventListener("focusout", () => {
+      paused = false;
+      start();
+    });
+
+    const observer = new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting;
+      if (visible) start();
+      else stop();
+    }, { threshold: 0.25 });
+    observer.observe(console);
+    document.addEventListener("astro:before-swap", () => {
+      observer.disconnect();
+      stop();
+    }, { once: true });
+  }
+
+  document.querySelectorAll<HTMLElement>("[data-feature-console]").forEach(enhanceFeatureConsole);
+</script>

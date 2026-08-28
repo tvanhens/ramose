@@ -1,13 +1,12 @@
 ---
 /**
- * Primary lockup: the ramose mark + the wordmark, per the brand guide —
- * "ramose." in white (the period included) and only "ai" in the brand green.
+ * Primary lockup: the rounded diamond mark + the wordmark from the supplied
+ * brand reference — "ramose." in warm white and "ai" in orange.
  *
  * The mark lives in `src/assets/ramose-mark.svg`; Astro turns an imported SVG
  * into a component, so it inlines (and can be sized) rather than loading an
- * extra request. The asset strokes the closed loop with `currentColor` and
- * hard-codes the growing branch to the brand green (#42D37A), so the loop
- * takes whatever `color` this component sets — `--sl-color-white` below.
+ * extra request. The outer diamond uses `currentColor`; the inset diamond
+ * carries the orange gradient inside the SVG.
  */
 import RamoseMark from "../assets/ramose-mark.svg";
 ---
@@ -32,19 +31,17 @@ import RamoseMark from "../assets/ramose-mark.svg";
     display: flex;
     flex-shrink: 0;
   }
-  /* The asset ships a viewBox but no width/height, so pin the height and let
-     the 305:169 aspect ratio derive the width rather than trusting the UA's
-     default 100% width for sized-less SVG. */
+  /* Pin both axes so the square mark keeps its optical balance in the nav. */
   .rg-mark :global(svg) {
     display: block;
-    height: 1.375rem;
-    width: auto;
-    aspect-ratio: 305 / 169;
+    width: 1.75rem;
+    height: 1.75rem;
+    filter: drop-shadow(0 0 0.35rem rgba(255, 101, 0, 0.2));
   }
   .rg-word {
-    font-weight: 600;
-    font-size: var(--sl-text-lg);
-    letter-spacing: -0.01em;
+    font-weight: 350;
+    font-size: 1.2rem;
+    letter-spacing: 0.035em;
     white-space: nowrap;
     color: var(--sl-color-white);
   }

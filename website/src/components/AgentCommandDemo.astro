@@ -1,0 +1,278 @@
+<figure class="rg-agent-demo">
+  <div class="rg-agent-terminal" aria-hidden="true">
+    <header>
+      <span class="rg-agent-dots"><i></i><i></i><i></i></span>
+      <strong>codex</strong>
+      <span>~/launch-app</span>
+    </header>
+    <div class="rg-agent-session">
+      <div class="rg-agent-command"><b>›</b><span>Delete all issues from the backlog</span><i></i></div>
+      <div class="rg-agent-line thinking"><span>•</span><p>Checking the live board and available operations…</p></div>
+      <div class="rg-agent-line query"><span>✓</span><p><strong>ramose.query_issue</strong><code>&#123; status: "backlog" &#125;</code></p></div>
+      <div class="rg-agent-line found"><span>↳</span><p>3 issues found <em>ISS-12 · ISS-18 · ISS-23</em></p></div>
+      <div class="rg-agent-line remove"><span>✓</span><p><strong>ramose.op_issue_delete</strong><code>&#123; ids: ["ISS-12", "ISS-18", "ISS-23"] &#125;</code></p></div>
+      <div class="rg-agent-line removed"><span>↳</span><p>Deleted 3 issues · policy allowed</p></div>
+      <div class="rg-agent-line complete"><span>●</span><p>Done — the backlog is empty.</p></div>
+    </div>
+  </div>
+
+  <div class="rg-agent-board" aria-hidden="true">
+    <div class="rg-agent-boardbar">
+      <span class="rg-agent-board-dots"><i></i><i></i><i></i></span>
+      <span>app.ramose.local / issues</span>
+      <b><i></i> Live</b>
+    </div>
+    <svg viewBox="0 0 680 270" role="img" aria-label="A project board whose backlog cards disappear after the agent tool call">
+      <defs>
+        <filter id="agent-orange-glow" x="-80%" y="-80%" width="260%" height="260%">
+          <feGaussianBlur stdDeviation="7" result="blur" />
+          <feFlood flood-color="#ff5b0a" flood-opacity=".5" />
+          <feComposite in2="blur" operator="in" />
+          <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+      </defs>
+      <rect width="680" height="270" fill="#0d0b0a" />
+      <text class="eyebrow" x="24" y="27">PRODUCT / LAUNCH</text>
+      <text class="title" x="24" y="49">Issue board</text>
+
+      <g class="column">
+        <rect x="22" y="69" width="202" height="178" rx="8" />
+        <text class="column-title" x="36" y="91">BACKLOG</text>
+        <g class="rg-agent-backlog-count">
+          <text x="198" y="91">3</text>
+          <text x="198" y="91">0</text>
+        </g>
+        <g class="card card-one">
+          <rect x="34" y="106" width="178" height="36" rx="6" />
+          <circle cx="48" cy="124" r="3" />
+          <text x="58" y="122">Fix empty state</text>
+          <text class="card-id" x="58" y="133">ISS-12</text>
+        </g>
+        <g class="card card-two">
+          <rect x="34" y="150" width="178" height="36" rx="6" />
+          <circle cx="48" cy="168" r="3" />
+          <text x="58" y="166">Remove old flag</text>
+          <text class="card-id" x="58" y="177">ISS-18</text>
+        </g>
+        <g class="card card-three">
+          <rect x="34" y="194" width="178" height="36" rx="6" />
+          <circle cx="48" cy="212" r="3" />
+          <text x="58" y="210">Archive launch notes</text>
+          <text class="card-id" x="58" y="221">ISS-23</text>
+        </g>
+        <g class="rg-agent-empty">
+          <circle cx="123" cy="151" r="13" />
+          <path d="M118 151l4 4 7-8" />
+          <text x="123" y="178">Backlog cleared</text>
+        </g>
+      </g>
+
+      <g class="column">
+        <rect x="239" y="69" width="202" height="178" rx="8" />
+        <text class="column-title" x="253" y="91">IN PROGRESS</text>
+        <text class="count" x="415" y="91">1</text>
+        <g class="card still">
+          <rect x="251" y="106" width="178" height="36" rx="6" />
+          <circle cx="265" cy="124" r="3" />
+          <text x="275" y="122">Polish onboarding</text>
+          <text class="card-id" x="275" y="133">ISS-31</text>
+        </g>
+      </g>
+
+      <g class="column">
+        <rect x="456" y="69" width="202" height="178" rx="8" />
+        <text class="column-title" x="470" y="91">DONE</text>
+        <text class="count" x="632" y="91">2</text>
+        <g class="card still done">
+          <rect x="468" y="106" width="178" height="36" rx="6" />
+          <circle cx="482" cy="124" r="3" />
+          <text x="492" y="122">Connect auth</text>
+          <text class="card-id" x="492" y="133">ISS-04</text>
+        </g>
+        <g class="card still done">
+          <rect x="468" y="150" width="178" height="36" rx="6" />
+          <circle cx="482" cy="168" r="3" />
+          <text x="492" y="166">Ship schema</text>
+          <text class="card-id" x="492" y="177">ISS-08</text>
+        </g>
+      </g>
+      <path class="rg-agent-action-pulse" d="M24 253H222" />
+    </svg>
+  </div>
+  <figcaption><span>Codex calls the tools.</span><code>The live app reflects the result.</code></figcaption>
+</figure>
+
+<style>
+  .rg-agent-demo {
+    --agent-cycle: 11s;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid rgba(255, 101, 0, 0.26);
+    border-radius: 0.9rem;
+    background: #0a0908;
+    box-shadow: 0 2.5rem 6rem -4rem rgba(255, 76, 0, 0.7);
+  }
+
+  .rg-agent-terminal {
+    border-bottom: 1px solid #302722;
+    background: #0c0b0a;
+  }
+
+  .rg-agent-terminal > header,
+  .rg-agent-boardbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    min-height: 2.45rem;
+    padding: 0 0.85rem;
+    color: #6f635c;
+    border-bottom: 1px solid #27221e;
+    background: #12100e;
+    font-family: var(--sl-font-mono);
+    font-size: 0.52rem;
+  }
+
+  .rg-agent-terminal > header strong {
+    justify-self: center;
+    color: #a99d95;
+    font-weight: 500;
+  }
+
+  .rg-agent-dots,
+  .rg-agent-board-dots {
+    display: flex;
+    align-items: center;
+    gap: 0.28rem;
+  }
+
+  .rg-agent-dots i,
+  .rg-agent-board-dots i {
+    width: 0.38rem;
+    height: 0.38rem;
+    margin: 0;
+    border-radius: 50%;
+    background: #4a403a;
+  }
+
+  .rg-agent-dots i:first-child,
+  .rg-agent-board-dots i:first-child { background: #a5441f; }
+
+  .rg-agent-session {
+    min-height: 15.5rem;
+    padding: 1rem 1.1rem 1.15rem;
+    font-family: var(--sl-font-mono);
+    font-size: clamp(0.57rem, 1vw, 0.68rem);
+  }
+
+  .rg-agent-command {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.55rem;
+    margin: 0 0 0.9rem;
+    color: #f1ebe6;
+  }
+
+  .rg-agent-command b { color: #ff6420; }
+  .rg-agent-command span { width: 0; overflow: hidden; white-space: nowrap; animation: rg-agent-type var(--agent-cycle) steps(42, end) infinite; }
+  .rg-agent-command i { width: 0.42rem; height: 0.8rem; margin: 0; background: #ff5b0a; animation: rg-agent-cursor var(--agent-cycle) step-end infinite; }
+
+  .rg-agent-line {
+    display: grid;
+    grid-template-columns: 1rem minmax(0, 1fr);
+    gap: 0.45rem;
+    margin: 0.38rem 0 0;
+    color: #786c65;
+    opacity: 0;
+  }
+
+  .rg-agent-line > span { color: #a76b4a; text-align: center; }
+  .rg-agent-line p { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .rg-agent-line strong { color: #d3c8c1; font-weight: 500; }
+  .rg-agent-line code { margin-inline-start: 0.5rem; padding: 0; color: #8d7f77; background: transparent; font-size: inherit; }
+  .rg-agent-line em { color: #6d615a; font-style: normal; }
+  .rg-agent-line.thinking { animation: rg-agent-thinking var(--agent-cycle) ease infinite; }
+  .rg-agent-line.query { animation: rg-agent-query var(--agent-cycle) ease infinite; }
+  .rg-agent-line.found { animation: rg-agent-found var(--agent-cycle) ease infinite; }
+  .rg-agent-line.remove { animation: rg-agent-remove var(--agent-cycle) ease infinite; }
+  .rg-agent-line.removed { animation: rg-agent-removed var(--agent-cycle) ease infinite; }
+  .rg-agent-line.complete { color: #d8cec7; animation: rg-agent-complete var(--agent-cycle) ease infinite; }
+  .rg-agent-line.complete > span { color: #ff6420; text-shadow: 0 0 0.8rem #ff3d00; }
+
+  .rg-agent-board { background: #0d0b0a; }
+  .rg-agent-boardbar span:nth-child(2) { justify-self: center; }
+  .rg-agent-boardbar b { display: flex; align-items: center; gap: 0.35rem; color: #8f837b; font-weight: 400; }
+  .rg-agent-boardbar b i { width: 0.35rem; height: 0.35rem; margin: 0; border-radius: 50%; background: #ff5b0a; box-shadow: 0 0 0.6rem #ff3d00; }
+  .rg-agent-board svg { display: block; width: 100%; height: auto; }
+  .rg-agent-board svg text { fill: #a99d95; font-family: var(--sl-font-mono); font-size: 9px; }
+  .rg-agent-board svg .eyebrow { fill: #6d615a; font-size: 7px; letter-spacing: 1px; }
+  .rg-agent-board svg .title { fill: #eee8e3; font-family: var(--sl-font); font-size: 15px; font-weight: 600; }
+  .rg-agent-board svg .column > rect { fill: #100e0d; stroke: #2c2622; }
+  .rg-agent-board svg .column-title { fill: #796c64; font-size: 7px; letter-spacing: .8px; }
+  .rg-agent-board svg .count,
+  .rg-agent-board svg .rg-agent-backlog-count text { fill: #625750; font-size: 7px; text-anchor: middle; }
+  .rg-agent-board svg .card rect { fill: #161310; stroke: #332b27; }
+  .rg-agent-board svg .card circle { fill: #ff5b0a; }
+  .rg-agent-board svg .card text { fill: #c5bab3; font-family: var(--sl-font); font-size: 8px; }
+  .rg-agent-board svg .card .card-id { fill: #645951; font-family: var(--sl-font-mono); font-size: 6px; }
+  .rg-agent-board svg .card.done circle { fill: #51766b; }
+  .rg-agent-board svg .card-one { animation: rg-agent-card-one var(--agent-cycle) ease-in infinite; }
+  .rg-agent-board svg .card-two { animation: rg-agent-card-two var(--agent-cycle) ease-in infinite; }
+  .rg-agent-board svg .card-three { animation: rg-agent-card-three var(--agent-cycle) ease-in infinite; }
+  .rg-agent-backlog-count text:first-child { animation: rg-agent-count-old var(--agent-cycle) step-end infinite; }
+  .rg-agent-backlog-count text:last-child { opacity: 0; animation: rg-agent-count-new var(--agent-cycle) step-end infinite; }
+  .rg-agent-empty { opacity: 0; animation: rg-agent-empty var(--agent-cycle) ease infinite; }
+  .rg-agent-empty circle { fill: #18110d; stroke: #6f391f; }
+  .rg-agent-empty path { fill: none; stroke: #ff6a24; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .rg-agent-empty text { fill: #806d62 !important; font-size: 7px !important; text-anchor: middle; }
+  .rg-agent-action-pulse { fill: none; stroke: #ff5b0a; stroke-width: 2; stroke-linecap: round; filter: url(#agent-orange-glow); stroke-dasharray: 200; stroke-dashoffset: 200; animation: rg-agent-pulse var(--agent-cycle) ease infinite; }
+
+  .rg-agent-demo figcaption {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin: 0;
+    padding: 0.75rem 1rem;
+    color: #766a62;
+    border-top: 1px solid #29231f;
+    background: #100e0c;
+    font-size: 0.68rem;
+  }
+  .rg-agent-demo figcaption code { padding: 0; color: #a86b49; background: transparent; font-size: 0.62rem; }
+
+  @keyframes rg-agent-type { 0%, 5% { width:0; } 18%, 91% { width:100%; } 96%, 100% { width:0; } }
+  @keyframes rg-agent-cursor { 0%, 18%, 96%, 100% { opacity:1; } 19%, 95% { opacity:0; } }
+  @keyframes rg-agent-thinking { 0%, 18%, 31%, 100% { opacity:0; transform:translateY(3px); } 21%, 28% { opacity:1; transform:none; } }
+  @keyframes rg-agent-query { 0%, 27%, 94%, 100% { opacity:0; } 31%, 91% { opacity:1; } }
+  @keyframes rg-agent-found { 0%, 35%, 94%, 100% { opacity:0; } 39%, 91% { opacity:1; } }
+  @keyframes rg-agent-remove { 0%, 43%, 94%, 100% { opacity:0; } 47%, 91% { opacity:1; } }
+  @keyframes rg-agent-removed { 0%, 70%, 94%, 100% { opacity:0; } 74%, 91% { opacity:1; } }
+  @keyframes rg-agent-complete { 0%, 77%, 94%, 100% { opacity:0; transform:translateY(3px); } 81%, 91% { opacity:1; transform:none; } }
+  @keyframes rg-agent-card-one { 0%, 49%, 92%, 100% { opacity:1; transform:none; } 57%, 91% { opacity:0; transform:translateY(18px) scale(.97); } }
+  @keyframes rg-agent-card-two { 0%, 54%, 92%, 100% { opacity:1; transform:none; } 62%, 91% { opacity:0; transform:translateY(18px) scale(.97); } }
+  @keyframes rg-agent-card-three { 0%, 59%, 92%, 100% { opacity:1; transform:none; } 67%, 91% { opacity:0; transform:translateY(18px) scale(.97); } }
+  @keyframes rg-agent-count-old { 0%, 66%, 92%, 100% { opacity:1; } 67%, 91% { opacity:0; } }
+  @keyframes rg-agent-count-new { 0%, 66%, 92%, 100% { opacity:0; } 67%, 91% { opacity:1; } }
+  @keyframes rg-agent-empty { 0%, 66%, 92%, 100% { opacity:0; transform:translateY(4px); } 71%, 89% { opacity:1; transform:none; } }
+  @keyframes rg-agent-pulse { 0%, 46%, 69%, 100% { stroke-dashoffset:200; opacity:0; } 49% { opacity:1; } 66% { stroke-dashoffset:0; opacity:1; } }
+
+  @media (max-width: 56rem) {
+    .rg-agent-demo { margin-top: 2rem; }
+  }
+
+  @media (max-width: 34rem) {
+    .rg-agent-session { min-height: 16.5rem; }
+    .rg-agent-line code { display:block; margin:.15rem 0 0; }
+    .rg-agent-demo figcaption { flex-direction:column; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rg-agent-command span { width:100%; animation:none; }
+    .rg-agent-command i, .rg-agent-line, .rg-agent-board svg .card, .rg-agent-backlog-count text, .rg-agent-empty, .rg-agent-action-pulse { animation:none; }
+    .rg-agent-command i { opacity:0; }
+    .rg-agent-line { opacity:1; }
+    .rg-agent-board svg .card-one, .rg-agent-board svg .card-two, .rg-agent-board svg .card-three, .rg-agent-backlog-count text:first-child { opacity:0; }
+    .rg-agent-backlog-count text:last-child, .rg-agent-empty { opacity:1; }
+  }
+</style>

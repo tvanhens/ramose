@@ -54,7 +54,7 @@ const ticks = Array.from({ length: 12 }, (_, i) => i + 1);
     </g>
 
     <!-- fact 1: title, added at t=3, still true -->
-    <g stroke="var(--rg-green, #42d37a)" stroke-width="6" stroke-linecap="round" fill="none">
+    <g stroke="var(--rg-green, #ff6500)" stroke-width="6" stroke-linecap="round" fill="none">
       <line x1={x(3)} y1="50" x2={x(12)} y2="50" />
     </g>
     <!-- fact 2: status todo, added at t=3, removed at t=9 -->
@@ -67,7 +67,7 @@ const ticks = Array.from({ length: 12 }, (_, i) => i + 1);
     </g>
     <text x={x(9) + 10} y="94" opacity="0.85">removed at t=9</text>
     <!-- fact 3: status done, added at t=9, still true -->
-    <g stroke="var(--rg-green, #42d37a)" stroke-width="6" stroke-linecap="round" fill="none">
+    <g stroke="var(--rg-green, #ff6500)" stroke-width="6" stroke-linecap="round" fill="none">
       <line x1={x(9)} y1="130" x2={x(12)} y2="130" />
     </g>
 
@@ -80,7 +80,7 @@ const ticks = Array.from({ length: 12 }, (_, i) => i + 1);
   </div>
   <div class="rg-diagram-fade" aria-hidden="true"></div>
   <figcaption>
-    Green means still true, grey means removed. On a narrow screen, scroll the
+    Orange means still true, grey means removed. On a narrow screen, scroll the
     picture sideways.
   </figcaption>
 </figure>

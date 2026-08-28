@@ -1,7 +1,7 @@
 /**
  * Generates `public/og.png` — the 1200x630 social card.
  *
- * Brand: deep black #0D0D0D, white #FFFFFF, vibrant green #42D37A, neutral grey #A6A6A6.
+ * Brand: near-black #050505, warm white #F8F6F3, vivid orange #FF6500, neutral grey #AAA6A2.
  * The mark and the "ramose.ai" wordmark are vector outlines, so they are exact on any
  * machine. Body copy is set with <text>, which librsvg resolves through fontconfig: it
  * uses Manrope when the family is installed and falls back to a Helvetica-class system
@@ -17,19 +17,11 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, "..", "public", "og.png");
 
-const BLACK = "#0D0D0D";
-const WHITE = "#FFFFFF";
-const GREEN = "#42D37A";
-const GREY = "#A6A6A6";
+const BLACK = "#050505";
+const WHITE = "#F8F6F3";
+const ORANGE = "#FF6500";
+const GREY = "#AAA6A2";
 const SANS = "Manrope, Manrope Variable, Nimbus Sans, Helvetica, DejaVu Sans, sans-serif";
-
-/**
- * The mark, in a 305x169 box: one continuous stroke that runs in at the upper-right
- * tip, crosses itself at (173, 84.5), closes the left loop and leaves at the lower-right
- * tip. White up to the crossing, green from the crossing outward.
- */
-const MARK =
-  "M305 8.5C251.5 8.5 243.9 22.8 188.1 71.4L157.9 97.6C114.9 135 94.5 146.5 70.5 146.5C32.5 146.5 8 114.5 8 84.5C8 54.5 32.5 22.5 70.5 22.5C94.5 22.5 114.9 34 157.9 71.4L188.1 97.6C243.9 146.2 251.5 160.5 305 160.5";
 
 /** "ramose." and "ai" as Manrope outlines, set at em = 100 with the baseline at y = 0. */
 const WORD = "M7 0V-54H13.6V-41L12.3 -42.7Q13.2 -45.1 14.65 -47.12Q16.1 -49.15 17.8 -50.45Q19.9 -52.3 22.7 -53.28Q25.5 -54.25 28.35 -54.42Q31.2 -54.6 33.55 -54V-47.1Q30.6 -47.85 27.1 -47.45Q23.6 -47.05 20.65 -44.65Q17.95 -42.55 16.6 -39.62Q15.25 -36.7 14.8 -33.43Q14.35 -30.15 14.35 -26.95V0ZM58.5 1.5Q52.4 1.5 48.28 -0.7Q44.15 -2.9 42.1 -6.55Q40.05 -10.2 40.05 -14.5Q40.05 -18.9 41.83 -22.03Q43.6 -25.15 46.68 -27.15Q49.75 -29.15 53.8 -30.2Q57.9 -31.2 62.88 -31.98Q67.85 -32.75 72.62 -33.33Q77.4 -33.9 81 -34.45L78.4 -32.85Q78.55 -40.85 75.3 -44.7Q72.05 -48.55 64 -48.55Q58.45 -48.55 54.62 -46.05Q50.8 -43.55 49.25 -38.15L42.1 -40.25Q43.95 -47.5 49.55 -51.5Q55.15 -55.5 64.1 -55.5Q71.5 -55.5 76.68 -52.73Q81.85 -49.95 84 -44.7Q85 -42.35 85.3 -39.45Q85.6 -36.55 85.6 -33.55V0H79.05V-13.55L80.95 -12.75Q78.2 -5.8 72.4 -2.15Q66.6 1.5 58.5 1.5ZM59.35 -4.85Q64.5 -4.85 68.35 -6.7Q72.2 -8.55 74.55 -11.78Q76.9 -15 77.6 -19.05Q78.2 -21.65 78.25 -24.78Q78.3 -27.9 78.3 -29.45L81.1 -28Q77.35 -27.5 72.98 -27Q68.6 -26.5 64.38 -25.85Q60.15 -25.2 56.75 -24.3Q54.45 -23.65 52.3 -22.48Q50.15 -21.3 48.78 -19.35Q47.4 -17.4 47.4 -14.5Q47.4 -12.15 48.58 -9.95Q49.75 -7.75 52.38 -6.3Q55 -4.85 59.35 -4.85ZM163 0 163.05 -35.45Q163.05 -41.7 159.58 -45.28Q156.1 -48.85 150.75 -48.85Q147.7 -48.85 144.8 -47.45Q141.9 -46.05 140.03 -42.95Q138.15 -39.85 138.15 -34.85L133.8 -36.1Q133.65 -41.9 136.07 -46.25Q138.5 -50.6 142.78 -53.03Q147.05 -55.45 152.45 -55.45Q160.6 -55.45 165.5 -50.43Q170.4 -45.4 170.4 -36.85L170.35 0ZM98.55 0V-54H105.15V-40.7H105.95V0ZM130.85 0 130.9 -34.95Q130.9 -41.4 127.48 -45.12Q124.05 -48.85 118.45 -48.85Q112.85 -48.85 109.4 -45.03Q105.95 -41.2 105.95 -34.85L101.55 -37.25Q101.55 -42.45 104 -46.58Q106.45 -50.7 110.7 -53.08Q114.95 -55.45 120.35 -55.45Q125.5 -55.45 129.53 -53.25Q133.55 -51.05 135.85 -46.85Q138.15 -42.65 138.15 -36.65L138.1 0ZM205.95 1.5Q197.9 1.5 192.2 -2.15Q186.5 -5.8 183.45 -12.25Q180.4 -18.7 180.4 -27.05Q180.4 -35.55 183.5 -41.95Q186.6 -48.35 192.33 -51.92Q198.05 -55.5 205.95 -55.5Q214.05 -55.5 219.78 -51.88Q225.5 -48.25 228.53 -41.83Q231.55 -35.4 231.55 -27.05Q231.55 -18.55 228.5 -12.12Q225.45 -5.7 219.7 -2.1Q213.95 1.5 205.95 1.5ZM205.95 -5.55Q214.95 -5.55 219.35 -11.53Q223.75 -17.5 223.75 -27.05Q223.75 -36.85 219.33 -42.65Q214.9 -48.45 205.95 -48.45Q199.9 -48.45 195.98 -45.73Q192.05 -43 190.13 -38.17Q188.2 -33.35 188.2 -27.05Q188.2 -17.3 192.7 -11.43Q197.2 -5.55 205.95 -5.55ZM262.7 1.45Q253.2 1.45 247.08 -2.65Q240.95 -6.75 239.55 -14.05L247.05 -15.3Q248.25 -10.7 252.53 -7.98Q256.8 -5.25 263.1 -5.25Q269.25 -5.25 272.8 -7.83Q276.35 -10.4 276.35 -14.85Q276.35 -17.35 275.23 -18.93Q274.1 -20.5 270.65 -21.85Q267.2 -23.2 260.35 -25.05Q253 -27.05 248.85 -29.05Q244.7 -31.05 242.95 -33.68Q241.2 -36.3 241.2 -40.1Q241.2 -44.7 243.8 -48.18Q246.4 -51.65 251 -53.58Q255.6 -55.5 261.7 -55.5Q267.8 -55.5 272.63 -53.53Q277.45 -51.55 280.4 -48Q283.35 -44.45 283.9 -39.75L276.4 -38.4Q275.65 -43.15 271.68 -45.93Q267.7 -48.7 261.6 -48.8Q255.85 -48.95 252.25 -46.62Q248.65 -44.3 248.65 -40.45Q248.65 -38.3 249.95 -36.78Q251.25 -35.25 254.68 -33.9Q258.1 -32.55 264.45 -30.95Q271.9 -29.05 276.15 -26.95Q280.4 -24.85 282.2 -22Q284 -19.15 284 -14.95Q284 -7.3 278.33 -2.93Q272.65 1.45 262.7 1.45ZM317.9 1.5Q310 1.5 304.23 -2Q298.45 -5.5 295.25 -11.85Q292.05 -18.2 292.05 -26.75Q292.05 -35.6 295.2 -42.05Q298.35 -48.5 304.08 -52Q309.8 -55.5 317.6 -55.5Q325.6 -55.5 331.25 -51.83Q336.9 -48.15 339.8 -41.3Q342.7 -34.45 342.45 -24.95H334.95V-27.55Q334.75 -38.05 330.43 -43.4Q326.1 -48.75 317.8 -48.75Q309.1 -48.75 304.48 -43.1Q299.85 -37.45 299.85 -27Q299.85 -16.8 304.48 -11.18Q309.1 -5.55 317.6 -5.55Q323.4 -5.55 327.73 -8.23Q332.05 -10.9 334.55 -15.95L341.4 -13.3Q338.2 -6.25 331.98 -2.38Q325.75 1.5 317.9 1.5ZM297.25 -24.95V-31.1H338.5V-24.95ZM354.9 0V-8.55H363.45V0Z";
@@ -37,37 +29,38 @@ const WORD_AI = "M394.3 1.5Q388.2 1.5 384.08 -0.7Q379.95 -2.9 377.9 -6.55Q375.85
 
 export const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <defs>
-    <clipPath id="branch"><rect x="173" y="0" width="132" height="169"/></clipPath>
+    <linearGradient id="orange" x1="102" y1="76" x2="138" y2="112" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF5600"/>
+      <stop offset="1" stop-color="#FF8A00"/>
+    </linearGradient>
+    <radialGradient id="glow"><stop stop-color="#FF6500" stop-opacity=".2"/><stop offset="1" stop-color="#FF6500" stop-opacity="0"/></radialGradient>
   </defs>
   <rect width="1200" height="630" fill="${BLACK}"/>
 
-  <!-- the open branch, echoed: a quiet fan of growth lines in the lower right -->
-  <g fill="none" stroke="${GREEN}" stroke-width="2">
-    <path d="M720 700 C 980 670, 1150 560, 1210 350" stroke-opacity="0.30"/>
-    <path d="M720 700 C 1000 700, 1180 620, 1240 450" stroke-opacity="0.22"/>
-    <path d="M720 700 C 940 650, 1070 530, 1110 310" stroke-opacity="0.17"/>
-    <path d="M720 700 C 900 620, 1000 480, 1020 270" stroke-opacity="0.12"/>
-    <path d="M720 700 C 870 590, 930 440, 940 240" stroke-opacity="0.08"/>
-    <path d="M720 700 C 840 570, 870 420, 865 225" stroke-opacity="0.05"/>
+  <!-- A quiet echo of the diamond geometry behind the message. -->
+  <circle cx="1030" cy="170" r="300" fill="url(#glow)"/>
+  <g fill="none" stroke="${ORANGE}" stroke-width="1.5" opacity=".16">
+    <rect x="865" y="5" width="330" height="330" rx="18" transform="rotate(45 1030 170)"/>
+    <rect x="910" y="50" width="240" height="240" rx="14" transform="rotate(45 1030 170)"/>
   </g>
 
   <!-- lockup: mark + ramose.ai -->
-  <g transform="translate(80 72) scale(0.42)" fill="none" stroke-width="16" stroke-linecap="butt" stroke-linejoin="round">
-    <path d="${MARK}" stroke="${WHITE}"/>
-    <path d="${MARK}" stroke="${GREEN}" clip-path="url(#branch)"/>
+  <g>
+    <rect x="84" y="60" width="72" height="72" rx="5" transform="rotate(45 120 96)" fill="none" stroke="${WHITE}" stroke-width="4"/>
+    <rect x="102" y="78" width="36" height="36" rx="4" transform="rotate(45 120 96)" fill="url(#orange)"/>
   </g>
-  <g transform="translate(224.73 126) scale(0.61)">
+  <g transform="translate(184 126) scale(0.61)">
     <path d="${WORD}" fill="${WHITE}"/>
-    <path d="${WORD_AI}" fill="${GREEN}"/>
+    <path d="${WORD_AI}" fill="${ORANGE}"/>
   </g>
 
-  <text x="80" y="300" font-family="${SANS}" font-size="78" fill="${WHITE}">Reactive applications</text>
-  <text x="80" y="386" font-family="${SANS}" font-size="78" fill="${GREEN}">that grow safely.</text>
+  <text x="80" y="300" font-family="${SANS}" font-size="78" fill="${WHITE}">The database optimized for</text>
+  <text x="80" y="386" font-family="${SANS}" font-size="78" fill="${ORANGE}">humans and agents.</text>
 
-  <text x="80" y="466" font-family="${SANS}" font-size="30" fill="${GREY}">The typed, realtime database for apps you ship on Cloudflare</text>
+  <text x="80" y="466" font-family="${SANS}" font-size="30" fill="${GREY}">One offline-first database for your app and its agents</text>
 
   <!-- one run, so the line stays set correctly whatever face fontconfig resolves -->
-  <text x="80" y="556" font-family="${SANS}" font-size="24" fill="${GREY}">Typed schema &#8195;&#183;&#8195; Live queries &#8195;&#183;&#8195; Per-user permissions</text>
+  <text x="80" y="556" font-family="${SANS}" font-size="24" fill="${GREY}">Generated MCP tools &#8195;&#183;&#8195; Live queries &#8195;&#183;&#8195; One permission model</text>
 </svg>`;
 
 const isMain =

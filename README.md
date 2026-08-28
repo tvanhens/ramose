@@ -1,15 +1,15 @@
 <div align="center">
 
 <a href="https://ramose.ai">
-  <img src="./website/public/brand/ramose-lockup-horizontal.svg" alt="Ramose — reactive applications that grow safely" width="440" />
+  <img src="./website/public/og.png" alt="Ramose — the database optimized for humans and agents" width="900" />
 </a>
 
 <br />
 <br />
 
-[![npm](https://img.shields.io/npm/v/ramose?style=flat-square&color=42D37A&label=ramose)](https://www.npmjs.com/package/ramose)
-[![license](https://img.shields.io/badge/license-Apache%202.0-42D37A?style=flat-square)](./LICENSE)
-[![docs](https://img.shields.io/badge/docs-ramose.ai-42D37A?style=flat-square)](https://ramose.ai)
+[![npm](https://img.shields.io/npm/v/ramose?style=flat-square&color=FF6500&label=ramose)](https://www.npmjs.com/package/ramose)
+[![license](https://img.shields.io/badge/license-Apache%202.0-FF6500?style=flat-square)](./LICENSE)
+[![docs](https://img.shields.io/badge/docs-ramose.ai-FF6500?style=flat-square)](https://ramose.ai)
 
 **The typed database foundation for apps on Cloudflare** — describe schemas,
 queries, operations, and authorization in TypeScript, then deploy the

@@ -2,8 +2,8 @@
 
 The static documentation site for Ramose: [Astro](https://astro.build) +
 [Starlight](https://starlight.astro.build), branded per the ramose.ai brand
-guide (white on deep black, dark-forest panels, one green signal, Manrope as
-the Avenir Next web fallback), deployed to Cloudflare with Alchemy — the same
+guide (warm white on near-black, graphite panels, one orange signal, Space
+Grotesk with JetBrains Mono), deployed to Cloudflare with Alchemy — the same
 pattern [alchemy.run](https://alchemy.run) uses for its own website.
 
 ## Develop
@@ -95,8 +95,8 @@ looking at.
 | `src/content/docs/` | all pages (Markdown/MDX); `index.mdx` is the landing page |
 | `src/styles/theme.css` | the brand theme mapped onto Starlight variables |
 | `src/components/` | `SiteTitle` (lockup), `ThemeProvider`/`ThemeSelect` (dark-only) |
-| `src/assets/ramose-mark.svg` | the mark (the two-stroke ramose loop) |
-| `public/favicon.svg` | micro-use mark (loop only, per the brand guide) |
+| `src/assets/ramose-mark.svg` | the geometric diamond mark |
+| `public/favicon.svg` | the mark tuned for micro use |
 | `public/reef/` | light-theme product shots; regenerate with `bun scripts/shots/capture.mjs` |
 | `astro.config.mjs` | Starlight config: sidebar, edit links, code theme |
 | `alchemy.run.ts` | the Cloudflare deploy stack |

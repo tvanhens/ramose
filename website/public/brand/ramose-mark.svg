@@ -1,18 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 305 169" fill="none" role="img" aria-label="Ramose">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" role="img" aria-label="Ramose">
   <title>Ramose</title>
-  <!--
-    One continuous stroke. It enters at the upper-right tip, runs down-left, crosses
-    itself at (173, 84.5), closes the left loop, returns through the same crossing and
-    leaves at the lower-right tip. The stroke is painted white, then repainted green
-    from the crossing rightward, so the branch that grows reads as the green one.
-  -->
   <defs>
-    <clipPath id="ramose-mark-branch">
-      <rect x="173" y="0" width="132" height="169"/>
-    </clipPath>
+    <linearGradient id="orange" x1="88" y1="88" x2="168" y2="168" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF5600"/>
+      <stop offset="1" stop-color="#FF8A00"/>
+    </linearGradient>
   </defs>
-  <g stroke-width="16" stroke-linecap="butt" stroke-linejoin="round">
-    <path d="M305 8.5C251.5 8.5 243.9 22.8 188.1 71.4L157.9 97.6C114.9 135 94.5 146.5 70.5 146.5C32.5 146.5 8 114.5 8 84.5C8 54.5 32.5 22.5 70.5 22.5C94.5 22.5 114.9 34 157.9 71.4L188.1 97.6C243.9 146.2 251.5 160.5 305 160.5" stroke="#FFFFFF"/>
-    <path d="M305 8.5C251.5 8.5 243.9 22.8 188.1 71.4L157.9 97.6C114.9 135 94.5 146.5 70.5 146.5C32.5 146.5 8 114.5 8 84.5C8 54.5 32.5 22.5 70.5 22.5C94.5 22.5 114.9 34 157.9 71.4L188.1 97.6C243.9 146.2 251.5 160.5 305 160.5" stroke="#42D37A" clip-path="url(#ramose-mark-branch)"/>
-  </g>
+  <rect x="38" y="38" width="180" height="180" rx="11" transform="rotate(45 128 128)" stroke="#F8F6F3" stroke-width="9"/>
+  <rect x="88" y="88" width="80" height="80" rx="8" transform="rotate(45 128 128)" fill="url(#orange)"/>
 </svg>
