@@ -94,9 +94,11 @@ export const OperationIssue = Db.Entity(
 
 const OperationBound = Db.Trait(
   "operation-bound",
-  { catalog: Db.string() },
+  { catalog: Db.string({ optional: true }) },
   {
-    bind: (definition) => ({ values: { catalog: definition.key } }),
+    bind: (definition) => definition.key === "mutable"
+      ? { values: {} }
+      : { values: { catalog: definition.key } },
     operations: (Operation) => ({
       inspect: Operation({
         input: Schema.Struct({}),
@@ -124,6 +126,15 @@ const otherOperationBinding = {
   key: "other-authoritative",
   schema: Db.Schema({}),
 };
+const mutableOperationBinding = {
+  key: "mutable",
+  schema: Db.Schema({}),
+};
+
+export const OperationComponent = Db.Entity(
+  "operation-component",
+  { value: Db.string() },
+);
 
 export const OperationCreatedOther = Db.Entity(
   "operation-created-other",
@@ -131,9 +142,24 @@ export const OperationCreatedOther = Db.Entity(
   { traits: [OperationBound(otherOperationBinding)] },
 );
 
+export const OperationMutable = Db.Entity(
+  "operation-mutable",
+  { title: Db.string() },
+  { traits: [OperationBound(mutableOperationBinding)] },
+);
+
+export const OperationUndeclared = Db.Entity(
+  "operation-undeclared",
+  { title: Db.string() },
+  { traits: [OperationBound(mutableOperationBinding)] },
+);
+
 export const OperationCreated = Db.Entity(
   "operation-created",
-  { title: Db.string({ default: () => "created by default" }) },
+  {
+    title: Db.string({ default: () => "created by default" }),
+    child: Db.Field.owned(Db.Ref(OperationComponent), { optional: true }),
+  },
   {
     traits: [OperationBound(operationBinding)],
     operations: (Operation) => ({
@@ -167,6 +193,55 @@ export const OperationCreated = Db.Entity(
           return { ok: true };
         },
       }),
+      createWithComponent: Operation({
+        self: false,
+        writes: [OperationComponent],
+        input: Schema.Struct({}),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run(op) {
+          const child = op.put(OperationComponent, { value: "child" });
+          const created = op.create({});
+          created.set(OperationCreated.child, child);
+          return { ok: true };
+        },
+      }),
+      mutateCatalog: Operation({
+        self: false,
+        writes: [OperationMutable],
+        input: Schema.Struct({ id: Schema.Finite, catalog: Schema.String }),
+        output: Schema.Struct({}),
+        run(op, input) {
+          op.set(
+            OperationMutable,
+            input.id,
+            OperationBound.catalog as never,
+            input.catalog as never,
+          );
+          return {};
+        },
+      }),
+      seedMutableCatalog: Operation({
+        self: false,
+        writes: [OperationMutable],
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        run(op) {
+          const row = op.put(OperationMutable, { title: "Mutable" });
+          row.set(OperationBound.catalog as never, "initial" as never);
+          return {};
+        },
+      }),
+      seedUndeclaredCatalog: Operation({
+        self: false,
+        writes: [OperationUndeclared],
+        input: Schema.Struct({}),
+        output: Schema.Struct({}),
+        run(op) {
+          const row = op.put(OperationUndeclared, { title: "Undeclared" });
+          row.set(OperationBound.catalog as never, "initial" as never);
+          return {};
+        },
+      }),
     }),
   },
 );
@@ -176,6 +251,9 @@ export const OperationSchema = Db.Schema({
   "operation-issue": OperationIssue,
   "operation-created": OperationCreated,
   "operation-created-other": OperationCreatedOther,
+  "operation-component": OperationComponent,
+  "operation-mutable": OperationMutable,
+  "operation-undeclared": OperationUndeclared,
 });
 
 const entity = (name: string) => EntityId.make({ catalog: OP_CATALOG, name });
@@ -207,6 +285,9 @@ const descriptorTables: Omit<CatalogDescriptor, "fingerprint"> = {
   version,
   entities: [
     { id: entity(OperationIssue.ns), traits: [] },
+    { id: entity(OperationComponent.ns), traits: [] },
+    { id: entity(OperationMutable.ns), traits: [operationBoundId] },
+    { id: entity(OperationUndeclared.ns), traits: [operationBoundId] },
     {
       id: entity(OperationCreated.ns),
       traits: [operationBoundId],
@@ -233,6 +314,39 @@ const descriptorTables: Omit<CatalogDescriptor, "fingerprint"> = {
       owned: false,
     },
     {
+      id: field(OperationCreated.ns, "child"),
+      valueType: "ref",
+      refTarget: { _tag: "entity", entity: entity(OperationComponent.ns) },
+      cardinality: "one",
+      index: false,
+      optional: true,
+      owned: true,
+    },
+    {
+      id: field(OperationComponent.ns, "value"),
+      valueType: "string",
+      cardinality: "one",
+      index: false,
+      optional: false,
+      owned: false,
+    },
+    {
+      id: field(OperationMutable.ns, "title"),
+      valueType: "string",
+      cardinality: "one",
+      index: false,
+      optional: false,
+      owned: false,
+    },
+    {
+      id: field(OperationUndeclared.ns, "title"),
+      valueType: "string",
+      cardinality: "one",
+      index: false,
+      optional: false,
+      owned: false,
+    },
+    {
       id: field(OperationCreatedOther.ns, "title"),
       valueType: "string",
       cardinality: "one",
@@ -245,7 +359,7 @@ const descriptorTables: Omit<CatalogDescriptor, "fingerprint"> = {
       valueType: "string",
       cardinality: "one",
       index: false,
-      optional: false,
+      optional: true,
       owned: false,
     },
     {
@@ -287,6 +401,16 @@ const descriptorTables: Omit<CatalogDescriptor, "fingerprint"> = {
       trait: operationBoundId,
       transitive: [operationBoundId],
     },
+    {
+      composer: entity(OperationMutable.ns),
+      trait: operationBoundId,
+      transitive: [operationBoundId],
+    },
+    {
+      composer: entity(OperationUndeclared.ns),
+      trait: operationBoundId,
+      transitive: [operationBoundId],
+    },
   ],
 };
 
@@ -306,6 +430,10 @@ const forgeFixed = OperationCreated[Db.OwnedOperations].forgeFixed;
 const inspectBound = OperationBound[Db.OwnedOperations].inspect;
 const destroyBound = OperationBound[Db.OwnedOperations].destroy;
 const createBoth = OperationCreated[Db.OwnedOperations].createBoth;
+const createWithComponent = OperationCreated[Db.OwnedOperations].createWithComponent;
+const mutateCatalog = OperationCreated[Db.OwnedOperations].mutateCatalog;
+const seedMutableCatalog = OperationCreated[Db.OwnedOperations].seedMutableCatalog;
+const seedUndeclaredCatalog = OperationCreated[Db.OwnedOperations].seedUndeclaredCatalog;
 const policy = Result.getOrThrow(
   compileReadAuthorizationResult({
     schema: OperationSchema,
@@ -316,6 +444,9 @@ const policy = Result.getOrThrow(
       read(OperationIssue).when(eq(OperationIssue.owner, me)),
       read(OperationCreated).when(allow),
       read(OperationCreatedOther).when(allow),
+      read(OperationComponent).when(allow),
+      read(OperationMutable).when(allow),
+      read(OperationUndeclared).when(allow),
       invoke(rename).when(allow),
       invoke(changeType).when(allow),
       invoke(clearTitle).when(allow),
@@ -325,6 +456,10 @@ const policy = Result.getOrThrow(
       invoke(inspectBound).when(allow),
       invoke(destroyBound).when(allow),
       invoke(createBoth).when(allow),
+      invoke(createWithComponent).when(allow),
+      invoke(mutateCatalog).when(allow),
+      invoke(seedMutableCatalog).when(allow),
+      invoke(seedUndeclaredCatalog).when(allow),
     ],
   }),
 );
@@ -357,3 +492,7 @@ export const FORGE_FIXED_OPERATION_ID = idOf("forgeFixed");
 export const INSPECT_BOUND_OPERATION_ID = idOf("inspect");
 export const DESTROY_BOUND_OPERATION_ID = idOf("destroy");
 export const CREATE_BOTH_OPERATION_ID = idOf("createBoth");
+export const CREATE_WITH_COMPONENT_OPERATION_ID = idOf("createWithComponent");
+export const MUTATE_CATALOG_OPERATION_ID = idOf("mutateCatalog");
+export const SEED_MUTABLE_CATALOG_OPERATION_ID = idOf("seedMutableCatalog");
+export const SEED_UNDECLARED_CATALOG_OPERATION_ID = idOf("seedUndeclaredCatalog");

@@ -33,6 +33,7 @@ import {
   otherCatalog,
   otherCatalogDescriptor,
   otherDatabase,
+  runtimeOperationsFor,
   scalarField,
   templateOf,
   version,
@@ -45,14 +46,18 @@ const assemble = (input: Parameters<typeof assembleDeployedCatalogs>[0]) =>
 const assembleFail = (input: Parameters<typeof assembleDeployedCatalogs>[0]) =>
   Effect.runPromise(Effect.flip(assembleDeployedCatalogs(input)));
 
-const appUnit = (extras: Partial<CatalogAssemblyUnit> = {}): CatalogAssemblyUnit => ({
-  catalog,
-  database,
-  version,
-  descriptor: catalogDescriptor(),
-  policy: templateOf(),
-  ...extras,
-});
+const appUnit = (extras: Partial<CatalogAssemblyUnit> = {}): CatalogAssemblyUnit => {
+  const descriptor = extras.descriptor ?? catalogDescriptor();
+  return {
+    catalog,
+    database,
+    version,
+    descriptor,
+    policy: templateOf(),
+    operations: runtimeOperationsFor(descriptor),
+    ...extras,
+  };
+};
 
 const libUnit = (extras: Partial<CatalogAssemblyUnit> = {}): CatalogAssemblyUnit => ({
   catalog: CatalogId.make("lib"),
@@ -81,6 +86,13 @@ const enumerablePayload = (value: object): Record<string, unknown> => {
 };
 
 describe("assembleDeployedCatalogs", () => {
+  test("operation descriptors require complete runtime definition coverage", async () => {
+    const { operations: _operations, ...withoutRuntime } = appUnit();
+    const failure = await assembleFail({ root: catalog, units: [withoutRuntime] });
+    expect(failure._tag).toBe("InvalidIR");
+    expect(failure.message).toContain("operation definition coverage");
+  });
+
   test("trusted database lookup returns the sealed unit; databases() lists it", async () => {
     const catalogs = await assemble({ root: catalog, units: [appUnit()] });
     const deployed = Result.getOrThrow(catalogs.requireDatabase(database));

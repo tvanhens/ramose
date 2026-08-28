@@ -168,23 +168,73 @@ const targetFits = (
   ? operation.owner.name === type
   : deployed.composition.transitiveTraits(`:${type}`).includes(`:${operation.owner.name}`);
 
+const ownerFitsType = (
+  deployed: DeployedCatalog,
+  owner: { readonly kind: "entity" | "trait"; readonly name: string },
+  type: string,
+): boolean => owner.kind === "entity"
+  ? owner.name === type
+  : deployed.composition.transitiveTraits(`:${type}`).includes(`:${owner.name}`);
+
+const componentTypeClosure = (
+  deployed: DeployedCatalog,
+  roots: ReadonlySet<string>,
+): ReadonlySet<string> => {
+  const types = new Set(roots);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const field of deployed.unit.catalog.fields) {
+      if (!field.owned || field.valueType !== "ref") continue;
+      if (![...types].some((type) => ownerFitsType(deployed, field.id.owner, type))) continue;
+      const target = field.refTarget;
+      if (target._tag === "entity") {
+        if (!types.has(target.entity.name)) {
+          types.add(target.entity.name);
+          changed = true;
+        }
+      } else if (target._tag === "trait") {
+        for (const entity of deployed.unit.catalog.entities) {
+          if (
+            !types.has(entity.id.name) &&
+            ownerFitsType(deployed, { kind: "trait", name: target.trait.name }, entity.id.name)
+          ) {
+            types.add(entity.id.name);
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+  return types;
+};
+
 const sync = <A>(effect: Effect.Effect<A>): A => Effect.runSync(effect);
+
+type BodyFieldWrite = {
+  readonly entity: unknown;
+  readonly ident: string;
+};
 
 const promiseHandle = (
   handle: TxHandle,
-  assertMutableField: (field: unknown) => void,
+  recordFieldWrite: (entity: unknown, field: unknown) => void,
+  recordDelete: (entity: unknown) => void,
 ): AnyOpHandle => ({
   _tag: "TxHandle",
   eid: handle.eid,
   set: (field, value) => {
-    assertMutableField(field);
+    recordFieldWrite(handle.eid, field);
     sync(handle.set(field as never, value as never));
   },
   remove: (field, value) => {
-    assertMutableField(field);
+    recordFieldWrite(handle.eid, field);
     sync(handle.remove(field as never, value as never));
   },
-  delete: () => { sync(handle.delete); },
+  delete: () => {
+    recordDelete(handle.eid);
+    sync(handle.delete);
+  },
 });
 
 const makeBodyOp = (args: {
@@ -195,27 +245,26 @@ const makeBodyOp = (args: {
   readonly deployed: DeployedCatalog;
   readonly target: number | undefined;
   readonly now: Date;
-}): { readonly op: Op<any, any>; readonly tx: () => readonly TxOp[] } => {
+}): {
+  readonly op: Op<any, any>;
+  readonly tx: () => readonly TxOp[];
+  readonly fieldWrites: () => readonly BodyFieldWrite[];
+  readonly deletes: () => readonly unknown[];
+} => {
   const tx = txBuilder({ _tag: "Schema", entities: {} } as AnySchema);
   const bodyWritableEntities = [
     ...(args.definition.owner._tag === "Entity" ? [args.definition.owner] : []),
     ...args.definition.writes,
   ];
-  const fixedMetadataEntities = [
-    ...bodyWritableEntities,
-    ...args.definition.composers,
-  ];
-  const fixedFieldIdents = new Set(
-    fixedMetadataEntities.flatMap((entity) => [...compositionValueMetadata(entity).fixed.keys()]),
-  );
-  const assertMutableField = (field: unknown): void => {
+  const fieldWrites: BodyFieldWrite[] = [];
+  const deletes: unknown[] = [];
+  const recordDelete = (entity: unknown): void => { deletes.push(entity); };
+  const recordFieldWrite = (entity: unknown, field: unknown): void => {
     const ident = lowerAttr(field);
     if (ident === ":ramose/type" || ident.startsWith(":db/") || ident.startsWith(":ramose/")) {
       throw new InvalidRequest({ message: "operation cannot mutate control-plane data" });
     }
-    if (fixedFieldIdents.has(ident)) {
-      throw new InvalidRequest({ message: "operation cannot write an engine-owned fixed field" });
-    }
+    fieldWrites.push({ entity, ident });
   };
   const assertMutableInput = (
     entity: AnyEntity,
@@ -228,7 +277,7 @@ const makeBodyOp = (args: {
   };
   const self = args.target === undefined
     ? undefined
-    : promiseHandle(sync(tx.entity(args.target as never)), assertMutableField);
+    : promiseHandle(sync(tx.entity(args.target as never)), recordFieldWrite, recordDelete);
   const opPrincipal: OpPrincipal = {
     eid: args.principal.me?.eid ?? null,
     class: args.principal.classes[0] ?? "",
@@ -270,7 +319,8 @@ const makeBodyOp = (args: {
   const entity = ((first?: unknown, second?: unknown) =>
     promiseHandle(
       sync(tx.entity((second === undefined ? first : second) as never)),
-      assertMutableField,
+      recordFieldWrite,
+      recordDelete,
     )) as Op<any, any>["entity"];
   const bodyOp: Op<any, any> = {
     self: self as never,
@@ -280,16 +330,18 @@ const makeBodyOp = (args: {
     tempid,
     set: ((...values: unknown[]) => {
       const offset = values.length === 4 ? 1 : 0;
-      assertMutableField(values[offset + 1]);
+      recordFieldWrite(values[offset], values[offset + 1]);
       sync(tx.set(values[offset] as never, values[offset + 1] as never, values[offset + 2] as never));
     }) as Op<any, any>["set"],
     remove: ((...values: unknown[]) => {
       const offset = bodyWritableEntities.includes(values[0] as AnyEntity) ? 1 : 0;
-      assertMutableField(values[offset + 1]);
+      recordFieldWrite(values[offset], values[offset + 1]);
       sync(tx.remove(values[offset] as never, values[offset + 1] as never, values[offset + 2] as never));
     }) as Op<any, any>["remove"],
     delete: ((...values: unknown[]) => {
-      sync(tx.delete(values[values.length - 1] as never));
+      const entity = values[values.length - 1];
+      recordDelete(entity);
+      sync(tx.delete(entity as never));
     }) as Op<any, any>["delete"],
     put: ((entityDefinition: AnyEntity, first: unknown, second?: unknown) => {
       assertMutableInput(entityDefinition, second === undefined ? first : second);
@@ -297,7 +349,7 @@ const makeBodyOp = (args: {
         second === undefined
           ? tx.put(entityDefinition, first as never)
           : tx.put(entityDefinition, first as never, second as never),
-      ), assertMutableField);
+      ), recordFieldWrite, recordDelete);
     }) as Op<any, any>["put"],
     update: ((entityDefinition: AnyEntity, first: unknown, second?: unknown) => {
       assertMutableInput(entityDefinition, second === undefined ? first : second);
@@ -305,7 +357,7 @@ const makeBodyOp = (args: {
         second === undefined
           ? tx.update(entityDefinition, first as never)
           : tx.update(entityDefinition, first as never, second as never),
-      ), assertMutableField);
+      ), recordFieldWrite, recordDelete);
     }) as Op<any, any>["update"],
     query: (async (input: AnyQueryObject) => {
       const lowered = tryLowerQueryObject(input);
@@ -335,20 +387,44 @@ const makeBodyOp = (args: {
         assertMutableInput(args.definition.owner as AnyEntity, attrs);
         return promiseHandle(
           sync(tx.put(args.definition.owner as AnyEntity, attrs as never)),
-          assertMutableField,
+          recordFieldWrite,
+          recordDelete,
         );
       };
   }
-  return { op: bodyOp, tx: () => txOps(tx) };
+  return {
+    op: bodyOp,
+    tx: () => txOps(tx),
+    fieldWrites: () => fieldWrites,
+    deletes: () => deletes,
+  };
 };
 
 const fieldIdentSet = (entities: readonly AnyEntity[]): ReadonlySet<string> =>
   new Set(entities.flatMap((entity) => Object.values(entity.fields).map((field) => field.ident)));
 
+const resolveReportEntity = async (
+  subject: unknown,
+  report: TxReport,
+): Promise<number | undefined> => {
+  try {
+    const lowered = lowerEntityArg(subject);
+    if (typeof lowered === "number") return lowered;
+    if (typeof lowered === "string") return report.tempids[lowered];
+    if (Array.isArray(lowered)) {
+      return (await report.dbAfter.entid(lowered as EntityRef)) ??
+        (await report.dbBefore.entid(lowered as EntityRef));
+    }
+  } catch {}
+  return undefined;
+};
+
 const validateProducedDatoms = async (
   deployed: DeployedCatalog,
   definition: DeployedOperationDefinition,
   report: TxReport,
+  fieldWrites: readonly BodyFieldWrite[],
+  deletes: readonly unknown[],
 ): Promise<void> => {
   const writableEntities = [
     ...(definition.owner._tag === "Entity" ? [definition.owner] : []),
@@ -359,9 +435,30 @@ const validateProducedDatoms = async (
     ...Object.values(definition.owner.fields).map((field) => field.ident),
   ]);
   const writableTypes = new Set(writableEntities.map((entity) => entity.ns));
+  const operationTypes = new Set([
+    ...writableTypes,
+    ...(definition.owner._tag === "Trait"
+      ? definition.composers.map((entity) => entity.ns)
+      : []),
+  ]);
+  const deletableTypes = componentTypeClosure(deployed, operationTypes);
+  const directDeleteEids = new Set<number>();
+  for (const subject of deletes) {
+    const eid = await resolveReportEntity(subject, report);
+    if (eid !== undefined) directDeleteEids.add(eid);
+  }
   const fixedFieldsByType = new Map<string, ReadonlyMap<string, { readonly value: unknown }>>();
   for (const entity of [...writableEntities, ...definition.composers]) {
     fixedFieldsByType.set(entity.ns, compositionValueMetadata(entity).fixed);
+  }
+  for (const write of fieldWrites) {
+    const eid = await resolveReportEntity(write.entity, report);
+    if (eid === undefined) continue;
+    const db = await report.dbAfter.exists(eid) ? report.dbAfter : report.dbBefore;
+    const type = await targetType(db, eid);
+    if (type !== undefined && fixedFieldsByType.get(type)?.has(write.ident)) {
+      throw new InvalidRequest({ message: `operation cannot mutate fixed field ${write.ident}` });
+    }
   }
   const principalField = deployed.unit.policy.principal.entity;
   const principalIdent = principalField === undefined
@@ -380,9 +477,10 @@ const validateProducedDatoms = async (
         throw new InvalidRequest({ message: "operation produced an invalid canonical type retraction" });
       }
       const deletedType = await targetType(report.dbBefore, datom.e);
+      const permittedTypes = directDeleteEids.has(datom.e) ? operationTypes : deletableTypes;
       if (
         deletedType === undefined ||
-        (!writableTypes.has(deletedType) && !targetFits(deployed, definition.id, deletedType))
+        !permittedTypes.has(deletedType)
       ) {
         throw new InvalidRequest({ message: "operation cannot delete this entity type" });
       }
@@ -411,11 +509,12 @@ const validateProducedDatoms = async (
       throw new InvalidRequest({ message: "operation cannot mutate principal identity" });
     }
     const wholeEntityDeletion = !datom.op && !rowExistsAfter;
-    if (
-      wholeEntityDeletion && rowType !== undefined &&
-      (writableTypes.has(rowType) || targetFits(deployed, definition.id, rowType))
-    ) {
+    const permittedDeleteTypes = directDeleteEids.has(datom.e) ? operationTypes : deletableTypes;
+    if (wholeEntityDeletion && rowType !== undefined && permittedDeleteTypes.has(rowType)) {
       continue;
+    }
+    if (rowType === undefined || !operationTypes.has(rowType)) {
+      throw new InvalidRequest({ message: "operation cannot write this entity type" });
     }
     if (!allowedFields.has(ident)) {
       throw new InvalidRequest({ message: `operation cannot write ${ident}` });
@@ -627,7 +726,13 @@ export const prepareAuthorizedOperation = async (args: {
     tx: [...tx],
     principal: args.principal,
     beforeCommit: async (report) => {
-      await validateProducedDatoms(args.deployed, args.definition, report);
+      await validateProducedDatoms(
+        args.deployed,
+        args.definition,
+        report,
+        built.fieldWrites(),
+        built.deletes(),
+      );
       const resolved = await resolveOutputHandles(output, report);
       const encoded = await Effect.runPromise(encodeOutput(args.definition.output as never, resolved));
       const filteredAfter = report.dbAfter.filter(compileReadFilter({

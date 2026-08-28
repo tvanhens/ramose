@@ -46,6 +46,7 @@ import {
 import { authorizedLiveResponse } from "../../../src/worker/authorized-live.ts";
 import { fromEnv, resetJwtVerifier } from "../../../src/worker/jwt.ts";
 import { applyLiveDiffs, collectLive } from "../../../../../test/support/live-query.ts";
+import { runtimeOperationsFor } from "./catalog-support.ts";
 import {
   App,
   Issue,
@@ -148,6 +149,7 @@ const deployPolicy = async (
           version,
           descriptor,
           policy: expectOk(compileRules(rules, extras)),
+          operations: runtimeOperationsFor(descriptor),
         },
       ],
     }),

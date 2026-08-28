@@ -35,6 +35,7 @@ import type { Db } from "../../../src/internal/core/db.ts";
 import { query } from "../../../src/internal/core/query/engine.ts";
 import { pull } from "../../../src/internal/core/query/pull.ts";
 import { fromEnv, resetJwtVerifier } from "../../../src/worker/jwt.ts";
+import { runtimeOperationsFor } from "./catalog-support.ts";
 import {
   App,
   Issue,
@@ -134,6 +135,7 @@ const deployPolicy = async (
           version,
           descriptor,
           policy: expectOk(compileRules(rules, extras)),
+          operations: runtimeOperationsFor(descriptor),
         },
       ],
     }),

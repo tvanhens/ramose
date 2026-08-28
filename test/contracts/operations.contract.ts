@@ -12,12 +12,16 @@ import {
   CLEAR_TITLE_OPERATION_ID,
   CREATE_BOTH_OPERATION_ID,
   CREATE_OPERATION_ID,
+  CREATE_WITH_COMPONENT_OPERATION_ID,
   DESTROY_BOUND_OPERATION_ID,
   FORGE_FIXED_OPERATION_ID,
   INSPECT_BOUND_OPERATION_ID,
+  MUTATE_CATALOG_OPERATION_ID,
   OP_DATABASE,
   OperationSchema,
   RENAME_OPERATION_ID,
+  SEED_MUTABLE_CATALOG_OPERATION_ID,
+  SEED_UNDECLARED_CATALOG_OPERATION_ID,
   UNGRANTED_OPERATION_ID,
 } from "../local/operation-catalog.ts";
 import { json, post, testAdmin, uniqueDb, type LocalUrls } from "../local/fixtures.ts";
@@ -48,6 +52,8 @@ export function registerOperationsContract(target: OperationsTarget): void {
     let alice: number;
     let aliceIssue: number;
     let bobIssue: number;
+    let mutable: number;
+    let undeclared: number;
     let token: string;
     let proof: { catalog: string; unitHash: string };
 
@@ -93,6 +99,26 @@ export function registerOperationsContract(target: OperationsTarget): void {
       aliceIssue = seeded.body.tempids["alice-issue"];
       bobIssue = seeded.body.tempids["bob-issue"];
       token = await signToken(OP_DATABASE, "member", "user_ada");
+      const mutableSeed = await json(
+        policyUrl,
+        `/db/${OP_DATABASE}/op`,
+        post({ ...proof, operation: SEED_MUTABLE_CATALOG_OPERATION_ID, input: {} }, token),
+      );
+      expect(mutableSeed.status).toBe(200);
+      const undeclaredSeed = await json(
+        policyUrl,
+        `/db/${OP_DATABASE}/op`,
+        post({ ...proof, operation: SEED_UNDECLARED_CATALOG_OPERATION_ID, input: {} }, token),
+      );
+      expect(undeclaredSeed.status).toBe(200);
+      const mutableRows = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        query: '[:find ?e :where [?e :operation-mutable/title "Mutable"]]',
+      }, { "x-ramose-min-t": String(undeclaredSeed.body.t) });
+      const undeclaredRows = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        query: '[:find ?e :where [?e :operation-undeclared/title "Undeclared"]]',
+      }, { "x-ramose-min-t": String(undeclaredSeed.body.t) });
+      mutable = mutableRows.body.result[0][0];
+      undeclared = undeclaredRows.body.result[0][0];
     });
 
     const invokeOperation = (
@@ -203,7 +229,7 @@ export function registerOperationsContract(target: OperationsTarget): void {
         undefined,
         {},
       );
-      expect(rejected.status).toBe(409);
+      expect(rejected.status).toBe(400);
 
       const stillUsable = await invokeOperation(
         policyUrl,
@@ -300,18 +326,46 @@ export function registerOperationsContract(target: OperationsTarget): void {
       ]);
     });
 
+    test("field writes use the concrete row type for fixed and write-scope checks", async () => {
+      const { policyUrl } = target.urls();
+      const accepted = await invokeOperation(
+        policyUrl,
+        MUTATE_CATALOG_OPERATION_ID,
+        undefined,
+        { id: mutable, catalog: "changed" },
+      );
+      expect(accepted.status).toBe(200);
+      const rejected = await invokeOperation(
+        policyUrl,
+        MUTATE_CATALOG_OPERATION_ID,
+        undefined,
+        { id: undeclared, catalog: "escaped" },
+      );
+      expect(rejected.status).toBe(400);
+
+      const mutableRow = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        entity: mutable,
+      }, { "x-ramose-min-t": String(accepted.body.t) });
+      const undeclaredRow = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        entity: undeclared,
+      }, { "x-ramose-min-t": String(accepted.body.t) });
+      expect(mutableRow.body.entity[":operation-bound/catalog"]).toBe("changed");
+      expect(undeclaredRow.body.entity[":operation-bound/catalog"]).toBe("initial");
+    });
+
     test("whole-entity deletion may retract engine-owned fixed bindings", async () => {
       const { policyUrl } = target.urls();
       const created = await invokeOperation(
         policyUrl,
-        CREATE_OPERATION_ID,
+        CREATE_WITH_COMPONENT_OPERATION_ID,
         undefined,
         {},
       );
       const rows = await testAdmin(policyUrl, OP_DATABASE, "/query", {
-        query: '[:find ?e :where [?e :ramose/type ":operation-created"]]',
+        query: "[:find ?e ?child :where [?e :operation-created/child ?child]]",
       }, { "x-ramose-min-t": String(created.body.t) });
       const createdEid = rows.body.result[0][0];
+      const childEid = rows.body.result[0][1];
       const destroyed = await invokeOperation(
         policyUrl,
         DESTROY_BOUND_OPERATION_ID,
@@ -322,7 +376,11 @@ export function registerOperationsContract(target: OperationsTarget): void {
       const missing = await testAdmin(policyUrl, OP_DATABASE, "/query", {
         entity: createdEid,
       }, { "x-ramose-min-t": String(destroyed.body.t) });
+      const missingChild = await testAdmin(policyUrl, OP_DATABASE, "/query", {
+        entity: childEid,
+      }, { "x-ramose-min-t": String(destroyed.body.t) });
       expect(missing.body.entity).toBeNull();
+      expect(missingChild.body.entity).toBeNull();
     });
 
     test("raw application transactions remain closed", async () => {

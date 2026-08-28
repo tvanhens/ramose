@@ -39,6 +39,7 @@ import type { Db } from "../../../src/internal/core/db.ts";
 import { UpstreamError } from "../../../src/worker/errors.ts";
 import { fromEnv, resetJwtVerifier } from "../../../src/worker/jwt.ts";
 import { digestHex } from "./fixtures.ts";
+import { runtimeOperationsFor } from "./catalog-support.ts";
 import {
   App,
   Issue,
@@ -144,6 +145,7 @@ const deployPolicy = async (
           version,
           descriptor,
           policy: expectOk(compileRules(rules, extras)),
+          operations: runtimeOperationsFor(descriptor),
         },
       ],
     }),

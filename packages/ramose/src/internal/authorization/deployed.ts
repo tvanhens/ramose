@@ -116,7 +116,11 @@ const bindRuntimeOperations = (
   descriptor: CatalogDescriptor,
   lowered: LoweredOwnedOperations | undefined,
 ): Result.Result<ReadonlyMap<string, DeployedOperationDefinition>, InvalidIR> => {
-  if (lowered === undefined) return Result.succeed(new Map());
+  if (lowered === undefined) {
+    return descriptor.operations.length === 0
+      ? Result.succeed(new Map())
+      : invalid("deployed operation definition coverage is incomplete");
+  }
   const expected = descriptor.operations.map(encodedOperation).sort();
   const actual = lowered.descriptors.map(encodedOperation).sort();
   if (expected.length !== actual.length || expected.some((row, index) => row !== actual[index])) {

@@ -4,6 +4,7 @@
  */
 
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import {
   CatalogId,
   CatalogVersion,
@@ -19,6 +20,7 @@ import {
   hashCatalogSchemaFingerprint,
   type CatalogDescriptor,
   type FieldRefTarget,
+  type LoweredOwnedOperations,
   type OwnerRef,
   type PolicyTemplateIR,
 } from "../../../src/internal/authorization/index.ts";
@@ -120,6 +122,29 @@ const fingerprint = SchemaFingerprint.make(
 export const catalogDescriptor = (): CatalogDescriptor => ({
   ...catalogSchemaTables(),
   fingerprint,
+});
+
+/** Runtime coverage for registry tests whose operation rows are inert fixtures. */
+export const runtimeOperationsFor = (
+  descriptor: CatalogDescriptor,
+): LoweredOwnedOperations => ({
+  descriptors: descriptor.operations,
+  definitions: descriptor.operations.map((operation) => ({
+    id: operation.id,
+    owner: {
+      _tag: operation.id.owner.kind === "entity" ? "Entity" : "Trait",
+      ns: operation.id.owner.name,
+      fields: {},
+    } as never,
+    composers: [],
+    localName: operation.id.localName,
+    self: operation.id.target === "required",
+    writes: [],
+    input: Schema.Unknown,
+    output: Schema.Unknown,
+    doc: operation.doc,
+    run: (() => undefined) as never,
+  })),
 });
 
 export const templateOf = (extras: Partial<PolicyTemplateIR> = {}): PolicyTemplateIR => ({
