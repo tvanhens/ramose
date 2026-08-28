@@ -3,10 +3,7 @@
 import type { AnyField, CreationDefault, ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
 
-/**
- * Minimal permanently-keyed code definition understood by authoring
- * reachability. `Catalog()` will extend this shape in #323.
- */
+/** Minimal permanently-keyed code definition understood by reachability. */
 export interface CodeDefinition {
   readonly key: string;
   readonly schema: AnySchema;

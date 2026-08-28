@@ -29,6 +29,7 @@ export * from "./catalog-unit.ts";
 export * from "./composition.ts";
 export * from "./decode.ts";
 export * from "./deployed.ts";
+export * from "./definitions.ts";
 export * from "./expr.ts";
 export * from "./failures.ts";
 export * from "./identities.ts";

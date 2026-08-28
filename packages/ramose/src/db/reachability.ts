@@ -2,10 +2,19 @@
 
 import {
   resolveCodeDefinition,
+  traitDefinitionOf,
   type CodeDefinition,
   type CodeDefinitionRef,
   type ResolvedTraitBinding,
+  type TraitLike,
 } from "./Binding.ts";
+import type { AnyEntity } from "./Entity.ts";
+import {
+  isOwnedOperation,
+  OwnedOperations,
+  type OperationOwner,
+} from "./Operation.ts";
+import { walkTraits, type ComposerLike } from "./compose.ts";
 import { compositionValueMetadata } from "./creation.ts";
 
 export class ReachabilityConflictError extends Error {
@@ -33,8 +42,81 @@ export interface CodeReachability {
 
 const formatPath = (path: readonly string[]): string => path.join(" → ");
 
+type ReachableEntity = {
+  readonly entity: AnyEntity;
+  readonly path: readonly string[];
+};
+
+const ownersOf = (entity: AnyEntity): readonly OperationOwner[] => {
+  const traits = walkTraits((entity as ComposerLike).traits).all
+    .map((trait) =>
+      traitDefinitionOf(trait as unknown as TraitLike) as unknown as OperationOwner
+    )
+    .sort((left, right) => left.ns < right.ns ? -1 : left.ns > right.ns ? 1 : 0);
+  return [entity as OperationOwner, ...traits];
+};
+
 /**
- * Walk root catalog → schema → entities → traits → bindings → dependencies.
+ * Same-database schema closure. Operation write definitions are code
+ * dependencies of the enclosing catalog unit, not separately runnable
+ * catalogs. Paths are retained so a same-name conflict is deterministic.
+ */
+export const collectDefinitionEntities = (
+  definition: CodeDefinition,
+): readonly ReachableEntity[] => {
+  const byName = new Map<string, ReachableEntity>();
+  const queue: ReachableEntity[] = [];
+
+  const add = (entity: AnyEntity, path: readonly string[]): void => {
+    const previous = byName.get(entity.ns);
+    if (previous !== undefined) {
+      if (previous.entity !== entity) {
+        throw new ReachabilityConflictError(
+          `ramose/reachability: entity ${JSON.stringify(entity.ns)} names different definitions (paths: ${formatPath(previous.path)}; ${formatPath(path)})`,
+        );
+      }
+      return;
+    }
+    const reachable = Object.freeze({ entity, path: Object.freeze([...path]) });
+    byName.set(entity.ns, reachable);
+    queue.push(reachable);
+  };
+
+  for (const entityName of Object.keys(definition.schema.entities).sort()) {
+    add(definition.schema.entities[entityName]!, [
+      `catalog:${definition.key}`,
+      "schema",
+      `entity:${entityName}`,
+    ]);
+  }
+
+  for (let index = 0; index < queue.length; index++) {
+    const reachable = queue[index]!;
+    for (const owner of ownersOf(reachable.entity)) {
+      const operations = owner[OwnedOperations] ?? {};
+      for (const localName of Object.keys(operations).sort()) {
+        const operation = operations[localName];
+        if (!isOwnedOperation(operation)) continue;
+        const writes = [...operation.writes].sort((left, right) =>
+          left.ns < right.ns ? -1 : left.ns > right.ns ? 1 : 0
+        );
+        for (const write of writes) {
+          add(write, [
+            ...reachable.path,
+            `operation:${owner.ns}.${localName}`,
+            `writes:${write.ns}`,
+          ]);
+        }
+      }
+    }
+  }
+
+  return Object.freeze([...queue]);
+};
+
+/**
+ * Walk root catalog → schema → entities → operations/writes → traits →
+ * bindings → dependencies.
  * Definitions are marked by permanent key before descending, so recursive
  * graphs terminate. The result is inert authoring metadata, not a registry.
  */
@@ -66,20 +148,18 @@ export const collectCodeReachability = (
     byKey.set(definition.key, reachable);
     definitions.push(reachable);
 
-    const entityNames = Object.keys(definition.schema.entities).sort();
-    for (const entityName of entityNames) {
-      const entity = definition.schema.entities[entityName]!;
+    for (const reachableEntity of collectDefinitionEntities(definition)) {
+      const entity = reachableEntity.entity;
       const metadata = compositionValueMetadata(entity);
       for (const use of metadata.bindings) {
         const bindingPath = Object.freeze([
           ...nextPath,
-          "schema",
-          `entity:${entityName}`,
+          ...reachableEntity.path.slice(1),
           ...use.path.slice(1),
         ]);
         bindings.push(Object.freeze({
           catalogKey: definition.key,
-          entity: entityName,
+          entity: entity.ns,
           binding: use.binding,
           path: bindingPath,
         }));

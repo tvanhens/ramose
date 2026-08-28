@@ -45,6 +45,11 @@ export {
 // ── resources ──────────────────────────────────────────────────────────────
 export { Database } from "./Database.ts";
 export {
+  Catalog,
+  type CatalogDefinition,
+  type CatalogProps,
+} from "./Catalog.ts";
+export {
   DEFAULT_JWT_MAX_TTL,
   type AuthEnvValue,
   type ServerAuth,

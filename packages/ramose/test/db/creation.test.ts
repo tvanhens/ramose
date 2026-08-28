@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import * as EffectSchema from "effect/Schema";
 import {
   BindingConflictError,
   CreationValueError,
@@ -224,6 +225,37 @@ describe("trait binding values", () => {
 });
 
 describe("code reachability", () => {
+  test("walks operation write entities before their binding dependencies", () => {
+    const Graph = Trait("writeGraph", { catalog: string() }, {
+      bind: (catalog) => ({ dependencies: [catalog] }),
+    });
+    const child: CodeDefinition = { key: "child", schema: Schema({}) };
+    const Audit = Entity("writeAudit", {}, { traits: [Graph(child)] });
+    const Root = Entity("writeRoot", {}, {
+      operations: (Operation) => ({
+        audit: Operation({
+          self: false,
+          writes: [Audit],
+          input: EffectSchema.Struct({}),
+          output: EffectSchema.Struct({}),
+          run() {
+            return {};
+          },
+        }),
+      }),
+    });
+    const root: CodeDefinition = {
+      key: "root",
+      schema: Schema({ writeRoot: Root }),
+    };
+
+    const reachable = collectCodeReachability(root);
+    expect(reachable.definitions.map((item) => item.key)).toEqual(["root", "child"]);
+    expect(reachable.bindings[0]!.path.join(" → ")).toContain(
+      "operation:writeRoot.audit → writes:writeAudit → trait:writeGraph",
+    );
+  });
+
   test("recursive graphs terminate and equivalent diamonds deduplicate by key", () => {
     const Graph = Trait("reachableGraph", { catalog: string() }, {
       bind: (catalog) => ({
