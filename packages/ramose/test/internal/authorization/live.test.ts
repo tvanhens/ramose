@@ -172,7 +172,11 @@ const installEntityKinds = (conn: Connection, namespaces: readonly string[]) =>
   );
 
 const seedWorld = async () => {
-  const conn = await Connection.create();
+  // Build the bootstrap schema explicitly. Bun 1.4's Linux parallel runner
+  // can expose a partially initialized class-field schema from create() when
+  // this suite shares a worker; fromDatoms installs the same real bootstrap
+  // database through the bulk-load constructor and keeps the fixture isolated.
+  const conn = await Connection.fromDatoms([]);
   await conn.transact(schemaTx(App));
   await installEntityKinds(conn, ["user", "workspace", "tag"]);
   const report = await conn.transact([
