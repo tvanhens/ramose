@@ -40,10 +40,13 @@ type DefaultEntry = {
   readonly path: readonly string[];
 };
 
+type CreationFieldEncoder = (value: unknown) => unknown;
+
 export interface CompositionValueMetadata {
   readonly bindings: readonly ResolvedBindingUse[];
   readonly fixed: ReadonlyMap<string, FixedEntry>;
   readonly defaults: ReadonlyMap<string, readonly DefaultEntry[]>;
+  readonly encoders: ReadonlyMap<string, CreationFieldEncoder>;
 }
 
 const formatPath = (path: readonly string[]): string => path.join(" → ");
@@ -146,6 +149,13 @@ export const compositionValueMetadataFromBindings = (
 ): CompositionValueMetadata => {
   const fixed = new Map<string, FixedEntry>();
   const defaults = new Map<string, DefaultEntry[]>();
+  const encoders = new Map<string, CreationFieldEncoder>();
+  for (const field of Object.values(entity.fields)) {
+    encoders.set(
+      field.ident,
+      Schema.encodeUnknownSync(field.schema as Schema.Encoder<unknown>),
+    );
+  }
 
   for (const use of bindings) {
     for (const [key, value] of Object.entries(use.binding.values)) {
@@ -157,7 +167,12 @@ export const compositionValueMetadataFromBindings = (
           `ramose/binding: fixed value ${field.ident} is undefined (path: ${formatPath(path)})`,
         );
       }
-      const validated = decodeField(field, value, "fixed value");
+      const validated = decodeField(
+        field,
+        value,
+        "fixed value",
+        encoders.get(field.ident),
+      );
       if (defaults.has(field.ident)) {
         const prior = defaults.get(field.ident)![0]!;
         throw new BindingConflictError(
@@ -196,13 +211,16 @@ export const compositionValueMetadataFromBindings = (
     }
   }
 
-  return Object.freeze({ bindings, fixed, defaults });
+  return Object.freeze({ bindings, fixed, defaults, encoders });
 };
 
 function decodeField(
   field: AnyField & { readonly ident: string },
   value: unknown,
   source: string,
+  encoder: CreationFieldEncoder = Schema.encodeUnknownSync(
+    field.schema as Schema.Encoder<unknown>,
+  ),
 ): unknown {
   try {
     if (field.cardinality === "many") {
@@ -210,11 +228,11 @@ function decodeField(
         throw new Error("expected an array for a cardinality-many field");
       }
       return value.map((item) => {
-        Schema.encodeUnknownSync(field.schema as Schema.Encoder<unknown>)(item);
+        encoder(item);
         return item;
       });
     }
-    Schema.encodeUnknownSync(field.schema as Schema.Encoder<unknown>)(value);
+    encoder(value);
     return value;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -285,19 +303,26 @@ export const resolveCreationValues = (
 
   const out: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(entity.fields)) {
+    const encoder = metadata.encoders.get(field.ident);
+    if (encoder === undefined) {
+      throw new CreationValueError(
+        `ramose/create: no snapshotted codec for ${field.ident}`,
+      );
+    }
     const fixed = metadata.fixed.get(field.ident);
     if (fixed !== undefined) {
       out[key] = decodeField(
         field,
         cloneBindingValue(fixed.value),
         "fixed value",
+        encoder,
       );
       continue;
     }
 
     const explicit = Object.hasOwn(input, key) ? input[key] : undefined;
     if (explicit !== undefined) {
-      out[key] = decodeField(field, explicit, "explicit value");
+      out[key] = decodeField(field, explicit, "explicit value", encoder);
       continue;
     }
 
@@ -316,14 +341,19 @@ export const resolveCreationValues = (
       defaultPath = entry.path;
     }
     if (defaultPath !== undefined) {
-      out[key] = decodeField(field, defaultValue, "composition default");
+      out[key] = decodeField(
+        field,
+        defaultValue,
+        "composition default",
+        encoder,
+      );
       continue;
     }
 
     if (typeof field.default === "function") {
       const value = field.default(defaultContext());
       if (value !== undefined) {
-        out[key] = decodeField(field, value, "field default");
+        out[key] = decodeField(field, value, "field default", encoder);
         continue;
       }
     }

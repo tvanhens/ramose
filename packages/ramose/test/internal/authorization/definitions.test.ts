@@ -10,6 +10,7 @@ import {
 } from "../../../src/Catalog.ts";
 import {
   Entity,
+  Field,
   Schema,
   Trait,
   bytes,
@@ -303,6 +304,36 @@ describe("catalog definition assembly", () => {
     )).toBe(false);
     expect(installed.resolveCreationValues("item", {}, { now: new Date(0) }))
       .toEqual({ value: "sealed" });
+  });
+
+  test("retains compiled field codecs instead of mutable schema objects", async () => {
+    const MutableString = EffectSchema.String.annotate({
+      identifier: "mutable-string",
+    });
+    const Item = Entity("item", { value: Field(MutableString) });
+    const App = Schema({ item: Item });
+    const installed = Result.getOrThrow(
+      (await assemble(Catalog("codec-snapshot", {
+        schema: App,
+        policy: await policy(App),
+      }))).require(CatalogId.make("codec-snapshot")),
+    );
+
+    expect(Reflect.set(
+      MutableString,
+      "ast",
+      EffectSchema.Finite.ast,
+    )).toBe(true);
+    expect(installed.resolveCreationValues(
+      "item",
+      { value: "still-a-string" },
+      { now: new Date(0) },
+    )).toEqual({ value: "still-a-string" });
+    expect(() => installed.resolveCreationValues(
+      "item",
+      { value: 42 },
+      { now: new Date(0) },
+    )).toThrow(/invalid explicit value/);
   });
 
   test("deduplicates stable trait IDs while retaining every bound dependency", async () => {
