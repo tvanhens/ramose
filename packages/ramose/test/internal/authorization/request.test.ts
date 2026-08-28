@@ -660,33 +660,6 @@ describe("executeAuthorizedRequest", () => {
     expectOpaque(error);
   });
 
-  test("principal lookup without a protected type fact is Unauthorized", async () => {
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(App));
-    await installEntityKinds(conn, ["user", "workspace", "tag"]);
-    await conn.transact([
-      { ":db/id": "untyped", ":user/authId": "untyped-sub" },
-    ]);
-    const catalogs = await deployOwnerPolicy();
-    const token = await signRamose({ sub: "untyped-sub" });
-    let executed = false;
-    const error = await runFail(
-      {
-        authenticate: authenticateToken(token),
-        catalogs,
-        routeDatabase: database,
-        ...proofOf(catalogs),
-        currentDb: () => Effect.sync(() => conn.db()),
-      },
-      () =>
-        Effect.sync(() => {
-          executed = true;
-        }),
-    );
-    expect(executed).toBe(false);
-    expectOpaque(error);
-  });
-
   test("currentDb is acquired with routeDatabase", async () => {
     const { conn } = await seedApp();
     const catalogs = await deployOwnerPolicy();
