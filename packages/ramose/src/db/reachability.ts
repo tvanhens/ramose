@@ -16,6 +16,7 @@ import {
 } from "./Operation.ts";
 import { walkTraits, type ComposerLike } from "./compose.ts";
 import { compositionValueMetadata } from "./creation.ts";
+import type { CompositionValueMetadata } from "./creation.ts";
 
 export class ReachabilityConflictError extends Error {
   override readonly name = "ReachabilityConflictError";
@@ -38,6 +39,13 @@ export interface CodeReachability {
   readonly root: CodeDefinition;
   readonly definitions: readonly ReachableCodeDefinition[];
   readonly bindings: readonly ReachableBinding[];
+  readonly creation: readonly ReachableCreationMetadata[];
+}
+
+export interface ReachableCreationMetadata {
+  readonly catalogKey: string;
+  readonly entity: string;
+  readonly metadata: CompositionValueMetadata;
 }
 
 const formatPath = (path: readonly string[]): string => path.join(" → ");
@@ -127,6 +135,7 @@ export const collectCodeReachability = (
   const byKey = new Map<string, ReachableCodeDefinition>();
   const definitions: ReachableCodeDefinition[] = [];
   const bindings: ReachableBinding[] = [];
+  const creation: ReachableCreationMetadata[] = [];
 
   const visit = (definition: CodeDefinition, path: readonly string[]): void => {
     const nextPath = [...path, `catalog:${definition.key}`];
@@ -151,6 +160,11 @@ export const collectCodeReachability = (
     for (const reachableEntity of collectDefinitionEntities(definition)) {
       const entity = reachableEntity.entity;
       const metadata = compositionValueMetadata(entity);
+      creation.push(Object.freeze({
+        catalogKey: definition.key,
+        entity: entity.ns,
+        metadata,
+      }));
       for (const use of metadata.bindings) {
         const bindingPath = Object.freeze([
           ...nextPath,
@@ -164,7 +178,7 @@ export const collectCodeReachability = (
           path: bindingPath,
         }));
 
-        const dependencies = use.binding.dependencies.map(resolveCodeDefinition).sort(
+        const dependencies = [...use.binding.dependencies].sort(
           (left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
         );
         for (const dependency of dependencies) {
@@ -177,9 +191,11 @@ export const collectCodeReachability = (
   visit(root, []);
   const frozenDefinitions = Object.freeze([...definitions]);
   const frozenBindings = Object.freeze([...bindings]);
+  const frozenCreation = Object.freeze([...creation]);
   return Object.freeze({
     root,
     definitions: frozenDefinitions,
     bindings: frozenBindings,
+    creation: frozenCreation,
   });
 };

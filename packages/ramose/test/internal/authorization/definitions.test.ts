@@ -154,8 +154,8 @@ describe("catalog definition assembly", () => {
       "inspect",
     ]);
     expect(installedRoot.operations[0]!.writes).toEqual([Audit]);
-    expect(resolveCreationValues(
-      installedRoot.schema.entities.rootNode!,
+    expect(installedRoot.resolveCreationValues(
+      "rootNode",
       { title: "Root" },
       { now: new Date(0) },
     )).toEqual({ title: "Root", catalog: "child" });
@@ -202,6 +202,42 @@ describe("catalog definition assembly", () => {
     );
     expect(rightUnit.unit.catalog.fingerprint).toBe(leftUnit.unit.catalog.fingerprint);
     expect(rightUnit.unitHash).not.toBe(leftUnit.unitHash);
+  });
+
+  test("resolves every binding once and retains it for authoritative creation", async () => {
+    const ChildSchema = Schema({});
+    const child = Catalog("binding-child", {
+      schema: ChildSchema,
+      policy: await policy(ChildSchema),
+    });
+    let calls = 0;
+    const Bound = Trait("singleBind", { value: string() }, {
+      bind: (definition) => {
+        calls += 1;
+        return {
+          values: { value: `${definition.key}:${calls}` },
+          dependencies: [definition],
+        };
+      },
+    });
+    const RootSchema = Schema({
+      singleRoot: Entity("singleRoot", {}, { traits: [Bound(child)] }),
+    });
+    const root = Catalog("single-bind-root", {
+      schema: RootSchema,
+      policy: await policy(RootSchema),
+    });
+
+    const installed = Result.getOrThrow(
+      (await assemble(root)).require(CatalogId.make("single-bind-root")),
+    );
+    expect(calls).toBe(1);
+    expect(installed.resolveCreationValues(
+      "singleRoot",
+      {},
+      { now: new Date(0) },
+    )).toEqual({ value: "binding-child:1" });
+    expect(calls).toBe(1);
   });
 
   test("deduplicates stable trait IDs while retaining every bound dependency", async () => {
@@ -293,6 +329,37 @@ describe("catalog definition assembly", () => {
     expect((await assembleFailure(unsafe)).message).toMatch(
       /must declare canonical captured inputs with creationDefault/,
     );
+  });
+
+  test("preserves own __proto__ default inputs in evaluation and identity", async () => {
+    type DangerousInputs = {
+      readonly ["__proto__"]: { readonly value: string };
+    };
+    const make = (value: string) => creationDefault(
+      JSON.parse(`{"__proto__":{"value":${JSON.stringify(value)}}}`) as DangerousInputs,
+      (inputs) => inputs.__proto__.value,
+    );
+    const schemaFor = (value: string) => Schema({
+      item: Entity("item", { value: string({ default: make(value) }) }),
+    });
+    const LeftSchema = schemaFor("left");
+    const RightSchema = schemaFor("right");
+    const left = Result.getOrThrow(
+      (await assemble(Catalog("proto", {
+        schema: LeftSchema,
+        policy: await policy(LeftSchema),
+      }))).require(CatalogId.make("proto")),
+    );
+    const right = Result.getOrThrow(
+      (await assemble(Catalog("proto", {
+        schema: RightSchema,
+        policy: await policy(RightSchema),
+      }))).require(CatalogId.make("proto")),
+    );
+
+    expect(left.resolveCreationValues("item", {}, { now: new Date(0) }))
+      .toEqual({ value: "left" });
+    expect(right.unitHash).not.toBe(left.unitHash);
   });
 
   test("rejects duplicate permanent keys with both internal reachability paths", async () => {

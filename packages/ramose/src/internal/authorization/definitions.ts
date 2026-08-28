@@ -7,16 +7,19 @@ import {
   type CatalogDefinition,
 } from "../../Catalog.ts";
 import {
-  resolveCodeDefinition,
   traitDefinitionOf,
   type TraitLike,
 } from "../../db/Binding.ts";
-import { compositionValueMetadata } from "../../db/creation.ts";
+import {
+  resolveCreationValues as resolveEntityCreationValues,
+  type CompositionValueMetadata,
+} from "../../db/creation.ts";
 import type { AnyEntity } from "../../db/Entity.ts";
 import {
   creationDefaultIdentityOf,
   type AnyField,
   type CreationDefault,
+  type CreationDefaultContext,
 } from "../../db/Field.ts";
 import {
   collectCodeReachability,
@@ -80,6 +83,12 @@ export type InstalledCatalogDefinition = {
   readonly schema: AnySchema;
   readonly definition: CatalogDefinition;
   readonly path: readonly string[];
+  /** Resolve authoritative creation values from assembly's binding snapshot. */
+  readonly resolveCreationValues: (
+    entityName: string,
+    input: Readonly<Record<string, unknown>>,
+    context: CreationDefaultContext,
+  ) => Readonly<Record<string, unknown>>;
 };
 
 export type CatalogDefinitions = {
@@ -219,7 +228,7 @@ const jsonValue = (value: unknown): JsonValue => {
   }
   if (Array.isArray(value)) return value.map(jsonValue);
   if (typeof value === "object" && value !== null) {
-    const out: Record<string, JsonValue> = {};
+    const out = Object.create(null) as Record<string, JsonValue>;
     for (const key of Object.keys(value).sort(compareText)) {
       out[key] = jsonValue((value as Record<string, unknown>)[key]);
     }
@@ -248,12 +257,16 @@ const defaultIdentity = (
 const creationHashMaterial = (
   schema: AnySchema,
   artifactHash: DigestHex,
+  metadataByEntity: ReadonlyMap<string, CompositionValueMetadata>,
 ): JsonValue => ({
   artifactHash,
   entities: Object.values(schema.entities)
     .sort((left, right) => compareText(left.ns, right.ns))
     .map((entity) => {
-      const metadata = compositionValueMetadata(entity);
+      const metadata = metadataByEntity.get(entity.ns);
+      if (metadata === undefined) {
+        throw new Error(`missing resolved binding metadata for entity '${entity.ns}'`);
+      }
       return {
         name: entity.ns,
         fieldDefaults: Object.values(entity.fields)
@@ -282,7 +295,6 @@ const creationHashMaterial = (
           trait: use.binding.trait.ns,
           definition: use.binding.definition.key,
           dependencies: use.binding.dependencies
-            .map(resolveCodeDefinition)
             .map((dependency) => dependency.key)
             .sort(compareText),
         })),
@@ -338,6 +350,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
   function* (
     reachable: ReachableCodeDefinition,
     artifactHash: DigestHex,
+    metadataByEntity: ReadonlyMap<string, CompositionValueMetadata>,
   ): Effect.fn.Return<InstalledCatalogDefinition, AssemblyFailure> {
     if (!isCatalogDefinition(reachable.definition)) {
       return yield* invalid(
@@ -365,7 +378,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
       CATALOG_DEFINITION_VERSION_DOMAIN,
       yield* fromPure(
         `catalog '${definition.key}' creation metadata lowering failed`,
-        () => creationHashMaterial(schema, artifactHash),
+        () => creationHashMaterial(schema, artifactHash, metadataByEntity),
       ),
     ));
     const descriptorWithoutFingerprint = {
@@ -392,6 +405,20 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
     });
     const unit = yield* sealInstalledCatalogUnit(descriptor, policy);
     const composition = yield* Effect.fromResult(compositionFromUnit(unit));
+    const resolveCreationValues = Object.freeze((
+      entityName: string,
+      input: Readonly<Record<string, unknown>>,
+      context: CreationDefaultContext,
+    ): Readonly<Record<string, unknown>> => {
+      const entity = schema.entities[entityName];
+      const metadata = metadataByEntity.get(entityName);
+      if (entity === undefined || metadata === undefined) {
+        throw new Error(
+          `ramose/create: unknown entity ${JSON.stringify(entityName)} in catalog ${JSON.stringify(definition.key)}`,
+        );
+      }
+      return resolveEntityCreationValues(entity, input, context, metadata);
+    });
     return Object.freeze({
       catalogKey: catalog,
       unitHash: unit.unitHash,
@@ -401,6 +428,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
       schema,
       definition,
       path: Object.freeze([...reachable.path]),
+      resolveCreationValues,
     });
   },
 );
@@ -451,7 +479,17 @@ export const assembleCatalogDefinitions = Effect.fn(
   );
   const byKey = new Map<CatalogId, InstalledCatalogDefinition>();
   for (const reachable of reachability.definitions) {
-    const assembled = yield* assembleOne(reachable, input.artifactHash);
+    const metadataByEntity = new Map<string, CompositionValueMetadata>();
+    for (const creation of reachability.creation) {
+      if (creation.catalogKey === reachable.key) {
+        metadataByEntity.set(creation.entity, creation.metadata);
+      }
+    }
+    const assembled = yield* assembleOne(
+      reachable,
+      input.artifactHash,
+      metadataByEntity,
+    );
     byKey.set(assembled.catalogKey, assembled);
   }
   return buildRegistry(CatalogId.make(reachability.root.key), Object.freeze(byKey));

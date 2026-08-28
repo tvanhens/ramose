@@ -109,7 +109,7 @@ export interface ResolvedTraitBinding {
   readonly definition: CodeDefinition;
   readonly values: Readonly<Record<string, unknown>>;
   readonly defaults: Readonly<Record<string, CreationDefault<unknown>>>;
-  readonly dependencies: readonly CodeDefinitionRef[];
+  readonly dependencies: readonly CodeDefinition[];
 }
 
 export const isCodeDefinition = (value: unknown): value is CodeDefinition =>
@@ -179,10 +179,11 @@ export const resolveTraitBinding = (
     }
     defaults[key] = value as CreationDefault<unknown>;
   }
-  const dependencies = result.dependencies ?? [];
-  if (!Array.isArray(dependencies)) {
+  const dependencyRefs = result.dependencies ?? [];
+  if (!Array.isArray(dependencyRefs)) {
     throw new Error("ramose/binding: dependencies must be an array");
   }
+  const dependencies = dependencyRefs.map(resolveCodeDefinition);
   for (const key of [...Object.keys(values), ...Object.keys(defaults)]) {
     if (!Object.hasOwn(runtime.trait.fields, key)) {
       throw new Error(
@@ -195,7 +196,7 @@ export const resolveTraitBinding = (
     definition,
     values: Object.freeze({ ...values }),
     defaults: Object.freeze(defaults),
-    dependencies: Object.freeze([...dependencies]),
+    dependencies: Object.freeze(dependencies),
   });
 };
 

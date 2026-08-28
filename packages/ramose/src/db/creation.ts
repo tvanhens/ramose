@@ -132,8 +132,17 @@ export const bindingUsesOf = (composer: ComposerLike): readonly ResolvedBindingU
  */
 export const compositionValueMetadata = (
   entity: AnyEntity,
+): CompositionValueMetadata =>
+  compositionValueMetadataFromBindings(
+    entity,
+    bindingUsesOf(entity as ComposerLike),
+  );
+
+/** Build creation metadata from binding callbacks already resolved once. */
+export const compositionValueMetadataFromBindings = (
+  entity: AnyEntity,
+  bindings: readonly ResolvedBindingUse[],
 ): CompositionValueMetadata => {
-  const bindings = bindingUsesOf(entity as ComposerLike);
   const fixed = new Map<string, FixedEntry>();
   const defaults = new Map<string, DefaultEntry[]>();
 
@@ -249,6 +258,7 @@ export const resolveCreationValues = (
   entity: AnyEntity,
   input: Readonly<Record<string, unknown>>,
   context: CreationDefaultContext,
+  metadata: CompositionValueMetadata = compositionValueMetadata(entity),
 ): Readonly<Record<string, unknown>> => {
   if (!(context.now instanceof Date) || !Number.isFinite(context.now.getTime())) {
     throw new CreationValueError("ramose/create: authoritative now must be a valid Date");
@@ -256,7 +266,6 @@ export const resolveCreationValues = (
   const authoritativeNow = context.now.getTime();
   const defaultContext = (): CreationDefaultContext =>
     Object.freeze({ now: new Date(authoritativeNow) });
-  const metadata = compositionValueMetadata(entity);
   const fixedKeys = fixedLocalKeys(entity, metadata);
 
   for (const key of Object.keys(input)) {

@@ -94,7 +94,7 @@ const snapshotInputs = (
     throw new Error("ramose/default: inputs must be canonical JSON data");
   }
   const record = value as Readonly<Record<string, CreationDefaultInputs>>;
-  const out: Record<string, CreationDefaultInputs> = {};
+  const out = Object.create(null) as Record<string, CreationDefaultInputs>;
   for (const key of Object.keys(record).sort()) {
     const item = record[key];
     if (item === undefined) {
