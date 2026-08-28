@@ -38,14 +38,16 @@ import {
 import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "../storage/index.ts";
 import { type RamoseEnv, envInt, internalGate, internalHeaders } from "../transactor/index.ts";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import type { Principal } from "../../worker/auth.ts";
 import { Unauthorized } from "../../db/Errors.ts";
-import { type Session, type SessionState, type SocketLike, openSession, parsePrincipalHeader, PRINCIPAL_HEADER, WRITES_HEADER } from "../../worker/session.ts";
+import { type Session, type SessionState, type SocketLike, openSession, parsePrincipalHeader, PRINCIPAL_HEADER, TEST_SESSION_TOKEN_HEADER, WRITES_HEADER } from "../../worker/session.ts";
+import { fromEnv as jwtVerifierFromEnv } from "../../worker/jwt.ts";
 import { type WritesMode, parseWritesHeader } from "../../writes.ts";
 import { decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../worker/session-sync.ts";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
-import { checkpoint, handleIsolateTestAdmin, resetTestHooks } from "../test-hooks.ts";
+import { checkpoint, handleIsolateTestAdmin, resetTestHooks, testHooksEnabled } from "../test-hooks.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
@@ -542,15 +544,26 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     }
   }
 
+  /** Test-session authentication still uses the deployed peer's real JWT verifier. */
+  private async authenticateTestSession(token: string): Promise<Principal> {
+    if (!testHooksEnabled(this.env)) throw new Unauthorized({});
+    try {
+      const verified = await Effect.runPromise(
+        jwtVerifierFromEnv(this.env).verify(Redacted.make(token)),
+      );
+      return verified.principal;
+    } catch {
+      throw new Unauthorized({});
+    }
+  }
+
   private createSession(ws: WebSocket, seed: SessionState): Session {
     return openSession(ws as unknown as SocketLike, {
       listen: false,
       seed,
       ...(seed.principal !== undefined && { principal: seed.principal }),
       dispatch: (rest, init, p) => this.sessionDispatch(rest, init, p, seed.writes),
-      authenticate: async () => {
-        throw new Unauthorized({});
-      },
+      authenticate: (token) => this.authenticateTestSession(token),
       provision: (p) => this.provisionPrincipal(p),
       describe: async (p) => ({ eid: p.eid ?? null, class: p.class }),
       readLog: async () => {
@@ -704,13 +717,21 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       return json({ error: "expected websocket" }, 426);
     }
     await this.sync();
+    let raw = parsePrincipalHeader(request.headers.get(PRINCIPAL_HEADER));
+    const testToken = request.headers.get(TEST_SESSION_TOKEN_HEADER);
+    if (testToken !== null) {
+      try {
+        raw = await this.authenticateTestSession(testToken);
+      } catch {
+        return json({ error: "unauthorized" }, 401);
+      }
+    }
+    const principal = raw !== undefined ? await this.provisionPrincipal(raw) : undefined;
+    const writes = parseWritesHeader(request.headers.get(WRITES_HEADER));
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     this.ctx.acceptWebSocket(server);
     this.armWatch();
-    const raw = parsePrincipalHeader(request.headers.get(PRINCIPAL_HEADER));
-    const principal = raw !== undefined ? await this.provisionPrincipal(raw) : undefined;
-    const writes = parseWritesHeader(request.headers.get(WRITES_HEADER));
     const seed: SessionState = {
       ...(principal !== undefined ? { principal } : {}),
       ...(writes !== undefined ? { writes } : {}),
@@ -949,6 +970,13 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       }
       case "/info":
         return json({ db: this.dbName, t: this.basisT, root: this.root, novelty: this.entries.length, connected: this.ws?.readyState === 1, stats: this.stats, store: this.store.stats });
+      case "/admin/test/sessions": {
+        if (!testHooksEnabled(this.env)) return json({ error: "not found" }, 404);
+        const sessions = (this.ctx.getWebSockets() as WebSocket[])
+          .filter((ws) => this.basisWatchOf(ws) === undefined)
+          .map((ws) => this.sessionOf(ws).state());
+        return json({ ok: true, sessions });
+      }
       case "/admin/test/checkpoint":
       case "/admin/test/abort": {
         const testAdmin = await handleIsolateTestAdmin(request, url.pathname, (reason) =>

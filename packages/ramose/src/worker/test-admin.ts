@@ -16,6 +16,7 @@ import {
 } from "../internal/test-hooks.ts";
 import { internalHeaders } from "../internal/transactor/internal.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
+import { TEST_SESSION_TOKEN_HEADER } from "./session.ts";
 import { BadRequest, Internal, NotFound, UpstreamError } from "./errors.ts";
 import { coloHeader, nearestReplica } from "./peer.ts";
 import { handleStorageTestAdmin } from "./storage-test-admin.ts";
@@ -201,6 +202,20 @@ export const handleTestAdmin = async (
       },
     });
   }
+  if (rest === "/session") {
+    if (request.method !== "GET") throw new BadRequest({ message: "test session is GET" });
+    const token = url.searchParams.get("token");
+    const headers = {
+      Upgrade: "websocket",
+      ...coloHeader(request),
+      ...internalHeaders(env),
+      ...(token === null ? {} : { [TEST_SESSION_TOKEN_HEADER]: token }),
+    };
+    return nearestReplica(env, db, request).fetch(
+      `https://replica/session?db=${encodeURIComponent(db)}`,
+      { headers },
+    );
+  }
   if (request.method !== "POST") throw new BadRequest({ message: "test admin is POST" });
   if (rest === "/r2") return handleR2(request, env, db);
   if (rest === "/storage") return handleStorageTestAdmin(request, env, db);
@@ -221,6 +236,16 @@ export const handleTestAdmin = async (
   }
   if (rest === "/reconnect") {
     return forward(request, env, db, "replica", "/admin/reconnect", "{}", {
+      passThrough: true,
+    });
+  }
+  if (rest === "/sessions") {
+    return forward(request, env, db, "replica", "/admin/test/sessions", "{}", {
+      passThrough: true,
+    });
+  }
+  if (rest === "/index") {
+    return forward(request, env, db, "transactor", "/admin/index", "{}", {
       passThrough: true,
     });
   }

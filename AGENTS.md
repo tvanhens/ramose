@@ -49,7 +49,8 @@ substitutes. Ramose has three test layers:
 Allowed instrumentation wraps a real implementation and forwards to it:
 `test/support/recorder.ts` (HTTP/WebSocket), checkpoints in
 `packages/ramose/src/internal/test-hooks.ts`, and `/__test__/db/:name/*`
-(R2 put/get/corrupt, checkpoint arm/release, DO abort). These are inert
+(R2/storage, checkpoint arm/release, DO abort, real session/watch WebSockets,
+and forwarded transact/query/index controls). These are inert
 unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`.
 
 Not allowed: `scriptedPeer`, `FakeSocket` / `fakeDispatch`, `MemoryBucket`

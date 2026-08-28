@@ -78,6 +78,8 @@ export const META_HEADERS: readonly string[] = [
 
 /** Worker→replica upgrade: the verified principal, so the replica does not re-parse the JWT. */
 export const PRINCIPAL_HEADER = "x-ramose-principal";
+/** Test-only Worker→Replica credential; never accepted on the public data plane. */
+export const TEST_SESSION_TOKEN_HEADER = "x-ramose-test-session-token";
 
 // ---- seams -----------------------------------------------------------------
 
@@ -183,8 +185,12 @@ const minTHeader = (v: unknown): Record<string, string> =>
 
 const isPlanError = (p: SessionPlan | PlanError): p is PlanError => (p as PlanError).error !== undefined;
 
-/** Past `exp`: every frame is denied and the socket closes on the next tick. */
-const expired = (p: Principal): boolean => p.claims.exp !== undefined && p.claims.exp * 1000 <= Date.now();
+/** Pure expiry decision used before dispatching every non-auth frame. */
+export const sessionPrincipalExpired = (
+  principal: Principal,
+  nowMs = Date.now(),
+): boolean =>
+  principal.claims.exp !== undefined && principal.claims.exp * 1000 <= nowMs;
 
 /**
  * Frame → sub-request. Pure, and the only place the wire ops map onto routes.
@@ -489,7 +495,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     // the principal is bound at plan time: frames planned after an `auth` ack use
     // the new one, in-flight ones finish under the old
     const bound = principal;
-    if (bound !== undefined && expired(bound)) {
+    if (bound !== undefined && sessionPrincipalExpired(bound)) {
       send({ id: plan.id, status: 401, body: { error: "token expired" } });
       if (!expiring) {
         expiring = true;
