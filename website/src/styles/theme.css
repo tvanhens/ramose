@@ -1738,6 +1738,7 @@ main:has(.rg-proto-hero) h1#_top {
 
 .rg-feature-sample {
   grid-area: 1 / 1;
+  min-width: 0;
   margin: 0;
   opacity: 0;
   visibility: hidden;
