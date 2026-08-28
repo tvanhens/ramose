@@ -11,6 +11,7 @@ import {
   INVOKE_RULE_TAG,
   isAuthPath,
   isEntityTarget,
+  isPathCarrier,
   isTraitTarget,
   type AuthExpr,
   type InvokeRule,
@@ -94,13 +95,13 @@ const ruleOf = (target: InvokeTarget, kind: "allow" | "deny", expr: AuthExpr): I
 export function invoke(target: InvokeTarget): InvokeBuilder {
   return {
     when: (expr) => {
-      if (typeof expr === "function" || isAuthPath(expr)) {
+      if (typeof expr === "function" || isAuthPath(expr) || isPathCarrier(expr)) {
         throw new Error("ramose: invoke().when cannot close over a target path");
       }
       return ruleOf(target, "allow", expr);
     },
     deny: (expr) => {
-      if (typeof expr === "function" || isAuthPath(expr)) {
+      if (typeof expr === "function" || isAuthPath(expr) || isPathCarrier(expr)) {
         throw new Error("ramose: invoke().deny cannot close over a target path");
       }
       return ruleOf(target, "deny", expr);

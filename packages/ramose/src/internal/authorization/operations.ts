@@ -519,6 +519,49 @@ const stampCreates = (ops: readonly TxOp[], created: ReadonlyMap<unknown, string
   return stamped;
 };
 
+const writtenIdentValues = (ops: readonly TxOp[]): Array<{ readonly ident: string; readonly value: unknown }> => {
+  const out: Array<{ readonly ident: string; readonly value: unknown }> = [];
+  for (const op of ops) {
+    if (isMapOp(op)) {
+      for (const [key, value] of Object.entries(op)) {
+        if (key === ":db/id" || key.startsWith(":db/") || key.startsWith(":ramose/")) continue;
+        out.push({ ident: key, value });
+      }
+      continue;
+    }
+    if (!Array.isArray(op) || op.length < 3) continue;
+    if (op[0] !== ":db/add" && op[0] !== ":db/update") continue;
+    if (typeof op[2] === "string") out.push({ ident: op[2], value: op[3] });
+  }
+  return out;
+};
+
+const rejectForgedFixed = (
+  unit: InstalledCatalogUnitV1,
+  ops: readonly TxOp[],
+  created: ReadonlyMap<unknown, string>,
+  operation: string,
+): void => {
+  const types = collectCreatedTypes(ops, created);
+  for (const write of writtenIdentValues(ops)) {
+    const field = fieldByIdent(unit, write.ident);
+    if (field === undefined) continue;
+    const typeName =
+      field.id.owner.kind === "entity"
+        ? field.id.owner.name
+        : [...types.values()].find((name) =>
+            unit.catalog.traitComposition.some(
+              (row) => row.composer.name === name && (row.trait.name === field.id.owner.name || row.transitive.some((t) => t.name === field.id.owner.name)),
+            ),
+          );
+    const composed = typeName === undefined ? {} : compositionValuesOf(unit, typeName);
+    const fixed = field.fixedValue ?? composed[field.id.localName];
+    if (fixed !== undefined && write.value !== undefined && !jsonEqual(write.value, fixed)) {
+      throw rejected(operation, `cannot forge fixed field ${write.ident}`, "tx/system");
+    }
+  }
+};
+
 const applyBindingsToMaps = (
   unit: InstalledCatalogUnitV1,
   ops: readonly TxOp[],
@@ -905,6 +948,7 @@ const runOperation = async (
   }
 
   const stripped = stripProtected(txOps(tx), operation);
+  rejectForgedFixed(unit, stripped, created, operation);
   const bound = applyBindingsToMaps(unit, stripped, created, operation);
   const stamped = stampCreates(bound, created);
   await validateRefWrites(unit, index, admitted.currentDb, stamped, created, operation);
