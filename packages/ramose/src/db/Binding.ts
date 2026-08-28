@@ -61,9 +61,12 @@ type BoundField<F, K extends PropertyKey, B> = K extends keyof ValuesOf<B>
     ? F & { readonly compositionDefault: true }
     : F;
 
-type BoundFields<T extends TraitLike, B> = {
-  readonly [K in keyof T["fields"]]: BoundField<T["fields"][K], K, B>;
+/** Apply one bind result to a field map at the type boundary. */
+export type BoundFieldMap<Fields extends Readonly<Record<string, AnyField>>, B> = {
+  readonly [K in keyof Fields]: BoundField<Fields[K], K, B>;
 };
+
+type BoundFields<T extends TraitLike, B> = BoundFieldMap<T["fields"], B>;
 
 export type TraitLike = {
   readonly _tag: "Trait";

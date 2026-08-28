@@ -34,6 +34,8 @@ const BoundOperations = Trait(
         input: Schema.Struct({}),
         output: Schema.Struct({}),
         run(op) {
+          // @ts-expect-error bind-supplied values are fixed on trait operations
+          op.self.set(BoundOperations.catalog, "forged");
           // @ts-expect-error bindable trait operations retain their exact owner
           op.self.set(Other.note, "wrong owner");
           return {};
@@ -42,6 +44,10 @@ const BoundOperations = Trait(
     }),
   },
 );
+type BoundInspect = typeof BoundOperations[typeof OwnedOperations]["inspect"];
+declare const boundInspectContext: Parameters<BoundInspect["run"]>[0];
+// @ts-expect-error the public bound operation retains the fixed field contract
+boundInspectContext.self.set(BoundOperations.catalog, "forged");
 
 const definition = { key: "child", schema: CatalogSchema({}) };
 const BoundOperationsUse = BoundOperations(definition);
