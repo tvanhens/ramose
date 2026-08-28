@@ -240,21 +240,24 @@ through another column or var.
 history collapse. Authorization does not. Historical and as-of *values*
 come from that requested application basis.
 
-**HIST-2.** Every authorization input is read from the trusted current
-rule snapshot: grants, resource fields the policy names, canonical type,
-and trait membership. A retracted grant MUST NOT re-grant through history
-or as-of. A current grant MAY reveal historical values of now-authorized
-facts.
+**HIST-2.** Current grants, current deployed policy, and resource fields
+the policy names are read from the trusted current basis. A retracted
+grant MUST NOT re-grant through history or as-of. A current grant MAY
+reveal historical values of now-authorized facts. Candidate canonical
+type is not a current-basis input; it is classified from the requested
+immutable `db` supplied to the predicate (**HIST-4**).
 
 **HIST-3.** History and as-of streams still pass the authorized datom
 cursor. Denied historical application datoms MUST NOT appear or affect
 counts.
 
-**HIST-4.** The engine MUST preserve enough engine-owned identity and
-membership on the current rule basis to authorize history after entity
-deletion. Deletion MUST NOT make all history categorically inaccessible.
-If current identity needed to decide authorization cannot be recovered,
-the read fails closed (**FC-1**).
+**HIST-4.** Canonical entity identity is recovered from the requested
+immutable temporal value. Current and as-of views require exactly one
+asserted `:ramose/type`. History and bounded history recover that one
+protected type assertion from the same value after `:db/retractEntity`.
+Zero, malformed, or conflicting type values fail closed (**FC-1**).
+Do not preserve deleted type facts on the current database solely for
+authorization.
 
 ## 10. Operations and writes
 

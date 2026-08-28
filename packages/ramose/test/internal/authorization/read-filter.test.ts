@@ -25,13 +25,15 @@ import {
   read,
   sealInstalledCatalogUnit,
   subject,
+  uniqueCanonicalTypeName,
   type AuthorizationPrincipal,
   type InstalledCatalogUnitV1,
   type PolicyTemplateIR,
 } from "../../../src/internal/authorization/index.ts";
 import { Connection } from "../../../src/internal/core/conn.ts";
-import { Index, type Datom } from "../../../src/internal/core/datom.ts";
+import { datom, Index, ValueTag, type Datom } from "../../../src/internal/core/datom.ts";
 import type { Db } from "../../../src/internal/core/db.ts";
+import { RAMOSE_TYPE } from "../../../src/internal/core/schema.ts";
 import { Entity, Schema, schemaTx, string } from "../../../src/db/internal.ts";
 import {
   App,
@@ -521,5 +523,88 @@ describe("compileReadFilter lattice and fail-closed", () => {
     expect(fromEavt.some((datom) => datom.a === titleA)).toBe(false);
     expect(fromAevt.filter((datom) => datom.e === i1)).toEqual([]);
     expect(fromEntity?.[":ramose/type"]).toBe(":issue");
+  });
+});
+
+describe("compileReadFilter requested-db classification", () => {
+  test("uniqueCanonicalTypeName fails closed on zero, malformed, or conflicting values", () => {
+    const issue = datom(1, RAMOSE_TYPE, ValueTag.Str, ":issue", 1, true);
+    const retract = datom(1, RAMOSE_TYPE, ValueTag.Str, ":issue", 2, false);
+    const note = datom(1, RAMOSE_TYPE, ValueTag.Str, ":note", 3, true);
+    expect(uniqueCanonicalTypeName([])).toBeUndefined();
+    expect(uniqueCanonicalTypeName([issue])).toBe("issue");
+    expect(uniqueCanonicalTypeName([issue, retract])).toBe("issue");
+    expect(uniqueCanonicalTypeName([issue, note])).toBeUndefined();
+    expect(uniqueCanonicalTypeName([datom(1, RAMOSE_TYPE, ValueTag.Str, ":issue/title", 1)])).toBeUndefined();
+    expect(uniqueCanonicalTypeName([datom(1, RAMOSE_TYPE, ValueTag.Long, 1, 1)])).toBeUndefined();
+    expect(uniqueCanonicalTypeName([datom(1, RAMOSE_TYPE, ValueTag.Str, ":", 1)])).toBeUndefined();
+  });
+
+  test("a currently readable entity remains readable through asOf where its type exists", async () => {
+    const { currentDb, aliceEid, i1, createdT } = await seedApp();
+    const pred = compileReadFilter({
+      unit: await unitFrom([read(Issue).when(allow)]),
+      principal: alicePrincipal(aliceEid),
+      currentDb,
+    });
+    const title = await datomOf(currentDb, i1, ":issue/title");
+    const asOf = currentDb.asOf(createdT);
+    expect(await pred(currentDb, title)).toBe(true);
+    expect(await pred(asOf, title)).toBe(true);
+    await expectVisible(asOf.filter(pred), i1, [
+      ":ramose/type",
+      ":ramose/trait",
+      ":issue/title",
+      ":issue/parent",
+    ]);
+  });
+
+  test("after retractEntity, history and bounded history recover type; current denies", async () => {
+    const { conn, currentDb, aliceEid, i1, createdT } = await seedApp();
+    const title = await datomOf(currentDb, i1, ":issue/title");
+    const retracted = await conn.transact([[":db/retractEntity", i1]]);
+    const after = conn.db();
+    const pred = compileReadFilter({
+      unit: await unitFrom([read(Issue).when(allow)]),
+      principal: alicePrincipal(aliceEid),
+      currentDb: after,
+    });
+    const asOf = after.asOf(createdT);
+    const history = after.history();
+    const boundedFromAsOf = asOf.history();
+    const boundedFromHistory = history.asOf(createdT);
+    const boundedThroughDelete = after.history().asOf(retracted.t);
+
+    expect(await pred(after, title)).toBe(false);
+    expect(await pred(asOf, title)).toBe(true);
+    expect(await pred(history, title)).toBe(true);
+    expect(await pred(boundedFromAsOf, title)).toBe(true);
+    expect(await pred(boundedFromHistory, title)).toBe(true);
+    expect(await pred(boundedThroughDelete, title)).toBe(true);
+    expect(await visibleAppIdents(after.filter(pred), i1)).toEqual([]);
+    await expectVisible(asOf.filter(pred), i1, [
+      ":ramose/type",
+      ":ramose/trait",
+      ":issue/title",
+      ":issue/parent",
+    ]);
+    expect(await visibleAppIdents(history.filter(pred), i1)).toContain(":issue/title");
+    expect(await visibleAppIdents(boundedFromAsOf.filter(pred), i1)).toContain(":issue/title");
+  });
+
+  test("current grants still govern historical datoms after retractEntity", async () => {
+    const { conn, currentDb, aliceEid, i1, createdT } = await seedApp();
+    const title = await datomOf(currentDb, i1, ":issue/title");
+    await conn.transact([[":db/retractEntity", i1]]);
+    const after = conn.db();
+    const ownerPred = compileReadFilter({
+      unit: await unitFrom([read(Issue).when(eq(Issue.owner, me))]),
+      principal: alicePrincipal(aliceEid),
+      currentDb: after,
+    });
+    expect(await ownerPred(after.asOf(createdT), title)).toBe(false);
+    expect(await ownerPred(after.history(), title)).toBe(false);
+    expect(await ownerPred(after.asOf(createdT).history(), title)).toBe(false);
+    expect(await visibleAppIdents(after.history().filter(ownerPred), i1)).toEqual([]);
   });
 });

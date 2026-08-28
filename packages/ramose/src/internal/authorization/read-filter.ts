@@ -2,8 +2,9 @@
  * Compile a sealed catalog unit into the trusted {@link DatomPredicate}
  * used by {@link import("../core/db.ts").Db.filter}.
  *
- * Evaluation is fail-closed, query-shape independent, and uses only the
- * closed-over current basis for type, grants, and path lookups (HIST-2).
+ * Candidate canonical type is classified from the predicate's requested
+ * immutable `db` (current, asOf, history, or bounded history). Current
+ * grants and rule path lookups stay on the closed-over `currentDb`.
  * No Effect or Context per datom.
  */
 
@@ -163,6 +164,28 @@ const inTruth = (value: Projected, collection: Projected): Truth => {
 
 const authorized = (truth: Truth): boolean => truth._tag === "True";
 
+/**
+ * One protected canonical type name from type datoms of a single requested
+ * view. Assert + later retract of the same value is one type. Zero,
+ * malformed, or distinct values fail closed.
+ */
+export const uniqueCanonicalTypeName = (
+  typeDatoms: readonly Datom[],
+): string | undefined => {
+  let name: string | undefined;
+  for (const datom of typeDatoms) {
+    if (typeof datom.v !== "string") return undefined;
+    const next = entityNameFromTypeIdent(datom.v);
+    if (next === undefined) return undefined;
+    if (name !== undefined && name !== next) return undefined;
+    name = next;
+  }
+  return name;
+};
+
+const viewKey = (db: Db): string =>
+  `${db.basisT}:${db.asOfT ?? ""}:${db.isHistory ? 1 : 0}`;
+
 export const compileReadFilter = (input: CompileReadFilterInput): DatomPredicate => {
   try {
     return compilePredicate(input);
@@ -209,22 +232,25 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     fieldDecisions.set(fieldKey(entry.target), entry.decision);
   }
 
-  const typeMemo = new Map<number, Promise<EntityId | undefined>>();
-  const rowMemo = new Map<number, Promise<boolean>>();
+  const typeMemo = new Map<string, Promise<EntityId | undefined>>();
+  const rowMemo = new Map<string, Promise<boolean>>();
 
-  const classifyEntity = (eid: number): Promise<EntityId | undefined> => {
-    const cached = typeMemo.get(eid);
+  const classifyFrom = (db: Db, eid: number): Promise<EntityId | undefined> => {
+    const key = `${viewKey(db)}:${eid}`;
+    const cached = typeMemo.get(key);
     if (cached !== undefined) return cached;
     const pending = (async (): Promise<EntityId | undefined> => {
-      const typeDatom = await currentDb.first(Index.EAVT, { e: eid, a: RAMOSE_TYPE });
-      if (typeDatom === undefined || typeof typeDatom.v !== "string") return undefined;
-      const name = entityNameFromTypeIdent(typeDatom.v);
+      const typeDatoms = await db.datomsArray(Index.EAVT, { e: eid, a: RAMOSE_TYPE });
+      const name = uniqueCanonicalTypeName(typeDatoms);
       if (name === undefined) return undefined;
       return index.entities.get(name);
     })();
-    typeMemo.set(eid, pending);
+    typeMemo.set(key, pending);
     return pending;
   };
+
+  const classifyCurrent = (eid: number): Promise<EntityId | undefined> =>
+    classifyFrom(currentDb, eid);
 
   const focusOf = (entity: EntityId): RowFocus => ({ _tag: "entity", entity });
 
@@ -264,7 +290,7 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     } else if (term.root._tag === "me") {
       if (principal.me === undefined) return MissingMeProjection;
       eid = principal.me.eid;
-      const meEntity = await classifyEntity(eid);
+      const meEntity = await classifyCurrent(eid);
       if (meEntity === undefined) return EntityAbsent;
       focus = focusOf(meEntity);
     } else {
@@ -289,7 +315,7 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
         if (hop._tag !== "Present") return hop;
         if (typeof hop.value !== "number") return InvalidTraversalProjection;
         eid = hop.value;
-        const next = await classifyEntity(eid);
+        const next = await classifyCurrent(eid);
         if (next === undefined) return EntityAbsent;
         focus = focusOf(next);
         continue;
@@ -391,17 +417,18 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     return false;
   };
 
-  const isRowReadable = (eid: number): Promise<boolean> => {
-    const cached = rowMemo.get(eid);
+  const isRowReadable = (db: Db, eid: number): Promise<boolean> => {
+    const key = `${viewKey(db)}:${eid}`;
+    const cached = rowMemo.get(key);
     if (cached !== undefined) return cached;
     const pending = (async (): Promise<boolean> => {
-      const entity = await classifyEntity(eid);
+      const entity = await classifyFrom(db, eid);
       if (entity === undefined) return false;
       const decision = entityDecisions.get(entity.name);
       if (decision === undefined) return false;
       return evaluateDecision(decision, eid, entity);
     })();
-    rowMemo.set(eid, pending);
+    rowMemo.set(key, pending);
     return pending;
   };
 
@@ -417,12 +444,13 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
   };
 
   const isFieldReadable = async (
+    db: Db,
     eid: number,
     entity: EntityId,
     field: FieldDescriptor,
   ): Promise<boolean> => {
     if (!fieldAccessibleFrom(index, focusOf(entity), field)) return false;
-    if (!(await isRowReadable(eid))) return false;
+    if (!(await isRowReadable(db, eid))) return false;
     if (field.id.owner.kind === "trait") {
       if (!(await isTraitReadable(eid, entity, field.id.owner.name))) return false;
     }
@@ -433,19 +461,19 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     return true;
   };
 
-  return async (_unfiltered, datom) => {
+  return async (db, datom) => {
     try {
-      const entity = await classifyEntity(datom.e);
+      const entity = await classifyFrom(db, datom.e);
       if (entity === undefined) return false;
       if (datom.a === RAMOSE_TYPE || datom.a === RAMOSE_TRAIT) {
-        return isRowReadable(datom.e);
+        return isRowReadable(db, datom.e);
       }
       const field = attrFields.get(datom.a);
       if (field === undefined) return false;
-      if (!(await isFieldReadable(datom.e, entity, field))) return false;
+      if (!(await isFieldReadable(db, datom.e, entity, field))) return false;
       if (datom.vt === ValueTag.Ref) {
         if (typeof datom.v !== "number") return false;
-        if (!(await isRowReadable(datom.v))) return false;
+        if (!(await isRowReadable(db, datom.v))) return false;
       }
       return true;
     } catch {

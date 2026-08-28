@@ -139,6 +139,7 @@ export type _noPublicAuthorization = Expect<
       | "catalogUnitCanonicalBytes"
       | "assembleDeployedCatalogs"
       | "compileReadFilter"
+      | "uniqueCanonicalTypeName"
       | "DeployedCatalogs"
       | "CatalogVersionMismatch"
       | "requireUnitHash"
@@ -349,6 +350,9 @@ export type _catalogUnitOnBarrel = Expect<Extends<"InstalledCatalogUnit", keyof 
 export type _sealCatalogUnitOnBarrel = Expect<Extends<"sealInstalledCatalogUnit", keyof AuthExports>>;
 export type _assembleDeployedOnBarrel = Expect<Extends<"assembleDeployedCatalogs", keyof AuthExports>>;
 export type _compileReadFilterOnBarrel = Expect<Extends<"compileReadFilter", keyof AuthExports>>;
+export type _uniqueCanonicalTypeNameOnBarrel = Expect<
+  Extends<"uniqueCanonicalTypeName", keyof AuthExports>
+>;
 export type _requireUnitHashOnBarrel = Expect<Extends<"requireUnitHash", keyof AuthExports>>;
 export type _catalogVersionMismatchOnBarrel = Expect<
   Extends<"CatalogVersionMismatch", keyof AuthExports>
@@ -1061,6 +1065,7 @@ describe("legacy authorization names cannot be imported", () => {
     expect("CatalogUnitCorrupt" in ir).toBe(true);
     expect("assembleDeployedCatalogs" in ir).toBe(true);
     expect("compileReadFilter" in ir).toBe(true);
+    expect("uniqueCanonicalTypeName" in ir).toBe(true);
     expect("requireUnitHash" in ir).toBe(true);
     expect("CatalogVersionMismatch" in ir).toBe(true);
     expect("opaqueCatalogDenial" in ir).toBe(true);
@@ -1081,6 +1086,7 @@ describe("legacy authorization names cannot be imported", () => {
     expect("CatalogUnitCorrupt" in root).toBe(false);
     expect("assembleDeployedCatalogs" in root).toBe(false);
     expect("compileReadFilter" in root).toBe(false);
+    expect("uniqueCanonicalTypeName" in root).toBe(false);
     expect("DeployedCatalogs" in root).toBe(false);
     expect("CatalogVersionMismatch" in root).toBe(false);
     expect("requireUnitHash" in root).toBe(false);
@@ -1089,5 +1095,6 @@ describe("legacy authorization names cannot be imported", () => {
     expect("InstalledCatalogUnit" in db).toBe(false);
     expect("sealInstalledCatalogUnit" in db).toBe(false);
     expect("compileReadFilter" in db).toBe(false);
+    expect("uniqueCanonicalTypeName" in db).toBe(false);
   });
 });
