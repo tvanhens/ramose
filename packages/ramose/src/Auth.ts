@@ -13,7 +13,6 @@
  * whatever it has (Better Auth's `auth.api.signJWT`, `jose`, …).
  */
 
-import { DATABASE_NAME_RE, invalidDatabaseName } from "./db/DatabaseName.ts";
 import { InvalidRequest } from "./db/Errors.ts";
 export interface Claims {
   readonly iss?: string;
@@ -49,12 +48,10 @@ export interface AuthConfig {
   readonly ttl: number;
 }
 
-/** The subject-and-scope half of a claim set; {@link AuthConfig} is the rest. */
+/** The subject-and-class half of a claim set; {@link AuthConfig} is the rest. */
 export interface ClaimsInput {
   /** The principal — resolved by the policy's `principal` attribute. */
   readonly sub: string;
-  /** The one database this token is bound to (`ramose.db`). */
-  readonly db: string;
   /** The policy class this token selects (`ramose.class`). */
   readonly class: string;
   /** App claims (`ramose.attrs`), decoded by the policy's `claims` struct. */
@@ -72,16 +69,16 @@ const declaredClasses = (policy: ClaimsPolicy): readonly string[] =>
 /**
  * Build the claim set the peer verifies. Pure: no signing, no I/O.
  *
- * Validates at mint what the peer would reject anyway: `db` must be a valid
- * database name, and — when a compiled policy is given — `class` must be one
- * the policy declares, because an undeclared class grants nothing, never an
- * outage. `exp - iat` is exactly `auth.ttl`.
+ * Validates at mint what the peer would reject anyway: when a compiled
+ * policy is given, `class` must be one the policy declares, because an
+ * undeclared class grants nothing, never an outage. `exp - iat` is exactly
+ * `auth.ttl`. JWT identity is deployment-global — do not emit `ramose.db`.
  *
  * @example
  * ```typescript
  * const payload = Ramose.claims(
  *   AUTH,
- *   { sub: user.id, db: workspace, class: role },
+ *   { sub: user.id, class: role },
  *   { classes: ["member"] },
  * );
  * const { token } = await auth.api.signJWT({ body: { payload } });
@@ -103,7 +100,6 @@ export function claims<P extends ClaimsPolicy | undefined = undefined>(
       message: `ramose: auth.ttl must be a positive whole number of seconds, got ${auth.ttl}`,
     });
   }
-  if (!DATABASE_NAME_RE.test(input.db)) throw invalidDatabaseName(input.db);
   if (policy !== undefined) {
     const classes = declaredClasses(policy);
     if (!classes.includes(input.class)) {
@@ -120,7 +116,6 @@ export function claims<P extends ClaimsPolicy | undefined = undefined>(
     iat,
     exp: iat + auth.ttl,
     ramose: {
-      db: input.db,
       class: input.class,
       ...(input.attrs === undefined ? {} : { attrs: input.attrs }),
     },

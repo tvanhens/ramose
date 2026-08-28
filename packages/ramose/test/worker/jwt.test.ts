@@ -95,7 +95,7 @@ const payload = (
     sub: "user-ada",
     iat: now,
     exp: now + 300,
-    ramose: { db: "acme", class: "member" },
+    ramose: { class: "member" },
     ...over,
   };
 };
@@ -135,7 +135,6 @@ describe("JwtVerifier", () => {
   test("verifies a real token and constructs one immutable principal", async () => {
     const claims = payload({
       ramose: {
-        db: "acme",
         class: "member",
         attrs: {
           active: true,
@@ -171,7 +170,6 @@ describe("JwtVerifier", () => {
           levels: [1, 2],
         },
       },
-      db: "acme",
     });
     expect(Object.isFrozen(verified)).toBe(true);
     expect(Object.isFrozen(verified.principal)).toBe(true);
@@ -191,7 +189,6 @@ describe("JwtVerifier", () => {
     const token = await sign({
       payload: payload({
         ramose: {
-          db: "acme",
           class: "member",
           attrs: {
             string: "value",
@@ -232,7 +229,7 @@ describe("JwtVerifier", () => {
     for (const value of attrs) {
       const token = await sign({
         payload: payload({
-          ramose: { db: "acme", class: "member", attrs: value },
+          ramose: { class: "member", attrs: value },
         }),
       });
       expectOpaque(await rejection(token), [token]);
@@ -305,21 +302,19 @@ describe("JwtVerifier", () => {
     for (const attrs of oversized) {
       const token = await sign({
         payload: payload({
-          ramose: { db: "acme", class: "member", attrs },
+          ramose: { class: "member", attrs },
         }),
       });
       expectOpaque(await rejection(token), [token]);
     }
   });
 
-  test("requires valid subject and Ramose database/class claims", async () => {
+  test("requires valid subject and Ramose class claims", async () => {
     const invalid = [
       payload({ sub: undefined }),
       payload({ sub: "" }),
-      payload({ ramose: { db: "acme", class: "" } }),
-      payload({ ramose: { db: "acme", class: "   " } }),
-      payload({ ramose: { db: "has/slash", class: "member" } }),
-      payload({ ramose: { class: "member" } }),
+      payload({ ramose: { class: "" } }),
+      payload({ ramose: { class: "   " } }),
       payload({ ramose: { db: "acme" } }),
       payload({ ramose: undefined }),
     ];
@@ -327,6 +322,22 @@ describe("JwtVerifier", () => {
       const token = await sign({ payload: invalidPayload });
       expectOpaque(await rejection(token), [token]);
     }
+  });
+
+  test("verifies without ramose.db and ignores leftover ramose.db", async () => {
+    const without = await verify(
+      await sign({ payload: payload({ ramose: { class: "member" } }) }),
+    );
+    expect(without.principal.class).toBe("member");
+    expect(without.principal).not.toHaveProperty("db");
+
+    const leftover = await verify(
+      await sign({
+        payload: payload({ ramose: { db: "acme", class: "member" } }),
+      }),
+    );
+    expect(leftover.principal.class).toBe("member");
+    expect(leftover.principal).not.toHaveProperty("db");
   });
 
   test("maps every signature, registered-claim, time, and algorithm failure opaquely", async () => {

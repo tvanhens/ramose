@@ -22,7 +22,6 @@ export interface Principal {
     readonly exp?: number;
     readonly attrs?: PrincipalAttrs;
   };
-  readonly db: string;
 }
 
 /**

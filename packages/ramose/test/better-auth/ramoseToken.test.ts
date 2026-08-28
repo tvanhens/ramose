@@ -120,7 +120,6 @@ describe("ramoseToken", () => {
     });
     expect(payload.sub).toBe(owner.userId);
     expect(payload.ramose).toEqual({
-      db: "acme",
       class: "owner",
       attrs: { name: "owner@acme.test", email: "owner@acme.test" },
     });
@@ -216,7 +215,6 @@ describe("ramoseToken", () => {
     const jwks = createLocalJWKSet(await auth.api.getJwks());
     const { payload } = await jwtVerify(minted.token, jwks);
     expect(payload.ramose).toEqual({
-      db: "acme",
       class: "member",
       attrs: { org: "org-of-acme", email: "user@acme.test" },
     });
@@ -375,7 +373,6 @@ describe("JWKS secret rotation", () => {
       audience: AUTH.audience,
     });
     expect(payload.ramose).toEqual({
-      db: "acme",
       class: "owner",
       attrs: { name: "owner@acme.test", email: "owner@acme.test" },
     });
@@ -385,7 +382,6 @@ describe("JWKS secret rotation", () => {
       audience: AUTH.audience,
     });
     expect(old.payload.ramose).toEqual({
-      db: "acme",
       class: "owner",
       attrs: { name: "owner@acme.test", email: "owner@acme.test" },
     });

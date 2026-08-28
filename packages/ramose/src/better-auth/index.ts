@@ -1,13 +1,13 @@
 /**
  * `ramose/better-auth` — the Better Auth server plugin that mints the
- * workspace-scoped JWTs a Ramose peer verifies
+ * deployment-global identity JWTs a Ramose peer verifies
  * (https://ramose.ai/guides/sign-in/).
  *
  * Ramose verifies tokens and never issues them, so every app repeats the
  * same mint route: read the Better Auth session, decide the caller's policy
- * class for the requested database, build the payload with `Ramose.claims`,
- * sign it with `signJWT`. {@link ramoseToken} is that route as a plugin —
- * the app keeps exactly one decision, {@link ClassOf}.
+ * class (POST `{ db }` is classOf input, not a JWT claim), build the payload
+ * with `Ramose.claims`, sign it with `signJWT`. {@link ramoseToken} is that
+ * route as a plugin — the app keeps exactly one decision, {@link ClassOf}.
  *
  * It requires Better Auth's `jwt` plugin and signs with the same JWKS key,
  * so the peer's `RAMOSE_JWKS_URL` (the jwt plugin's `/jwks` endpoint) reads
@@ -62,11 +62,11 @@ export interface ClassGrant {
   readonly attrs?: Readonly<Record<string, unknown>> | undefined;
 }
 
-/** What {@link ClassOf} receives: the caller, the database, the endpoint. */
+/** What {@link ClassOf} receives: the caller, the org-slug lookup, the endpoint. */
 export interface ClassOfInput {
   /** The authenticated Better Auth session (the mint route requires one). */
   readonly session: SessionInfo;
-  /** The database the caller asked a token for (already a valid name). */
+  /** Org slug for classOf lookup (already a valid name). Not written into the JWT. */
   readonly db: string;
   /**
    * The Better Auth endpoint context — `ctx.context.adapter` for lookups,
@@ -76,10 +76,11 @@ export interface ClassOfInput {
 }
 
 /**
- * The one decision the app owns: the caller's policy class for `db`, or
- * `null` for no access (a 403 that leaks nothing — "no org with that slug"
- * and "not a member of it" are the same answer). Return a {@link ClassGrant}
- * to also carry `ramose.attrs`.
+ * The one decision the app owns: the caller's policy class for the
+ * requested org slug, or `null` for no access (a 403 that leaks nothing —
+ * "no org with that slug" and "not a member of it" are the same answer).
+ * Return a {@link ClassGrant} to also carry `ramose.attrs`. The slug is
+ * not written into the JWT.
  */
 export type ClassOf = (
   input: ClassOfInput,
@@ -213,7 +214,7 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
           method: "POST",
           body: z.object({
             db: z.string().meta({
-              description: "The Ramose database this token is to be bound to",
+              description: "Org slug for classOf lookup; not written into the JWT",
             }),
           }),
           use: [sessionMiddleware],
@@ -221,7 +222,7 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
             openapi: {
               operationId: "mintRamoseToken",
               description:
-                "Mint a Ramose JWT bound to one database, signed with the jwt plugin's JWKS",
+                "Mint a Ramose identity JWT, signed with the jwt plugin's JWKS",
               responses: {
                 "200": {
                   description: "The minted token",
@@ -246,8 +247,7 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
         async (ctx) => {
           const session = ctx.context.session;
           const db = ctx.body.db;
-          // The peer would 400 this anyway; failing at mint keeps the error
-          // near its cause. `claims` re-checks, but after `classOf` ran.
+          // Mint-body org slug check for classOf. Not a JWT database claim.
           if (!isDatabaseName(db)) {
             throw new APIError("BAD_REQUEST", {
               message: `ramose: ${JSON.stringify(db)} is not a valid database name`,
@@ -268,16 +268,15 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
               options.auth,
               {
                 sub: session.user.id,
-                db,
                 class: grant.class,
                 attrs: grant.attrs,
               },
               options.policy,
             );
           } catch (cause) {
-            // `db` was validated above, so what `claims` rejects here is
-            // deploy configuration: a class the policy does not declare, or
-            // a bad ttl. The caller cannot fix either.
+            // What `claims` rejects here is deploy configuration: a class
+            // the policy does not declare, or a bad ttl. The caller cannot
+            // fix either.
             throw new APIError("INTERNAL_SERVER_ERROR", {
               message: cause instanceof Error ? cause.message : String(cause),
             });

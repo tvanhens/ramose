@@ -64,7 +64,7 @@ export { TransactorDeadError };
 function asPrincipal(x: unknown): Principal | undefined {
   if (typeof x !== "object" || x === null || Array.isArray(x)) return undefined;
   const o = x as Record<string, unknown>;
-  if (o.kind !== "user" || typeof o.class !== "string" || typeof o.db !== "string") return undefined;
+  if (o.kind !== "user" || typeof o.class !== "string") return undefined;
   const claims =
     typeof o.claims === "object" && o.claims !== null
       ? (o.claims as Principal["claims"])
@@ -75,7 +75,6 @@ function asPrincipal(x: unknown): Principal | undefined {
   return {
     kind: "user",
     class: o.class,
-    db: o.db,
     claims,
     ...(typeof o.sub === "string" ? { sub: o.sub } : {}),
     ...(typeof o.eid === "number" ? { eid: o.eid } : {}),
@@ -149,7 +148,7 @@ const RECENT_CLIENT_TX_LIMIT = 256;
 export function clientTxReplayKey(principal: Principal | undefined, id: string): string {
   if (!principal) return `\0:${id}`;
   const who = principal.sub ?? (principal.eid !== undefined ? `#${principal.eid}` : principal.class);
-  return `${principal.db}\0${principal.kind}\0${who}\0${id}`;
+  return `${principal.kind}\0${who}\0${id}`;
 }
 
 const yieldToEventLoop = (): Promise<void> => new Promise((r) => setTimeout(r, 0));

@@ -150,7 +150,7 @@ describe("planOf: frame → sub-request", () => {
 
 describe("parsePrincipalHeader", () => {
   test("the worker hands the replica a JSON principal; junk is ignored", () => {
-    const ada: Principal = { kind: "user", class: "member", sub: "ada", claims: { sub: "ada" }, db: "acme" };
+    const ada: Principal = { kind: "user", class: "member", sub: "ada", claims: { sub: "ada" } };
     expect(PRINCIPAL_HEADER).toBe("x-ramose-principal");
     expect(parsePrincipalHeader(JSON.stringify(ada))).toEqual(ada);
     expect(parsePrincipalHeader(null)).toBeUndefined();
@@ -329,7 +329,7 @@ describe("socket lifetime", () => {
 });
 
 describe("the auth frame", () => {
-  const who = (sub: string, exp?: number): Principal => ({ kind: "user", class: "member", sub, claims: { sub, ...(exp === undefined ? {} : { exp }) }, db: "demo" });
+  const who = (sub: string, exp?: number): Principal => ({ kind: "user", class: "member", sub, claims: { sub, ...(exp === undefined ? {} : { exp }) } });
 
   /** Dispatch that records the principal each frame was planned under. */
   const seen = (): { dispatch: SessionDispatch; subs: (string | undefined)[]; release: () => void } => {

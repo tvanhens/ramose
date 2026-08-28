@@ -21,16 +21,16 @@ const key = async () => {
   return privateKey;
 };
 
-/** Sign a `ramose.db` / `ramose.class` token for `db`. */
+/** Sign a `ramose.class` identity token. `db` is unused leftover. */
 export const signToken = async (
-  db: string,
+  _db: string,
   cls: string,
   sub = "user_ada",
   attrs?: Record<string, unknown>,
   over: Record<string, unknown> = {},
 ): Promise<string> => {
   let jwt = new SignJWT({
-    ramose: { db, class: cls, ...(attrs === undefined ? {} : { attrs }) },
+    ramose: { class: cls, ...(attrs === undefined ? {} : { attrs }) },
   }).setProtectedHeader({ alg: "ES256", kid: "test" });
   jwt = jwt.setIssuer((over.iss as string) ?? ISS);
   jwt = jwt.setAudience((over.aud as string) ?? AUD);

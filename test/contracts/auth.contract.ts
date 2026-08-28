@@ -67,12 +67,18 @@ export function registerAuthContract(target: AuthTarget): void {
       expect((await json(jwksUrlOnlyUrl, "/db/-invalid/info", { token: jwt })).status).toBe(401);
     });
 
-    test("a principal is bound to the database named in its JWT", async () => {
+    test("a JWT without ramose.db crosses admission on any valid database the same way", async () => {
       const { policyUrl } = target.urls();
       const jwt = await signToken("acme", "member");
-      const response = await json(policyUrl, "/db/other/info", { token: jwt });
-      expect(response.status).toBe(401);
-      expect(response.body).toEqual({ error: "unauthorized" });
+      const acme = await json(policyUrl, "/db/acme/info", { token: jwt });
+      const other = await json(policyUrl, "/db/other/info", { token: jwt });
+      expect(acme.status).toBe(401);
+      expect(other.status).toBe(401);
+      expect(acme.body).toEqual({ error: "unauthorized" });
+      expect(other.body).toEqual({ error: "unauthorized" });
+      expect((await json(policyUrl, "/db/-invalid/info", { token: jwt })).status).toBe(
+        400,
+      );
     });
 
     test("HTTP rejects query credentials even with Bearer or a spoofed upgrade", async () => {
