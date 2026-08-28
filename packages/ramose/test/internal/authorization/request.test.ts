@@ -15,6 +15,7 @@ import {
   CatalogId,
   CatalogMismatch,
   CatalogUnitHash,
+  DatabaseId,
   SchemaFingerprint,
   allow,
   assembleDeployedCatalogs,
@@ -96,7 +97,7 @@ const payload = (over: Record<string, unknown> = {}): JWTPayload => {
     sub: "alice-sub",
     iat: now,
     exp: now + 300,
-    ramose: { db: "todos", class: "member", attrs: { org: "acme" } },
+    ramose: { class: "member", attrs: { org: "acme" } },
     ...over,
   };
 };
@@ -113,8 +114,8 @@ const authenticateToken = (token: string) =>
     .verify(Redacted.make(token))
     .pipe(Effect.map(callerFromVerified));
 
-const sealedDescriptor = async () => {
-  const base = catalogDescriptor();
+const sealedDescriptor = async (db: DatabaseId = database) => {
+  const base = { ...catalogDescriptor(), database: db };
   const fingerprint = await Effect.runPromise(hashCatalogSchemaFingerprint(base));
   return { ...base, fingerprint };
 };
@@ -122,15 +123,16 @@ const sealedDescriptor = async () => {
 const deployPolicy = async (
   rules: Parameters<typeof compileRules>[0],
   extras: Parameters<typeof compileRules>[1] = {},
+  db: DatabaseId = database,
 ): Promise<DeployedCatalogs> => {
-  const descriptor = await sealedDescriptor();
+  const descriptor = await sealedDescriptor(db);
   return Effect.runPromise(
     assembleDeployedCatalogs({
       root: catalog,
       units: [
         {
           catalog,
-          database,
+          database: db,
           version,
           descriptor,
           policy: expectOk(compileRules(rules, extras)),
@@ -145,14 +147,12 @@ const deployOwnerPolicy = (): Promise<DeployedCatalogs> =>
 
 const signRamose = (over: {
   readonly sub?: string;
-  readonly db?: string;
   readonly attrs?: Record<string, unknown>;
 } = {}) =>
   sign({
     payload: payload({
       ...(over.sub === undefined ? {} : { sub: over.sub }),
       ramose: {
-        db: over.db ?? "todos",
         class: "member",
         attrs: over.attrs ?? { org: "acme" },
       },
@@ -247,6 +247,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: (db) =>
           Effect.sync(() => {
             acquired += 1;
@@ -284,6 +285,7 @@ describe("executeAuthorizedRequest", () => {
           authenticate: authenticateToken(token),
           catalogs,
           catalogRef: refOf(catalogs),
+        routeDatabase: database,
           currentDb: (db) => {
             expect(db).toBe(database);
             return Effect.sync(() => conn.db());
@@ -331,6 +333,7 @@ describe("executeAuthorizedRequest", () => {
           catalogKey: missing,
           unitHash: CatalogUnitHash.make(digestHex(0xab)),
         },
+        routeDatabase: database,
         currentDb: () => {
           acquired = true;
           throw new Error("currentDb must not run");
@@ -357,6 +360,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: { catalogKey: catalog, unitHash: wrong },
+        routeDatabase: database,
         currentDb: () => {
           acquired = true;
           throw new Error("currentDb must not run");
@@ -381,6 +385,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken("not-a-jwt"),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: () => {
           acquired = true;
           throw new Error("currentDb must not run");
@@ -430,6 +435,7 @@ describe("executeAuthorizedRequest", () => {
           authenticate: authenticateToken(token),
           catalogs: fixture,
           catalogRef: { catalogKey: catalog, unitHash: real.unitHash },
+          routeDatabase: database,
           currentDb: () => {
             acquired = true;
             return Effect.sync(() => conn.db());
@@ -455,6 +461,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: () => Effect.fail({ _tag: "AcquisitionFailed" as const }),
       },
       () =>
@@ -475,6 +482,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: () => Effect.never,
         interruptAfter: 20,
       },
@@ -496,6 +504,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: (db) => {
             expect(db).toBe(database);
             return Effect.sync(() => conn.db());
@@ -517,6 +526,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: (db) => {
             expect(db).toBe(database);
             return Effect.sync(() => conn.db());
@@ -549,6 +559,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: () => Effect.succeed(latest),
       },
       (filteredDb) => Effect.promise(() => visibleTitle(filteredDb, i1)),
@@ -568,6 +579,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: (db) => {
             expect(db).toBe(database);
             return Effect.sync(() => conn.db());
@@ -620,6 +632,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: (db) => {
             expect(db).toBe(database);
             return Effect.sync(() => conn.db());
@@ -657,6 +670,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: (db) => {
             expect(db).toBe(database);
             return Effect.sync(() => conn.db());
@@ -671,9 +685,10 @@ describe("executeAuthorizedRequest", () => {
     expectOpaque(error);
   });
 
-  test("JWT database disagreeing with catalog is Unauthorized before currentDb", async () => {
+  test("catalog A cannot be paired with routeDatabase B", async () => {
     const catalogs = await deployOwnerPolicy();
-    const token = await signRamose({ db: "otherdb" });
+    const token = await sign();
+    const otherdb = DatabaseId.make("otherdb");
     let acquired = false;
     let executed = false;
     const error = await runFail(
@@ -681,6 +696,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: otherdb,
         currentDb: () => {
           acquired = true;
           throw new Error("currentDb must not run");
@@ -696,7 +712,7 @@ describe("executeAuthorizedRequest", () => {
     expectOpaque(error, ["todos", "otherdb"]);
   });
 
-  test("currentDb is acquired with the agreed catalog/JWT database", async () => {
+  test("currentDb is acquired with routeDatabase", async () => {
     const { conn } = await seedApp();
     const catalogs = await deployOwnerPolicy();
     const token = await sign();
@@ -706,6 +722,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: (db) => {
           seen.push(db);
           return Effect.sync(() => conn.db());
@@ -715,6 +732,44 @@ describe("executeAuthorizedRequest", () => {
     );
     expect(seen).toEqual([database]);
     expect(seen).not.toContain("otherdb");
+  });
+
+  test("the same JWT requests two databases; each database's deployed policy decides access", async () => {
+    const seededA = await seedApp();
+    const seededB = await seedApp();
+    const otherdb = DatabaseId.make("otherdb");
+    const catalogsA = await deployOwnerPolicy();
+    const catalogsB = await deployPolicy([read(Issue).when(allow)], {}, otherdb);
+    const token = await sign();
+    const ask = (
+      catalogs: DeployedCatalogs,
+      route: typeof database,
+      seeded: typeof seededA,
+    ) =>
+      run(
+        {
+          authenticate: authenticateToken(token),
+          catalogs,
+          catalogRef: refOf(catalogs),
+          routeDatabase: route,
+          currentDb: (db) => {
+            expect(db).toBe(route);
+            return Effect.sync(() => seeded.conn.db());
+          },
+        },
+        (filteredDb) =>
+          Effect.promise(async () => ({
+            i1: await visibleTitle(filteredDb, seeded.i1),
+            i2: await visibleTitle(filteredDb, seeded.i2),
+          })),
+      );
+
+    const onTodos = await ask(catalogsA, database, seededA);
+    const onOther = await ask(catalogsB, otherdb, seededB);
+    expect(onTodos.i1).toBe("Bug");
+    expect(onTodos.i2).toBeUndefined();
+    expect(onOther.i1).toBe("Bug");
+    expect(onOther.i2).toBe("Other");
   });
 
   test("asOf and history compose as a product (bounded history)", async () => {
@@ -729,6 +784,7 @@ describe("executeAuthorizedRequest", () => {
           authenticate: authenticateToken(token),
           catalogs,
           catalogRef: refOf(catalogs),
+        routeDatabase: database,
           currentDb: (db) => {
             expect(db).toBe(database);
             return Effect.sync(() => conn.db());
@@ -766,6 +822,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(token),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: () => {
           acquired = true;
           throw new Error("currentDb must not run");
@@ -801,6 +858,7 @@ describe("executeAuthorizedRequest", () => {
           authenticate: authenticateToken(token),
           catalogs,
           catalogRef: refOf(catalogs),
+        routeDatabase: database,
           currentDb: () => {
             acquired = true;
             throw new Error("currentDb must not run");
@@ -824,6 +882,7 @@ describe("executeAuthorizedRequest", () => {
         authenticate: authenticateToken(await signRamose({ attrs: { org: "acme", suspended: true } })),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: (db) => {
             expect(db).toBe(database);
             return Effect.sync(() => conn.db());
@@ -840,6 +899,7 @@ describe("executeAuthorizedRequest", () => {
         ),
         catalogs,
         catalogRef: refOf(catalogs),
+        routeDatabase: database,
         currentDb: (db) => {
             expect(db).toBe(database);
             return Effect.sync(() => conn.db());

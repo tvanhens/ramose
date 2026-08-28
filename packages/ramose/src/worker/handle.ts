@@ -226,15 +226,12 @@ export const handle = (
     info.path = rest;
     info.route = routeOf(rest, request.method);
 
-    const verified = yield* authenticateRequest(request);
+    yield* authenticateRequest(request);
 
     const db = yield* Effect.fromResult(decodeDatabaseName(match[1]!));
     info.db = db;
     if (!isDatabaseName(db)) {
       return yield* new BadRequest({ message: "invalid database name" });
-    }
-    if (verified.principal.db !== db) {
-      return yield* new Unauthorized({});
     }
     return yield* new Unauthorized({});
   });

@@ -1,5 +1,4 @@
 import { DEFAULT_JWT_MAX_TTL } from "../Auth.ts";
-import { isDatabaseName } from "../db/DatabaseName.ts";
 import {
   MAX_COLLECTION_SIZE,
   MAX_JSON_DEPTH,
@@ -250,8 +249,6 @@ const verifiedPrincipal = (
     if (typeof ramose !== "object" || ramose === null || Array.isArray(ramose)) {
       return yield* failure();
     }
-    const db = yield* nonBlankString((ramose as Record<string, unknown>).db);
-    if (!isDatabaseName(db)) return yield* failure();
     const principalClass = yield* nonBlankString(
       (ramose as Record<string, unknown>).class,
     );
@@ -271,7 +268,6 @@ const verifiedPrincipal = (
       class: principalClass,
       sub,
       claims,
-      db,
     });
     return Object.freeze({ token, kid, iat, exp, principal });
   });

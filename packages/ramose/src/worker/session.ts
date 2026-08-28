@@ -244,7 +244,7 @@ export function parsePrincipalHeader(raw: string | null): Principal | undefined 
   if (raw === null || raw === "") return undefined;
   try {
     const p = JSON.parse(raw) as Principal;
-    if (typeof p !== "object" || p === null || p.kind !== "user" || typeof p.class !== "string" || typeof p.db !== "string") return undefined;
+    if (typeof p !== "object" || p === null || p.kind !== "user" || typeof p.class !== "string") return undefined;
     return p;
   } catch {
     return undefined;

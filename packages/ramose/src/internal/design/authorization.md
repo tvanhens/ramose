@@ -13,7 +13,7 @@ This document is the contract only. It does not schedule remaining work.
 
 Terms used below:
 
-- **Principal** — verified JWT caller bound to one database, with classes and claims from the active catalog policy.
+- **Principal** — verified JWT caller with classes and claims; not bound to one database.
 - **Ordinary principal** — a principal without an explicit grant to observe control-plane or operational metadata.
 - **Datom** — one `[e, a, v, t, op]` fact.
 - **Basis** — the root + novelty + `t` from which a snapshot is built.
@@ -318,8 +318,9 @@ raw-transact fallbacks are forbidden.
 
 **AUTH-2.** Every external HTTP and WebSocket database request MUST
 present a JWT whose signature, issuer, audience, expiration, not-before,
-algorithm, and required subject / principal claims verify. Algorithms are
-explicit; the token header MUST NOT choose them.
+algorithm, and required claims verify. Required claims are subject and
+`ramose.class` (plus typed attrs); `ramose.db` is not a required claim.
+Algorithms are explicit; the token header MUST NOT choose them.
 Verification uses `jose` (`createLocalJWKSet` / `createRemoteJWKSet` and
 `jwtVerify`). Rotation is issuer-owned overlap: every token has a non-empty
 `kid`, new keys use new `kid` values, and issuers retain old public keys until

@@ -23,7 +23,7 @@ import {
   type CatalogBoundRef,
   type DeployedCatalogs,
 } from "./deployed.ts";
-import { DatabaseId, EntityId } from "./identities.ts";
+import { EntityId, type DatabaseId } from "./identities.ts";
 import type { JsonValue } from "./json.ts";
 import type {
   AuthorizationPrincipal,
@@ -35,7 +35,6 @@ import { compileReadFilter } from "./read-filter.ts";
 import { prepareAuthorizationCatalog } from "./validation/catalog.ts";
 
 export type AuthenticatedCaller = {
-  readonly database: DatabaseId;
   readonly claims: Readonly<Record<string, JsonValue>>;
   readonly classes: readonly string[];
 };
@@ -49,6 +48,7 @@ export type AuthorizedRequestInput<R = never> = {
   readonly authenticate: Effect.Effect<AuthenticatedCaller, Unauthorized, R>;
   readonly catalogs: DeployedCatalogs;
   readonly catalogRef: CatalogBoundRef;
+  readonly routeDatabase: DatabaseId;
   readonly currentDb: (database: DatabaseId) => Effect.Effect<Db, unknown, R>;
   readonly view?: AuthorizedRequestView;
   readonly interruptAfter?: Duration.Input;
@@ -64,7 +64,6 @@ const deny = (): Unauthorized => new Unauthorized({});
 export const callerFromVerified = (verified: {
   readonly principal: {
     readonly sub?: string;
-    readonly db: string;
     readonly class: string;
     readonly classes?: readonly string[];
     readonly claims: { readonly attrs?: Record<string, unknown> };
@@ -80,7 +79,6 @@ export const callerFromVerified = (verified: {
   }
   if (sub !== undefined && sub.length > 0) claims.sub = sub;
   return {
-    database: DatabaseId.make(verified.principal.db),
     claims,
     classes: verified.principal.classes ?? [verified.principal.class],
   };
@@ -216,13 +214,12 @@ const constructFilteredDb = <R>(
       resolveDeployedCatalog(input.catalogs, input.catalogRef),
     ).pipe(Effect.mapError(opaqueCatalogDenial));
     yield* Effect.fromResult(requirePreparedUnit(deployed.unit));
-    if (caller.database !== deployed.unit.catalog.database) {
+    if (deployed.unit.catalog.database !== input.routeDatabase) {
       return yield* deny();
     }
-    const database = deployed.unit.catalog.database;
     const subject = yield* Effect.fromResult(selectSubject(caller, deployed.unit));
     yield* Effect.fromResult(validateCallerClaims(caller.claims, deployed.unit.policy.claims));
-    const current = yield* input.currentDb(database).pipe(Effect.mapError(() => deny()));
+    const current = yield* input.currentDb(input.routeDatabase).pipe(Effect.mapError(() => deny()));
     const resolved = yield* Effect.tryPromise({
       try: () => resolveMe(deployed.unit, subject, caller, current),
       catch: () => deny(),

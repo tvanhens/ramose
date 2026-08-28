@@ -58,7 +58,6 @@ const member: Principal = {
   class: "member",
   sub: "ada",
   claims: { sub: "ada" },
-  db: "acme",
 };
 
 const dataTx = [{ ":doc/title": "raw via socket" }];
