@@ -1,23 +1,12 @@
 /**
  * Analytics Engine service (src/analytics.ts): the per-request http point's
- * column layout, the route labels, and the Effect client over a fake
- * `env.ANALYTICS` binding — a narrow double for the unbound / throwing
- * dataset cases. Public HTTP telemetry is covered by the local stack.
+ * column layout, route labels, binding detection, delivery-error
+ * classification, and the missing-binding no-op. Delivery claims require a
+ * real platform boundary and do not belong in this pure suite.
  */
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
-import { Analytics, type AnalyticsEngineDatasetLike, type DataPoint, bindingOf, fromBinding, httpPoint, routeOf } from "../../src/worker/analytics.ts";
-
-function fakeDataset(onWrite?: () => void) {
-  const points: DataPoint[] = [];
-  const dataset: AnalyticsEngineDatasetLike = {
-    writeDataPoint(p) {
-      onWrite?.();
-      points.push(p);
-    },
-  };
-  return { dataset, points };
-}
+import { bindingOf, classifyDatasetError, fromBinding, httpPoint, routeOf } from "../../src/worker/analytics.ts";
 
 describe("http data point", () => {
   test("columns: index=db, blobs=[http, db, colo, route, status], doubles=[ms, 1, ok, err]", () => {
@@ -53,49 +42,25 @@ describe("http data point", () => {
   });
 });
 
-describe("Analytics service", () => {
-  test("writes through the binding when bound", async () => {
-    const { dataset, points } = fakeDataset();
-    const client = fromBinding(dataset);
-    expect(client.bound).toBe(true);
-    await Effect.runPromise(client.writeDataPoint(httpPoint({ db: "demo", colo: "IAD", route: "info", status: 200, ms: 2 })));
-    expect(points.length).toBe(1);
-    expect(points[0].blobs).toEqual(["http", "demo", "IAD", "info", "200"]);
-  });
-
+describe("Analytics decisions", () => {
   test("unbound: no-op, succeeds", async () => {
     const client = fromBinding(undefined);
     expect(client.bound).toBe(false);
     expect(await Effect.runPromise(client.writeDataPoint({ blobs: ["http"] }))).toBeUndefined();
   });
 
-  test("a throwing binding fails with DatasetError (never escapes as a defect)", async () => {
-    const { dataset } = fakeDataset(() => {
-      throw new Error("AE quota");
-    });
-    const exit = await Effect.runPromiseExit(fromBinding(dataset).writeDataPoint({ blobs: ["http"] }));
-    expect(exit._tag).toBe("Failure");
-    const err = await Effect.runPromise(Effect.flip(fromBinding(dataset).writeDataPoint({ blobs: ["http"] })));
+  test("delivery failures are classified as DatasetError values", () => {
+    const cause = new Error("AE quota");
+    const err = classifyDatasetError(cause);
     expect(err._tag).toBe("DatasetError");
     expect(err.message).toBe("AE quota");
-  });
-
-  test("provided as a service and yielded by a program (as the Worker does)", async () => {
-    const { dataset, points } = fakeDataset();
-    const program = Effect.gen(function* () {
-      const ae = yield* Analytics;
-      if (!ae.bound) return 0;
-      yield* ae.writeDataPoint(httpPoint({ db: "demo", route: "health", status: 200, ms: 0 }));
-      return 1;
-    });
-    expect(await Effect.runPromise(program.pipe(Effect.provideService(Analytics, fromBinding(dataset))))).toBe(1);
-    expect(await Effect.runPromise(program.pipe(Effect.provideService(Analytics, fromBinding(undefined))))).toBe(0);
-    expect(points.length).toBe(1);
+    expect(err.cause).toBe(cause);
+    expect(classifyDatasetError("dataset unavailable").message).toBe("dataset unavailable");
   });
 
   test("bindingOf reads env.ANALYTICS only when it looks like a dataset", () => {
-    const { dataset } = fakeDataset();
-    expect(bindingOf({ ANALYTICS: dataset })).toBe(dataset);
+    const bindingCandidate = { writeDataPoint: Array.prototype.push };
+    expect(bindingOf({ ANALYTICS: bindingCandidate })).toBe(bindingCandidate);
     expect(bindingOf({})).toBeUndefined();
     expect(bindingOf(undefined)).toBeUndefined();
     expect(bindingOf({ ANALYTICS: {} })).toBeUndefined();

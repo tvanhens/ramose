@@ -40,6 +40,10 @@ export interface AnalyticsEngineDatasetLike {
 
 export class DatasetError extends Data.TaggedError("DatasetError")<{ readonly message: string; readonly cause?: unknown }> {}
 
+/** Classify a thrown Analytics Engine delivery failure without depending on a binding. */
+export const classifyDatasetError = (cause: unknown): DatasetError =>
+  new DatasetError({ message: cause instanceof Error ? cause.message : String(cause), cause });
+
 export interface AnalyticsClient {
   /** false when the Worker runs without an `ANALYTICS` binding (writes are dropped). */
   readonly bound: boolean;
@@ -55,7 +59,7 @@ export const fromBinding = (binding: AnalyticsEngineDatasetLike | undefined): An
     binding
       ? Effect.try({
           try: () => binding.writeDataPoint(point),
-          catch: (cause) => new DatasetError({ message: cause instanceof Error ? cause.message : String(cause), cause }),
+          catch: classifyDatasetError,
         })
       : Effect.void,
 });

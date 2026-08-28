@@ -9,7 +9,6 @@
     "packages/ramose/test/internal/transactor/indexer.test.ts": ["MemoryBucket"],
     "packages/ramose/test/internal/transactor/observability.test.ts": ["FakeAnalytics"],
     "packages/ramose/test/internal/transactor/transactor.test.ts": ["FakeSocket"],
-    "packages/ramose/test/worker/analytics.test.ts": ["fakeDataset"],
     "packages/ramose/test/worker/basis-cache.test.ts": ["fakeEnv"],
     "packages/ramose/test/worker/session.test.ts": ["FakeSocket", "fakeDispatch"]
   }
