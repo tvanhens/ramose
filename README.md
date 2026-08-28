@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="https://ramose.ai">
-  <img src="./website/public/og.png" alt="Ramose — the database optimized for humans and agents" width="900" />
+  <img src="./website/public/brand/ramose-lockup-horizontal.svg" alt="Ramose.ai" width="440" />
 </a>
 
 <br />

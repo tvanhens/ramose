@@ -1,15 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 280" role="img" aria-label="ramose.ai">
   <title>ramose.ai</title>
   <defs>
-    <linearGradient id="orange" x1="120" y1="100" x2="200" y2="180" gradientUnits="userSpaceOnUse">
+    <linearGradient id="orange" x1="146" y1="106" x2="214" y2="174" gradientUnits="userSpaceOnUse">
       <stop stop-color="#FF5600"/>
       <stop offset="1" stop-color="#FF8A00"/>
     </linearGradient>
   </defs>
   <rect width="900" height="280" rx="28" fill="#050505"/>
-  <g transform="translate(32 12)">
-    <rect x="70" y="50" width="180" height="180" rx="11" transform="rotate(45 160 140)" fill="none" stroke="#F8F6F3" stroke-width="9"/>
-    <rect x="120" y="100" width="80" height="80" rx="8" transform="rotate(45 160 140)" fill="url(#orange)"/>
+  <g>
+    <rect x="105" y="65" width="150" height="150" rx="9" transform="rotate(45 180 140)" fill="none" stroke="#F8F6F3" stroke-width="8"/>
+    <rect x="146" y="106" width="68" height="68" rx="7" transform="rotate(45 180 140)" fill="url(#orange)"/>
   </g>
-  <text x="300" y="171" font-family="Avenir Next, Manrope, Helvetica Neue, sans-serif" font-size="84" font-weight="300" letter-spacing="3"><tspan fill="#F8F6F3">ramose.</tspan><tspan fill="#FF6500">ai</tspan></text>
+  <text x="330" y="179" font-family="Avenir Next, Manrope, Helvetica Neue, sans-serif" font-size="104" font-weight="300" letter-spacing="3"><tspan fill="#F8F6F3">ramose.</tspan><tspan fill="#FF6500">ai</tspan></text>
 </svg>
