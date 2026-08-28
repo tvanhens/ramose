@@ -34,7 +34,7 @@ import { Connection } from "../../../src/internal/core/conn.ts";
 import { datom, Index, ValueTag, type Datom } from "../../../src/internal/core/datom.ts";
 import type { Db } from "../../../src/internal/core/db.ts";
 import { RAMOSE_TYPE } from "../../../src/internal/core/schema.ts";
-import { Entity, Schema, compositionFromSchema, schemaTx, string } from "../../../src/db/internal.ts";
+import { Entity, Schema, compositionFromSchema, schemaTx, string, type AnySchema } from "../../../src/db/internal.ts";
 import {
   App,
   Issue,
@@ -77,9 +77,7 @@ const unitFrom = (
   extras?: Parameters<typeof compileRules>[1],
 ) => installUnit(expectOk(compileRules(rules, extras)));
 
-const seedApp = async (
-  extras: Parameters<typeof compositionFromSchema>[0] = App,
-) => {
+const seedApp = async (extras: AnySchema = App) => {
   const conn = await Connection.create({
     composition: compositionFromSchema(extras),
   });

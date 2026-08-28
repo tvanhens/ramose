@@ -14,6 +14,7 @@ import {
   Query,
   Schema,
   Trait,
+  type AnySchema,
   compositionFromSchema,
   string,
   lowerQueryObject,
@@ -242,7 +243,7 @@ describe("typed create", () => {
 });
 
 describe("processTx membership and required trait fields", () => {
-  const setup = async (schema = Board) => {
+  const setup = async (schema: AnySchema = Board) => {
     const conn = await Connection.create({
       composition: compositionFromSchema(schema),
     });
@@ -250,10 +251,8 @@ describe("processTx membership and required trait fields", () => {
     return conn;
   };
 
-  const membershipOf = (
-    type: string,
-    schema: Parameters<typeof compositionFromSchema>[0] = Board,
-  ) => compositionFromSchema(schema).transitiveTraits(type);
+  const membershipOf = (type: string, schema: AnySchema = Board) =>
+    compositionFromSchema(schema).transitiveTraits(type);
 
   test("missing required trait field is tx/required", async () => {
     const conn = await setup();
