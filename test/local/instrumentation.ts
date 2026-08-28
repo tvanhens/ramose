@@ -30,6 +30,7 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       const body = (await res.json()) as { ok?: boolean; service?: string };
       expect(body.ok).toBe(true);
       expect(body.service).toBe("ramose");
+      expect(res.headers.get("x-ramose-deployment")).not.toBeNull();
       expect(rec.calls.length).toBeGreaterThanOrEqual(1);
       expect(rec.calls.at(-1)?.status).toBe(200);
       expect(rec.calls.at(-1)?.url).toContain("/health");

@@ -51,6 +51,8 @@ export type AuthorizedLiveInput<R = never, EDb = unknown> = AuthorizedRequestInp
   readonly wakes?: Queue.Dequeue<unknown>;
   /** Completing this invalidates the current epoch and closes uniformly. */
   readonly revoked?: Deferred.Deferred<void>;
+  /** Revalidate deployment-scoped authority before starting another lease. */
+  readonly renew?: Effect.Effect<void, Unauthorized, R>;
   /** Poll `currentDb` for `basisT` changes. Worker live output sets this. */
   readonly watchBasis?: boolean;
   readonly pollEvery?: Duration.Input;
@@ -299,7 +301,15 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
           });
 
         const leaseLoop = Effect.gen(function* () {
+          let firstLease = true;
           while (true) {
+            if (!firstLease && input.renew !== undefined) {
+              const currentDeployment = yield* input.renew.pipe(
+                Effect.mapError(() => deny()),
+                Effect.result,
+              );
+              if (Result.isFailure(currentDeployment)) return;
+            }
             const admitted = yield* input.authenticate.pipe(
               Effect.mapError(() => deny()),
               Effect.result,
@@ -322,6 +332,7 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
               if (basisChanged) break;
             }
             yield* invalidate;
+            firstLease = false;
           }
         });
 

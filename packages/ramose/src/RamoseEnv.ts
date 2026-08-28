@@ -14,6 +14,12 @@ export interface RamoseEnv {
   STORE: R2Bucket;
   TRANSACTOR: DurableObjectNamespace;
   REPLICA: DurableObjectNamespace;
+  /** Cloudflare version metadata used to fence live-query lease renewal. */
+  CF_VERSION_METADATA?: {
+    readonly id: string;
+    readonly tag: string;
+    readonly timestamp: string;
+  };
   /** optional Analytics Engine dataset for write-path + http metrics; unbound = metrics off */
   ANALYTICS?: AnalyticsEngineDatasetLike;
   /** stage name (dev / prod) */

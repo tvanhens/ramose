@@ -16,9 +16,12 @@ import { workerEntry } from "./workerEntry.ts";
  * Compatibility date and flags every Ramose peer Worker is deployed with.
  * One value — do not copy a date into a stack file.
  */
-export const PEER_COMPAT: { date: string; flags: Array<"nodejs_compat"> } = {
+export const PEER_COMPAT: {
+  date: string;
+  flags: Array<"nodejs_compat" | "global_fetch_strictly_public">;
+} = {
   date: "2026-03-17",
-  flags: ["nodejs_compat"],
+  flags: ["nodejs_compat", "global_fetch_strictly_public"],
 };
 
 /** Env keys the peer Worker and both DO classes read. */
@@ -273,6 +276,7 @@ export const declareOwnedPeer = (options: OwnedPeerOptions & {
         [PEER_BINDINGS.store]: storageDecl(options.storage),
         [PEER_BINDINGS.transactor]: dos.transactor,
         [PEER_BINDINGS.replica]: dos.replica,
+        CF_VERSION_METADATA: Cloudflare.Workers.VersionMetadata(),
         ...options.env,
         ...options.authEnv,
       },

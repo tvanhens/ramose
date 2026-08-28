@@ -100,6 +100,42 @@ const CORS = {
     "x-ramose-ms,x-ramose-r2-gets,x-ramose-cache-hits,x-ramose-basis-t,x-ramose-basis-hit,x-ramose-basis-reason,x-ramose-basis-calls,x-ramose-basis-behind,x-ramose-replica-hint,x-ramose-cache-basis,x-ramose-cache-mode,x-ramose-colo",
 };
 
+const DEPLOYMENT_HEADER = "x-ramose-deployment";
+
+const deploymentVersion = (env: RamoseEnv): string | undefined => {
+  const id = env.CF_VERSION_METADATA?.id;
+  return typeof id === "string" && id.length > 0 ? id : undefined;
+};
+
+/**
+ * Re-enter the public route without credentials so a long-lived request can
+ * observe the deployment Cloudflare currently routes. Any ambiguity fails
+ * closed at the lease boundary.
+ */
+export const renewCurrentDeployment = (
+  request: Request,
+  env: RamoseEnv,
+): Effect.Effect<void, Unauthorized> => {
+  const expected = deploymentVersion(env);
+  if (expected === undefined) return Effect.fail(new Unauthorized({}));
+  const health = new URL("/health", request.url);
+  health.searchParams.set("live-renew", crypto.randomUUID());
+  return Effect.tryPromise({
+    try: () => fetch(health, {
+      method: "GET",
+      headers: { "cache-control": "no-cache" },
+      redirect: "error",
+    }),
+    catch: () => new Unauthorized({}),
+  }).pipe(
+    Effect.filterOrFail(
+      (response) => response.ok && response.headers.get(DEPLOYMENT_HEADER) === expected,
+      () => new Unauthorized({}),
+    ),
+    Effect.asVoid,
+  );
+};
+
 export interface RequestInfo {
   /** Trusted route database from the request path. Not a JWT claim. */
   db: string;
@@ -229,13 +265,21 @@ export const handle = (
           });
         }
       }
-      return json({
-        ok: true,
-        service: "ramose",
-        stage: env.RAMOSE_STAGE ?? "dev",
-        time: Date.now(),
-        operations: operationNames(peer.operations),
-      });
+      const version = deploymentVersion(env);
+      return json(
+        {
+          ok: true,
+          service: "ramose",
+          stage: env.RAMOSE_STAGE ?? "dev",
+          time: Date.now(),
+          operations: operationNames(peer.operations),
+        },
+        200,
+        {
+          "cache-control": "no-store",
+          ...(version === undefined ? {} : { [DEPLOYMENT_HEADER]: version }),
+        },
+      );
     }
 
     const match = /^\/db\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -266,6 +310,7 @@ export const handle = (
         rest === "/live"
           ? authenticateRequest(request).pipe(Effect.map(callerFromVerified))
           : Effect.succeed(callerFromVerified(verified)),
+      ...(rest === "/live" ? { renew: renewCurrentDeployment(request, env) } : {}),
       catalogs: peer.catalogs,
       routeDatabase: DatabaseId.make(db),
       catalogKey: parsed.catalogKey,

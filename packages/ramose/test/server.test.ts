@@ -126,7 +126,10 @@ describe("env keys", () => {
 
 describe("PEER_COMPAT", () => {
   test("one date, nodejs_compat, and the fixed binding / class names", () => {
-    expect(PEER_COMPAT).toEqual({ date: "2026-03-17", flags: ["nodejs_compat"] });
+    expect(PEER_COMPAT).toEqual({
+      date: "2026-03-17",
+      flags: ["nodejs_compat", "global_fetch_strictly_public"],
+    });
     expect(PEER_BINDINGS).toEqual({ store: "STORE", transactor: "TRANSACTOR", replica: "REPLICA" });
     expect(PEER_DO_CLASSES).toEqual({ transactor: "TransactorDO", replica: "QueryReplicaDO" });
   });

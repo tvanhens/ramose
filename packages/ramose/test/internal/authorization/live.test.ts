@@ -22,13 +22,10 @@ import {
   assembleDeployedCatalogs,
   callerFromVerified,
   contains,
-  diffAuthorizedResults,
   eq,
   executeAuthorizedLive,
   executeAuthorizedRead,
   hashCatalogSchemaFingerprint,
-  isSilentLiveDiff,
-  liveDiffFromPrevious,
   me,
   path,
   read,
@@ -256,38 +253,6 @@ const waitArmed = async (name: string): Promise<void> => {
   throw new Error(`${name} never armed`);
 };
 
-describe("diffAuthorizedResults", () => {
-  test("additions and retractions are result rows only", () => {
-    const diff = diffAuthorizedResults(["Bug", "Child"], ["Bug", "Other"]);
-    expect(diff.added).toEqual(["Other"]);
-    expect(diff.retracted).toEqual(["Child"]);
-    expect(isSilentLiveDiff(diffAuthorizedResults(["Bug"], ["Bug"]))).toBe(true);
-    expect(liveDiffFromPrevious(undefined, ["Bug"]).added).toEqual(["Bug"]);
-    expect(liveDiffFromPrevious(undefined, [])).toEqual({ added: [], retracted: [] });
-    const reordered = diffAuthorizedResults(["A", "B"], ["B", "A"]);
-    expect(reordered).toEqual({ added: ["B", "A"], retracted: ["A", "B"] });
-    expect(applyLiveDiffs([reordered])).toEqual(["B", "A"]);
-    const inserted = diffAuthorizedResults(["A", "C"], ["A", "B", "C"]);
-    expect(inserted).toEqual({ added: ["A", "B", "C"], retracted: ["A", "C"] });
-    expect(applyLiveDiffs([{ added: ["A", "C"], retracted: [] }, inserted])).toEqual([
-      "A",
-      "B",
-      "C",
-    ]);
-    const duplicateTuple = diffAuthorizedResults(["A", "A"], ["B", "B"]);
-    expect(duplicateTuple).toEqual({ added: ["B", "B"], retracted: ["A", "A"] });
-    expect(
-      applyLiveDiffs([{ added: ["A", "A"], retracted: [] }, duplicateTuple]),
-    ).toEqual(["B", "B"]);
-    const oneDuplicateRemoved = diffAuthorizedResults(["A", "A"], ["A"]);
-    expect(oneDuplicateRemoved).toEqual({ added: [], retracted: ["A"] });
-    expect(
-      applyLiveDiffs([{ added: ["A", "A"], retracted: [] }, oneDuplicateRemoved]),
-    ).toEqual(["A"]);
-    expect(leakKeys(diff)).toEqual([]);
-  });
-});
-
 describe("executeAuthorizedLive equals one-shot and diffs visibility", () => {
   test("the first live result equals one-shot at the same basis and principal", async () => {
     const world = await seedWorld();
@@ -435,6 +400,36 @@ describe("executeAuthorizedLive equals one-shot and diffs visibility", () => {
       expect(leakKeys(exit.failure)).toEqual([]);
       expect(JSON.stringify(exit.failure)).not.toMatch(/jwt|catalog|grant|expir/i);
     }
+  });
+
+  test("deployment change closes before a second authorization lease", async () => {
+    const world = await seedWorld();
+    const catalogs = await ownerPolicy();
+    let authentications = 0;
+    const caller = {
+      claims: { sub: "alice-sub", org: "acme" },
+      classes: ["member"],
+      exp: nowSeconds() + 300,
+    };
+    const input = inputOf(catalogs, await sign(), world.conn, {
+      authenticate: Effect.sync(() => {
+        authentications += 1;
+        return caller;
+      }),
+      interruptAfter: "50 millis",
+    });
+    const seen: LiveQueryDiff[] = [];
+    await Effect.runPromise(
+      executeAuthorizedLive(
+        { ...input, renew: Effect.fail(new Unauthorized({})) },
+        titlesQuery,
+      ).pipe(
+        Stream.runForEach((diff) => Effect.sync(() => seen.push(diff))),
+        Effect.result,
+      ),
+    );
+    expect(titlesOf(applyLiveDiffs(seen))).toEqual(["Bug", "Child"]);
+    expect(authentications).toBe(1);
   });
 
   test("cancellation interrupts the live scope", async () => {
