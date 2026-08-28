@@ -36,10 +36,6 @@
     "Effect Schema values. That makes the import legal under pnpm and Yarn PnP",
     "and guarantees one version supplies both Ramose and application codecs.",
     "",
-    "`acorn` compiles creation defaults into a closure-free declarative plan at",
-    "catalog assembly. It is a direct runtime dependency because `ramose/db`",
-    "performs that validation in every supported JavaScript environment.",
-    "",
     "`alchemy` is a real dependency, not a peer: it carries the `alchemy` CLI",
     "the quickstart runs. Its types sit in the public deploy signatures, and",
     "the 2.x line is still beta (no semver signal). The range is pinned to the",
@@ -106,7 +102,6 @@
   },
   "dependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
-    "acorn": "^8.18.0",
     "alchemy": ">=2.0.0-beta.74 <2.0.0-beta.75",
     "jose": "^6.0.0"
   },

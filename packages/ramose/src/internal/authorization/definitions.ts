@@ -12,9 +12,11 @@ import {
 } from "../../db/Binding.ts";
 import {
   compileCreationPlan,
+  pairDeployedCreationDefaults,
   resolveCompiledCreationValues,
   type CompiledCreationPlan,
   type CompositionValueMetadata,
+  type DeployedCreationDefaultBinding,
 } from "../../db/creation.ts";
 import type { AnyEntity } from "../../db/Entity.ts";
 import { documentationOf } from "../../db/documentation.ts";
@@ -127,6 +129,7 @@ type NormalizedDefinitionSnapshot = {
     "database" | "version" | "fingerprint"
   >;
   readonly creationPlans: readonly CompiledCreationPlan[];
+  readonly creationDefaultBindings: readonly DeployedCreationDefaultBinding[];
   readonly creationHashMaterial: JsonValue;
   readonly operationSnapshots: readonly OwnedOperationSnapshot[];
 };
@@ -305,8 +308,11 @@ const creationHashMaterial = (
         .map((field) => ({
           field: field.ident,
           default: {
-            source: field.fieldDefault!.source,
-            inputs: creationInputHashValue(field.fieldDefault!.inputs),
+            id: field.fieldDefault!.id,
+            artifactHash: field.fieldDefault!.artifactHash,
+            revision: field.fieldDefault!.revision._tag === "artifact"
+              ? "artifact"
+              : creationInputHashValue(field.fieldDefault!.revision.inputs),
           },
         })),
       fixed: plan.fields
@@ -319,8 +325,11 @@ const creationHashMaterial = (
         .map((field) => ({
           field: field.ident,
           defaults: field.defaults.map((entry) => ({
-            source: entry.source,
-            inputs: creationInputHashValue(entry.inputs),
+            id: entry.id,
+            artifactHash: entry.artifactHash,
+            revision: entry.revision._tag === "artifact"
+              ? "artifact"
+              : creationInputHashValue(entry.revision.inputs),
           })),
         })),
       bindings: plan.bindings,
@@ -391,7 +400,7 @@ const normalizeDefinitionSnapshot = (
   }
   const catalog = CatalogId.make(reachable.definition.key);
   const schema = completeSchema(reachable.definition);
-  const creationPlans = Object.freeze(
+  const creationSnapshots = Object.freeze(
     Object.values(schema.entities)
       .sort((left, right) => compareText(left.ns, right.ns))
       .map((entity) => {
@@ -399,8 +408,14 @@ const normalizeDefinitionSnapshot = (
         if (metadata === undefined) {
           throw invalid(`missing resolved binding metadata for entity '${entity.ns}'`);
         }
-        return compileCreationPlan(entity, metadata);
+        return compileCreationPlan(entity, metadata, artifactHash);
       }),
+  );
+  const creationPlans = Object.freeze(
+    creationSnapshots.map((snapshot) => snapshot.plan),
+  );
+  const creationDefaultBindings = Object.freeze(
+    creationSnapshots.flatMap((snapshot) => snapshot.defaults),
   );
   const operationSnapshots = Result.getOrThrow(
     snapshotOwnedOperations(catalog, [schema], artifactHash),
@@ -412,6 +427,7 @@ const normalizeDefinitionSnapshot = (
     policy: reachable.definition.policy,
     descriptorTables: Object.freeze(descriptorTables(catalog, schema, [])),
     creationPlans,
+    creationDefaultBindings,
     creationHashMaterial: Object.freeze(
       creationHashMaterial(artifactHash, creationPlans),
     ),
@@ -464,6 +480,13 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
     const operations = yield* Effect.fromResult(
       pairDeployedOperations(unit.catalog.operations, lowered.definitions),
     );
+    const creationDefaults = yield* fromPure(
+      "creation default binding failed",
+      () => pairDeployedCreationDefaults(
+        snapshot.creationPlans,
+        snapshot.creationDefaultBindings,
+      ),
+    );
     const composition = yield* Effect.fromResult(compositionFromUnit(unit));
     const creationByEntity = new Map(
       snapshot.creationPlans.map((plan) => [plan.entity, plan] as const),
@@ -480,7 +503,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
           `ramose/create: unknown entity ${JSON.stringify(entityName)} in catalog ${JSON.stringify(catalogKeyText)}`,
         );
       }
-      return resolveCompiledCreationValues(plan, input, context);
+      return resolveCompiledCreationValues(plan, input, context, creationDefaults);
     });
     return Object.freeze({
       catalogKey: snapshot.catalog,

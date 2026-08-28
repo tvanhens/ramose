@@ -16,8 +16,11 @@ import {
   Schema,
   Trait,
   bytes,
+  compileCreationPlan,
+  compositionValueMetadata,
   creationDefault,
   float,
+  pairDeployedCreationDefaults,
   resolveCreationValues,
   stored,
   string,
@@ -173,8 +176,10 @@ describe("catalog definition assembly", () => {
     expect(Object.isFrozen(installedRoot.unit)).toBe(true);
   });
 
-  test("binds the unit hash to the deployed artifact", async () => {
-    const App = Schema({ item: Entity("item", { name: string() }) });
+  test("binds native default implementation identity to the deployed artifact", async () => {
+    const App = Schema({ item: Entity("item", {
+      name: string({ default: () => "native" }),
+    }) });
     const definition = Catalog("app", { schema: App, policy: await policy(App) });
     const first = await assemble(definition);
     const second = await assemble(
@@ -184,6 +189,11 @@ describe("catalog definition assembly", () => {
 
     expect(Result.getOrThrow(first.require(CatalogId.make("app"))).unitHash)
       .not.toBe(Result.getOrThrow(second.require(CatalogId.make("app"))).unitHash);
+    expect(Result.getOrThrow(first.require(CatalogId.make("app"))).resolveCreationValues(
+      "item",
+      {},
+      { now: new Date(0) },
+    )).toEqual({ name: "native" });
   });
 
   test("preserves documentation in deployed discovery metadata without changing identities", async () => {
@@ -741,9 +751,12 @@ describe("catalog definition assembly", () => {
     expect(installed.unit.catalog.entities[0]!.traits).toHaveLength(1);
   });
 
-  test("binds declared captured default inputs and rejects undeclared captures", async () => {
+  test("executes declared inputs and bare deployed callbacks natively", async () => {
     const make = (value: string) =>
-      creationDefault({ value }, (inputs) => inputs.value);
+      creationDefault({ value }, (inputs) => {
+        const decoded = EffectSchema.decodeSync(EffectSchema.String)(inputs.value);
+        return decoded.toUpperCase().toLowerCase();
+      });
     const LeftSchema = Schema({ item: Entity("item", {
       value: string({ default: make("left") }),
     }) });
@@ -789,44 +802,80 @@ describe("catalog definition assembly", () => {
       (await assemble(snapshot)).require(CatalogId.make("snapshot-default")),
     ).unitHash).toBe(installedSnapshot.unitHash);
 
-    const UnsafeSchema = Schema({ item: Entity("item", {
-      value: string({ default: () => "captured" }),
-    }) });
-    const unsafe = Catalog("unsafe-default", {
-      schema: UnsafeSchema,
-      policy: await policy(UnsafeSchema),
+    const trustedPrefix = "native-default-capture";
+    const Bound = Trait("nativeBound", {
+      composedAt: timestamp(),
+    }, {
+      bind: () => ({
+        defaults: {
+          composedAt: ({ now }) => new Date(now.getTime()),
+        },
+      }),
     });
-    expect((await assembleFailure(unsafe)).message).toMatch(
-      /must declare canonical captured inputs with creationDefault/,
+    const NativeSchema = Schema({ nativeItem: Entity("nativeItem", {
+      label: string({ default: ({ now }) => {
+        const imported = EffectSchema.decodeSync(EffectSchema.String)(trustedPrefix);
+        return [imported, now.toISOString()].join(":");
+      } }),
+      createdAt: timestamp({
+        default: ({ now }) => new Date(now.getTime()),
+      }),
+      data: bytes({
+        default: () => Uint8Array.from([1, 2, 3].map((value) => value * 2)),
+      }),
+    }, { traits: [Bound({ key: "native", schema: Schema({}) })] }) });
+    const native = Result.getOrThrow(
+      (await assemble(Catalog("native-default", {
+        schema: NativeSchema,
+        policy: await policy(NativeSchema),
+      }))).require(CatalogId.make("native-default")),
     );
-
-    let undeclared = "initial";
-    expect(() => creationDefault(
-      { useDeclared: true, declared: "safe" },
-      (inputs) => inputs.useDeclared ? inputs.declared : undeclared,
-    )).toThrow(
-      /references undeclared identifier 'undeclared'/,
-    );
-    undeclared = "mutated";
-
-    let forgedCapture = "forged-original";
-    const forged = () => forgedCapture;
-    Object.defineProperty(
-      forged,
-      Symbol.for("ramose.creation-default.identity"),
-      { value: { inputs: {}, source: "() => forgedCapture" } },
-    );
-    const ForgedSchema = Schema({ item: Entity("item", {
-      value: string({ default: forged }),
-    }) });
-    const forgedCatalog = Catalog("forged-default", {
-      schema: ForgedSchema,
-      policy: await policy(ForgedSchema),
+    const now = new Date("2026-08-28T12:34:56.000Z");
+    expect(native.resolveCreationValues("nativeItem", {}, { now })).toEqual({
+      label: `${trustedPrefix}:${now.toISOString()}`,
+      createdAt: now,
+      data: new Uint8Array([2, 4, 6]),
+      composedAt: now,
     });
-    expect((await assembleFailure(forgedCatalog)).message).toMatch(
-      /must declare canonical captured inputs with creationDefault/,
+    expect(JSON.stringify(native.unit)).not.toContain(trustedPrefix);
+  });
+
+  test("fails closed when default descriptors and native callbacks do not pair exactly", () => {
+    const evaluate = () => "native";
+    const Item = Entity("pairedDefault", {
+      value: string({ default: evaluate }),
+    });
+    const snapshot = compileCreationPlan(
+      Item,
+      compositionValueMetadata(Item),
+      artifactHash,
     );
-    forgedCapture = "forged-mutated";
+    const binding = snapshot.defaults[0]!;
+    const descriptor = snapshot.plan.fields[0]!.fieldDefault!;
+
+    expect(binding.evaluate).toBe(evaluate);
+    expect(pairDeployedCreationDefaults(
+      [snapshot.plan],
+      [binding],
+    ).require(descriptor)).toBe(evaluate);
+
+    expect(() => pairDeployedCreationDefaults([snapshot.plan], []))
+      .toThrow(/missing deployed binding/);
+    expect(() => pairDeployedCreationDefaults(
+      [snapshot.plan],
+      [binding, binding],
+    )).toThrow(/duplicate deployed binding/);
+    expect(() => pairDeployedCreationDefaults([{
+      ...snapshot.plan,
+      fields: Object.freeze([
+        ...snapshot.plan.fields,
+        snapshot.plan.fields[0]!,
+      ]),
+    }], [binding])).toThrow(/duplicate descriptor/);
+    expect(() => pairDeployedCreationDefaults([snapshot.plan], [{
+      ...binding,
+      artifactHash: "different-build",
+    }])).toThrow(/mismatched deployed binding/);
   });
 
   test("preserves own __proto__ default inputs in evaluation and identity", async () => {

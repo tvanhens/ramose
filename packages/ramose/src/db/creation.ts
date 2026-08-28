@@ -63,10 +63,19 @@ export interface CompositionValueMetadata {
 }
 
 export type CompiledCreationDefault = {
-  readonly source: string;
-  readonly inputs: CreationDefaultInputs;
-  readonly evaluate: CreationDefault<unknown>;
+  readonly id: string;
+  readonly artifactHash: string;
+  readonly revision:
+    | { readonly _tag: "artifact" }
+    | {
+      readonly _tag: "declared-inputs";
+      readonly inputs: CreationDefaultInputs;
+    };
   readonly path: readonly string[];
+};
+
+export type DeployedCreationDefaultBinding = CompiledCreationDefault & {
+  readonly evaluate: CreationDefault<unknown>;
 };
 
 export type CompiledCreationField = {
@@ -94,26 +103,53 @@ export type CompiledCreationPlan = {
   readonly bindings: readonly CompiledBindingIdentity[];
 };
 
+export type CompiledCreationPlanSnapshot = {
+  readonly plan: CompiledCreationPlan;
+  readonly defaults: readonly DeployedCreationDefaultBinding[];
+};
+
+export type PairedCreationDefaults = {
+  readonly require: (
+    descriptor: CompiledCreationDefault,
+  ) => CreationDefault<unknown>;
+};
+
 const formatPath = (path: readonly string[]): string => path.join(" → ");
 
 const declaredDefault = (
   get: CreationDefault<unknown>,
+  id: string,
+  artifactHash: string,
   path: readonly string[],
-  label: string,
-): CompiledCreationDefault => {
+): {
+  readonly descriptor: CompiledCreationDefault;
+  readonly binding: DeployedCreationDefaultBinding;
+} => {
   const identity = creationDefaultIdentityOf(get);
-  if (identity === undefined) {
-    throw new BindingConflictError(
-      `${label} must declare canonical captured inputs with creationDefault(inputs, get)`,
-    );
-  }
-  return Object.freeze({
-    source: identity.source,
-    inputs: identity.inputs,
-    evaluate: identity.evaluate,
+  const revision = identity === undefined
+    ? Object.freeze({ _tag: "artifact" as const })
+    : Object.freeze({
+      _tag: "declared-inputs" as const,
+      inputs: identity.inputs,
+    });
+  const descriptor = Object.freeze({
+    id,
+    artifactHash,
+    revision,
     path: Object.freeze([...path]),
   });
+  return Object.freeze({
+    descriptor,
+    binding: Object.freeze({ ...descriptor, evaluate: get }),
+  });
 };
+
+const defaultId = (
+  entity: string,
+  field: string,
+  kind: "composition" | "field",
+  ordinal: number,
+): string => JSON.stringify([entity, field, kind, ordinal]);
 
 const sameValue = (
   left: unknown,
@@ -283,7 +319,9 @@ export const compositionValueMetadataFromBindings = (
 export const compileCreationPlan = (
   entity: AnyEntity,
   metadata: CompositionValueMetadata,
-): CompiledCreationPlan => {
+  artifactHash: string,
+): CompiledCreationPlanSnapshot => {
+  const deployedDefaults: DeployedCreationDefaultBinding[] = [];
   const fields = Object.entries(entity.fields).map(([key, field]) => {
     const codec = metadata.encoders.get(field.ident);
     if (codec === undefined) {
@@ -292,19 +330,27 @@ export const compileCreationPlan = (
       );
     }
     const fixed = metadata.fixed.get(field.ident);
-    const defaults = (metadata.defaults.get(field.ident) ?? []).map((entry) =>
-      declaredDefault(
+    const defaults = (metadata.defaults.get(field.ident) ?? []).map((entry, index) => {
+      const compiled = declaredDefault(
         entry.get as CreationDefault<unknown>,
+        defaultId(entity.ns, field.ident, "composition", index),
+        artifactHash,
         entry.path,
-        `composition default '${field.ident}'`,
-      )
-    );
+      );
+      deployedDefaults.push(compiled.binding);
+      return compiled.descriptor;
+    });
     const fieldDefault = typeof field.default === "function"
-      ? declaredDefault(
-        field.default,
-        Object.freeze([`entity:${entity.ns}`, field.ident]),
-        `field default '${field.ident}'`,
-      )
+      ? (() => {
+        const compiled = declaredDefault(
+          field.default,
+          defaultId(entity.ns, field.ident, "field", 0),
+          artifactHash,
+          Object.freeze([`entity:${entity.ns}`, field.ident]),
+        );
+        deployedDefaults.push(compiled.binding);
+        return compiled.descriptor;
+      })()
       : undefined;
     return Object.freeze({
       key,
@@ -326,9 +372,91 @@ export const compileCreationPlan = (
     ),
   }));
   return Object.freeze({
-    entity: entity.ns,
-    fields: Object.freeze(fields),
-    bindings: Object.freeze(bindings),
+    plan: Object.freeze({
+      entity: entity.ns,
+      fields: Object.freeze(fields),
+      bindings: Object.freeze(bindings),
+    }),
+    defaults: Object.freeze(deployedDefaults),
+  });
+};
+
+const sameDefaultDescriptor = (
+  left: CompiledCreationDefault,
+  right: CompiledCreationDefault,
+): boolean =>
+  left.id === right.id &&
+  left.artifactHash === right.artifactHash &&
+  sameValue(left.revision, right.revision) &&
+  sameValue(left.path, right.path);
+
+/**
+ * Pair inert creation-default descriptors with the native callbacks captured
+ * from the same deployed build. Exact pairing is validated before startup
+ * exposes an installed catalog definition.
+ */
+export const pairDeployedCreationDefaults = (
+  plans: readonly CompiledCreationPlan[],
+  bindings: readonly DeployedCreationDefaultBinding[],
+): PairedCreationDefaults => {
+  const byId = new Map<string, DeployedCreationDefaultBinding>();
+  for (const binding of bindings) {
+    if (byId.has(binding.id)) {
+      throw new BindingConflictError(
+        `ramose/default: duplicate deployed binding for ${binding.id}`,
+      );
+    }
+    byId.set(binding.id, binding);
+  }
+
+  const descriptorIds = new Set<string>();
+  const paired = new Map<string, CreationDefault<unknown>>();
+  for (const plan of plans) {
+    for (const field of plan.fields) {
+      const descriptors = [
+        ...field.defaults,
+        ...(field.fieldDefault === undefined ? [] : [field.fieldDefault]),
+      ];
+      for (const descriptor of descriptors) {
+        if (descriptorIds.has(descriptor.id)) {
+          throw new BindingConflictError(
+            `ramose/default: duplicate descriptor for ${descriptor.id}`,
+          );
+        }
+        descriptorIds.add(descriptor.id);
+        const binding = byId.get(descriptor.id);
+        if (binding === undefined) {
+          throw new BindingConflictError(
+            `ramose/default: missing deployed binding for ${descriptor.id}`,
+          );
+        }
+        if (!sameDefaultDescriptor(descriptor, binding)) {
+          throw new BindingConflictError(
+            `ramose/default: mismatched deployed binding for ${descriptor.id}`,
+          );
+        }
+        byId.delete(descriptor.id);
+        paired.set(descriptor.id, binding.evaluate);
+      }
+    }
+  }
+
+  const extra = byId.values().next().value;
+  if (extra !== undefined) {
+    throw new BindingConflictError(
+      `ramose/default: deployed binding has no descriptor for ${extra.id}`,
+    );
+  }
+  return Object.freeze({
+    require: (descriptor: CompiledCreationDefault) => {
+      const evaluate = paired.get(descriptor.id);
+      if (evaluate === undefined) {
+        throw new BindingConflictError(
+          `ramose/default: missing paired callback for ${descriptor.id}`,
+        );
+      }
+      return evaluate;
+    },
   });
 };
 
@@ -361,6 +489,7 @@ export const resolveCompiledCreationValues = (
   plan: CompiledCreationPlan,
   input: Readonly<Record<string, unknown>>,
   context: CreationDefaultContext,
+  deployedDefaults: PairedCreationDefaults,
 ): Readonly<Record<string, unknown>> => {
   if (!(context.now instanceof Date) || !Number.isFinite(context.now.getTime())) {
     throw new CreationValueError("ramose/create: authoritative now must be a valid Date");
@@ -402,7 +531,7 @@ export const resolveCompiledCreationValues = (
     let defaultValue: unknown = undefined;
     let defaultPath: readonly string[] | undefined;
     for (const entry of field.defaults) {
-      const value = entry.evaluate(defaultContext());
+      const value = deployedDefaults.require(entry)(defaultContext());
       if (value === undefined) continue;
       const normalized = cloneBindingValue(value);
       if (defaultPath !== undefined && !sameValue(defaultValue, normalized)) {
@@ -422,7 +551,7 @@ export const resolveCompiledCreationValues = (
       continue;
     }
     if (field.fieldDefault !== undefined) {
-      const value = field.fieldDefault.evaluate(defaultContext());
+      const value = deployedDefaults.require(field.fieldDefault)(defaultContext());
       if (value !== undefined) {
         out[field.key] = decodeCompiledField(field, value, "field default");
         continue;
