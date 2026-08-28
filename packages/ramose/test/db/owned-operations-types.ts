@@ -62,7 +62,7 @@ const BoundEntity = Entity(
         output: Schema.Struct({}),
         run(op, { title }) {
           op.self.set(BoundEntity.title, title);
-          op.set(op.self, BoundEntity.title, title);
+          op.set(BoundEntity, op.self, BoundEntity.title, title);
           op.put(BoundEntity, { title });
           op.update(BoundEntity, op.self.eid, { title });
           // @ts-expect-error engine-owned binding fields are not mutable
@@ -208,11 +208,18 @@ Entity("numberOperationKey", {}, {
   }),
 });
 
+const IssueLike = Trait("issueLike", {});
+const Membership = Entity("membership", {
+  issue: Ref(IssueLike),
+  user: Ref(User),
+  role: string(),
+});
+
 const Issue = Entity(
   "issue",
   { title: string(), assignee: Ref(User, { optional: true }) },
   {
-    traits: [Taggable],
+    traits: [Taggable, IssueLike],
     operations: (Operation) => ({
       create: Operation({
         self: false,
@@ -223,6 +230,15 @@ const Issue = Entity(
           op.create({ slug: input.slug });
           const issue = op.create({ title: input.title, slug: input.slug });
           issue.set(Issue.title, input.title);
+          const membership = op.put(Membership, {
+            issue,
+            user: userId,
+            role: "owner",
+          });
+          membership.set(Membership.issue, issue);
+          membership.set(Membership.role, "admin");
+          // @ts-expect-error a Membership handle cannot fill its User ref slot
+          membership.set(Membership.user, membership);
           // @ts-expect-error an Issue handle cannot fill a User ref slot
           issue.set(Issue.assignee, issue);
           return { id: issue };

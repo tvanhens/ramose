@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { COMPOSED_TRAITS } from "./Composer.ts";
 import type { Eid } from "./Eid.ts";
-import type { AnySchema, Schema as CatalogSchema } from "./Schema.ts";
+import type { AnySchema } from "./Schema.ts";
 import { InvalidRequest, OperationsCoverageError } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type { AnyTrait } from "./Trait.ts";
@@ -228,8 +228,8 @@ type OperationOwnerShape = {
   readonly fields: object;
 };
 
-type OwnerField<Owner extends OperationOwnerShape> = Owner["fields"][
-  keyof Owner["fields"] & string
+type MutableField<Definition extends OperationOwnerShape> = Definition["fields"][
+  keyof Definition["fields"] & string
 ] extends infer Field
   ? Field extends { readonly ident: string }
     ? Field extends { readonly fixed: true }
@@ -288,36 +288,52 @@ type OwnedFieldValue<
     : never
   : OpValue<AnySchema, A>;
 
+type EntityIdentity<Entity extends AnyEntity> = Pick<
+  Entity,
+  "_tag" | "ns" | "fields"
+> &
+  Pick<
+    AnyEntity,
+    "id" | typeof COMPOSED_TRAITS | typeof OwnedOperations
+  >;
+
+type EntityRefOf<Entity extends AnyEntity> = EntityRef<
+  AnySchema,
+  EntityIdentity<Entity>,
+  OwnedHandleRef<EntityIdentity<Entity>>
+>;
+
+/** Entity-specialized handle returned by definition-directed writes. */
+export type OwnedEntityHandle<Entity extends AnyEntity> = Omit<
+  OpHandle<AnySchema>,
+  "eid" | "set" | "remove"
+> & {
+  readonly eid: Eid<Entity> | Tempid;
+  set<const A extends MutableField<Entity>>(
+    field: A,
+    value: OwnedFieldValue<Entity, A>,
+  ): void;
+  remove<const A extends MutableField<Entity>>(
+    field: A,
+    value?: OwnedFieldValue<Entity, A>,
+  ): void;
+};
+
 /** A targeted handle only accepts fields carried by its canonical owner. */
 export type OwnedTargetHandle<Owner extends OperationOwnerShape> = Omit<
   OpHandle<AnySchema>,
   "eid" | "set" | "remove"
 > & {
   readonly eid: Eid<OwnedInvocationEntity<Owner>> | Tempid;
-  set<const A extends OwnerField<Owner>>(
+  set<const A extends MutableField<Owner>>(
     field: A,
     value: OwnedFieldValue<Owner, A>,
   ): void;
-  remove<const A extends OwnerField<Owner>>(
+  remove<const A extends MutableField<Owner>>(
     field: A,
     value?: OwnedFieldValue<Owner, A>,
   ): void;
 };
-
-/** Complete create input for an entity owner, including flattened trait fields. */
-type OwnerCreateAttrs<Owner extends OperationOwnerShape> = Owner extends {
-  readonly _tag: "Entity";
-  readonly fields: AnyEntity["fields"];
-}
-  ? PutCreateAttrs<
-      CatalogSchema<{
-        readonly [K in Owner["ns"]]: Owner &
-          Pick<AnyEntity, "id" | typeof COMPOSED_TRAITS>;
-      }>,
-      Owner & Pick<AnyEntity, "id" | typeof COMPOSED_TRAITS>,
-      never
-    >
-  : never;
 
 type OwnerEntity<Owner extends OperationOwnerShape> = Owner extends {
   readonly _tag: "Entity";
@@ -330,20 +346,97 @@ type OwnerEntity<Owner extends OperationOwnerShape> = Owner extends {
       >
   : never;
 
-type OwnerCatalog<Owner extends OperationOwnerShape> = CatalogSchema<{
-  readonly [K in Owner["ns"]]: OwnerEntity<Owner>;
-}>;
-
-type OwnerPutAttrs<Owner extends OperationOwnerShape> = Owner extends {
-  readonly _tag: "Entity";
+type DecodedFieldValue<Field> = Field extends {
+  readonly schema: { readonly Type: infer Value };
 }
-  ? PutAttrs<OwnerCatalog<Owner>, OwnerEntity<Owner>, never>
+  ? Value
+  : unknown;
+
+type FieldIsOptional<Field> = Field extends { readonly cardinality: "many" }
+  ? true
+  : Field extends { readonly isOptional: true }
+    ? true
+    : Field extends { readonly default: (...args: never[]) => unknown }
+      ? true
+      : Field extends { readonly compositionDefault: true }
+        ? true
+        : undefined extends DecodedFieldValue<Field>
+          ? true
+          : false;
+
+type MutableKeys<Entity extends AnyEntity> = {
+  [K in keyof Entity["fields"] & string]: Entity["fields"][K] extends {
+    readonly fixed: true;
+  }
+    ? never
+    : K;
+}[keyof Entity["fields"] & string];
+
+type RequiredCreateKeys<Entity extends AnyEntity> = {
+  [K in MutableKeys<Entity>]: FieldIsOptional<Entity["fields"][K]> extends true
+    ? never
+    : K;
+}[MutableKeys<Entity>];
+
+type OptionalCreateKeys<Entity extends AnyEntity> = Exclude<
+  MutableKeys<Entity>,
+  RequiredCreateKeys<Entity>
+>;
+
+type DefinitionWriteValue<
+  Entity extends AnyEntity,
+  K extends keyof Entity["fields"] & string,
+> = Entity["fields"][K] extends infer Field
+  ? Field extends { readonly cardinality: "many" }
+    ? ReadonlyArray<OwnedFieldValue<Entity, Field>>
+    : OwnedFieldValue<Entity, Field>
   : never;
 
-type OwnerUpdateMapAttrs<Owner extends OperationOwnerShape> = Owner extends {
+type FixedAttrs<Entity extends AnyEntity> = {
+  [K in keyof Entity["fields"] & string as Entity["fields"][K] extends {
+    readonly fixed: true;
+  }
+    ? K
+    : never]?: never;
+};
+
+type CreateAttrsOf<Entity extends AnyEntity> = {
+  [K in RequiredCreateKeys<Entity>]: DefinitionWriteValue<Entity, K>;
+} & {
+  [K in OptionalCreateKeys<Entity>]?: DefinitionWriteValue<Entity, K> | undefined;
+} & FixedAttrs<Entity>;
+
+type MutableAttrsOf<Entity extends AnyEntity> = {
+  [K in MutableKeys<Entity>]?: DefinitionWriteValue<Entity, K> | undefined;
+} & FixedAttrs<Entity>;
+
+type UpsertKeys<Entity extends AnyEntity> = {
+  [K in MutableKeys<Entity>]: Entity["fields"][K] extends {
+    readonly unique: "upsert";
+  }
+    ? K
+    : never;
+}[MutableKeys<Entity>];
+
+type RequireAtLeastOne<T, Keys extends keyof T> = {
+  [K in Keys]-?: Required<Pick<T, K>> & Partial<Omit<T, K>>;
+}[Keys];
+
+type UpdateMapAttrsOf<Entity extends AnyEntity> = [
+  UpsertKeys<Entity>,
+] extends [never]
+  ? { readonly "update map form needs a unique: \"upsert\" field": never }
+  : RequireAtLeastOne<
+      MutableAttrsOf<Entity>,
+      UpsertKeys<Entity> & keyof MutableAttrsOf<Entity>
+    >;
+
+/** Complete create input for an entity owner, including flattened trait fields. */
+type OwnerCreateAttrs<Owner extends OperationOwnerShape> = Owner extends {
   readonly _tag: "Entity";
+  readonly fields: AnyEntity["fields"];
 }
-  ? UpdateMapAttrs<OwnerCatalog<Owner>, OwnerEntity<Owner>, never>
+  ? CreateAttrsOf<OwnerEntity<Owner>>
   : never;
 
 type OwnedEntityRef<Owner extends OperationOwnerShape> = EntityRef<
@@ -366,38 +459,53 @@ export type OwnedOp<
   readonly self: Self extends true ? OwnedTargetHandle<Owner> : undefined;
   entity(): OwnedTargetHandle<Owner>;
   entity(id: OwnedEntityRef<Owner>): OwnedTargetHandle<Owner>;
-  set<const A extends OwnerField<Owner>>(
-    entity: OwnedEntityRef<Owner>,
+  entity<const Entity extends AnyEntity>(
+    definition: Entity,
+    id: EntityRefOf<NoInfer<Entity>>,
+  ): OwnedEntityHandle<Entity>;
+  set<
+    const Entity extends AnyEntity,
+    const A extends MutableField<NoInfer<Entity>>,
+  >(
+    definition: Entity,
+    entity: EntityRefOf<NoInfer<Entity>>,
     field: A,
-    value: OwnedFieldValue<Owner, A>,
+    value: OwnedFieldValue<NoInfer<Entity>, A>,
   ): void;
-  remove<const A extends OwnerField<Owner>>(
-    entity: OwnedEntityRef<Owner>,
+  remove<
+    const Entity extends AnyEntity,
+    const A extends MutableField<NoInfer<Entity>>,
+  >(
+    definition: Entity,
+    entity: EntityRefOf<NoInfer<Entity>>,
     field: A,
-    value?: OwnedFieldValue<Owner, A>,
+    value?: OwnedFieldValue<NoInfer<Entity>, A>,
   ): void;
-  delete(entity: OwnedEntityRef<Owner>): void;
-  put(
-    entity: OwnerEntity<Owner>,
-    attrs: OwnerCreateAttrs<Owner>,
-  ): OwnedTargetHandle<Owner>;
-  put(
-    entity: OwnerEntity<Owner>,
-    id: OwnedEntityRef<Owner>,
-    attrs: OwnerPutAttrs<Owner>,
-  ): OwnedTargetHandle<Owner>;
-  update(
-    entity: OwnerEntity<Owner>,
-    attrs: OwnerUpdateMapAttrs<Owner>,
-  ): OwnedTargetHandle<Owner>;
-  update(
-    entity: OwnerEntity<Owner>,
-    id: OwnedEntityRef<Owner>,
-    attrs: OwnerPutAttrs<Owner>,
-  ): OwnedTargetHandle<Owner>;
+  delete<const Entity extends AnyEntity>(
+    definition: Entity,
+    entity: EntityRefOf<NoInfer<Entity>>,
+  ): void;
+  put<const Entity extends AnyEntity>(
+    entity: Entity,
+    attrs: CreateAttrsOf<NoInfer<Entity>>,
+  ): OwnedEntityHandle<Entity>;
+  put<const Entity extends AnyEntity>(
+    entity: Entity,
+    id: EntityRefOf<NoInfer<Entity>>,
+    attrs: MutableAttrsOf<NoInfer<Entity>>,
+  ): OwnedEntityHandle<Entity>;
+  update<const Entity extends AnyEntity>(
+    entity: Entity,
+    attrs: UpdateMapAttrsOf<NoInfer<Entity>>,
+  ): OwnedEntityHandle<Entity>;
+  update<const Entity extends AnyEntity>(
+    entity: Entity,
+    id: EntityRefOf<NoInfer<Entity>>,
+    attrs: MutableAttrsOf<NoInfer<Entity>>,
+  ): OwnedEntityHandle<Entity>;
   readonly create: Self extends false
     ? Owner extends { readonly _tag: "Entity" }
-      ? (attrs: OwnerCreateAttrs<Owner>) => OwnedTargetHandle<Owner>
+      ? (attrs: OwnerCreateAttrs<Owner>) => OwnedEntityHandle<OwnerEntity<Owner>>
       : undefined
     : undefined;
 };
