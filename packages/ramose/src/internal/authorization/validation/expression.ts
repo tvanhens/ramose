@@ -10,6 +10,7 @@ import type { ClaimDescriptor, InstalledPrincipalResolution } from "../principal
 import {
   requireEntity,
   requireField,
+  requireOperation,
   requireTrait,
   type PreparedAuthorizationCatalog,
   type RowFocus,
@@ -139,6 +140,9 @@ const validateFocus = (
       case "field":
         yield* requireField(index, focus.field, "rule focus field");
         return;
+      case "operation":
+        yield* requireOperation(index, focus.operation, "rule focus operation");
+        return;
     }
   });
 
@@ -158,6 +162,15 @@ export const validateRule = (
     const derived = yield* walkExpr(index, rule.expr, resource, me, classes, claims, limits, {
       count: 0,
     });
+
+    if (
+      rule.focus._tag === "operation" &&
+      (derived.usesResource || derived.usesMe || derived.traversalDepth !== 0)
+    ) {
+      return yield* invalid(
+        "operation grants may use only principal classes, claims, and subject identity",
+      );
+    }
 
     yield* compareDerived(rule, derived, limits);
     return {

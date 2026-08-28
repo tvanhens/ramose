@@ -4,7 +4,7 @@
 
 import * as Result from "effect/Result";
 import type { FieldDescriptor } from "../catalog.ts";
-import type { EntityId, RuleId, TraitId } from "../identities.ts";
+import type { EntityId, OperationId, RuleId, TraitId } from "../identities.ts";
 import type {
   CanonicalAuthorizationDecisions,
   CanonicalAuthorizationRule,
@@ -14,11 +14,12 @@ import {
   entityComposes,
   requireEntity,
   requireField,
+  requireOperation,
   requireTrait,
   traitComposes,
   type PreparedAuthorizationCatalog,
 } from "./catalog.ts";
-import { entityKey, fieldKey, invalid, traitKey, type ValidateFailure } from "./common.ts";
+import { entityKey, fieldKey, invalid, operationKey, traitKey, type ValidateFailure } from "./common.ts";
 
 const uniqueDecisionIds = (
   ids: ReadonlyArray<RuleId>,
@@ -66,6 +67,13 @@ const ruleFitsField = (
   const owner = index.traits.get(field.id.owner.name);
   return owner !== undefined && ruleFitsTrait(index, rule, owner);
 };
+
+const ruleFitsOperation = (
+  rule: CanonicalAuthorizationRule,
+  target: OperationId,
+): boolean =>
+  rule.focus._tag === "operation" &&
+  operationKey(rule.focus.operation) === operationKey(target);
 
 const lookupRule = (
   rules: ReadonlyMap<RuleId, CanonicalAuthorizationRule>,
@@ -139,6 +147,25 @@ export const validateDecisions = (
         ruleFitsField(index, rule, target)
           ? Result.succeed(undefined)
           : invalid("rule focus is incompatible with field decision"),
+      );
+    }
+
+    const seenOperations = new Set<string>();
+    for (const entry of decisions.operations) {
+      const target = yield* requireOperation(
+        index,
+        entry.target,
+        "operation decision target",
+      );
+      const key = operationKey(target.id);
+      if (seenOperations.has(key)) {
+        return yield* invalid("duplicate operation decision target");
+      }
+      seenOperations.add(key);
+      yield* validateDecisionRules(entry.decision, rules, (rule) =>
+        ruleFitsOperation(rule, target.id)
+          ? Result.succeed(undefined)
+          : invalid("rule focus is incompatible with operation decision"),
       );
     }
   });

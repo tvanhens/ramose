@@ -260,7 +260,10 @@ export const deriveRuleAccessPlan = (
     const resource = yield* resourceFocus(index, rule.focus);
     const me = yield* meEntity(index, principal);
 
-    if (rule.usesResource) {
+    if (rule.focus._tag === "operation") {
+      // Operation grants are principal-only. Their expression walk may add
+      // claim/class/subject work, but never a resource membership lookup.
+    } else if (rule.usesResource) {
       yield* addFocusMembership(index, rule, builder);
     } else if (rule.focus._tag === "field") {
       yield* addField(builder, rule.focus.field);

@@ -7,7 +7,7 @@
  * canonicalization, and hashing reuse those same schemas. Catalog binding
  * (#384) resolves relative identities against one authoritative descriptor.
  * Semantic validation recomputes rule metadata from the bound expression.
- * Install assembles {@link InstalledAuthorizationIRV1} from that verified
+ * Install assembles {@link InstalledAuthorizationIRV2} from that verified
  * path. Structural decode of {@link InstalledAuthorizationIR} is not
  * that brand. The read authoring language (#406) lowers to
  * {@link PolicyTemplateIR}; it is not a public `ramose` / `ramose/db`

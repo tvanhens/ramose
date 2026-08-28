@@ -5,7 +5,7 @@ import { sha256Hex } from "../../../src/internal/core/bytes.ts";
 import {
   AUTHORIZATION_CANONICAL_JSON_VERSION,
   AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1,
-  AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+  AUTHORIZATION_POLICY_HASH_DOMAIN_V2,
   AUTHORIZATION_RULE_HASH_DOMAIN_V1,
   INSTALLED_AUTHORIZATION_IR_VERSION,
   INSTALLED_CATALOG_UNIT_VERSION,
@@ -115,6 +115,25 @@ describe("structural decoding", () => {
     expect(result.success.version).toBe(INSTALLED_AUTHORIZATION_IR_VERSION);
     expect(result.success.languageVersion).toBe("v1");
     expectPlainFrozen(result.success);
+  });
+
+  test("v1 policy shapes without operation decisions require migration", () => {
+    const template = clone(templateEncoded) as {
+      decisions: { operations?: unknown };
+    };
+    const installed = clone(installedEncoded) as {
+      decisions: { operations?: unknown };
+    };
+    const unit = clone(catalogUnitEncoded) as {
+      policy: { decisions: { operations?: unknown } };
+    };
+    delete template.decisions.operations;
+    delete installed.decisions.operations;
+    delete unit.policy.decisions.operations;
+
+    expect(Result.isFailure(decodePolicyTemplateResult(template))).toBe(true);
+    expect(Result.isFailure(decodeInstalledAuthorizationResult(installed))).toBe(true);
+    expect(Result.isFailure(decodeInstalledCatalogUnitResult(unit))).toBe(true);
   });
 
   test("decodes a hand-written catalog unit into plain frozen data", () => {
@@ -514,7 +533,7 @@ describe("schema shape rejections", () => {
 
   test("rejects the wrong version discriminator", () => {
     expectInvalid(
-      decodePolicyTemplateResult({ ...emptyTemplateEncoded, version: 2 }),
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, version: 1 }),
       /2|Literal|version/i,
     );
   });
@@ -524,19 +543,8 @@ describe("schema shape rejections", () => {
     expectInvalid(decodePolicyTemplateResult(untagged), /_tag|PolicyTemplateIR/);
   });
 
-  test("rejects an operation decision as an excess property", () => {
-    expectInvalid(
-      decodePolicyTemplateResult({
-        ...emptyTemplateEncoded,
-        decisions: {
-          entities: [],
-          traits: [],
-          fields: [],
-          operations: [],
-        },
-      }),
-      /extra|unexpected|excess|Key|operations/i,
-    );
+  test("accepts the operation decision table", () => {
+    expect(Result.isSuccess(decodePolicyTemplateResult(emptyTemplateEncoded))).toBe(true);
   });
 
   test("rejects an unknown language version", () => {
@@ -608,8 +616,8 @@ describe("schema shape rejections", () => {
     }
   });
 
-  test("rejects an operation-focused rule at Schema decode", () => {
-    expectInvalid(
+  test("accepts an operation-focused rule at Schema decode", () => {
+    expect(Result.isSuccess(
       decodePolicyTemplateResult({
         ...emptyTemplateEncoded,
         rules: [
@@ -632,8 +640,7 @@ describe("schema shape rejections", () => {
           },
         ],
       }),
-      /operation|_tag|Union|focus/i,
-    );
+    )).toBe(true);
   });
 
   test("rejects deferred rule metadata at Schema decode", () => {
@@ -814,6 +821,7 @@ describe("rule identity collisions", () => {
       decodePolicyTemplateResult({
         ...emptyTemplateEncoded,
         decisions: {
+          operations: [],
           entities: [
             { target, decision: { allow: [], deny: [] } },
             { target: clone(target), decision: { allow: [RULE_SAME], deny: [] } },
@@ -1039,8 +1047,8 @@ describe("canonical serialization", () => {
     const a = Effect.runSync(decodePolicyTemplate(clone(emptyTemplateEncoded)));
     const reordered = {
       languageVersion: "v1",
-      version: 1,
-      decisions: { fields: [], traits: [], entities: [] },
+      version: POLICY_TEMPLATE_IR_VERSION,
+      decisions: { fields: [], traits: [], entities: [], operations: [] },
       rules: [],
       principal: { subjectClaim: "sub" },
       claims: [],
@@ -1089,14 +1097,14 @@ describe("canonical serialization", () => {
     const decoded = Effect.runSync(decodePolicyTemplate(clone(emptyTemplateEncoded)));
     const canonical = canonicalizePolicyTemplate(decoded);
     expect(canonical).toBe(
-      '{"_tag":"PolicyTemplateIR","claims":[],"classes":[],"decisions":{"entities":[],"fields":[],"traits":[]},"languageVersion":"v1","principal":{"subjectClaim":"sub"},"rules":[],"version":1}',
+      '{"_tag":"PolicyTemplateIR","claims":[],"classes":[],"decisions":{"entities":[],"fields":[],"operations":[],"traits":[]},"languageVersion":"v1","principal":{"subjectClaim":"sub"},"rules":[],"version":2}',
     );
     const digest = String(await hashOf(hashPolicyTemplate(decoded)));
-    expect(digest).toBe("8f8b6971eff4b40f8e2629cd45dfe37d0f46ca10c54e1e80c32be8fdac0a51ff");
+    expect(digest).toBe("f4242a73bcb6bab4d882185bc05a834245eb256e5d52883dcd119fb704916323");
     expect(
       await hashOf(
         hashDomainSeparatedCanonicalJson(
-          AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+          AUTHORIZATION_POLICY_HASH_DOMAIN_V2,
           JSON.parse(canonical) as JsonValue,
         ),
       ),
@@ -1108,10 +1116,10 @@ describe("canonical serialization", () => {
     const template = Effect.runSync(decodePolicyTemplate(clone(templateEncoded)));
     const installed = Effect.runSync(decodeInstalledAuthorization(clone(installedEncoded)));
     expect(String(await hashOf(hashPolicyTemplate(template)))).toBe(
-      "9db5ae3c8a479f5b05a236de08214fa270cd5bbf4240a5c0fd6333a8604fc102",
+      "c06589b43c08154b164ace92533c642c4dada666d0701406071260eb96568f18",
     );
     expect(String(await hashOf(hashInstalledAuthorization(installed)))).toBe(
-      "89de81cbb8f8f40925643717eb25a638ad377ccdf383300d2b7cce3fa9808720",
+      "d09abc361ab4618b4bd6444059e7e7b682250be2fb386ab622e7ac650c561411",
     );
     expect(String(await hashOf(hashRelativeRule(template.rules[0])))).toBe(
       "8bd1556841dbd587924d0341f9bf428bf3e776fbcc0d6422fe2103795b5ddb6d",

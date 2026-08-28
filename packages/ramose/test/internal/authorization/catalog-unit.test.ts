@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
   AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V2,
-  AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+  AUTHORIZATION_POLICY_HASH_DOMAIN_V2,
   CatalogId,
   CatalogMismatch,
   CatalogUnitCorrupt,
@@ -41,7 +41,7 @@ import {
   type CatalogDescriptor,
   type FieldRefTarget,
   type InstalledAuthorizationIR,
-  type InstalledAuthorizationIRV1,
+  type InstalledAuthorizationIRV2,
   type InstalledCatalogUnit,
   type InstalledCatalogUnitV2,
   type JsonValue,
@@ -197,6 +197,7 @@ const templateOf = (extras: Partial<PolicyTemplateIR> = {}): PolicyTemplateIR =>
     },
   ],
   decisions: {
+    operations: [],
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
@@ -274,6 +275,7 @@ const richTemplate = (): PolicyTemplateIR =>
       },
     ],
     decisions: {
+      operations: [],
       entities: [
         {
           target: { _tag: "RelativeEntityId", name: "issue" },
@@ -329,10 +331,10 @@ const install = (
   template: PolicyTemplateIR = templateOf(),
 ) => Effect.runPromise(installAuthorization(bindingInput(descriptor, template)));
 
-const seal = (descriptor: CatalogDescriptor, policy: InstalledAuthorizationIRV1) =>
+const seal = (descriptor: CatalogDescriptor, policy: InstalledAuthorizationIRV2) =>
   Effect.runPromise(sealInstalledCatalogUnit(descriptor, policy));
 
-const sealFail = (descriptor: CatalogDescriptor, policy: InstalledAuthorizationIRV1) =>
+const sealFail = (descriptor: CatalogDescriptor, policy: InstalledAuthorizationIRV2) =>
   Effect.runPromise(Effect.flip(sealInstalledCatalogUnit(descriptor, policy)));
 
 const requireSealed = (_unit: InstalledCatalogUnitV2): void => undefined;
@@ -431,7 +433,7 @@ describe("sealInstalledCatalogUnit", () => {
     );
     expect(String(unit.unitHash)).not.toBe(unprefixed);
     const policyDomain = await Effect.runPromise(
-      hashDomainSeparatedCanonicalJson(AUTHORIZATION_POLICY_HASH_DOMAIN_V1, body as JsonValue),
+      hashDomainSeparatedCanonicalJson(AUTHORIZATION_POLICY_HASH_DOMAIN_V2, body as JsonValue),
     );
     expect(String(unit.unitHash)).not.toBe(policyDomain);
     expect(AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V2.endsWith("\0")).toBe(true);
@@ -456,6 +458,17 @@ describe("sealInstalledCatalogUnit", () => {
     requireSealed(decoded.success);
     const structural: InstalledCatalogUnit = decoded.success;
     expect(structural._tag).toBe("InstalledCatalogUnit");
+  });
+
+  test("v2 policy decoding requires the operation decision table", async () => {
+    const descriptor = catalogDescriptor();
+    const policy = await install(descriptor);
+    const unit = await seal(descriptor, policy);
+    const encoded = encodeInstalledCatalogUnit(unit) as {
+      policy: { decisions: { operations?: unknown } };
+    };
+    delete encoded.policy.decisions.operations;
+    expect(Result.isFailure(decodeInstalledCatalogUnitResult(encoded))).toBe(true);
   });
 
   test("recognizes persisted v1 operation rows and requires redeployment", async () => {
@@ -945,7 +958,7 @@ describe("corruption", () => {
       mutate: (unit: InstalledCatalogUnit) =>
         ({
           ...unit,
-          policy: { ...unit.policy, version: 2 },
+          policy: { ...unit.policy, version: 1 },
         }) as unknown as InstalledCatalogUnit,
       rehash: false,
       pattern: /installed policy version/,
@@ -1153,7 +1166,7 @@ describe("mutation isolation", () => {
     const descriptor = { ...catalogDescriptor(), entities };
     const installed = await install(descriptor);
     const classes = [...installed.classes];
-    const policy = { ...installed, classes } as InstalledAuthorizationIRV1;
+    const policy = { ...installed, classes } as InstalledAuthorizationIRV2;
     const unit = await seal(descriptor, policy);
     const originalHash = unit.unitHash;
 
@@ -1184,7 +1197,7 @@ describe("mutation isolation", () => {
     const descriptor = { ...catalogDescriptor(), entities, fields };
     const installed = await install(descriptor);
     const rules = [...installed.rules];
-    const policy = { ...installed, rules } as InstalledAuthorizationIRV1;
+    const policy = { ...installed, rules } as InstalledAuthorizationIRV2;
     const assembled = assembleInstalledCatalogUnit(descriptor, policy);
     expect(Result.isSuccess(assembled)).toBe(true);
     if (!Result.isSuccess(assembled)) return;

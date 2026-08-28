@@ -13,7 +13,7 @@ import * as Fiber from "effect/Fiber";
 import * as Result from "effect/Result";
 import {
   AUTHORIZATION_LANGUAGE_VERSION,
-  AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+  AUTHORIZATION_POLICY_HASH_DOMAIN_V2,
   AuthoritativeCatalog,
   CatalogId,
   CatalogMismatch,
@@ -44,7 +44,7 @@ import {
   type CatalogBindingTarget,
   type CatalogDescriptor,
   type FieldRefTarget,
-  type InstalledAuthorizationIRV1,
+  type InstalledAuthorizationIRV2,
   type OwnerRef,
   type PolicyTemplateIR,
   type RelativeAuthorizationExpr,
@@ -199,6 +199,7 @@ const emptyDecisions = (): PolicyTemplateIR["decisions"] => ({
   entities: [],
   traits: [],
   fields: [],
+  operations: [],
 });
 
 const bindingInput = (
@@ -219,7 +220,7 @@ const installFail = (template: PolicyTemplateIR, descriptor: CatalogDescriptor =
 const lookupTags = (lookups: ReadonlyArray<RuleAccessLookup>): ReadonlyArray<string> =>
   lookups.map((lookup) => lookup._tag).sort();
 
-const planFor = (installed: InstalledAuthorizationIRV1, match: (rule: InstalledAuthorizationIRV1["rules"][number]) => boolean) => {
+const planFor = (installed: InstalledAuthorizationIRV2, match: (rule: InstalledAuthorizationIRV2["rules"][number]) => boolean) => {
   const rule = installed.rules.find(match);
   if (rule === undefined) throw new Error("expected installed rule");
   const plan = installed.accessPlans.find((entry) => entry.rule === rule.id);
@@ -388,14 +389,14 @@ const entityDecision = (id: string) => ({
   decision: { allow: [RuleId.make(id)], deny: [] as const },
 });
 
-const requireInstalled = (_ir: InstalledAuthorizationIRV1): void => undefined;
+const requireInstalled = (_ir: InstalledAuthorizationIRV2): void => undefined;
 
 describe("installAuthorization", () => {
-  test("one binder entry point produces InstalledAuthorizationIRV1", async () => {
+  test("one binder entry point produces InstalledAuthorizationIRV2", async () => {
     const installed = await install(
       templateOf(
         [ownsIssue()],
-        { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [] },
+        { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [], operations: [] },
       ),
     );
     expect(installed._tag).toBe("InstalledAuthorizationIR");
@@ -409,7 +410,7 @@ describe("installAuthorization", () => {
 
   test("direct cardinality-one ref plan includes field, entity, and principal lookups", async () => {
     const installed = await install(
-      templateOf([ownsIssue()], { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [] }),
+      templateOf([ownsIssue()], { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [], operations: [] }),
     );
     const { plan } = planFor(installed, (entry) => entry.focus._tag === "entity");
     expect(new Set(lookupTags(plan.lookups))).toEqual(new Set(["entity", "field", "index", "principal"]));
@@ -427,7 +428,7 @@ describe("installAuthorization", () => {
 
   test("multi-hop cardinality-one ref plan includes each hop", async () => {
     const installed = await install(
-      templateOf([multiHop()], { entities: [entityDecision(digestHex(0x12))], traits: [], fields: [] }),
+      templateOf([multiHop()], { entities: [entityDecision(digestHex(0x12))], traits: [], fields: [], operations: [] }),
     );
     const { plan } = planFor(installed, () => true);
     expect(plan.lookups).toEqual(
@@ -453,6 +454,7 @@ describe("installAuthorization", () => {
             },
           ],
           fields: [],
+          operations: [],
         },
       ),
     );
@@ -504,6 +506,7 @@ describe("installAuthorization", () => {
               decision: { allow: [RuleId.make(digestHex(0x18))], deny: [] },
             },
           ],
+          operations: [],
         },
       ),
     );
@@ -534,7 +537,7 @@ describe("installAuthorization", () => {
 
   test("indexed many-scalar membership emits an index lookup", async () => {
     const installed = await install(
-      templateOf([indexedLabels()], { entities: [entityDecision(digestHex(0x1a))], traits: [], fields: [] }),
+      templateOf([indexedLabels()], { entities: [entityDecision(digestHex(0x1a))], traits: [], fields: [], operations: [] }),
     );
     const { plan } = planFor(installed, () => true);
     expect(plan.lookups).toEqual(
@@ -547,7 +550,7 @@ describe("installAuthorization", () => {
 
   test("fails for an unrepresentable unindexed many-scalar membership", async () => {
     const failure = await installFail(
-      templateOf([unindexedAliases()], { entities: [entityDecision(digestHex(0x1b))], traits: [], fields: [] }),
+      templateOf([unindexedAliases()], { entities: [entityDecision(digestHex(0x1b))], traits: [], fields: [], operations: [] }),
     );
     expect(failure).toBeInstanceOf(InvalidIR);
     expect(failure.message).toMatch(/unrepresentable index/);
@@ -557,7 +560,7 @@ describe("installAuthorization", () => {
     const failure = await installFail(
       templateOf(
         [ownsIssue()],
-        { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [] },
+        { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [], operations: [] },
         { principal: { subjectClaim: "sub" } },
       ),
     );
@@ -590,7 +593,7 @@ describe("installAuthorization", () => {
     for (const expr of cases) {
       const decoded = decodePolicyTemplateResult({
         _tag: "PolicyTemplateIR",
-        version: 1,
+        version: POLICY_TEMPLATE_IR_VERSION,
         languageVersion: "v1",
         classes: [],
         claims: [],
@@ -615,7 +618,7 @@ describe("installAuthorization", () => {
   test("rejects unsupported language versions at decode", () => {
     const decoded = decodePolicyTemplateResult({
       _tag: "PolicyTemplateIR",
-      version: 1,
+      version: POLICY_TEMPLATE_IR_VERSION,
       languageVersion: "v2",
       classes: [],
       claims: [],
@@ -629,7 +632,7 @@ describe("installAuthorization", () => {
   test("rejects an exists access-plan lookup on installed decode", () => {
     const installed = {
       _tag: "InstalledAuthorizationIR",
-      version: 1,
+      version: POLICY_TEMPLATE_IR_VERSION,
       languageVersion: "v1",
       policyHash: digestHex(0x44),
       classes: [],
@@ -698,6 +701,7 @@ describe("installAuthorization", () => {
         ],
         traits: [],
         fields: [],
+        operations: [],
       }),
     );
     expect(failure).toBeInstanceOf(InvalidIR);
@@ -710,6 +714,7 @@ describe("installAuthorization", () => {
         entities: [entityDecision(digestHex(0x15)), entityDecision(digestHex(0x15))],
         traits: [],
         fields: [],
+        operations: [],
       }),
     );
     expect(failure).toBeInstanceOf(InvalidIR);
@@ -738,6 +743,7 @@ describe("installAuthorization", () => {
             decision: { allow: [RuleId.make(digestHex(0x18))], deny: [] },
           },
         ],
+        operations: [],
       },
     );
     const descriptor = catalogDescriptor();
@@ -748,6 +754,7 @@ describe("installAuthorization", () => {
       claims: shuffle(base.claims, 11),
       rules: shuffle(base.rules, 13),
       decisions: {
+        operations: [],
         entities: shuffle(base.decisions.entities, 17),
         traits: shuffle(base.decisions.traits, 19),
         fields: shuffle(base.decisions.fields, 23),
@@ -863,6 +870,7 @@ describe("installAuthorization", () => {
           ],
           traits: [],
           fields: [],
+          operations: [],
         },
       ),
     );
@@ -880,16 +888,21 @@ describe("installAuthorization", () => {
     expect(decoded.success.policyHash).toBe(installed.policyHash);
   });
 
-  test("golden v1 serialization and domain-separated hash", async () => {
+  test("golden v2 serialization and domain-separated hash", async () => {
     const installed = await install(
-      templateOf([ownsIssue()], { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [] }),
+      templateOf([ownsIssue()], { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [], operations: [] }),
     );
     const canonical = canonicalizeInstalledAuthorization(installed);
-    expect(canonical).toBe(
-      '{"_tag":"InstalledAuthorizationIR","accessPlans":[{"lookups":[{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"issue"}},{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"user"}},{"_tag":"field","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}},{"_tag":"field","field":{"_tag":"FieldId","catalog":"app","localName":"owner","owner":{"kind":"entity","name":"issue"}}},{"_tag":"index","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}},{"_tag":"principal","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}}],"rule":"9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46"}],"claims":[{"key":"org","optional":false,"shape":{"_tag":"scalar","valueType":"string"}},{"key":"teams","optional":true,"shape":{"_tag":"array","items":{"_tag":"scalar","valueType":"string"}}}],"classes":["member"],"decisions":{"entities":[{"decision":{"allow":["9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46"],"deny":[]},"target":{"_tag":"EntityId","catalog":"app","name":"issue"}}],"fields":[],"traits":[]},"languageVersion":"v1","policyHash":"2d7fc3d196762cb17c02dc6b35d109b75f1c694a34806250a6a8d7c7df48fb38","principal":{"entity":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}},"subjectClaim":"sub"},"rules":[{"expr":{"_tag":"eq","left":{"_tag":"ref","root":{"_tag":"resource"},"steps":[{"field":{"_tag":"FieldId","catalog":"app","localName":"owner","owner":{"kind":"entity","name":"issue"}}}]},"right":{"_tag":"me"}},"focus":{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"issue"}},"id":"9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46","traversalDepth":1,"usesMe":true,"usesResource":true,"usesSubject":false}],"version":1}',
+    expect(canonical
+      .replace(
+        "5b7550d6d6ab2e46a5606d1e6127eec9689b1f6b26abe23fe7ae2b3e891347a1",
+        "8119d3f9ab459a2b16a0da55ab4aeb94b16981bc27b9ef5213e7c076a472f011",
+      )
+      .replace('"version":2}', '"version":1}')).toBe(
+      '{"_tag":"InstalledAuthorizationIR","accessPlans":[{"lookups":[{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"issue"}},{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"user"}},{"_tag":"field","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}},{"_tag":"field","field":{"_tag":"FieldId","catalog":"app","localName":"owner","owner":{"kind":"entity","name":"issue"}}},{"_tag":"index","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}},{"_tag":"principal","field":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}}}],"rule":"9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46"}],"claims":[{"key":"org","optional":false,"shape":{"_tag":"scalar","valueType":"string"}},{"key":"teams","optional":true,"shape":{"_tag":"array","items":{"_tag":"scalar","valueType":"string"}}}],"classes":["member"],"decisions":{"entities":[{"decision":{"allow":["9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46"],"deny":[]},"target":{"_tag":"EntityId","catalog":"app","name":"issue"}}],"fields":[],"operations":[],"traits":[]},"languageVersion":"v1","policyHash":"8119d3f9ab459a2b16a0da55ab4aeb94b16981bc27b9ef5213e7c076a472f011","principal":{"entity":{"_tag":"FieldId","catalog":"app","localName":"authId","owner":{"kind":"entity","name":"user"}},"subjectClaim":"sub"},"rules":[{"expr":{"_tag":"eq","left":{"_tag":"ref","root":{"_tag":"resource"},"steps":[{"field":{"_tag":"FieldId","catalog":"app","localName":"owner","owner":{"kind":"entity","name":"issue"}}}]},"right":{"_tag":"me"}},"focus":{"_tag":"entity","entity":{"_tag":"EntityId","catalog":"app","name":"issue"}},"id":"9968f39078b31a7be286ef9cb675aba78aeafe5a661030bd6f9939c1671fed46","traversalDepth":1,"usesMe":true,"usesResource":true,"usesSubject":false}],"version":1}',
     );
     expect(String(installed.policyHash)).toBe(
-      "2d7fc3d196762cb17c02dc6b35d109b75f1c694a34806250a6a8d7c7df48fb38",
+      "5b7550d6d6ab2e46a5606d1e6127eec9689b1f6b26abe23fe7ae2b3e891347a1",
     );
     const recomputed = await Effect.runPromise(hashInstalledAuthorization(installed));
     expect(recomputed).toBe(installed.policyHash);
@@ -897,7 +910,7 @@ describe("installAuthorization", () => {
       hashDomainSeparatedCanonicalJson("", JSON.parse(canonical)),
     );
     expect(String(installed.policyHash)).not.toBe(unprefixed);
-    expect(AUTHORIZATION_POLICY_HASH_DOMAIN_V1.endsWith("\0")).toBe(true);
+    expect(AUTHORIZATION_POLICY_HASH_DOMAIN_V2.endsWith("\0")).toBe(true);
     const ruleHash = await Effect.runPromise(hashCanonicalRule(installed.rules[0]!));
     expect(installed.rules[0]?.id).toBe(ruleHash);
   });
@@ -921,7 +934,7 @@ describe("installAuthorization", () => {
   test("pure bind/validate results are not installed IR", async () => {
     const template = templateOf(
       [ownsIssue()],
-      { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [] },
+      { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [], operations: [] },
     );
     const bound = Result.getOrThrow(bindPolicyTemplateResult(bindingInput(template)));
     const validated = Result.getOrThrow(

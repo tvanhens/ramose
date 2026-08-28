@@ -21,6 +21,7 @@ export {
 } from "./expr.ts";
 export { $, path, seededPath } from "./path.ts";
 export { read, type ReadBuilder } from "./read.ts";
+export { invoke, type InvokeBuilder } from "./invoke.ts";
 export { compileReadAuthorization, compileReadAuthorizationResult } from "./compile.ts";
 export {
   lowerOperationSchema,
@@ -36,5 +37,6 @@ export type {
   CompileReadAuthorizationInput,
   FieldTargetFields,
   ReadRule,
+  InvokeRule,
   ReadTarget,
 } from "./types.ts";

@@ -10,6 +10,11 @@
 
 import type { AnySchema } from "../../../db/Schema.ts";
 import { schemaTraits } from "../../../db/Schema.ts";
+import {
+  isOwnedOperation,
+  OwnedOperations,
+  type AnyOwnedOperation,
+} from "../../../db/Operation.ts";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -21,7 +26,7 @@ import {
   hashRelativeRule,
 } from "../decode.ts";
 import { InvalidIR } from "../failures.ts";
-import { RuleId, type OwnerRef, type RelativeEntityId, type RelativeFieldId, type RelativeTraitId } from "../identities.ts";
+import { RuleId, type OwnerRef, type RelativeEntityId, type RelativeFieldId, type RelativeOperationId, type RelativeTraitId } from "../identities.ts";
 import type {
   PolicyTemplateIR,
   RelativeAuthorizationRule,
@@ -37,6 +42,7 @@ import type {
 } from "../expr.ts";
 import {
   isEntityTarget,
+  INVOKE_RULE_TAG,
   isJsonScalar,
   isPathCarrier,
   isTraitTarget,
@@ -45,7 +51,7 @@ import {
   stepFromCarrier,
   type AuthPathStep,
   type CompileReadAuthorizationInput,
-  type ReadRule,
+  type AuthorizationRule as AuthoredAuthorizationRule,
   type ReadTarget,
 } from "./types.ts";
 
@@ -481,9 +487,36 @@ const deriveFlags = (expr: RelativeAuthorizationExpr): DerivedFlags => {
 
 const lowerFocus = (
   schema: AnySchema,
-  target: ReadTarget,
+  target: ReadTarget | AnyOwnedOperation,
 ): Result.Result<RelativeRuleFocus, InvalidIR> =>
   Result.gen(function* () {
+    if (isOwnedOperation(target)) {
+      const owner =
+        target.owner._tag === "Entity"
+          ? schema.entities[target.owner.ns]
+          : schemaTraits(schema).get(target.owner.ns);
+      if (
+        owner === undefined ||
+        owner !== target.owner ||
+        owner[OwnedOperations]?.[target.localName] !== target
+      ) {
+        return yield* invalid(
+          `operation '${target.owner.ns}.${target.localName}' is not in this catalog`,
+        );
+      }
+      return {
+        _tag: "operation" as const,
+        operation: {
+          _tag: "RelativeOperationId" as const,
+          owner: {
+            kind: target.owner._tag === "Entity" ? "entity" as const : "trait" as const,
+            name: target.owner.ns,
+          },
+          localName: target.localName,
+          target: target.self ? "required" as const : "none" as const,
+        },
+      };
+    }
     if (isEntityTarget(target)) {
       if (!Object.hasOwn(schema.entities, target.ns)) {
         return yield* invalid(`entity '${target.ns}' is not in this catalog`);
@@ -506,7 +539,7 @@ const lowerFocus = (
       const field = yield* lowerFieldId(schema, stepFromCarrier(target));
       return { _tag: "field" as const, field: field.id };
     }
-    return yield* invalid("read() target must be an Entity, Trait, or stamped field");
+    return yield* invalid("rule target must be a reachable Entity, Trait, field, or owned operation");
   });
 
 const focusTargetKey = (focus: RelativeRuleFocus): string => {
@@ -517,12 +550,14 @@ const focusTargetKey = (focus: RelativeRuleFocus): string => {
       return `trait\0${focus.trait.name}`;
     case "field":
       return `field\0${focus.field.owner.kind}\0${focus.field.owner.name}\0${focus.field.localName}`;
+    case "operation":
+      return `operation\0${focus.operation.owner.kind}\0${focus.operation.owner.name}\0${focus.operation.localName}\0${focus.operation.target}`;
   }
 };
 
 const focusTarget = (
   focus: RelativeRuleFocus,
-): RelativeEntityId | RelativeTraitId | RelativeFieldId => {
+): RelativeEntityId | RelativeTraitId | RelativeFieldId | RelativeOperationId => {
   switch (focus._tag) {
     case "entity":
       return focus.entity;
@@ -530,6 +565,8 @@ const focusTarget = (
       return focus.trait;
     case "field":
       return focus.field;
+    case "operation":
+      return focus.operation;
   }
 };
 
@@ -567,15 +604,18 @@ const lowerPrincipal = (
     return { subjectClaim, entity: field.id };
   });
 
-const requireReadRule = (rule: unknown): Result.Result<ReadRule, InvalidIR> => {
+const requireAuthorizationRule = (
+  rule: unknown,
+): Result.Result<AuthoredAuthorizationRule, InvalidIR> => {
   if (
     typeof rule !== "object" ||
     rule === null ||
-    (rule as { readonly _tag?: unknown })._tag !== READ_RULE_TAG
+    (rule as { readonly _tag?: unknown })._tag !== READ_RULE_TAG &&
+    (rule as { readonly _tag?: unknown })._tag !== INVOKE_RULE_TAG
   ) {
-    return invalid("rules must be produced by read().when / read().deny");
+    return invalid("rules must be produced by read() or invoke()");
   }
-  return Result.succeed(rule as ReadRule);
+  return Result.succeed(rule as AuthoredAuthorizationRule);
 };
 
 type DecisionBucket = {
@@ -616,7 +656,7 @@ export const compileReadAuthorizationResult = (
     const documentBudget: NodeBudget = { nodes: 0 };
 
     for (let i = 0; i < input.rules.length; i++) {
-      const authored = yield* requireReadRule(input.rules[i]);
+      const authored = yield* requireAuthorizationRule(input.rules[i]);
       const focus = yield* lowerFocus(input.schema, authored.target);
       const lowered = yield* lowerExpr(input.schema, authored.expr, documentBudget);
       for (const key of lowered.claims) {
@@ -632,6 +672,14 @@ export const compileReadAuthorizationResult = (
         }
       }
       const flags = deriveFlags(lowered.expr);
+      if (
+        authored._tag === INVOKE_RULE_TAG &&
+        (flags.usesResource || flags.usesMe || flags.traversalDepth !== 0)
+      ) {
+        return yield* invalid(
+          "operation grants may use only principal classes, claims, and subject identity",
+        );
+      }
       const id = RuleId.make(placeholderRuleId(i));
       const rule = {
         id,
@@ -676,17 +724,23 @@ export const compileReadAuthorizationResult = (
       readonly target: RelativeFieldId;
       readonly decision: { readonly allow: readonly RuleId[]; readonly deny: readonly RuleId[] };
     }> = [];
+    const operations: Array<{
+      readonly target: RelativeOperationId;
+      readonly decision: { readonly allow: readonly RuleId[]; readonly deny: readonly RuleId[] };
+    }> = [];
     for (const bucket of buckets.values()) {
       const decision = { allow: bucket.allow, deny: bucket.deny };
       if (bucket.focusKey.startsWith("entity\0")) {
         entities.push({ target: bucket.target as RelativeEntityId, decision });
       } else if (bucket.focusKey.startsWith("trait\0")) {
         traits.push({ target: bucket.target as RelativeTraitId, decision });
-      } else {
+      } else if (bucket.focusKey.startsWith("field\0")) {
         fields.push({ target: bucket.target as RelativeFieldId, decision });
+      } else {
+        operations.push({ target: bucket.target as RelativeOperationId, decision });
       }
     }
-    const decisions = { entities, traits, fields };
+    const decisions = { entities, traits, fields, operations };
 
     const principal = yield* lowerPrincipal(input.schema, input.principal);
     const document = {
@@ -742,6 +796,13 @@ export const compileReadAuthorization = Effect.fn("Authorization.compileReadAuth
           },
         })),
         fields: template.decisions.fields.map((entry) => ({
+          ...entry,
+          decision: {
+            allow: remapRuleIds(entry.decision.allow, idMap),
+            deny: remapRuleIds(entry.decision.deny, idMap),
+          },
+        })),
+        operations: template.decisions.operations.map((entry) => ({
           ...entry,
           decision: {
             allow: remapRuleIds(entry.decision.allow, idMap),

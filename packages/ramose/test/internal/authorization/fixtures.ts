@@ -31,7 +31,7 @@ const v1Flags = {
 
 export const templateEncoded = {
   _tag: "PolicyTemplateIR",
-  version: 1,
+  version: 2,
   languageVersion: "v1",
   classes: ["member"],
   claims: [
@@ -100,6 +100,7 @@ export const templateEncoded = {
     },
   ],
   decisions: {
+    operations: [],
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
@@ -118,7 +119,7 @@ export const templateEncoded = {
 
 export const installedEncoded = {
   _tag: "InstalledAuthorizationIR",
-  version: 1,
+  version: 2,
   languageVersion: "v1",
   policyHash: POLICY_HASH_PLACEHOLDER,
   classes: ["member"],
@@ -157,6 +158,7 @@ export const installedEncoded = {
     },
   ],
   decisions: {
+    operations: [],
     entities: [
       {
         target: { _tag: "EntityId", catalog: "app", name: "issue" },
@@ -248,11 +250,11 @@ export const catalogUnitEncoded = {
 
 export const emptyTemplateEncoded = {
   _tag: "PolicyTemplateIR",
-  version: 1,
+  version: 2,
   languageVersion: "v1",
   classes: [],
   claims: [],
   principal: { subjectClaim: "sub" },
   rules: [],
-  decisions: { entities: [], traits: [], fields: [] },
+  decisions: { entities: [], traits: [], fields: [], operations: [] },
 } as const;

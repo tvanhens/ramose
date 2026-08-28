@@ -9,7 +9,7 @@
  * lives in the Effect orchestration shell via the Web Crypto API
  * (`crypto.subtle.digest`), matching #337. Structural success is not
  * runtime acceptance — template binding is #384; installed decode is
- * not {@link InstalledAuthorizationIRV1}. Revalidation is #368.
+ * not {@link InstalledAuthorizationIRV2}. Revalidation is #368.
  */
 
 import * as Effect from "effect/Effect";
@@ -69,7 +69,7 @@ import type { JsonValue } from "./json.ts";
 import {
   AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1,
   AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V2,
-  AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+  AUTHORIZATION_POLICY_HASH_DOMAIN_V2,
   AUTHORIZATION_RULE_HASH_DOMAIN_V1,
 } from "./version.ts";
 import { sha256Hex } from "../core/bytes.ts";
@@ -92,7 +92,7 @@ export const decodePolicyTemplateResult = (
     input,
   );
 
-/** Structural document only. Not {@link InstalledAuthorizationIRV1}. */
+/** Structural document only. Not {@link InstalledAuthorizationIRV2}. */
 export const decodeInstalledAuthorizationResult = (
   input: unknown,
 ): Result.Result<InstalledAuthorizationIRType, InvalidIR> =>
@@ -248,7 +248,7 @@ export const hashPolicyTemplate = Effect.fn("Authorization.hashPolicyTemplate")(
   document: PolicyTemplateIRType,
 ) {
   const digest = yield* hashDomainSeparatedCanonicalJson(
-    AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+    AUTHORIZATION_POLICY_HASH_DOMAIN_V2,
     encodedJson(encodePolicyTemplate(document)),
   );
   return PolicyHash.make(digest);
@@ -257,7 +257,7 @@ export const hashPolicyTemplate = Effect.fn("Authorization.hashPolicyTemplate")(
 export const hashInstalledAuthorization = Effect.fn("Authorization.hashInstalledAuthorization")(
   function* (document: InstalledAuthorizationIRType) {
     const digest = yield* hashDomainSeparatedCanonicalJson(
-      AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
+      AUTHORIZATION_POLICY_HASH_DOMAIN_V2,
       omitKey(encodedJson(encodeInstalledAuthorization(document)), "policyHash"),
     );
     return PolicyHash.make(digest);
@@ -436,10 +436,12 @@ const decisionCollisions = (decisions: {
   readonly entities: ReadonlyArray<{ readonly target: unknown }>;
   readonly traits: ReadonlyArray<{ readonly target: unknown }>;
   readonly fields: ReadonlyArray<{ readonly target: unknown }>;
+  readonly operations: ReadonlyArray<{ readonly target: unknown }>;
 }): InvalidIR | undefined =>
   uniqueEncoded(decisions.entities.map((entry) => entry.target), "entity decision target") ??
   uniqueEncoded(decisions.traits.map((entry) => entry.target), "trait decision target") ??
-  uniqueEncoded(decisions.fields.map((entry) => entry.target), "field decision target");
+  uniqueEncoded(decisions.fields.map((entry) => entry.target), "field decision target") ??
+  uniqueEncoded(decisions.operations.map((entry) => entry.target), "operation decision target");
 
 const entityDescriptorCollisions = (
   entities: CatalogDescriptor["entities"],

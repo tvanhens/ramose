@@ -19,7 +19,7 @@ import type {
   OperationDescriptor,
   OperationInputShape,
 } from "../catalog.ts";
-import type { EntityId, FieldId, OwnerRef, TraitId } from "../identities.ts";
+import type { EntityId, FieldId, OperationId, OwnerRef, TraitId } from "../identities.ts";
 import type { CatalogBindingTarget } from "../ir.ts";
 import {
   fieldKey,
@@ -42,6 +42,7 @@ export type PreparedAuthorizationCatalog = {
   readonly entities: ReadonlyMap<string, EntityId>;
   readonly traits: ReadonlyMap<string, TraitId>;
   readonly fields: ReadonlyMap<string, FieldDescriptor>;
+  readonly operations: ReadonlyMap<string, OperationDescriptor>;
   readonly entityTraits: ReadonlyMap<string, ReadonlySet<string>>;
   readonly traitTraits: ReadonlyMap<string, ReadonlySet<string>>;
 };
@@ -469,6 +470,7 @@ export const prepareAuthorizationCatalog = (
       entities,
       traits,
       fields,
+      operations,
       entityTraits,
       traitTraits,
     };
@@ -506,6 +508,22 @@ export const requireField = (
   Result.gen(function* () {
     yield* catalogOfIdentity(id, index.target, label);
     const found = index.fields.get(fieldKey(id));
+    if (found === undefined) {
+      return yield* invalid(
+        `stale identity: missing ${label} '${id.owner.kind}:${id.owner.name}.${id.localName}'`,
+      );
+    }
+    return found;
+  });
+
+export const requireOperation = (
+  index: PreparedAuthorizationCatalog,
+  id: OperationId,
+  label: string,
+): Result.Result<OperationDescriptor, ValidateFailure> =>
+  Result.gen(function* () {
+    yield* catalogOfIdentity(id, index.target, label);
+    const found = index.operations.get(operationKey(id));
     if (found === undefined) {
       return yield* invalid(
         `stale identity: missing ${label} '${id.owner.kind}:${id.owner.name}.${id.localName}'`,

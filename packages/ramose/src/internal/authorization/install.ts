@@ -2,7 +2,7 @@
  * Core-v1 installed-IR assembly.
  *
  * The only production path from {@link CatalogBindingInput} to
- * {@link InstalledAuthorizationIRV1}. Binding and semantic validation
+ * {@link InstalledAuthorizationIRV2}. Binding and semantic validation
  * run through their Effect shells (hashed / verified). Plan derivation
  * and table normalization stay pure. The policy hash is recomputed
  * through the #357 RFC 8785 / Web Crypto contract and domain-separated
@@ -10,7 +10,7 @@
  *
  * Unhashed tables never leave this module and are not
  * {@link InstalledAuthorizationIR}. Structural decode output is not
- * {@link InstalledAuthorizationIRV1}; only this module seals the brand.
+ * {@link InstalledAuthorizationIRV2}; only this module seals the brand.
  */
 
 import * as Brand from "effect/Brand";
@@ -33,7 +33,7 @@ import {
   type CatalogBindingInput,
   type CatalogBindingTarget,
   type InstalledAuthorizationIR as InstalledAuthorizationIRType,
-  type InstalledAuthorizationIRV1 as InstalledAuthorizationIRV1Type,
+  type InstalledAuthorizationIRV2 as InstalledAuthorizationIRV2Type,
   type PolicyTemplateIR,
   type ValidatedAuthorizationIR,
 } from "./ir.ts";
@@ -48,7 +48,7 @@ export type InstallFailure = BindFailure;
 
 const PLACEHOLDER_POLICY_HASH = PolicyHash.make("0".repeat(64));
 
-const verifiedInstalledAuthorization = Brand.nominal<InstalledAuthorizationIRV1Type>();
+const verifiedInstalledAuthorization = Brand.nominal<InstalledAuthorizationIRV2Type>();
 
 type UnhashedInstalledTables = Omit<
   InstalledAuthorizationIRType,
@@ -131,7 +131,7 @@ const sealInstalledAuthorization = Effect.fn("Authorization.sealInstalledAuthori
   function* (
     validated: ValidatedAuthorizationIR,
     descriptor: CatalogDescriptor,
-  ): Effect.fn.Return<InstalledAuthorizationIRV1Type, InstallFailure> {
+  ): Effect.fn.Return<InstalledAuthorizationIRV2Type, InstallFailure> {
     const tables = yield* Effect.fromResult(assembleUnhashedTables(validated, descriptor));
     const hashingDocument: InstalledAuthorizationIRType = {
       _tag: "InstalledAuthorizationIR",
@@ -159,7 +159,7 @@ const sealInstalledAuthorization = Effect.fn("Authorization.sealInstalledAuthori
 export const installAuthorization = Effect.fn("Authorization.installAuthorization")(
   function* (
     input: CatalogBindingInput,
-  ): Effect.fn.Return<InstalledAuthorizationIRV1Type, InstallFailure> {
+  ): Effect.fn.Return<InstalledAuthorizationIRV2Type, InstallFailure> {
     yield* Effect.fromResult(
       requireLanguageVersion(input.template.languageVersion, "policy template"),
     );

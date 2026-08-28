@@ -751,14 +751,18 @@ export interface OwnedOperation<
   readonly run: OwnedRun<Owner, ICodec, OCodec, Self, Writes>;
 }
 
-export type AnyOwnedOperation = OwnedOperation<
-  OperationOwner,
-  string,
-  Schema.Top,
-  Schema.Top,
-  boolean,
-  readonly AnyEntity[]
->;
+/** Erased owned operation used by registries without losing concrete assignability. */
+export type AnyOwnedOperation = {
+  readonly _tag: "OwnedOperation";
+  readonly owner: OperationOwner;
+  readonly localName: string;
+  readonly input: Schema.Top;
+  readonly output: Schema.Top;
+  readonly self: boolean;
+  readonly writes: readonly AnyEntity[];
+  readonly doc: string | undefined;
+  readonly run: (...args: never[]) => unknown;
+};
 
 type BoundOwnedOperation<
   Owner extends OperationOwner,

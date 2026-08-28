@@ -31,6 +31,7 @@ import type {
   OwnerRef,
   RelativeEntityId,
   RelativeFieldId,
+  RelativeOperationId,
   RelativeTraitId,
   RuleId,
   TraitId,
@@ -82,6 +83,7 @@ type CatalogIndex = {
   readonly entities: ReadonlyMap<string, EntityId>;
   readonly traits: ReadonlyMap<string, TraitId>;
   readonly fields: ReadonlyMap<string, FieldId>;
+  readonly operations: ReadonlyMap<string, OperationId>;
   readonly owners: ReadonlyMap<string, OwnerRef>;
   readonly fieldsByOwnerName: ReadonlyMap<string, ReadonlyArray<FieldId>>;
 };
@@ -292,6 +294,7 @@ const indexCatalog = (
       entities,
       traits,
       fields,
+      operations,
       owners,
       fieldsByOwnerName,
     };
@@ -406,6 +409,34 @@ const bindField = (
   );
 };
 
+const bindOperation = (
+  index: CatalogIndex,
+  relative: RelativeOperationId,
+): Result.Result<OperationId, BindFailure> => {
+  if (isBlank(relative.localName)) return invalid("blank operation local name");
+  if (isBlank(relative.owner.name)) return invalid("blank operation owner name");
+  const exact = index.operations.get(
+    operationKey(relative.owner, relative.localName, relative.target),
+  );
+  if (exact !== undefined) return Result.succeed(exact);
+
+  if (!index.owners.has(ownerKey(relative.owner))) {
+    const swapped: OwnerRef = { kind: otherOwnerKind(relative.owner.kind), name: relative.owner.name };
+    if (index.owners.has(ownerKey(swapped))) {
+      return invalid(
+        `wrong owner kind for operation '${relative.owner.name}.${relative.localName}': expected ${relative.owner.kind}`,
+      );
+    }
+    return invalid(
+      `missing owner ${relative.owner.kind} '${relative.owner.name}' for operation '${relative.localName}'`,
+    );
+  }
+
+  return invalid(
+    `missing operation '${relative.owner.kind}:${relative.owner.name}.${relative.localName}:${relative.target}'`,
+  );
+};
+
 const bindFocus = (
   index: CatalogIndex,
   focus: RelativeRuleFocus,
@@ -423,6 +454,10 @@ const bindFocus = (
       case "field": {
         const field = yield* bindField(index, focus.field);
         return { _tag: "field" as const, field };
+      }
+      case "operation": {
+        const operation = yield* bindOperation(index, focus.operation);
+        return { _tag: "operation" as const, operation };
       }
     }
   });
@@ -564,7 +599,10 @@ const bindDecisions = (
     );
     const traits = yield* bindDecisionEntries(decisions.traits, (target) => bindTrait(index, target));
     const fields = yield* bindDecisionEntries(decisions.fields, (target) => bindField(index, target));
-    return { entities, traits, fields };
+    const operations = yield* bindDecisionEntries(decisions.operations, (target) =>
+      bindOperation(index, target)
+    );
+    return { entities, traits, fields, operations };
   });
 
 const bindPrincipal = (
@@ -677,6 +715,7 @@ const restampBoundRuleIds = Effect.fn("Authorization.restampBoundRuleIds")(funct
       entities: remapDecisionEntries(bound.decisions.entities, idMap),
       traits: remapDecisionEntries(bound.decisions.traits, idMap),
       fields: remapDecisionEntries(bound.decisions.fields, idMap),
+      operations: remapDecisionEntries(bound.decisions.operations, idMap),
     },
   });
 });

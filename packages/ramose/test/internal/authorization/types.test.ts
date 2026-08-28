@@ -78,7 +78,7 @@ import {
   decodeInstalledCatalogUnitResult,
   InstalledAuthorizationIR,
   InstalledCatalogUnit,
-  type InstalledAuthorizationIRV1,
+  type InstalledAuthorizationIRV2,
   type InstalledCatalogUnitV2,
   type OperationId as OperationIdType,
   type OperationInputFieldDescriptor,
@@ -127,7 +127,7 @@ export type _noPublicAuthorization = Expect<
       | "validateBoundAuthorization"
       | "installAuthorization"
       | "installAgainstAuthoritativeCatalog"
-      | "InstalledAuthorizationIRV1"
+      | "InstalledAuthorizationIRV2"
       | "InstalledCatalogUnit"
       | "InstalledCatalogUnitV2"
       | "sealInstalledCatalogUnit"
@@ -194,9 +194,9 @@ export type _validatedFromSchema = Expect<
 export type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
 export type _catalogUnitFromSchema = Expect<Equal<InstalledCatalogUnit, typeof InstalledCatalogUnit.Type>>;
 export type _structuralNotVerified = Expect<
-  Equal<Extends<InstalledAuthorizationIR, InstalledAuthorizationIRV1>, false>
+  Equal<Extends<InstalledAuthorizationIR, InstalledAuthorizationIRV2>, false>
 >;
-export type _verifiedIsStructural = Expect<Extends<InstalledAuthorizationIRV1, InstalledAuthorizationIR>>;
+export type _verifiedIsStructural = Expect<Extends<InstalledAuthorizationIRV2, InstalledAuthorizationIR>>;
 export type _catalogUnitStructuralNotVerified = Expect<
   Equal<Extends<InstalledCatalogUnit, InstalledCatalogUnitV2>, false>
 >;
@@ -209,7 +209,7 @@ type DecodedInstalled = Extract<
 >["success"];
 export type _decodeIsStructural = Expect<Equal<DecodedInstalled, InstalledAuthorizationIR>>;
 export type _decodeNotVerified = Expect<
-  Equal<Extends<DecodedInstalled, InstalledAuthorizationIRV1>, false>
+  Equal<Extends<DecodedInstalled, InstalledAuthorizationIRV2>, false>
 >;
 type DecodedCatalogUnit = Extract<
   ReturnType<typeof decodeInstalledCatalogUnitResult>,
@@ -351,7 +351,7 @@ export type _partialBoundNotInstalled = Expect<
 >;
 type UnhashedInstalledTables = Omit<InstalledAuthorizationIR, "_tag" | "policyHash">;
 export type _unhashedTablesNotInstalled = Expect<
-  Equal<Extends<UnhashedInstalledTables, InstalledAuthorizationIRV1>, false>
+  Equal<Extends<UnhashedInstalledTables, InstalledAuthorizationIRV2>, false>
 >;
 export type _unhashedTablesNotInstalledAlias = Expect<
   Equal<Extends<UnhashedInstalledTables, InstalledAuthorizationIR>, false>
@@ -536,8 +536,8 @@ type OperationFocus = {
   readonly _tag: "operation";
   readonly operation: RelativeOperationIdType;
 };
-export type _operationFocusRejected = Expect<
-  Equal<Extends<OperationFocus, PolicyTemplateIR["rules"][number]["focus"]>, false>
+export type _operationFocusAccepted = Expect<
+  Equal<Extends<OperationFocus, PolicyTemplateIR["rules"][number]["focus"]>, true>
 >;
 
 type BindingWithoutDatabase = {
@@ -679,6 +679,7 @@ const templateFixture: PolicyTemplateIR = {
     },
   ],
   decisions: {
+    operations: [],
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
@@ -721,7 +722,7 @@ const installedFixture: InstalledAuthorizationIR = {
     entity: FieldId.make({ catalog, owner: { kind: "entity", name: "user" }, localName: "authId" }),
   },
   rules: [],
-  decisions: { entities: [], traits: [], fields: [] },
+  decisions: { entities: [], traits: [], fields: [], operations: [] },
   accessPlans: [],
 };
 
@@ -843,7 +844,7 @@ const _operationFixtures = () => {
   const asInstalled: InstalledAuthorizationIR = templateFixture;
 
   // @ts-expect-error — structural document is not verified installed v1
-  const structuralAsVerified: InstalledAuthorizationIRV1 = installedFixture;
+  const structuralAsVerified: InstalledAuthorizationIRV2 = installedFixture;
 
   // @ts-expect-error — structural catalog unit is not verified installed catalog unit v2
   const structuralUnitAsVerified: InstalledCatalogUnitV2 = catalogUnitFixture;
@@ -863,7 +864,7 @@ const _operationFixtures = () => {
     principal: { subjectClaim: "sub" },
     languageVersion: AUTHORIZATION_LANGUAGE_VERSION,
     rules: [] as const,
-    decisions: { entities: [], traits: [], fields: [] },
+    decisions: { entities: [], traits: [], fields: [], operations: [] },
   } satisfies BoundAuthorizationIR;
 
   const validatedFixture = {
@@ -879,7 +880,7 @@ const _operationFixtures = () => {
   const validatedAsInstalled: InstalledAuthorizationIR = validatedFixture;
 
   // @ts-expect-error — a validated intermediate is not installed v1 IR
-  const validatedAsInstalledV1: InstalledAuthorizationIRV1 = validatedFixture;
+  const validatedAsInstalledV2: InstalledAuthorizationIRV2 = validatedFixture;
 
   const unhashedTables: UnhashedInstalledTables = {
     version: INSTALLED_AUTHORIZATION_IR_VERSION,
@@ -888,11 +889,11 @@ const _operationFixtures = () => {
     claims: [],
     principal: { subjectClaim: "sub" },
     rules: [],
-    decisions: { entities: [], traits: [], fields: [] },
+    decisions: { entities: [], traits: [], fields: [], operations: [] },
     accessPlans: [],
   };
   // @ts-expect-error — unhashed tables are not runtime-acceptable installed IR
-  const unhashedAsInstalled: InstalledAuthorizationIRV1 = unhashedTables;
+  const unhashedAsInstalled: InstalledAuthorizationIRV2 = unhashedTables;
 
   // @ts-expect-error — a bound intermediate is not validated IR
   const boundAsValidated: ValidatedAuthorizationIR = boundFixture;
@@ -902,7 +903,7 @@ const _operationFixtures = () => {
 
   const partialBound: Pick<BoundAuthorizationIR, "rules" | "decisions"> = {
     rules: [],
-    decisions: { entities: [], traits: [], fields: [] },
+    decisions: { entities: [], traits: [], fields: [], operations: [] },
   };
   // @ts-expect-error — a partial bound result is not installed IR
   const partialAsInstalled: InstalledAuthorizationIR = partialBound;

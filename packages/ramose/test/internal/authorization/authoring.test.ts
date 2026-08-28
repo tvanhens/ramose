@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
+import * as EffectSchema from "effect/Schema";
 import {
   InvalidIR,
   bindPolicyTemplateResult,
@@ -35,12 +36,13 @@ import {
   not,
   path,
   read,
+  invoke,
   subject,
   type AuthExpr,
   type PolicyTemplateIR,
   type ReadRule,
 } from "../../../src/internal/authorization/index.ts";
-import { Entity, Schema, string } from "../../../src/db/internal.ts";
+import { Entity, OwnedOperations, Schema, string } from "../../../src/db/internal.ts";
 import "./authoring-types.ts";
 import {
   App,
@@ -92,6 +94,58 @@ const assertInert = (value: unknown, seen = new WeakSet<object>()): void => {
 };
 
 describe("compile common rules", () => {
+  test("owned operations compile to principal-only exact decisions", () => {
+    const Operated = Entity(
+      "operated",
+      { title: string() },
+      {
+        operations: (Operation) => ({
+          rename: Operation({
+            input: EffectSchema.Struct({ title: EffectSchema.String }),
+            output: EffectSchema.Struct({}),
+            run() {
+              return {};
+            },
+          }),
+        }),
+      },
+    );
+    const OperatedSchema = Schema({ operated: Operated });
+    const rename = Operated[OwnedOperations].rename;
+    const template = Result.getOrThrow(
+      compileReadAuthorizationResult({
+        schema: OperatedSchema,
+        classes: ["member"],
+        rules: [invoke(rename).when(hasClass("member"))],
+      }),
+    );
+
+    expect(template.rules[0]?.focus).toEqual({
+      _tag: "operation",
+      operation: {
+        _tag: "RelativeOperationId",
+        owner: { kind: "entity", name: "operated" },
+        localName: "rename",
+        target: "required",
+      },
+    });
+    expect(template.decisions.operations).toHaveLength(1);
+    expect(template.rules[0]).toMatchObject({
+      usesResource: false,
+      usesMe: false,
+      usesSubject: false,
+      traversalDepth: 0,
+    });
+
+    expectInvalid(
+      compileReadAuthorizationResult({
+        schema: OperatedSchema,
+        rules: [invoke(rename).when(eq(Operated.title, "hidden"))],
+      }),
+      /principal classes, claims, and subject identity/,
+    );
+  });
+
   test("owner eq(me), workspace contains, hasClass, claim+subject, trait, field-narrow", () => {
     const template = expectOk(
       compile([
@@ -110,7 +164,7 @@ describe("compile common rules", () => {
     );
 
     expect(template._tag).toBe("PolicyTemplateIR");
-    expect(template.version).toBe(1);
+    expect(template.version).toBe(2);
     expect(template.languageVersion).toBe("v1");
     expect(template.classes).toEqual(["admin", "member"]);
     expect(template.principal.entity).toEqual({
@@ -242,6 +296,7 @@ describe("callback and $() match eq/path/contains", () => {
         ...encoded,
         rules: encoded.rules.map(({ id: _id, ...rule }) => rule),
         decisions: {
+          operations: [],
           entities: encoded.decisions.entities.map((entry) => ({
             ...entry,
             decision: { allow: entry.decision.allow.map(() => "id"), deny: entry.decision.deny },

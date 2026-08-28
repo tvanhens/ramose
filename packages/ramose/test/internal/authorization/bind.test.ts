@@ -264,6 +264,7 @@ const fullTemplate = (): PolicyTemplateIR => ({
     },
   ],
   decisions: {
+    operations: [],
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
@@ -391,7 +392,7 @@ describe("successful binding", () => {
     expect(bound.decisions.entities[0]?.target).toEqual(entity("issue"));
     expect(bound.decisions.traits[0]?.target).toEqual(trait("taggable"));
     expect(bound.decisions.fields[0]?.target).toEqual(field(issueOwner, "internalNotes"));
-    expect("operations" in bound.decisions).toBe(false);
+    expect(bound.decisions.operations).toEqual([]);
 
     expect(entityRule(bound, "issue").usesMe).toBe(true);
     expect(entityRule(bound, "issue").id).toBe(RuleId.make(RULE_OWNS_ISSUE));
@@ -417,6 +418,7 @@ describe("successful binding", () => {
             ...template,
             rules: [first, { ...first }],
             decisions: {
+              operations: [],
               entities: [
                 {
                   target: { _tag: "RelativeEntityId", name: "issue" },
@@ -446,6 +448,7 @@ describe("successful binding", () => {
             ...template,
             rules: [first, { ...second, id: first.id }],
             decisions: {
+              operations: [],
               entities: [
                 {
                   target: { _tag: "RelativeEntityId", name: "issue" },
@@ -477,7 +480,7 @@ describe("successful binding", () => {
                 { _tag: "hasClass", class: "member\uD800" },
               ),
             ],
-            decisions: { entities: [], traits: [], fields: [] },
+            decisions: { entities: [], traits: [], fields: [], operations: [] },
           },
         }),
       ),
@@ -573,7 +576,7 @@ describe("identity resolution failures", () => {
       template: {
         ...template,
         rules: [rule(RULE_OWNS_ISSUE, focus, { _tag: "const", value: true })],
-        decisions: { entities: [], traits: [], fields: [] },
+        decisions: { entities: [], traits: [], fields: [], operations: [] },
       },
     });
   };
@@ -820,7 +823,7 @@ describe("Effect orchestration and catalog capability", () => {
                 { _tag: "const", value: true },
               ),
             ],
-            decisions: { entities: [], traits: [], fields: [] },
+            decisions: { entities: [], traits: [], fields: [], operations: [] },
           },
         }),
       ),
@@ -839,7 +842,7 @@ describe("Effect orchestration and catalog capability", () => {
                   { _tag: "const", value: true },
                 ),
               ],
-              decisions: { entities: [], traits: [], fields: [] },
+              decisions: { entities: [], traits: [], fields: [], operations: [] },
             },
           }),
         ),

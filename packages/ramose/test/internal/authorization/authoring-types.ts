@@ -48,7 +48,9 @@ type CompileSuccess = Extract<
   { readonly _tag: "Success" }
 >["success"];
 export type _compileResultIsTemplate = Expect<Equal<CompileSuccess, PolicyTemplateIR>>;
-export type _inputHasRules = Expect<Extends<CompileReadAuthorizationInput["rules"], readonly ReadRule[]>>;
+export type _inputAcceptsReadRules = Expect<
+  Extends<readonly ReadRule[], CompileReadAuthorizationInput["rules"]>
+>;
 
 void User;
 void Tag;

@@ -13,6 +13,7 @@ import {
   ownerFocus,
   requireEntity,
   requireField,
+  requireOperation,
   requireTrait,
   type PreparedAuthorizationCatalog,
   type RowFocus,
@@ -47,6 +48,14 @@ export const resourceFocus = (
       case "field": {
         const field = yield* requireField(index, focus.field, "rule focus field");
         return yield* ownerFocus(index, field.id.owner);
+      }
+      case "operation": {
+        const operation = yield* requireOperation(
+          index,
+          focus.operation,
+          "rule focus operation",
+        );
+        return yield* ownerFocus(index, operation.id.owner);
       }
     }
   });

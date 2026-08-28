@@ -10,11 +10,13 @@ import type { AnySchema } from "../../../db/Schema.ts";
 import type { PathCarrier } from "../../../db/shapes.ts";
 import type { AnyEntity } from "../../../db/Entity.ts";
 import type { AnyTrait } from "../../../db/Trait.ts";
+import type { AnyOwnedOperation } from "../../../db/Operation.ts";
 import type { JsonScalar } from "../json.ts";
 import type { ClaimDescriptor } from "../principal.ts";
 
 export const AUTH_PATH_TAG = "AuthPath" as const;
 export const READ_RULE_TAG = "ReadRule" as const;
+export const INVOKE_RULE_TAG = "InvokeRule" as const;
 
 export type AuthPathStep = {
   readonly ident: string;
@@ -59,9 +61,19 @@ export type ReadRule = {
   readonly expr: AuthExpr;
 };
 
+/** Principal-only grant attached to one canonical owned operation. */
+export type InvokeRule = {
+  readonly _tag: typeof INVOKE_RULE_TAG;
+  readonly target: AnyOwnedOperation;
+  readonly kind: "allow" | "deny";
+  readonly expr: AuthExpr;
+};
+
+export type AuthorizationRule = ReadRule | InvokeRule;
+
 export type CompileReadAuthorizationInput = {
   readonly schema: AnySchema;
-  readonly rules: readonly ReadRule[];
+  readonly rules: readonly AuthorizationRule[];
   readonly classes?: readonly string[];
   readonly claims?: readonly ClaimDescriptor[];
   readonly principal?: {

@@ -251,7 +251,12 @@ export const normalizeDecisions = (
       encodeField,
       "field decision target",
     );
-    return { entities, traits, fields };
+    const operations = yield* normalizeDecisionEntries(
+      decisions.operations,
+      (operation) => Schema.encodeUnknownSync(CanonicalIdentitySchemas.operation)(operation),
+      "operation decision target",
+    );
+    return { entities, traits, fields, operations };
   });
 
 export const normalizeAccessPlans = (

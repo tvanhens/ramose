@@ -149,6 +149,7 @@ export const templateOf = (extras: Partial<PolicyTemplateIR> = {}): PolicyTempla
     },
   ],
   decisions: {
+    operations: [],
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "issue" },
@@ -266,6 +267,7 @@ export const childTemplate = (): PolicyTemplateIR => ({
     },
   ],
   decisions: {
+    operations: [],
     entities: [
       {
         target: { _tag: "RelativeEntityId", name: "user" },
