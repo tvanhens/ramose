@@ -20,7 +20,7 @@ import {
 import type { CanonicalAuthorizationExpr, CanonicalRefTerm, CanonicalValueTerm } from "../expr.ts";
 import type { EntityId, FieldId, TraitId } from "../identities.ts";
 import type { CanonicalAuthorizationRule } from "../ir.ts";
-import type { JsonValue } from "../json.ts";
+import { encodedJson } from "../plain.ts";
 import type { InstalledPrincipalResolution } from "../principal.ts";
 import {
   fieldAccessibleFrom,
@@ -32,8 +32,6 @@ import {
 import { invalid, type ValidateFailure } from "../validation/common.ts";
 import { rowFromRefTarget } from "../validation/types.ts";
 import { meEntity, resourceFocus } from "../validation/traversal.ts";
-
-const encodedJson = (encoded: unknown): JsonValue => encoded as JsonValue;
 
 const encodeLookup = (lookup: RuleAccessLookup): string =>
   canonicalizeJson(encodedJson(Schema.encodeUnknownSync(RuleAccessLookup)(lookup)));

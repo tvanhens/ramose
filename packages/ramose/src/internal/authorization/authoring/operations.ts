@@ -54,6 +54,7 @@ import {
   hashDomainSeparatedCanonicalJson,
 } from "../decode.ts";
 import type { JsonValue } from "../json.ts";
+import { compareText } from "../plain.ts";
 
 const OPERATION_SCHEMA_HASH_DOMAIN_V1 = "ramose/operation-schema/v1\0";
 const OPERATION_IMPLEMENTATION_HASH_DOMAIN_V1 =
@@ -137,9 +138,6 @@ export type OwnedOperationSnapshot = {
 };
 
 const invalid = (message: string): InvalidIR => new InvalidIR({ message });
-
-const compareText = (left: string, right: string): number =>
-  left < right ? -1 : left > right ? 1 : 0;
 
 const ownerRefOf = (owner: OperationOwner): OwnerRef => ({
   kind: owner._tag === "Entity" ? "entity" : "trait",

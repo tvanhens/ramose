@@ -66,6 +66,7 @@ import {
   type RelativeAuthorizationRule as RelativeAuthorizationRuleType,
 } from "./ir.ts";
 import type { JsonValue } from "./json.ts";
+import { encodedJson, freezePlain } from "./plain.ts";
 import {
   AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1,
   AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V2,
@@ -355,7 +356,6 @@ export const canonicalAuthorizationRuleMaterial = (
  * Schema-encoded IR is JSON by construction. This is the only cast from
  * encode output into {@link JsonValue}; callers must not hash `unknown`.
  */
-const encodedJson = (encoded: unknown): JsonValue => encoded as JsonValue;
 
 const decodeDocument = <A>(
   decode: (input: unknown) => Result.Result<A, Schema.SchemaError>,
@@ -771,16 +771,3 @@ const jsonLeafViolation = (value: unknown, work: Work): string | undefined => {
 const stringLengthOfNumber = (value: number): number =>
   Object.is(value, -0) || value === 0 ? 1 : String(value).length;
 
-const freezePlain = <T>(value: T): T => {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) freezePlain(item);
-  } else {
-    for (const key of Object.keys(value)) {
-      freezePlain((value as Record<string, unknown>)[key]);
-    }
-  }
-  return Object.freeze(value);
-};

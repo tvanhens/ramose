@@ -72,7 +72,7 @@ import { validateBoundAuthorizationResult } from "./validate.ts";
 import { prepareAuthorizationCatalog } from "./validation/catalog.ts";
 import { invalid, type ValidateFailure } from "./validation/common.ts";
 import { AUTHORIZATION_LANGUAGE_VERSION } from "./version.ts";
-import type { JsonValue } from "./json.ts";
+import { clonePlain, encodedJson, freezePlain } from "./plain.ts";
 import { canonicalizeJson } from "./canonical-json.ts";
 
 export const INSTALLED_CATALOG_UNIT_VERSION = 2 as const;
@@ -142,28 +142,6 @@ const verifiedInstalledCatalogUnit = Brand.nominal<InstalledCatalogUnitV2>();
 
 type UnhashedCatalogUnitTables = Omit<InstalledCatalogUnit, "_tag" | "unitHash">;
 
-const clonePlain = <T>(value: T): T => {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((item) => clonePlain(item)) as T;
-  const copy: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) {
-    copy[key] = clonePlain((value as Record<string, unknown>)[key]);
-  }
-  return copy as T;
-};
-
-const freezePlain = <T>(value: T): T => {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
-  if (Array.isArray(value)) {
-    for (const item of value) freezePlain(item);
-  } else {
-    for (const key of Object.keys(value)) {
-      freezePlain((value as Record<string, unknown>)[key]);
-    }
-  }
-  return Object.freeze(value);
-};
-
 const requireLanguageVersion = (
   version: string,
   label: string,
@@ -173,8 +151,6 @@ const requireLanguageVersion = (
   }
   return Result.succeed(undefined);
 };
-
-const encodedJson = (encoded: unknown): JsonValue => encoded as JsonValue;
 
 const canonicalEqual = (
   left: unknown,

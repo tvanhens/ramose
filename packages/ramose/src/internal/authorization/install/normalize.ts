@@ -31,11 +31,9 @@ import type {
   Decision,
   ValidatedAuthorizationIR,
 } from "../ir.ts";
-import type { JsonValue } from "../json.ts";
+import { encodedJson } from "../plain.ts";
 import type { ClaimDescriptor } from "../principal.ts";
 import { invalid, type ValidateFailure } from "../validation/common.ts";
-
-const encodedJson = (encoded: unknown): JsonValue => encoded as JsonValue;
 
 const canonicalKey = (value: unknown): Result.Result<string, ValidateFailure> => {
   try {

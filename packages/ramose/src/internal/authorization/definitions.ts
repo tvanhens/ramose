@@ -71,6 +71,7 @@ import {
 } from "./identities.ts";
 import { installAuthorization, type InstallFailure } from "./install.ts";
 import type { JsonValue } from "./json.ts";
+import { compareText } from "./plain.ts";
 import {
   lowerOwnedOperationSnapshots,
   pairDeployedOperations,
@@ -184,9 +185,6 @@ type NormalizedDefinitionSnapshot = {
 };
 
 const invalid = (message: string): InvalidIR => new InvalidIR({ message });
-
-const compareText = (left: string, right: string): number =>
-  left < right ? -1 : left > right ? 1 : 0;
 
 const CATALOG_DEFINITION_VERSION_DOMAIN = "ramose/catalog-definition/v1\0";
 

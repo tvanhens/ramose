@@ -36,6 +36,7 @@ import { POLICY_TEMPLATE_IR_VERSION, RelativeAuthorizationRule as RelativeAuthor
 import type { JsonValue } from "../json.ts";
 import type { PrincipalResolutionConfig } from "../principal.ts";
 import { AUTHORIZATION_LANGUAGE_VERSION } from "../version.ts";
+import { clonePlain, remapDecision } from "../plain.ts";
 import type {
   RelativeAuthorizationExpr,
   RelativeValueTerm,
@@ -60,16 +61,6 @@ const SUPPORTED_OPERAND_TAGS = new Set(["me", "subject", "claim", "lit", "path"]
 
 const invalid = (message: string): Result.Result<never, InvalidIR> =>
   Result.fail(new InvalidIR({ message }));
-
-const clonePlain = <T>(value: T): T => {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((item) => clonePlain(item)) as T;
-  const copy: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) {
-    copy[key] = clonePlain((value as Record<string, unknown>)[key]);
-  }
-  return copy as T;
-};
 
 const placeholderRuleId = (index: number): string => index.toString(16).padStart(64, "0");
 
@@ -756,11 +747,6 @@ export const compileReadAuthorizationResult = (
     return yield* decodePolicyTemplateResult(clonePlain(document));
   });
 
-const remapRuleIds = (
-  ids: readonly RuleId[],
-  map: ReadonlyMap<RuleId, RuleId>,
-): readonly RuleId[] => ids.map((id) => map.get(id) ?? id);
-
 /**
  * Effect shell: compile, restamp every rule id with {@link hashRelativeRule},
  * rewrite decision lists, and decode again so Schema remains the source of truth.
@@ -783,31 +769,19 @@ export const compileReadAuthorization = Effect.fn("Authorization.compileReadAuth
       decisions: {
         entities: template.decisions.entities.map((entry) => ({
           ...entry,
-          decision: {
-            allow: remapRuleIds(entry.decision.allow, idMap),
-            deny: remapRuleIds(entry.decision.deny, idMap),
-          },
+          decision: remapDecision(entry.decision, idMap),
         })),
         traits: template.decisions.traits.map((entry) => ({
           ...entry,
-          decision: {
-            allow: remapRuleIds(entry.decision.allow, idMap),
-            deny: remapRuleIds(entry.decision.deny, idMap),
-          },
+          decision: remapDecision(entry.decision, idMap),
         })),
         fields: template.decisions.fields.map((entry) => ({
           ...entry,
-          decision: {
-            allow: remapRuleIds(entry.decision.allow, idMap),
-            deny: remapRuleIds(entry.decision.deny, idMap),
-          },
+          decision: remapDecision(entry.decision, idMap),
         })),
         operations: template.decisions.operations.map((entry) => ({
           ...entry,
-          decision: {
-            allow: remapRuleIds(entry.decision.allow, idMap),
-            deny: remapRuleIds(entry.decision.deny, idMap),
-          },
+          decision: remapDecision(entry.decision, idMap),
         })),
       },
     };

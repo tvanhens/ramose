@@ -24,6 +24,7 @@ import { CatalogMismatch, CatalogUnitCorrupt, CatalogVersionMismatch, InvalidIR 
 import type { CatalogId, CatalogUnitHash, CatalogVersion, DatabaseId } from "./identities.ts";
 import { installAuthorization, type InstallFailure } from "./install.ts";
 import type { CatalogBindingTarget, PolicyTemplateIR } from "./ir.ts";
+import { freezePlain } from "./plain.ts";
 
 export type CatalogBoundRef = {
   readonly database: DatabaseId;
@@ -60,18 +61,6 @@ export type CatalogAssemblyUnit = {
 export type CatalogAssemblyInput = {
   readonly root: CatalogId;
   readonly units: readonly CatalogAssemblyUnit[];
-};
-
-const freezePlain = <T>(value: T): T => {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
-  if (Array.isArray(value)) {
-    for (const item of value) freezePlain(item);
-  } else {
-    for (const key of Object.keys(value)) {
-      freezePlain((value as Record<string, unknown>)[key]);
-    }
-  }
-  return Object.freeze(value);
 };
 
 const invalid = (message: string): Result.Result<never, InvalidIR> =>

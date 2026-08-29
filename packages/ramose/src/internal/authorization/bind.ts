@@ -50,6 +50,7 @@ import {
   type RelativeRuleFocus,
 } from "./ir.ts";
 import { AUTHORIZATION_LANGUAGE_VERSION } from "./version.ts";
+import { freezeBound, remapDecision } from "./plain.ts";
 import type {
   CanonicalAuthorizationExpr,
   CanonicalRefTerm,
@@ -549,19 +550,6 @@ const bindRule = (
     return { rule: bound, material };
   });
 
-const remapRuleIds = (
-  ids: ReadonlyArray<RuleId>,
-  map: ReadonlyMap<RuleId, RuleId>,
-): ReadonlyArray<RuleId> => ids.map((id) => map.get(id) ?? id);
-
-const remapDecision = (
-  decision: Decision,
-  map: ReadonlyMap<RuleId, RuleId>,
-): Decision => ({
-  allow: remapRuleIds(decision.allow, map),
-  deny: remapRuleIds(decision.deny, map),
-});
-
 const remapDecisionEntries = <Target>(
   entries: ReadonlyArray<{ readonly target: Target; readonly decision: Decision }>,
   map: ReadonlyMap<RuleId, RuleId>,
@@ -616,38 +604,6 @@ const bindPrincipal = (
     const entity = yield* bindField(index, principal.entity);
     return { subjectClaim: principal.subjectClaim, entity };
   });
-
-/**
- * Deep-copy JSON-shaped data so later freeze cannot seal caller-owned
- * template, descriptor, or identity objects the result still names.
- */
-const clonePlain = <T>(value: T): T => {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) {
-    return value.map((item) => clonePlain(item)) as T;
-  }
-  const copy: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) {
-    copy[key] = clonePlain((value as Record<string, unknown>)[key]);
-  }
-  return copy as T;
-};
-
-const freezePlain = <T>(value: T): T => {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) freezePlain(item);
-  } else {
-    for (const key of Object.keys(value)) {
-      freezePlain((value as Record<string, unknown>)[key]);
-    }
-  }
-  return Object.freeze(value);
-};
-
-const freezeBound = <T>(value: T): T => freezePlain(clonePlain(value));
 
 /**
  * Pure catalog-binding kernel. Resolves every relative identity in the
