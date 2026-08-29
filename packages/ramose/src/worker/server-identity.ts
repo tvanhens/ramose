@@ -53,8 +53,12 @@ const load = async (env: IdentityEnv): Promise<ServerIdentityRoot> => {
     });
   }
   if (!response.ok) {
+    // A record this build cannot read fails closed here rather than being
+    // replaced; derivations stop instead of producing identities under a
+    // different key.
+    const failure = await response.text().catch(() => "");
     throw new ServerIdentityUnavailable({
-      reason: `server identity root refused the internal capability (${response.status})`,
+      reason: `server identity root is unusable (${response.status}) ${failure}`.trim(),
     });
   }
   const body = (await response.json()) as { readonly root?: unknown };

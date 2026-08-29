@@ -33,7 +33,7 @@ import {
   seedWorld,
   type World,
 } from "./conformance.ts";
-import { testAdmin, type LocalUrls } from "./fixtures.ts";
+import { json, post, testAdmin, type LocalUrls } from "./fixtures.ts";
 
 const SNAPSHOT_DATABASE = CONFORMANCE_DATABASES[10]!;
 const RESUME_DATABASE = CONFORMANCE_DATABASES[11]!;
@@ -474,21 +474,21 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(unauthenticated.status).toBe(401);
 
-      const unresolved = await fetch(
-        `${base.replace(/\/+$/, "")}/db/${encodeURIComponent(world.database)}/replicate`,
+      // Through `json` rather than a raw `fetch`: the local Alchemy dev proxy
+      // intermittently answers 502 before the Worker sees the request, and
+      // `json` is the established retry-past-a-proxy-blip path.
+      const unresolved = await json(
+        base,
+        `/db/${encodeURIComponent(world.database)}/replicate`,
         {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${world.member}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
+          ...post({
             type: "Activate",
             protocol: 1,
             graphPath: ["missing"],
             scope: { type: "database" },
             readCompatibilityHash: "z".repeat(43),
           }),
+          token: world.member,
         },
       );
       expect(unresolved.status).toBe(403);

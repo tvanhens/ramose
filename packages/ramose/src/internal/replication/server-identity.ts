@@ -117,6 +117,25 @@ export const decodeServerIdentityRoot = (
   });
 };
 
+export type ServerIdentityRootRead =
+  | { readonly type: "existing"; readonly root: ServerIdentityRoot }
+  /** No record at all: this is the one case that may mint a root. */
+  | { readonly type: "absent" }
+  /**
+   * A record exists but this build cannot read it — a newer version after a
+   * rollback, or corruption. Overwriting it would destroy the only key that
+   * reproduces existing identities and revisions, so it fails closed instead.
+   */
+  | { readonly type: "unreadable" };
+
+export const readServerIdentityRootRecord = (
+  stored: unknown,
+): ServerIdentityRootRead => {
+  if (stored === undefined) return { type: "absent" };
+  const root = decodeServerIdentityRoot(stored);
+  return root === undefined ? { type: "unreadable" } : { type: "existing", root };
+};
+
 export const sealingKeyOf = (root: ServerIdentityRoot): ServerSealingKey =>
   Object.freeze({ keyId: root.keyId, material: root.key });
 
@@ -142,3 +161,6 @@ export const decideServerIdentityBinding = (
 
 /** Wire code the Replica DO returns for a quarantining key mismatch. */
 export const SERVER_IDENTITY_INCOMPATIBLE = "server-identity-incompatible";
+
+/** Wire code for a root record this build cannot read and must not replace. */
+export const SERVER_IDENTITY_UNREADABLE = "server-identity-unreadable";

@@ -4,6 +4,7 @@ import {
   decodeServerIdentityRoot,
   generateServerIdentityRoot,
   makeEntityIdentity,
+  readServerIdentityRootRecord,
   SERVER_IDENTITY_ROOT_VERSION,
   sealingKeyOf,
 } from "../../../src/internal/replication/index.ts";
@@ -45,6 +46,20 @@ describe("durable server identity/sealing root", () => {
       ]
     ) {
       expect(decodeServerIdentityRoot(broken)).toBeUndefined();
+    }
+  });
+
+  test("only a genuinely absent record may be initialized", () => {
+    const minted = root();
+    expect(readServerIdentityRootRecord(undefined)).toEqual({ type: "absent" });
+    expect(readServerIdentityRootRecord(minted))
+      .toEqual({ type: "existing", root: minted });
+    // A record from a newer build (reached by rolling back) or a corrupt one
+    // must never be replaced: replacing it destroys the only key that
+    // reproduces every existing identity and revision.
+    for (const unreadable of [null, {}, { ...minted, version: 2 }, "garbage"]) {
+      expect(readServerIdentityRootRecord(unreadable))
+        .toEqual({ type: "unreadable" });
     }
   });
 

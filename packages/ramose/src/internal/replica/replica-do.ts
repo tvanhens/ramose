@@ -38,10 +38,11 @@ import {
 } from "./revision-retention.ts";
 import {
   decideServerIdentityBinding,
-  decodeServerIdentityRoot,
   generateServerIdentityRoot,
+  readServerIdentityRootRecord,
   SERVER_IDENTITY_INCOMPATIBLE,
   SERVER_IDENTITY_KEY_ID,
+  SERVER_IDENTITY_UNREADABLE,
 } from "../replication/server-identity.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
@@ -749,15 +750,25 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
    * Read and write happen in one synchronous turn, so the Durable Object's
    * single-threaded execution is the whole mutual exclusion: two concurrent
    * Workers cannot both mint a root.
+   *
+   * Only a genuinely absent record is initialized. A record this build cannot
+   * read — a newer version reached by rolling back, or corruption — fails
+   * closed, because replacing it would destroy the only key that reproduces
+   * every existing identity and revision.
    */
   private serveServerIdentityRoot(request: Request): Response {
     if (request.method !== "GET" && request.method !== "POST") {
       return json({ error: "method not allowed" }, 405);
     }
-    const stored = decodeServerIdentityRoot(
+    const record = readServerIdentityRootRecord(
       this.getMeta<unknown>("server-identity-root"),
     );
-    if (stored !== undefined) return json({ root: stored, created: false });
+    if (record.type === "existing") {
+      return json({ root: record.root, created: false });
+    }
+    if (record.type === "unreadable") {
+      return json({ error: SERVER_IDENTITY_UNREADABLE }, 409);
+    }
     const created = generateServerIdentityRoot(Date.now());
     this.setMeta("server-identity-root", created);
     return json({ root: created, created: true });
