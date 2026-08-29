@@ -335,6 +335,13 @@ denied application datoms or emit policy-input facts.
 **LIVE-6.** Caches and queued deltas MUST NOT cross principals, databases,
 catalog versions, policy versions, rule bases, or authorization epochs.
 
+**LIVE-7.** A long-lived Graph-path read places the complete ordered path
+dependency set under the same **REV-1** lease as its target output. Every
+renewal rebuilds every segment through **REF-2** before output may continue.
+Early dependency notification only invalidates that lease sooner; it is never
+an alternate authorization decision. Operations ignore read leases and apply
+**WR-2** independently on the authoritative current basis.
+
 ## 12. Admission
 
 **AUTH-1.** Verified JWT principals plus compiled policy are the only

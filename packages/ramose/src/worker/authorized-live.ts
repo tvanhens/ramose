@@ -33,13 +33,37 @@ export const liveNdjsonStream = <R, EDb>(
   opts: OneShotReadOptions,
   context: Context.Context<R>,
 ): ReadableStream<Uint8Array> =>
+  liveDiffNdjsonStream(executeAuthorizedLive(input, read, opts), context);
+
+export const liveDiffNdjsonStream = <R, E>(
+  stream: Stream.Stream<LiveQueryDiff, E, R>,
+  context: Context.Context<R>,
+): ReadableStream<Uint8Array> =>
   Stream.toReadableStreamWith(
-    executeAuthorizedLive(input, read, opts).pipe(
+    stream.pipe(
       Stream.map(encodeDiff),
       Stream.catchCause(() => Stream.empty),
     ),
     context,
   );
+
+/** Frame any already-authorized live stream through the one public NDJSON shape. */
+export const liveResponseFromStream = <R, E>(
+  stream: Stream.Stream<LiveQueryDiff, E, R>,
+  headers: Record<string, string>,
+): Effect.Effect<Response, never, R> =>
+  Effect.gen(function* () {
+    const context = yield* Effect.context<R>();
+    const body = liveDiffNdjsonStream(stream, context);
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": "application/x-ndjson",
+        "cache-control": "no-store",
+        ...headers,
+      },
+    });
+  });
 
 /**
  * Admit the first authorized result, then stream diffs. Admission failures
@@ -65,14 +89,8 @@ export const authorizedLiveResponse = <R, EDb>(
       read,
       opts,
     );
-    const context = yield* Effect.context<R>();
-    const body = liveNdjsonStream(input, read, opts, context);
-    return new Response(body, {
-      status: 200,
-      headers: {
-        "content-type": "application/x-ndjson",
-        "cache-control": "no-store",
-        ...headers,
-      },
-    });
+    return yield* liveResponseFromStream(
+      executeAuthorizedLive(input, read, opts),
+      headers,
+    );
   });

@@ -11,6 +11,11 @@ import {
   DatabaseId,
   deriveDynamicChildDatabaseId,
 } from "../../packages/ramose/src/internal/authorization/index.ts";
+import {
+  applyLiveDiffs,
+  readLiveNdjson,
+  type LiveQueryDiff,
+} from "../support/live-query.ts";
 import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
 import {
   GateHidden,
@@ -21,11 +26,31 @@ import {
   GRAPH_PATH_ROOT_DATABASE,
   GraphPathRootSchema,
   PrivateWorkspace,
+  Project,
   Workspace,
 } from "./graph-path-catalog.ts";
 import { graphPathRootProof } from "./graph-path-proof.ts";
 
 let rootInstall: Promise<void> | undefined;
+
+const nestedNotesQuery =
+  "[:find [?text ...] :where [?e :localNestedNote/text ?text]]";
+
+const withTimeout = async <A>(
+  promise: Promise<A>,
+  ms: number,
+  label: string,
+): Promise<A> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
 
 const gateTraitCount = Query.q(function* () {
   const entity = yield* Query.entities(GateTagged);
@@ -82,6 +107,22 @@ const nestedEntity = (
     { token },
   );
 };
+
+const nestedLive = (
+  base: string,
+  token: string,
+  at: readonly string[],
+): Promise<Response> => fetch(
+  `${base.replace(/\/+$/, "")}/db/${GRAPH_PATH_ROOT_DATABASE}/live`,
+  {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ at, query: nestedNotesQuery }),
+  },
+);
 
 const rootEntity = (
   base: string,
@@ -435,6 +476,74 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         entity: noteId,
       });
       expect(sameLeaf.body.entity[":localNestedNote/text"]).toBe("two levels deep");
+    });
+
+    test("reauthorizes every nested live dependency and closes on ancestor rename", async () => {
+      const base = ctx.urls().graphPathsUrl;
+      await installRoot(base);
+      const member = await signToken(GRAPH_PATH_ROOT_DATABASE, "member");
+      const suffix = crypto.randomUUID().slice(0, 8);
+      const workspaceName = `live-${suffix}`;
+      const projectName = `project-${suffix}`;
+
+      const workspace = await invoke(base, member, {
+        owner: { kind: "entity", name: Workspace.ns },
+        localName: "create",
+      }, { name: workspaceName });
+      expect(workspace.status).toBe(200);
+      const workspaceId = workspace.body.result.id as number;
+
+      const project = await invoke(base, member, {
+        owner: { kind: "entity", name: Project.ns },
+        localName: "create",
+      }, { name: projectName }, { at: [workspaceName] });
+      expect(project.status).toBe(200);
+
+      const firstNote = await invoke(base, member, {
+        owner: { kind: "entity", name: "localNestedNote" },
+        localName: "create",
+      }, { text: `first-${suffix}` }, { at: [workspaceName, projectName] });
+      expect(firstNote.status).toBe(200);
+
+      const response = await nestedLive(
+        base,
+        member,
+        [workspaceName, projectName],
+      );
+      expect(response.status).toBe(200);
+      const iterator = readLiveNdjson(response)[Symbol.asyncIterator]();
+      const frames: LiveQueryDiff[] = [];
+      try {
+        const initial = await withTimeout(iterator.next(), 5_000, "nested live initial");
+        expect(initial.done).toBe(false);
+        frames.push(initial.value!);
+        expect(applyLiveDiffs(frames)).toContain(`first-${suffix}`);
+
+        const secondNote = await invoke(base, member, {
+          owner: { kind: "entity", name: "localNestedNote" },
+          localName: "create",
+        }, { text: `second-${suffix}` }, { at: [workspaceName, projectName] });
+        expect(secondNote.status).toBe(200);
+        const changed = await withTimeout(iterator.next(), 5_000, "nested live change");
+        expect(changed.done).toBe(false);
+        frames.push(changed.value!);
+        expect(applyLiveDiffs(frames)).toEqual(
+          expect.arrayContaining([`first-${suffix}`, `second-${suffix}`]),
+        );
+
+        const renamed = await invoke(base, member, {
+          owner: { kind: "entity", name: Workspace.ns },
+          localName: "rename",
+        }, { name: `renamed-${suffix}` }, { target: workspaceId });
+        expect(renamed.status).toBe(200);
+        const closed = await withTimeout(iterator.next(), 7_000, "ancestor revoke");
+        expect(closed.done).toBe(true);
+        expect(JSON.stringify(frames)).not.toMatch(
+          /basis|txEid|lease|database|catalog|graphEntity|sequence|count/i,
+        );
+      } finally {
+        await iterator.return?.(undefined);
+      }
     });
 
     test("keeps hidden graph facts out of discovery, paths, counts, and errors", async () => {

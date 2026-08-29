@@ -34,6 +34,7 @@ export * from "./definitions.ts";
 export * from "./expr.ts";
 export * from "./failures.ts";
 export * from "./graph-path.ts";
+export * from "./graph-path-live.ts";
 export * from "./identities.ts";
 export * from "./install.ts";
 export * from "./ir.ts";

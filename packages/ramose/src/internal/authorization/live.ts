@@ -2,8 +2,8 @@
  * Leased server live queries (#415).
  *
  * One authorization lease/epoch covers recomputation, enqueue, and emission.
- * Each authorized basis rebuilds the filtered {@link Db} through
- * {@link executeAuthorizedRequest} and runs the ordinary one-shot read.
+ * Each authorized basis rebuilds the filtered {@link Db} through the caller's
+ * ordinary request-context constructor and runs the ordinary one-shot read.
  * Output is additions and retractions of that result. Raw transaction
  * datoms, IDs, counts, rule facts, and hidden-only sequence events are
  * never forwarded. There is no second live authorization predicate.
@@ -18,11 +18,12 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { Unauthorized } from "../../db/Errors.ts";
+import type { Db } from "../core/db.ts";
 import { stringifyJson } from "../core/json.ts";
 import type { RuntimeBoundaries } from "../runtime-boundaries.ts";
 import { MAX_READ_LEASE_MS } from "./bounds.ts";
 import {
-  executeAuthorizedRequest,
+  constructAuthorizedRequestContext,
   type AuthenticatedCaller,
   type AuthorizedRequestInput,
 } from "./request.ts";
@@ -45,7 +46,7 @@ export type LiveQueryDiff = {
 
 export type LiveBasisEvent = "ready" | "change";
 
-export type AuthorizedLiveInput<R = never, EDb = unknown> = AuthorizedRequestInput<R, EDb> & {
+export type AuthorizedLiveControls<R = never> = {
   /** Already-authorized result used as the first diff baseline. */
   readonly previous?: unknown;
   /** Basis-change signals. Extra offers coalesce on a sliding slot. */
@@ -56,9 +57,30 @@ export type AuthorizedLiveInput<R = never, EDb = unknown> = AuthorizedRequestInp
   readonly renew?: Effect.Effect<void, Unauthorized, R>;
   /** Push-only basis notifications from the real replica topology. */
   readonly basisChanges?: Stream.Stream<LiveBasisEvent, Unauthorized, R>;
+  /** Optional early invalidation source; bounded renewal remains authoritative. */
+  readonly invalidations?: Stream.Stream<unknown, Unauthorized, R>;
   /** Explicit non-production race boundaries; absent in the production graph. */
   readonly boundaries?: RuntimeBoundaries;
 };
+
+export type AuthorizedLiveInput<R = never, EDb = unknown> =
+  AuthorizedRequestInput<R, EDb> & AuthorizedLiveControls<R>;
+
+/**
+ * One generic lease/output gate. Authorization callbacks may construct an
+ * ordinary single-database filtered Db or compose that same boundary across
+ * a graph path; the lease engine never evaluates authorization itself.
+ */
+export type AuthorizedLiveLeaseInput<R = never, EAuthorize = unknown> =
+  AuthorizedLiveControls<R> & {
+    readonly authenticate: Effect.Effect<AuthenticatedCaller, Unauthorized, R>;
+    readonly interruptAfter?: Duration.Input;
+    readonly authorize: (
+      caller: AuthenticatedCaller,
+    ) => Effect.Effect<Db, Unauthorized | EAuthorize, R>;
+    /** Graph paths reauthorize even while idle; ordinary live reads stay push-only. */
+    readonly reauthorizeOnIdle?: boolean;
+  };
 
 type QueuedSnapshot = {
   readonly id: number;
@@ -86,6 +108,13 @@ const callerLease = (
   const duration = Duration.min(limit, Duration.millis(remainingMs));
   return Result.succeed({ duration, expiresAtMs: nowMs + Duration.toMillis(duration) });
 };
+
+/** A renewed request can extend one stream only for the same principal. */
+const principalLeaseIdentity = (caller: AuthenticatedCaller): string =>
+  stringifyJson({
+    claims: caller.claims,
+    classes: [...caller.classes].sort(),
+  });
 
 const atBoundary = (
   boundaries: RuntimeBoundaries | undefined,
@@ -222,15 +251,16 @@ const deliverSnapshot = (
   });
 
 /**
- * Live output over ordinary filtered values. Reuses one-shot query, pull,
- * entity, lookup, refs, graph, aggregation, ordering, and limit behavior.
+ * The shared authorization-lease and output gate. The supplied callback owns
+ * construction of the ordinary filtered Db; this loop owns only lifetime,
+ * invalidation, recomputation, enqueue, and emission.
  */
-export const executeAuthorizedLive = <R, EDb = unknown>(
-  input: AuthorizedLiveInput<R, EDb>,
+export const executeAuthorizedLiveLease = <R, EAuthorize = unknown>(
+  input: AuthorizedLiveLeaseInput<R, EAuthorize>,
   read: OneShotRead,
   opts: OneShotReadOptions = {},
-): Stream.Stream<LiveQueryDiff, Unauthorized | OneShotReadError | EDb, R> =>
-  Stream.callback<QueuedSnapshot, Unauthorized | OneShotReadError | EDb, R>(
+): Stream.Stream<LiveQueryDiff, Unauthorized | OneShotReadError | EAuthorize, R> =>
+  Stream.callback<QueuedSnapshot, Unauthorized | OneShotReadError | EAuthorize, R>(
     (out) =>
       Effect.gen(function* () {
         const wakes = yield* Queue.dropping<void>(1);
@@ -260,47 +290,37 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
         const close = Queue.end(out).pipe(Effect.asVoid);
 
         const recompute = (
-          caller: AuthenticatedCaller,
+          filteredDb: Db,
           id: number,
           expiresAtMs: number,
-        ): Effect.Effect<void, Unauthorized | OneShotReadError | EDb, R> =>
+        ): Effect.Effect<void, Unauthorized | OneShotReadError, R> =>
           Effect.gen(function* () {
             const nowMs = yield* Clock.currentTimeMillis;
-            const left = remainingOf(expiresAtMs, nowMs);
-            if (Duration.toMillis(left) <= 0) return;
-            yield* executeAuthorizedRequest(
-              {
-                ...input,
-                authenticate: Effect.succeed(caller),
-                interruptAfter: left,
-              },
-              (filteredDb) =>
-                Effect.gen(function* () {
-                  const value = yield* readAuthorized(filteredDb, read, opts);
-                  yield* atBoundary(input.boundaries, "live.recompute");
-                  const current = yield* Ref.get(epoch);
-                  if (current !== id) return;
-                  yield* atBoundary(input.boundaries, "live.enqueue");
-                  const still = yield* Ref.get(epoch);
-                  const enqueueNow = yield* Clock.currentTimeMillis;
-                  if (still !== id || enqueueNow >= expiresAtMs) return;
-                  yield* Queue.offer(out, {
-                    id,
-                    expiresAtMs,
-                    value,
-                    epoch,
-                    lastSent,
-                    ...(input.boundaries === undefined
-                      ? {}
-                      : { boundaries: input.boundaries }),
-                  });
-                }),
-            );
+            if (nowMs >= expiresAtMs) return;
+            const value = yield* readAuthorized(filteredDb, read, opts);
+            yield* atBoundary(input.boundaries, "live.recompute");
+            const current = yield* Ref.get(epoch);
+            if (current !== id) return;
+            yield* atBoundary(input.boundaries, "live.enqueue");
+            const still = yield* Ref.get(epoch);
+            const enqueueNow = yield* Clock.currentTimeMillis;
+            if (still !== id || enqueueNow >= expiresAtMs) return;
+            yield* Queue.offer(out, {
+              id,
+              expiresAtMs,
+              value,
+              epoch,
+              lastSent,
+              ...(input.boundaries === undefined
+                ? {}
+                : { boundaries: input.boundaries }),
+            });
           });
 
         const leaseLoop = Effect.gen(function* () {
           let firstLease = true;
           let basisChanged = true;
+          let principalIdentity: string | undefined;
           while (true) {
             if (!firstLease && input.renew !== undefined) {
               const currentDeployment = yield* input.renew.pipe(
@@ -315,12 +335,30 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
             );
             if (Result.isFailure(admitted)) return;
             const caller = admitted.success;
+            const identity = principalLeaseIdentity(caller);
+            if (principalIdentity === undefined) principalIdentity = identity;
+            else if (principalIdentity !== identity) return;
             const nowMs = yield* Clock.currentTimeMillis;
             const lease = yield* Effect.fromResult(callerLease(caller, nowMs, limit));
             const id = yield* Ref.updateAndGet(epoch, (n) => n + 1);
             const tickNow = yield* Clock.currentTimeMillis;
-            if (tickNow < lease.expiresAtMs && basisChanged) {
-              yield* recompute(caller, id, lease.expiresAtMs);
+            if (
+              tickNow < lease.expiresAtMs &&
+              (basisChanged || input.reauthorizeOnIdle === true)
+            ) {
+              const leaseWork = input.authorize(caller).pipe(
+                Effect.flatMap((filteredDb) =>
+                  basisChanged
+                    ? recompute(filteredDb, id, lease.expiresAtMs)
+                    : Effect.void
+                ),
+                Effect.timeoutOrElse({
+                  duration: remainingOf(lease.expiresAtMs, tickNow),
+                  orElse: () => Effect.fail(deny()),
+                }),
+                Effect.result,
+              );
+              if (Result.isFailure(yield* leaseWork)) return;
             }
             const after = yield* Clock.currentTimeMillis;
             basisChanged = after < lease.expiresAtMs
@@ -343,7 +381,7 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
             Effect.mapError(() => deny()),
             Effect.andThen(Effect.fail(deny())),
           );
-        const authorizedLoop = input.basisChanges === undefined
+        const leaseAndBasis = input.basisChanges === undefined
           ? Effect.raceFirst(leaseLoop, revoked)
           : Effect.raceFirst(
             basisWatch,
@@ -351,6 +389,15 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
               Effect.andThen(Effect.raceFirst(leaseLoop, revoked)),
             ),
           );
+        const invalidationWatch = input.invalidations === undefined
+          ? Effect.never
+          : Stream.runForEach(input.invalidations, () => signalBasisChange).pipe(
+            Effect.mapError(() => deny()),
+            Effect.andThen(Effect.fail(deny())),
+          );
+        const authorizedLoop = input.invalidations === undefined
+          ? leaseAndBasis
+          : Effect.raceFirst(leaseAndBasis, invalidationWatch);
 
         // Always end the callback queue. A failed producer fiber otherwise
         // leaves Stream.callback open, so consumers hang until the test timeout.
@@ -366,3 +413,20 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
       }),
     { bufferSize: 1, strategy: "suspend" },
   ).pipe(Stream.filterMapEffect(deliverSnapshot));
+
+/**
+ * Live output over one ordinary filtered database value. Reuses one-shot
+ * query, pull, entity, lookup, refs, graph, aggregation, ordering, and limit
+ * behavior without introducing another authorization predicate.
+ */
+export const executeAuthorizedLive = <R, EDb = unknown>(
+  input: AuthorizedLiveInput<R, EDb>,
+  read: OneShotRead,
+  opts: OneShotReadOptions = {},
+): Stream.Stream<LiveQueryDiff, Unauthorized | OneShotReadError | EDb, R> =>
+  executeAuthorizedLiveLease({
+    ...input,
+    authorize: (caller) => constructAuthorizedRequestContext(input, caller).pipe(
+      Effect.map((context) => context.filteredDb),
+    ),
+  }, read, opts);

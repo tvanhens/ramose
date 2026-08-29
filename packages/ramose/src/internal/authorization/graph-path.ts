@@ -21,7 +21,11 @@ import {
   type DynamicGraphBinding,
   type ResolvedDatabaseRoute,
 } from "./database-bindings.ts";
-import { CatalogId, type DatabaseId } from "./identities.ts";
+import {
+  CatalogId,
+  type CatalogUnitHash,
+  type DatabaseId,
+} from "./identities.ts";
 import {
   constructAuthorizedResolvedRequestContext,
   executeWithinAuthorizedLease,
@@ -128,11 +132,86 @@ export type AuthorizedGraphPathInput<R = never, EDb = unknown, EProvision = unkn
   readonly view?: AuthorizedRequestView;
 };
 
+/** Stable lifecycle dependency for one authorized Graph path segment. */
+export type GraphPathLeaseDependency = {
+  readonly parentDatabase: DatabaseId;
+  readonly graphEntity: number;
+};
+
+export type GraphPathLeaseRouteIdentity = {
+  readonly database: DatabaseId;
+  readonly catalogKey: CatalogId;
+  readonly unitHash: CatalogUnitHash;
+};
+
+/**
+ * Complete, opaque identity of the path authorized for one live stream.
+ * Authorization is still the filtered-Db traversal above; this value only
+ * prevents a renewed lease from silently moving to another path target.
+ */
+export type GraphPathLeaseIdentity = {
+  readonly rootDatabase: DatabaseId;
+  readonly path: readonly string[];
+  readonly routes: readonly GraphPathLeaseRouteIdentity[];
+  readonly dependencies: readonly GraphPathLeaseDependency[];
+};
+
 export type AuthorizedGraphPathTarget = {
   readonly route: ResolvedDatabaseRoute;
   readonly derivation: DatabaseRouteDerivation;
   readonly context: AuthorizedRequestContext;
+  /** Configured root through target, in traversal order. */
+  readonly routes: readonly ResolvedDatabaseRoute[];
+  /** Lifecycle/path invalidation keys, in segment order. */
+  readonly dependencies: readonly GraphPathLeaseDependency[];
 };
+
+export const graphPathLeaseIdentity = (
+  target: AuthorizedGraphPathTarget,
+  path: readonly string[],
+): GraphPathLeaseIdentity => Object.freeze({
+  rootDatabase: target.derivation.rootDatabase,
+  path: Object.freeze([...path]),
+  routes: Object.freeze(target.routes.map((route) => Object.freeze({
+    database: route.database,
+    catalogKey: route.deployed.catalogKey,
+    unitHash: route.deployed.unitHash,
+  }))),
+  dependencies: Object.freeze(target.dependencies.map((dependency) =>
+    Object.freeze({ ...dependency })
+  )),
+});
+
+export const sameGraphPathLeaseIdentity = (
+  left: GraphPathLeaseIdentity,
+  right: GraphPathLeaseIdentity,
+): boolean =>
+  left.rootDatabase === right.rootDatabase &&
+  left.path.length === right.path.length &&
+  left.path.every((segment, index) => segment === right.path[index]) &&
+  left.routes.length === right.routes.length &&
+  left.routes.every((route, index) => {
+    const other = right.routes[index];
+    return other !== undefined &&
+      route.database === other.database &&
+      route.catalogKey === other.catalogKey &&
+      route.unitHash === other.unitHash;
+  }) &&
+  left.dependencies.length === right.dependencies.length &&
+  left.dependencies.every((dependency, index) => {
+    const other = right.dependencies[index];
+    return other !== undefined &&
+      dependency.parentDatabase === other.parentDatabase &&
+      dependency.graphEntity === other.graphEntity;
+  });
+
+export const graphPathLeaseDependsOn = (
+  identity: GraphPathLeaseIdentity,
+  dependency: GraphPathLeaseDependency,
+): boolean => identity.dependencies.some((candidate) =>
+  candidate.parentDatabase === dependency.parentDatabase &&
+  candidate.graphEntity === dependency.graphEntity
+);
 
 export type CatalogProvisioningAttribute = {
   readonly ":db/ident": string;
@@ -339,6 +418,8 @@ export const resolveAuthorizedGraphPath = Effect.fn(
 ): Effect.fn.Return<AuthorizedGraphPathTarget, GraphPathFailure, R> {
   const path = yield* Effect.fromResult(validatePath(input.path));
   const graphs: DynamicGraphBinding[] = [];
+  const routes: ResolvedDatabaseRoute[] = [input.root];
+  const dependencies: GraphPathLeaseDependency[] = [];
   let route = input.root;
   let context!: AuthorizedRequestContext;
 
@@ -359,6 +440,10 @@ export const resolveAuthorizedGraphPath = Effect.fn(
       index,
     );
     const child = yield* input.bindings.child(route, graph);
+    dependencies.push(Object.freeze({
+      parentDatabase: route.database,
+      graphEntity: graph.graphEntity,
+    }));
     const childDerivation: DatabaseRouteDerivation = Object.freeze({
       rootDatabase: input.root.database,
       graphs: Object.freeze([...graphs, graph]),
@@ -372,6 +457,7 @@ export const resolveAuthorizedGraphPath = Effect.fn(
     );
     graphs.push(graph);
     route = child;
+    routes.push(child);
   }
 
   return Object.freeze({
@@ -381,6 +467,8 @@ export const resolveAuthorizedGraphPath = Effect.fn(
       graphs: Object.freeze([...graphs]),
     }),
     context,
+    routes: Object.freeze([...routes]),
+    dependencies: Object.freeze([...dependencies]),
   });
 });
 

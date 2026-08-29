@@ -1,9 +1,14 @@
 /** Authenticated Graph paths over ordinary filtered database values. */
 
 import { describe, expect, test } from "bun:test";
+import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
 import * as EffectSchema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { Catalog, type CatalogDefinition } from "../../../src/Catalog.ts";
 import {
   Entity,
@@ -30,12 +35,16 @@ import {
   deriveResolvedDatabaseRoute,
   executeCatalogOperation,
   executeAuthorizedGraphPath,
+  executeAuthorizedGraphPathLive,
+  graphPathLeaseIdentity,
   hasClass,
   invoke,
   read,
   resolveAuthorizedGraphPath,
   resolveBoundCatalogDefinition,
+  sameGraphPathLeaseIdentity,
   type AuthenticatedCaller,
+  type LiveQueryDiff,
   type ResolvedDatabaseRoute,
 } from "../../../src/internal/authorization/index.ts";
 import { Connection } from "../../../src/internal/core/conn.ts";
@@ -44,6 +53,10 @@ import { restoreEngineTypeAssertions } from "../../../src/internal/core/tx-prove
 
 const rootDatabase = DatabaseId.make("graph-path-root");
 const artifactHash = DigestHex.make("b".repeat(64));
+const nestedNotesQuery = {
+  kind: "query" as const,
+  query: `[:find [?text ...] :where [?e :pathNote/text ?text]]`,
+};
 
 let childCatalog!: CatalogDefinition;
 let leafCatalog!: CatalogDefinition;
@@ -286,6 +299,15 @@ describe("authorized Graph paths", () => {
         { graphEntity: world.design, catalogKey: CatalogId.make("path-leaf") },
       ],
     });
+    expect(target.routes).toEqual([world.root, world.child, world.leaf]);
+    expect(target.dependencies).toEqual([
+      { parentDatabase: world.root.database, graphEntity: world.acme },
+      { parentDatabase: world.child.database, graphEntity: world.design },
+    ]);
+    expect(graphPathLeaseIdentity(target, ["acme", "design"])).toMatchObject({
+      rootDatabase,
+      path: ["acme", "design"],
+    });
     expect(await target.context.filteredDb.entity(world.note)).toMatchObject({
       ":pathNote/text": "nested visible",
     });
@@ -467,5 +489,210 @@ describe("authorized Graph paths", () => {
       input: { text: "must not run" },
       caller: caller(["member"]),
     })).rejects.toBeInstanceOf(Unauthorized);
+  });
+
+  test("renews every path segment and finalizes the complete dependency watch scope", async () => {
+    const world = await buildWorld();
+    const path = ["acme", "design"] as const;
+    const target = await Effect.runPromise(resolver(world, ["member"], path));
+    const expectedLeaseIdentity = graphPathLeaseIdentity(target, path);
+    const basisEvents = await Effect.runPromise(
+      Queue.unbounded<"ready" | "change">(),
+    );
+    const output = await Effect.runPromise(Queue.unbounded<LiveQueryDiff>());
+    const acquired: DatabaseId[] = [];
+    let finalized = false;
+    const basisChanges = Stream.fromQueue(basisEvents).pipe(
+      Stream.ensuring(Effect.sync(() => {
+        finalized = true;
+      })),
+    );
+    const program = Effect.gen(function* () {
+      const scope = yield* Scope.make();
+      const fiber = yield* executeAuthorizedGraphPathLive({
+        authenticate: Effect.succeed(caller(["member"])),
+        bindings: world.bindings,
+        root: world.root,
+        path,
+        currentDb: (database) => Effect.sync(() => {
+          acquired.push(database);
+          return world.connections.get(database)!.db();
+        }),
+        provision: () => Effect.void,
+        basisChanges,
+        expectedLeaseIdentity,
+        interruptAfter: "25 millis",
+      }, nestedNotesQuery).pipe(
+        Stream.runForEach((diff) => Queue.offer(output, diff)),
+        Effect.forkIn(scope, { startImmediately: true }),
+      );
+      yield* Queue.offer(basisEvents, "ready");
+      const first = yield* Queue.take(output);
+      expect(first).toEqual({ added: ["nested visible"], retracted: [] });
+      expect(acquired).toEqual([
+        world.root.database,
+        world.child.database,
+        world.leaf.database,
+      ]);
+
+      // #390 keeps the Effect clock real. Poll only the observable renewal;
+      // Scope still owns cancellation and the basis-watch finalizer.
+      for (let attempt = 0; attempt < 100 && acquired.length < 6; attempt++) {
+        yield* Effect.sleep("5 millis");
+      }
+      expect(acquired.slice(0, 6)).toEqual([
+        world.root.database,
+        world.child.database,
+        world.leaf.database,
+        world.root.database,
+        world.child.database,
+        world.leaf.database,
+      ]);
+
+      yield* Scope.close(scope, Exit.void);
+      yield* Fiber.await(fiber);
+      expect(finalized).toBe(true);
+    });
+    await Effect.runPromise(program);
+  });
+
+  test("an exact segment invalidation closes after filtered path reauthorization", async () => {
+    const world = await buildWorld();
+    const path = ["acme", "design"] as const;
+    const target = await Effect.runPromise(resolver(world, ["member"], path));
+    const expectedLeaseIdentity = graphPathLeaseIdentity(target, path);
+    const invalidations = await Effect.runPromise(
+      Queue.unbounded<(typeof target.dependencies)[number]>(),
+    );
+    const seen: LiveQueryDiff[] = [];
+    const program = Effect.gen(function* () {
+      const fiber = yield* executeAuthorizedGraphPathLive({
+        authenticate: Effect.succeed(caller(["member"])),
+        bindings: world.bindings,
+        root: world.root,
+        path,
+        currentDb: (database) =>
+          Effect.succeed(world.connections.get(database)!.db()),
+        provision: () => Effect.void,
+        expectedLeaseIdentity,
+        dependencyInvalidations: Stream.fromQueue(invalidations),
+        interruptAfter: "1 second",
+      }, nestedNotesQuery).pipe(
+        Stream.runForEach((diff) => Effect.sync(() => seen.push(diff))),
+        Effect.forkChild,
+      );
+      while (seen.length === 0) yield* Effect.yieldNow;
+      const graphName = world.childConnection.db().requireAttr(":graph/name");
+      yield* Effect.promise(() => world.childConnection.transact([
+        [":db/retract", world.design, graphName.id, "design"],
+        [":db/add", world.design, graphName.id, "renamed-design"],
+      ]));
+      yield* Queue.offer(invalidations, target.dependencies[1]!);
+      yield* Fiber.await(fiber);
+      expect(seen).toEqual([{ added: ["nested visible"], retracted: [] }]);
+    });
+    await Effect.runPromise(program);
+  });
+
+  test("does not emit a queued path result after its lease expires", async () => {
+    const world = await buildWorld();
+    const path = ["acme", "design"] as const;
+    const target = await Effect.runPromise(resolver(world, ["member"], path));
+    const expectedLeaseIdentity = graphPathLeaseIdentity(target, path);
+    let releaseEmit!: () => void;
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const holdEmit = new Promise<void>((resolve) => {
+      releaseEmit = resolve;
+    });
+    const seen: LiveQueryDiff[] = [];
+    const program = Effect.gen(function* () {
+      const scope = yield* Scope.make();
+      const fiber = yield* executeAuthorizedGraphPathLive({
+        authenticate: Effect.succeed(caller(["member"])),
+        bindings: world.bindings,
+        root: world.root,
+        path,
+        currentDb: (database) =>
+          Effect.succeed(world.connections.get(database)!.db()),
+        provision: () => Effect.void,
+        expectedLeaseIdentity,
+        interruptAfter: "25 millis",
+        boundaries: {
+          checkpoint: (name) => {
+            if (name !== "live.emit") return Promise.resolve();
+            markEntered();
+            return holdEmit;
+          },
+          checkpointSync: () => {},
+        },
+      }, nestedNotesQuery).pipe(
+        Stream.runForEach((diff) => Effect.sync(() => seen.push(diff))),
+        Effect.forkIn(scope, { startImmediately: true }),
+      );
+      yield* Effect.promise(() => entered);
+      yield* Effect.sleep("50 millis");
+      releaseEmit();
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      expect(seen).toEqual([]);
+      yield* Scope.close(scope, Exit.void);
+      yield* Fiber.await(fiber);
+    });
+    await Effect.runPromise(program);
+  });
+
+  test("does not renew a path lease under another principal", async () => {
+    const world = await buildWorld();
+    const path = ["acme", "design"] as const;
+    const target = await Effect.runPromise(resolver(world, ["member"], path));
+    const expectedLeaseIdentity = graphPathLeaseIdentity(target, path);
+    let authentications = 0;
+    const seen: LiveQueryDiff[] = [];
+    await Effect.runPromise(Effect.gen(function* () {
+      const fiber = yield* executeAuthorizedGraphPathLive({
+        authenticate: Effect.sync(() => {
+          authentications += 1;
+          return {
+            ...caller(["member"]),
+            claims: {
+              sub: authentications === 1
+                ? "same-deployment-subject"
+                : "another-subject",
+            },
+          };
+        }),
+        bindings: world.bindings,
+        root: world.root,
+        path,
+        currentDb: (database) =>
+          Effect.succeed(world.connections.get(database)!.db()),
+        provision: () => Effect.void,
+        expectedLeaseIdentity,
+        interruptAfter: "25 millis",
+      }, nestedNotesQuery).pipe(
+        Stream.runForEach((diff) => Effect.sync(() => seen.push(diff))),
+        Effect.forkChild,
+      );
+      yield* Fiber.await(fiber);
+    }));
+    expect(authentications).toBe(2);
+    expect(seen).toEqual([{ added: ["nested visible"], retracted: [] }]);
+  });
+
+  test("binds a lease to the resolved database and catalog-unit route", async () => {
+    const world = await buildWorld();
+    const acme = await Effect.runPromise(
+      resolver(world, ["member"], ["acme"]),
+    );
+    const other = await Effect.runPromise(
+      resolver(world, ["member"], ["other"]),
+    );
+    expect(sameGraphPathLeaseIdentity(
+      graphPathLeaseIdentity(acme, ["same-address"]),
+      graphPathLeaseIdentity(other, ["same-address"]),
+    )).toBe(false);
   });
 });

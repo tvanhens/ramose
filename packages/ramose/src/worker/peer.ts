@@ -131,14 +131,16 @@ export function nearestReplica(
  * replica also owns deployment-version probes in separate alarm invocations,
  * closing this socket when the public route no longer selects this Worker.
  */
+export type BasisWatch = {
+  readonly changes: Stream.Stream<LiveBasisEvent, Unauthorized>;
+  readonly currentBasis: () => Basis | undefined;
+};
+
 export const watchBasisChanges = (
   env: RamoseEnv,
   db: string,
   request: Request,
-): {
-  readonly changes: Stream.Stream<LiveBasisEvent, Unauthorized>;
-  readonly currentBasis: () => Basis | undefined;
-} => {
+): BasisWatch => {
   let currentBasis: Basis | undefined;
   const changes = Stream.callback<LiveBasisEvent, Unauthorized>((out) =>
     Effect.gen(function* () {
@@ -209,6 +211,60 @@ export const watchBasisChanges = (
     }),
   );
   return { changes, currentBasis: () => currentBasis };
+};
+
+/**
+ * Compose the existing replica basis watch across one sealed database set.
+ * `ready` is emitted only after every real watch has supplied its current
+ * basis; later changes from any member invalidate the same live lease epoch.
+ */
+export const watchBasisChangesForDatabases = (
+  env: RamoseEnv,
+  databases: readonly string[],
+  request: Request,
+): {
+  readonly changes: Stream.Stream<LiveBasisEvent, Unauthorized>;
+  readonly currentBasis: (database: string) => Basis | undefined;
+} => {
+  const unique = Object.freeze([...new Set(databases)]);
+  const watches = new Map(unique.map((database) => [
+    database,
+    watchBasisChanges(env, database, request),
+  ] as const));
+  type Event = { readonly database: string; readonly event: LiveBasisEvent };
+  type ReadyState = {
+    readonly ready: ReadonlySet<string>;
+    readonly opened: boolean;
+  };
+  const events = Stream.mergeAll(
+    unique.map((database) =>
+      watches.get(database)!.changes.pipe(
+        Stream.map((event): Event => ({ database, event })),
+      )
+    ),
+    { concurrency: "unbounded" },
+  );
+  const changes = events.pipe(
+    Stream.mapAccumEffect(
+      (): ReadyState => ({ ready: new Set(), opened: false }),
+      (state, item) => Effect.sync(() => {
+        if (item.event === "change") {
+          return [state, state.opened ? ["change" as const] : []] as const;
+        }
+        const ready = new Set(state.ready);
+        ready.add(item.database);
+        const opened = state.opened || ready.size === unique.length;
+        return [
+          { ready, opened },
+          !state.opened && opened ? ["ready" as const] : [],
+        ] as const;
+      }),
+    ),
+  );
+  return {
+    changes,
+    currentBasis: (database) => watches.get(database)?.currentBasis(),
+  };
 };
 
 export function wantsBasisCache(_request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">): boolean {
