@@ -371,7 +371,15 @@ export function registerTransactor(target: { urls: () => LocalUrls }): void {
       expect(await queryIds(base, db, seed.t)).toEqual([1]);
 
       requireOk(
-        "arm storage throw",
+        "arm failed batch wait",
+        await testAdmin(base, db, "/checkpoint", {
+          scope: "transactor",
+          action: "arm-wait",
+          name: "transactor.commit",
+        }),
+      );
+      requireOk(
+        "arm failed batch storage throw",
         await testAdmin(base, db, "/checkpoint", {
           scope: "transactor",
           action: "arm-throw",
@@ -379,13 +387,34 @@ export function registerTransactor(target: { urls: () => LocalUrls }): void {
           error: "induced real DO SQLite write failure",
         }),
       );
-      const failed = await Promise.allSettled(
-        [3, 4, 5].map((id) =>
-          testAdmin(base, db, "/transact", {
-            tx: [{ ":k/id": id, ":k/v": `failed-${id}` }],
-          })
-        ),
-      );
+      const failing = [testAdmin(base, db, "/transact", {
+        tx: [{ ":k/id": 3, ":k/v": "failed-3" }],
+      })];
+      await waitFor(async () => {
+        const status = await testAdmin(base, db, "/checkpoint", {
+          scope: "transactor",
+          action: "status",
+        });
+        return status.body.checkpoints?.["transactor.commit"]?.pending === true;
+      }, "failed batch commit checkpoint");
+      failing.push(...[4, 5].map((id) =>
+        testAdmin(base, db, "/transact", {
+          tx: [{ ":k/id": id, ":k/v": `failed-${id}` }],
+        })
+      ));
+      await waitFor(async () => {
+        const response = await testAdmin(base, db, "/info", {});
+        return response.status === 200 && response.body.metrics.queueDepth === 2;
+      }, "failed batch queued requests");
+      // Releasing reaches the armed sync throw before the admin response can
+      // leave the isolate, so this request may observe the expected abort.
+      // The three transaction results below are the authoritative outcome.
+      await testAdmin(base, db, "/checkpoint", {
+        scope: "transactor",
+        action: "release",
+        name: "transactor.commit",
+      }).catch(() => undefined);
+      const failed = await Promise.allSettled(failing);
       expect(
         failed.some(
           (result) => result.status === "fulfilled" && result.value.status === 200,
