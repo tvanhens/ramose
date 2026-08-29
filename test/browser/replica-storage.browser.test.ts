@@ -93,6 +93,16 @@ const deleteDatabase = (name: string): Promise<void> =>
     });
   });
 
+const openDatabase = (name: string, version: number): Promise<IDBDatabase> =>
+  new Promise((resolve, reject) => {
+    const request = indexedDB.open(name, version);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("blocked", () => reject(new Error("database upgrade blocked")), {
+      once: true,
+    });
+  });
+
 const facts = async (db: Db, field: string) => {
   const attribute = db.attr(field);
   if (attribute === undefined) throw new Error(`missing ${field}`);
@@ -236,6 +246,14 @@ browserTest("restores only old-or-new values across durable staging and aborted 
       index: 0,
       datoms: [snapshotDatom(entity, ":item/name", { type: "string", value: "snapshot" })],
     });
+    await expect(storage.stageSnapshotChunk({
+      type: "SnapshotChunk", protocol: 1, identity: selected,
+      snapshot: nextSnapshot, index: 0,
+      datoms: [snapshotDatom(entity, ":item/name", { type: "string", value: "changed bytes" })],
+    })).rejects.toMatchObject({
+      _tag: "ReplicationTransitionError",
+      reason: "duplicate snapshot chunk changed bytes",
+    });
 
     storage.close();
     storage = await IndexedDbReplicaStorage.open(name);
@@ -263,6 +281,7 @@ browserTest("restores only old-or-new values across durable staging and aborted 
     await expect(abortedSnapshot).rejects.toHaveProperty("name", "AbortError");
     expect((await storage.restore(selected, attributes))?.revision).toBe(oldRevision);
 
+    const installedController = new AbortController();
     const installed = await storage.commitSnapshot({
       type: "SnapshotCommit",
       protocol: 1,
@@ -270,9 +289,14 @@ browserTest("restores only old-or-new values across durable staging and aborted 
       snapshot: nextSnapshot,
       revision: snapshotRevision,
       chunks: 1,
-    }, attributes);
+    }, attributes, { signal: installedController.signal });
+    installedController.abort();
     expect(installed?.revision).toBe(snapshotRevision);
     expect([...(await namedEntities(installed!.db)).keys()]).toEqual(["snapshot"]);
+    await expect(storage.stageSnapshotChunk({
+      type: "SnapshotChunk", protocol: 1, identity: selected,
+      snapshot: nextSnapshot, index: 0, datoms: [],
+    })).resolves.toBeUndefined();
 
     const change: Change = {
       type: "Change",
@@ -396,6 +420,19 @@ browserTest("a snapshot cannot overwrite a change committed after staging began"
     const restored = await storage.restore(selected, attributes);
     expect(restored?.revision).toBe(r3);
     expect([...(await namedEntities(restored!.db)).keys()]).toEqual(["r3"]);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("an open adapter does not block a future IndexedDB schema upgrade", async ({ browser }) => {
+  const name = `ramose-replica-upgrade-${browser.uniqueId}`;
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    const upgraded = await openDatabase(name, 2);
+    expect(upgraded.version).toBe(2);
+    upgraded.close();
   } finally {
     storage.close();
     await deleteDatabase(name);

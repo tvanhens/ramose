@@ -32,6 +32,7 @@ import {
 import {
   applyReplicationFrame,
   emptyClientReplicationState,
+  ReplicationTransitionError,
   sameReplicationIdentity,
   type ClientReplicationState,
   type CommittedReplica,
@@ -121,6 +122,17 @@ const transactionDone = (transaction: IDBTransaction): Promise<void> =>
 const commitTransaction = async (transaction: IDBTransaction): Promise<void> => {
   transaction.commit();
   await transactionDone(transaction);
+};
+
+/** Abort a transaction because this operation intentionally lost a CAS. */
+const abortTransaction = async (transaction: IDBTransaction): Promise<void> => {
+  const done = transactionDone(transaction);
+  transaction.abort();
+  try {
+    await done;
+  } catch (error) {
+    if (!(error instanceof DOMException) || error.name !== "AbortError") throw error;
+  }
 };
 
 const abortWithSignal = (
@@ -348,7 +360,9 @@ const materialize = async (
   return {
     record,
     db: new Db({
-      store,
+      // The caller may abort its install controller during cleanup after this
+      // value commits; reads from the immutable result must remain usable.
+      store: new IndexedDbNodeStore(database, partition),
       roots,
       novelty: new Novelty(),
       basisT: roots.t,
@@ -394,7 +408,9 @@ export class IndexedDbReplicaStorage {
       database.createObjectStore(STAGING_CHUNKS, { keyPath: ["partition", "index"] });
       database.createObjectStore(NODES, { keyPath: ["partition", "hash"] });
     });
-    return new IndexedDbReplicaStorage(name, await requestResult(request));
+    const database = await requestResult(request);
+    database.addEventListener("versionchange", () => database.close());
+    return new IndexedDbReplicaStorage(name, database);
   }
 
   close(): void {
@@ -464,8 +480,7 @@ export class IndexedDbReplicaStorage {
       staging === undefined || staging.snapshot !== frame.snapshot ||
       !sameReplicationIdentity(staging.identity, frame.identity)
     ) {
-      transaction.abort();
-      await transactionDone(transaction);
+      await abortTransaction(transaction);
       return;
     }
     const chunks = transaction.objectStore(STAGING_CHUNKS);
@@ -473,9 +488,10 @@ export class IndexedDbReplicaStorage {
       chunks.get([partition, frame.index]),
     );
     if (existing !== undefined && !sameJson(existing.datoms, frame.datoms)) {
-      transaction.abort();
-      await transactionDone(transaction);
-      return;
+      await abortTransaction(transaction);
+      throw new ReplicationTransitionError({
+        reason: "duplicate snapshot chunk changed bytes",
+      });
     }
     if (existing === undefined) {
       chunks.put({ partition, index: frame.index, datoms: frame.datoms } satisfies StagingChunkRecord);
@@ -558,8 +574,7 @@ export class IndexedDbReplicaStorage {
         !sameReplicationIdentity(current.identity, frame.identity) ||
         (currentCommitted?.revision ?? null) !== staged.baseRevision
       ) {
-        transaction.abort();
-        await transactionDone(transaction);
+        await abortTransaction(transaction);
         return undefined;
       }
       transaction.objectStore(COMMITTED).put(built.record);
@@ -607,8 +622,7 @@ export class IndexedDbReplicaStorage {
         write.objectStore(COMMITTED).get(partition),
       );
       if (current?.revision !== prior.revision) {
-        write.abort();
-        await transactionDone(write);
+        await abortTransaction(write);
         return undefined;
       }
       write.objectStore(COMMITTED).put(built.record);
