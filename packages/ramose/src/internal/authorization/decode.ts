@@ -388,10 +388,29 @@ const identityCollision = (
 ): InvalidIR | undefined => {
   if (isCatalogUnit(document)) {
     return (
-      entityDescriptorCollisions(document.catalog.entities) ??
-      traitDescriptorCollisions(document.catalog.traits) ??
-      fieldDescriptorCollisions(document.catalog.fields) ??
-      operationDescriptorCollisions(document.catalog.operations) ??
+      descriptorCollisions(
+        document.catalog.entities,
+        "entity",
+        Schema.encodeUnknownSync(EntityId),
+        Schema.encodeUnknownSync(EntityDescriptor),
+      ) ??
+      descriptorCollisions(
+        document.catalog.traits,
+        "trait",
+        Schema.encodeUnknownSync(TraitId),
+        Schema.encodeUnknownSync(TraitDescriptor),
+      ) ??
+      descriptorCollisions(
+        document.catalog.fields,
+        "field",
+        Schema.encodeUnknownSync(FieldId),
+        Schema.encodeUnknownSync(FieldDescriptor),
+      ) ??
+      descriptorCollisions(
+        document.catalog.operations,
+        "operation",
+        Schema.encodeUnknownSync(OperationId),
+      ) ??
       traitCompositionCollisions(document.catalog.traitComposition) ??
       identityCollision(document.policy, encodeRule)
     );
@@ -443,75 +462,27 @@ const decisionCollisions = (decisions: {
   uniqueEncoded(decisions.fields.map((entry) => entry.target), "field decision target") ??
   uniqueEncoded((decisions.operations ?? []).map((entry) => entry.target), "operation decision target");
 
-const entityDescriptorCollisions = (
-  entities: CatalogDescriptor["entities"],
+const descriptorCollisions = (
+  rows: ReadonlyArray<{ readonly id: unknown }>,
+  label: string,
+  encodeId: (id: unknown) => unknown,
+  encodeRow: (row: unknown) => unknown = (row) => row,
 ): InvalidIR | undefined =>
   internByIdentity(
-    entities.map((entity) => {
-      const encoded = encodedJson(Schema.encodeUnknownSync(EntityDescriptor)(entity));
+    rows.map((row) => {
+      // Rows without a rowSchema (operations) have already crossed a strict
+      // schema decode — both persisted v1 rows and current rows — so
+      // canonicalize the decoded row without forcing the v2 operation codec
+      // onto the legacy shape.
+      const encoded = encodedJson(encodeRow(row));
       return {
-        id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(EntityId)(entity.id))),
+        id: canonicalizeJson(encodedJson(encodeId(row.id))),
         body: canonicalizeJson(omitKey(encoded, "id")),
       };
     }),
     {
-      collision: (id) => `entity identity collision: ${id} maps to different canonical bodies`,
-      duplicate: (id) => `duplicate entity identity: ${id}`,
-    },
-  );
-
-const traitDescriptorCollisions = (
-  traits: CatalogDescriptor["traits"],
-): InvalidIR | undefined =>
-  internByIdentity(
-    traits.map((trait) => {
-      const encoded = encodedJson(Schema.encodeUnknownSync(TraitDescriptor)(trait));
-      return {
-        id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(TraitId)(trait.id))),
-        body: canonicalizeJson(omitKey(encoded, "id")),
-      };
-    }),
-    {
-      collision: (id) => `trait identity collision: ${id} maps to different canonical bodies`,
-      duplicate: (id) => `duplicate trait identity: ${id}`,
-    },
-  );
-
-const fieldDescriptorCollisions = (
-  fields: CatalogDescriptor["fields"],
-): InvalidIR | undefined =>
-  internByIdentity(
-    fields.map((field) => {
-      const encoded = encodedJson(Schema.encodeUnknownSync(FieldDescriptor)(field));
-      return {
-        id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(FieldId)(field.id))),
-        body: canonicalizeJson(omitKey(encoded, "id")),
-      };
-    }),
-    {
-      collision: (id) => `field identity collision: ${id} maps to different canonical bodies`,
-      duplicate: (id) => `duplicate field identity: ${id}`,
-    },
-  );
-
-const operationDescriptorCollisions = (
-  operations: ReadonlyArray<{ readonly id: OperationId }>,
-): InvalidIR | undefined =>
-  internByIdentity(
-    operations.map((operation) => {
-      // Both persisted v1 rows and current rows have already crossed a strict
-      // schema decode, so canonicalize the decoded row without forcing the v2
-      // operation codec onto the legacy shape.
-      const encoded = encodedJson(operation);
-      return {
-        id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(OperationId)(operation.id))),
-        body: canonicalizeJson(omitKey(encoded, "id")),
-      };
-    }),
-    {
-      collision: (id) =>
-        `operation identity collision: ${id} maps to different canonical bodies`,
-      duplicate: (id) => `duplicate operation identity: ${id}`,
+      collision: (id) => `${label} identity collision: ${id} maps to different canonical bodies`,
+      duplicate: (id) => `duplicate ${label} identity: ${id}`,
     },
   );
 

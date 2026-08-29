@@ -190,17 +190,9 @@ const requireDescriptorTables = (
 ): Result.Result<void, ValidateFailure> =>
   Result.gen(function* () {
     yield* requirePresent(descriptor, "catalog descriptor");
-    yield* requirePresent(descriptor.entities, "entities");
-    yield* requirePresent(descriptor.traits, "traits");
-    yield* requirePresent(descriptor.fields, "fields");
-    yield* requirePresent(descriptor.operations, "operations");
-    yield* requirePresent(descriptor.traitComposition, "traitComposition");
-    if (!Array.isArray(descriptor.entities)) return yield* invalid("missing entities");
-    if (!Array.isArray(descriptor.traits)) return yield* invalid("missing traits");
-    if (!Array.isArray(descriptor.fields)) return yield* invalid("missing fields");
-    if (!Array.isArray(descriptor.operations)) return yield* invalid("missing operations");
-    if (!Array.isArray(descriptor.traitComposition)) {
-      return yield* invalid("missing traitComposition");
+    for (const key of CATALOG_TABLE_KEYS) {
+      yield* requirePresent(descriptor[key], key);
+      if (!Array.isArray(descriptor[key])) return yield* invalid(`missing ${key}`);
     }
   });
 
@@ -210,31 +202,34 @@ const requirePolicyPresent = (
   Result.gen(function* () {
     yield* requirePresent(policy, "installed policy");
     if (typeof policy !== "object") return yield* invalid("missing installed policy");
-    yield* requirePresent(policy.accessPlans, "accessPlans");
-    yield* requirePresent(policy.rules, "rules");
-    yield* requirePresent(policy.decisions, "decisions");
-    yield* requirePresent(policy.classes, "classes");
-    yield* requirePresent(policy.claims, "claims");
+    for (const key of ["accessPlans", "rules", "decisions", "classes", "claims"] as const) {
+      yield* requirePresent(policy[key], key);
+    }
   });
 
-const encodeEntities = (
-  entities: ReadonlyArray<EntityDescriptor>,
-): unknown => entities.map((entity) => Schema.encodeUnknownSync(EntityDescriptor)(entity));
+const CATALOG_TABLE_KEYS = [
+  "entities",
+  "traits",
+  "fields",
+  "operations",
+  "traitComposition",
+] as const;
 
-const encodeTraits = (
-  traits: ReadonlyArray<TraitDescriptor>,
-): unknown => traits.map((trait) => Schema.encodeUnknownSync(TraitDescriptor)(trait));
+const CATALOG_TABLE_ROW_ENCODERS: Record<
+  (typeof CATALOG_TABLE_KEYS)[number],
+  (row: unknown) => unknown
+> = {
+  entities: Schema.encodeUnknownSync(EntityDescriptor),
+  traits: Schema.encodeUnknownSync(TraitDescriptor),
+  fields: Schema.encodeUnknownSync(FieldDescriptor),
+  operations: Schema.encodeUnknownSync(OperationDescriptor),
+  traitComposition: Schema.encodeUnknownSync(TraitComposition),
+};
 
-const encodeFields = (
-  fields: ReadonlyArray<FieldDescriptor>,
-): unknown => fields.map((field) => Schema.encodeUnknownSync(FieldDescriptor)(field));
-
-const encodeOperations = (
-  operations: ReadonlyArray<CatalogDescriptorType["operations"][number]>,
-): unknown => operations.map((operation) => Schema.encodeUnknownSync(OperationDescriptor)(operation));
-
-const encodeComposition = (rows: ReadonlyArray<TraitComposition>): unknown =>
-  rows.map((row) => Schema.encodeUnknownSync(TraitComposition)(row));
+const encodeCatalogTable = (
+  key: (typeof CATALOG_TABLE_KEYS)[number],
+  rows: ReadonlyArray<unknown>,
+): unknown => rows.map(CATALOG_TABLE_ROW_ENCODERS[key]);
 
 const encodeAccessPlans = (
   plans: InstalledAuthorizationIRType["accessPlans"],
@@ -315,31 +310,13 @@ const requireCatalogAlreadyCanonical = (
   normalized: CatalogDescriptorType,
 ): Result.Result<void, ValidateFailure> =>
   Result.gen(function* () {
-    yield* canonicalEqual(
-      encodeEntities(normalized.entities),
-      encodeEntities(catalog.entities),
-      catalogTableMismatch("entities"),
-    );
-    yield* canonicalEqual(
-      encodeTraits(normalized.traits),
-      encodeTraits(catalog.traits),
-      catalogTableMismatch("traits"),
-    );
-    yield* canonicalEqual(
-      encodeFields(normalized.fields),
-      encodeFields(catalog.fields),
-      catalogTableMismatch("fields"),
-    );
-    yield* canonicalEqual(
-      encodeOperations(normalized.operations),
-      encodeOperations(catalog.operations),
-      catalogTableMismatch("operations"),
-    );
-    yield* canonicalEqual(
-      encodeComposition(normalized.traitComposition),
-      encodeComposition(catalog.traitComposition),
-      catalogTableMismatch("traitComposition"),
-    );
+    for (const key of CATALOG_TABLE_KEYS) {
+      yield* canonicalEqual(
+        encodeCatalogTable(key, normalized[key]),
+        encodeCatalogTable(key, catalog[key]),
+        catalogTableMismatch(key),
+      );
+    }
   });
 
 /**
