@@ -176,6 +176,9 @@ export const handleIsolateTestAdmin = async (
   request: Request,
   path: string,
   abort?: (reason: string) => void,
+  inspect?: {
+    readonly operationReceiptCount: () => number;
+  },
 ): Promise<Response | undefined> => {
   if (!path.startsWith("/admin/test/")) return undefined;
   enableTestHooks();
@@ -221,6 +224,12 @@ export const handleIsolateTestAdmin = async (
       return json({ ok: true, name, action: "release" });
     }
     return json({ error: "checkpoint action must be arm-wait|arm-throw|release|status" }, 400);
+  }
+  if (
+    path === "/admin/test/operation-receipts" &&
+    request.method === "POST" && inspect !== undefined
+  ) {
+    return json({ count: inspect.operationReceiptCount() });
   }
   return json({ error: "unknown test admin path" }, 404);
 };

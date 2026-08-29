@@ -71,7 +71,7 @@ import {
 } from "../runtime-boundaries.ts";
 import {
   authorizeCatalogOperation,
-  authorizeCatalogOperationAtBasis,
+  authorizeCatalogOperationReplay,
   catalogProvisioningAttributes,
   decideInvocationReceipt,
   executeCatalogOperation,
@@ -90,7 +90,6 @@ import {
   type InvocationReceiptEvent,
   type OperationRuntime,
   type PreparedInvocationReceipt,
-  type ResolvedOperationCatalog,
   type SealedInvocationRejection,
   type StoredInvocationReceipt,
   type TerminalInvocationReceipt,
@@ -390,6 +389,34 @@ export class Transactor {
     });
   }
 
+  /** Read-only first pass; missing invocations are admitted before insertion. */
+  private inspectInvocationReceipt(
+    prepared: PreparedInvocationReceipt,
+  ) {
+    const stored = this.readInvocationReceipt(
+      prepared.principalId,
+      prepared.invocationId,
+    );
+    return decideInvocationReceipt(stored, prepared);
+  }
+
+  /** Atomically seal only an already-existing abandoned claim. */
+  private recoverInvocationReceipt(
+    prepared: PreparedInvocationReceipt,
+  ) {
+    return this.host.transactionSync(() => {
+      const stored = this.readInvocationReceipt(
+        prepared.principalId,
+        prepared.invocationId,
+      );
+      const decision = decideInvocationReceipt(stored, prepared);
+      if (decision._tag === "Recover") {
+        this.replaceInvocationReceipt(decision.receipt);
+      }
+      return decision;
+    });
+  }
+
   private assertClaimIdentity(
     stored: StoredInvocationReceipt | undefined,
     claim: ClaimedInvocationReceipt,
@@ -630,77 +657,6 @@ export class Transactor {
       : { _tag: "Reject", rejection };
   }
 
-  /** Preserve an exact sealed failure only when current admission fails alike. */
-  private replayMatchesAdmissionFailure(
-    receipt: TerminalInvocationReceipt,
-    error: unknown,
-  ): boolean {
-    const current = this.invocationFailureEvent(error);
-    if (receipt.status === "failed") return current._tag === "Fail";
-    if (receipt.status !== "rejected" || current._tag !== "Reject") {
-      return false;
-    }
-    return JSON.stringify(receipt.rejection) ===
-      JSON.stringify(current.rejection);
-  }
-
-  private sameDeterministicAdmissionFailure(
-    left: unknown,
-    right: unknown,
-  ): boolean {
-    const leftEvent = this.invocationFailureEvent(left);
-    const rightEvent = this.invocationFailureEvent(right);
-    return leftEvent._tag === "Reject" && rightEvent._tag === "Reject" &&
-      JSON.stringify(leftEvent.rejection) ===
-        JSON.stringify(rightEvent.rejection);
-  }
-
-  /**
-   * A completed operation may make its own target or consumed refs disappear.
-   * Replay that post-commit denial only when the same invocation still admits
-   * immediately before its commit. Current token, catalog, caller, and grant
-   * checks run on both historical fences; no operation body is invoked.
-   */
-  private async replayDenialComesFromOwnCommit(
-    receipt: TerminalInvocationReceipt,
-    currentFailure: unknown,
-    invocation: AuthoritativeOperationInvocation,
-    resolved: ResolvedOperationCatalog,
-  ): Promise<boolean> {
-    if (receipt.status !== "completed" || this.operationRuntime === undefined) {
-      return false;
-    }
-    let postCommitFailure: unknown;
-    try {
-      await authorizeCatalogOperationAtBasis(
-        this.conn,
-        this.operationRuntime,
-        invocation,
-        receipt.committedT,
-        resolved,
-      );
-      return false;
-    } catch (error) {
-      postCommitFailure = error;
-    }
-    if (!this.sameDeterministicAdmissionFailure(
-      currentFailure,
-      postCommitFailure,
-    )) return false;
-    try {
-      await authorizeCatalogOperationAtBasis(
-        this.conn,
-        this.operationRuntime,
-        invocation,
-        receipt.committedT - 1,
-        resolved,
-      );
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   private takeBatch(): Pending[] {
     const max = this.host.config.maxBatch;
     // An operation carries a short-lived authorization lease through native
@@ -755,22 +711,29 @@ export class Transactor {
         for (const p of batch) {
           if (p.operation !== undefined) {
             let claim: ClaimedInvocationReceipt | undefined;
-            let replay: TerminalInvocationReceipt | undefined;
             try {
               const prepared = await Effect.runPromise(
                 prepareInvocationReceipt(p.operation),
               );
-              const decision = this.claimInvocationReceipt(prepared);
-              if (decision._tag === "Conflict") {
+              const inspected = this.inspectInvocationReceipt(prepared);
+              if (inspected._tag === "Conflict") {
                 this.stats.rejected++;
                 p.resolve({ _tag: "Conflict" });
                 continue;
               }
-              if (decision._tag === "Replay" || decision._tag === "Recover") {
-                replay = decision.receipt;
-              } else {
-                claim = decision.receipt;
-                await this.boundaries.checkpoint("operation.claimed");
+              if (inspected._tag === "Recover") {
+                const recovered = this.recoverInvocationReceipt(prepared);
+                if (recovered._tag === "Conflict") {
+                  this.stats.rejected++;
+                  p.resolve({ _tag: "Conflict" });
+                  continue;
+                }
+                if (recovered._tag === "Replay" || recovered._tag === "Recover") {
+                  p.resolve(invocationReceiptOutcome(recovered.receipt));
+                  continue;
+                }
+                // A missing row cannot normally race inside one serialized DO,
+                // but if storage changed, continue through fresh admission.
               }
               if (this.operationRuntime === undefined) {
                 throw opaqueOperationDenial();
@@ -782,43 +745,58 @@ export class Transactor {
                 resolved.deployed.definition.unitHash,
                 resolved.deployed.definition.composition,
               );
-              let admission: CatalogOperationAdmission;
-              try {
-                admission = await authorizeCatalogOperation(
+              if (inspected._tag === "Replay") {
+                if (inspected.receipt.status === "completed") {
+                  await authorizeCatalogOperationReplay(
+                    this.conn,
+                    this.operationRuntime,
+                    p.operation,
+                    inspected.receipt.replayFence,
+                    resolved,
+                  );
+                } else {
+                  await authorizeCatalogOperation(
+                    this.conn,
+                    this.operationRuntime,
+                    p.operation,
+                    resolved,
+                  );
+                }
+                p.resolve(invocationReceiptOutcome(inspected.receipt));
+                continue;
+              }
+
+              const admission: CatalogOperationAdmission =
+                await authorizeCatalogOperation(
                   this.conn,
                   this.operationRuntime,
                   p.operation,
                   resolved,
                 );
-              } catch (error) {
-                if (
-                  replay !== undefined &&
-                  this.replayMatchesAdmissionFailure(replay, error)
-                ) {
-                  p.resolve(invocationReceiptOutcome(replay));
-                  continue;
-                }
-                if (
-                  replay !== undefined &&
-                  await this.replayDenialComesFromOwnCommit(
-                    replay,
-                    error,
-                    p.operation,
-                    resolved,
-                  )
-                ) {
-                  p.resolve(invocationReceiptOutcome(replay));
-                  continue;
-                }
-                throw error;
-              }
-              if (replay !== undefined) {
-                p.resolve(invocationReceiptOutcome(replay));
+
+              // Missing keys are admitted without writes. Only now, directly
+              // before native execution, atomically recheck and insert.
+              const decision = this.claimInvocationReceipt(prepared);
+              if (decision._tag === "Conflict") {
+                this.stats.rejected++;
+                p.resolve({ _tag: "Conflict" });
                 continue;
               }
-              if (claim === undefined) {
-                throw new Error("operation execution has no durable claim");
+              if (decision._tag === "Replay" || decision._tag === "Recover") {
+                if (decision.receipt.status === "completed") {
+                  await authorizeCatalogOperationReplay(
+                    this.conn,
+                    this.operationRuntime,
+                    p.operation,
+                    decision.receipt.replayFence,
+                    resolved,
+                  );
+                }
+                p.resolve(invocationReceiptOutcome(decision.receipt));
+                continue;
               }
+              claim = decision.receipt;
+              await this.boundaries.checkpoint("operation.claimed");
               const executed = await executeCatalogOperation(
                 this.conn,
                 this.operationRuntime,
@@ -831,6 +809,7 @@ export class Transactor {
                 _tag: "Complete" as const,
                 committedT: rep.t,
                 output: executed.output,
+                replayFence: executed.replayFence,
               };
               const terminal = transitionInvocationReceipt(claim, event);
               const txInstant = rep.txData[0]?.v as number;
@@ -1136,6 +1115,14 @@ export class Transactor {
       store: this.store.stats,
       indexer: this.indexer.status(),
     };
+  }
+
+  /** Test-assembly inspection of the real durable receipt table. */
+  operationReceiptCount(): number {
+    const row = this.host.sql.exec(
+      `SELECT COUNT(*) AS count FROM operation_receipts`,
+    ).toArray()[0];
+    return Number(row?.count ?? 0);
   }
 
   /**

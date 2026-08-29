@@ -44,12 +44,35 @@ import { fieldKey } from "./validation/common.ts";
 import type { Datom } from "../core/datom.ts";
 import { Index, ValueTag } from "../core/datom.ts";
 import type { Db, DatomPredicate } from "../core/db.ts";
+import { toWireDatom, type WireDatom } from "../core/log.ts";
 import { RAMOSE_TYPE } from "../core/schema.ts";
+
+/** Private observations used to bind a durable replay to its policy read-set. */
+export type ReadAuthorizationObservation =
+  | {
+    readonly _tag: "type";
+    readonly eid: number;
+    readonly datoms: readonly WireDatom[];
+  }
+  | {
+    readonly _tag: "field";
+    readonly eid: number;
+    readonly ident: string;
+    readonly attributeId: number | null;
+    readonly datoms: readonly WireDatom[];
+  }
+  | {
+    readonly _tag: "exists";
+    readonly eid: number;
+    readonly value: boolean;
+  };
 
 export type CompileReadFilterInput = {
   readonly unit: InstalledCatalogUnitV2;
   readonly principal: AuthorizationPrincipal;
   readonly currentDb: Db;
+  /** Internal-only read-set recorder. It never changes the policy decision. */
+  readonly observe?: (observation: ReadAuthorizationObservation) => void;
 };
 
 const denyAll: DatomPredicate = () => false;
@@ -195,7 +218,7 @@ export const compileReadFilter = (input: CompileReadFilterInput): DatomPredicate
 };
 
 const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
-  const { unit, principal, currentDb } = input;
+  const { unit, principal, currentDb, observe } = input;
   const prepared = prepareAuthorizationCatalog(
     {
       database: unit.catalog.database,
@@ -235,12 +258,23 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
   const typeMemo = new Map<string, Promise<EntityId | undefined>>();
   const rowMemo = new Map<string, Promise<boolean>>();
 
+  const observeExists = async (db: Db, eid: number): Promise<boolean> => {
+    const value = await db.exists(eid);
+    observe?.({ _tag: "exists", eid, value });
+    return value;
+  };
+
   const classifyFrom = (db: Db, eid: number): Promise<EntityId | undefined> => {
     const key = `${viewKey(db)}:${eid}`;
     const cached = typeMemo.get(key);
     if (cached !== undefined) return cached;
     const pending = (async (): Promise<EntityId | undefined> => {
       const typeDatoms = await db.datomsArray(Index.EAVT, { e: eid, a: RAMOSE_TYPE });
+      observe?.({
+        _tag: "type",
+        eid,
+        datoms: typeDatoms.map(toWireDatom),
+      });
       const name = uniqueCanonicalTypeName(typeDatoms);
       if (name === undefined) return undefined;
       return index.entities.get(name);
@@ -258,18 +292,42 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     eid: number,
     field: FieldDescriptor,
   ): Promise<Projected> => {
-    const attr = currentDb.schema.attr(fieldIdent(field));
-    if (attr === undefined) return InvalidTraversalProjection;
+    const ident = fieldIdent(field);
+    const attr = currentDb.schema.attr(ident);
+    if (attr === undefined) {
+      observe?.({
+        _tag: "field",
+        eid,
+        ident,
+        attributeId: null,
+        datoms: [],
+      });
+      return InvalidTraversalProjection;
+    }
     if (field.cardinality === "many") {
       const datoms = await currentDb.datomsArray(Index.EAVT, { e: eid, a: attr.id });
+      observe?.({
+        _tag: "field",
+        eid,
+        ident,
+        attributeId: attr.id,
+        datoms: datoms.map(toWireDatom),
+      });
       if (datoms.length === 0) {
-        return (await currentDb.exists(eid)) ? FieldAbsent : EntityAbsent;
+        return (await observeExists(currentDb, eid)) ? FieldAbsent : EntityAbsent;
       }
       return Present(datoms.map(atomValue));
     }
     const datom = await currentDb.first(Index.EAVT, { e: eid, a: attr.id });
+    observe?.({
+      _tag: "field",
+      eid,
+      ident,
+      attributeId: attr.id,
+      datoms: datom === undefined ? [] : [toWireDatom(datom)],
+    });
     if (datom === undefined) {
-      return (await currentDb.exists(eid)) ? FieldAbsent : EntityAbsent;
+      return (await observeExists(currentDb, eid)) ? FieldAbsent : EntityAbsent;
     }
     return Present(atomValue(datom));
   };
@@ -298,7 +356,7 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     }
 
     if (term.steps.length === 0) {
-      return (await currentDb.exists(eid)) ? Present(eid) : EntityAbsent;
+      return (await observeExists(currentDb, eid)) ? Present(eid) : EntityAbsent;
     }
 
     for (let i = 0; i < term.steps.length; i++) {

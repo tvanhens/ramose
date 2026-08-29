@@ -363,6 +363,17 @@ export const handleTestAdmin = async (
       passThrough: true,
     });
   }
+  if (rest === "/operation-receipts") {
+    return forward(
+      request,
+      env,
+      db,
+      "transactor",
+      "/admin/test/operation-receipts",
+      "{}",
+      { passThrough: true },
+    );
+  }
   if (rest === "/log") {
     const body = (await request.json()) as { from?: unknown; to?: unknown };
     const from = body.from === undefined ? 0 : body.from;

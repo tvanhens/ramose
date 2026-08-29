@@ -88,7 +88,7 @@ const invoke = (
   token: string,
   operation: OperationAddress,
   input: unknown,
-  target?: number,
+  target?: number | readonly [string, unknown],
   invocationId: string = crypto.randomUUID(),
 ) => json(base, `/db/${database}/op`, {
   method: "POST",
@@ -661,6 +661,247 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(stored.body.entity[":conformanceIssue/title"]).toBe(
         "After revocation",
       );
+    });
+
+    test("self-delete replay binds the pre-admission policy path while its target stays absent", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = CONFORMANCE_DATABASES[7]!;
+      await install(base, database);
+      const admin = await signToken(database, "admin", "admin-sub", {
+        org: "admin-org",
+      });
+      const member = await signToken(database, "member", "alice-sub", {
+        org: "acme",
+      });
+      const alice = await create(
+        base,
+        database,
+        admin,
+        ConformanceUser.ns,
+        { sub: "alice-sub" },
+      );
+      const issue = await create(
+        base,
+        database,
+        admin,
+        ConformanceIssue.ns,
+        {
+          key: "self-delete-replay",
+          title: "Original visible result",
+          owner: alice,
+          org: "acme",
+        },
+      );
+      const invocationId = "self-delete-revoked-invocation-01";
+      const operation = {
+        owner: { kind: "entity" as const, name: ConformanceIssue.ns },
+        localName: "deleteAndEchoTitle",
+      };
+      const target = [
+        ":conformanceIssue/key",
+        "self-delete-replay",
+      ] as const;
+      const completed = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        {},
+        target,
+        invocationId,
+      );
+      expect(completed.status).toBe(200);
+      expect(completed.body).toEqual({
+        result: { title: "Original visible result" },
+        receipt: { version: 1, invocationId, status: "completed" },
+      });
+      const absentReplay = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        {},
+        target,
+        invocationId,
+      );
+      expect(absentReplay.status).toBe(200);
+      expect(absentReplay.body).toEqual(completed.body);
+
+      // An unrelated real commit and a new isolate do not invalidate the
+      // durable lost-ack result.
+      await create(
+        base,
+        database,
+        admin,
+        ConformanceUser.ns,
+        { sub: "unrelated-sub" },
+      );
+      expect((await testAdmin(base, database, "/abort", {
+        target: "transactor",
+      })).status).toBe(200);
+      const afterUnrelated = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        {},
+        target,
+        invocationId,
+      );
+      expect(afterUnrelated.status).toBe(200);
+      expect(afterUnrelated.body).toEqual(completed.body);
+
+      // The target is still absent, but a fact on the exact membership path
+      // that admitted it has changed. The receipt must not cache access.
+      const revoked = await invoke(base, database, admin, {
+        owner: { kind: "entity", name: ConformanceUser.ns },
+        localName: "setAccess",
+      }, { access: "disabled" }, alice);
+      expect(revoked.status).toBe(200);
+      const beforeReplay = await currentBasis(base, database);
+
+      const denied = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        {},
+        target,
+        invocationId,
+      );
+      expect(denied.status).toBe(403);
+      expect(denied.body).toEqual({ error: "unauthorized" });
+      expect(await currentBasis(base, database)).toBe(beforeReplay);
+      const stored = await testAdmin(base, database, "/query", {
+        entity: issue,
+      });
+      expect(stored.body.entity).toBeNull();
+    });
+
+    test("self-hidden lookup replay binds referenced policy facts without binding unrelated data", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = CONFORMANCE_DATABASES[8]!;
+      await install(base, database);
+      const admin = await signToken(database, "admin", "admin-sub", {
+        org: "admin-org",
+      });
+      const member = await signToken(database, "member", "alice-sub", {
+        org: "acme",
+      });
+      const alice = await create(
+        base,
+        database,
+        admin,
+        ConformanceUser.ns,
+        { sub: "alice-sub" },
+      );
+      const bob = await create(
+        base,
+        database,
+        admin,
+        ConformanceUser.ns,
+        { sub: "bob-sub" },
+      );
+      const issue = await create(
+        base,
+        database,
+        admin,
+        ConformanceIssue.ns,
+        {
+          key: "self-hidden-original",
+          title: "Durable private result",
+          owner: alice,
+          org: "acme",
+        },
+      );
+      const invocationId = "self-hidden-lookup-invocation-01";
+      const operation = {
+        owner: { kind: "entity" as const, name: ConformanceIssue.ns },
+        localName: "archive",
+      };
+      const target = [
+        ":conformanceIssue/key",
+        "self-hidden-original",
+      ] as const;
+      const input = {
+        key: "self-hidden-archived",
+        owner: bob,
+        org: "other",
+      };
+      const completed = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        target,
+        invocationId,
+      );
+      expect(completed.status).toBe(200);
+      expect(completed.body).toEqual({
+        result: { id: issue },
+        receipt: { version: 1, invocationId, status: "completed" },
+      });
+
+      const exactRetry = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        target,
+        invocationId,
+      );
+      expect(exactRetry.status).toBe(200);
+      expect(exactRetry.body).toEqual(completed.body);
+
+      await create(
+        base,
+        database,
+        admin,
+        ConformanceUser.ns,
+        { sub: "unrelated-self-hidden-sub" },
+      );
+      const afterUnrelated = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        target,
+        invocationId,
+      );
+      expect(afterUnrelated.status).toBe(200);
+      expect(afterUnrelated.body).toEqual(completed.body);
+
+      const targetBeforeRevocation = await testAdmin(base, database, "/query", {
+        entity: issue,
+      });
+      const revoked = await invoke(base, database, admin, {
+        owner: { kind: "entity", name: ConformanceUser.ns },
+        localName: "setAccess",
+      }, { access: "disabled" }, bob);
+      expect(revoked.status).toBe(200);
+      const targetAfterRevocation = await testAdmin(base, database, "/query", {
+        entity: issue,
+      });
+      expect(targetAfterRevocation.body.entity).toEqual(
+        targetBeforeRevocation.body.entity,
+      );
+      const beforeReplay = await currentBasis(base, database);
+
+      const denied = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        target,
+        invocationId,
+      );
+      expect(denied.status).toBe(403);
+      expect(denied.body).toEqual({ error: "unauthorized" });
+      expect(await currentBasis(base, database)).toBe(beforeReplay);
     });
 
     test("JWT, catalog proof, metadata, and errors fail closed opaquely", async () => {

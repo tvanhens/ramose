@@ -72,12 +72,51 @@ export type ClaimedInvocationReceipt = InvocationReceiptIdentity & {
   readonly status: "claimed";
 };
 
+export type InvocationReplayFenceV1 = {
+  readonly version: 1;
+  /** Original resolved target plus its exact post-commit admission state. */
+  readonly target?: {
+    readonly eid: number;
+    readonly type: string;
+    /** Resolution of the original numeric/ident/lookup ref after the commit. */
+    readonly referenceEid: number | null;
+    readonly postCommit:
+      | { readonly kind: "visible" }
+      | {
+        readonly kind: "absent";
+        readonly authorizationDigest: string;
+        /** Non-target policy observations admitted before self-deletion. */
+        readonly authorizationReadSet: readonly (
+          | { readonly kind: "type" | "exists"; readonly eid: number }
+          | {
+            readonly kind: "field";
+            readonly eid: number;
+            readonly ident: string;
+          }
+        )[];
+      }
+      | {
+        readonly kind: "hidden";
+        /** Digest of every database observation used by read-policy denial. */
+        readonly authorizationDigest: string;
+      };
+  };
+  /** Original input-ref slots made absent by this invocation. */
+  readonly consumedRefs: readonly {
+    readonly path: readonly (string | number)[];
+    readonly eid: number;
+    readonly type: string;
+  }[];
+};
+
 export type CompletedInvocationReceipt = InvocationReceiptIdentity & {
   readonly status: "completed";
   /** Private writer position used only for cache invalidation. Never public. */
   readonly committedT: number;
   /** Exact JSON output materialized by the deployed operation codec before commit. */
   readonly output: unknown;
+  /** Private, data-only exemption for absences caused by this exact commit. */
+  readonly replayFence: InvocationReplayFenceV1;
 };
 
 export type RejectedInvocationReceipt = InvocationReceiptIdentity & {
@@ -125,6 +164,7 @@ export type InvocationReceiptEvent =
     readonly _tag: "Complete";
     readonly committedT: number;
     readonly output: unknown;
+    readonly replayFence: InvocationReplayFenceV1;
   }
   | {
     readonly _tag: "Reject";
@@ -185,10 +225,11 @@ export const invocationPrincipalId = (
   return subject;
 };
 
-const canonicalClasses = (classes: readonly string[]): readonly string[] =>
-  [...new Set(classes)].sort();
-
-/** Pure authorization claim view; ordinary JWT renewal leaves it unchanged. */
+/**
+ * Pure authorization claim view; ordinary JWT renewal leaves it unchanged.
+ * Class order and duplicates are preserved because trusted operation code sees
+ * the first verified class as `op.principal.class`.
+ */
 export const invocationScopeMaterial = (
   invocation: AuthoritativeOperationInvocation,
 ): JsonValue => ({
@@ -196,7 +237,7 @@ export const invocationScopeMaterial = (
   database: invocation.database,
   principal: {
     claims: invocation.caller.claims,
-    classes: canonicalClasses(invocation.caller.classes),
+    classes: [...invocation.caller.classes],
   },
   graph: invocation.routeDerivation === undefined
     ? null
@@ -273,6 +314,166 @@ const sameIdentity = (
   stored.scopeDigest === prepared.scopeDigest &&
   stored.invocationDigest === prepared.invocationDigest;
 
+const hasExactKeys = (
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean => {
+  const expected = new Set(keys);
+  return Object.keys(value).length === expected.size &&
+    Object.keys(value).every((key) => expected.has(key));
+};
+
+const isReplayTargetPostCommit = (
+  value: unknown,
+): value is NonNullable<InvocationReplayFenceV1["target"]>["postCommit"] => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === "visible") {
+    return hasExactKeys(record, ["kind"]);
+  }
+  if (
+    record.kind === "absent" &&
+    typeof record.authorizationDigest === "string" &&
+    DIGEST_RE.test(record.authorizationDigest) &&
+    Array.isArray(record.authorizationReadSet) &&
+    isAuthorizationReadSet(record.authorizationReadSet)
+  ) {
+    return hasExactKeys(record, [
+      "kind",
+      "authorizationDigest",
+      "authorizationReadSet",
+    ]);
+  }
+  return record.kind === "hidden" &&
+    typeof record.authorizationDigest === "string" &&
+    DIGEST_RE.test(record.authorizationDigest) &&
+    hasExactKeys(record, ["kind", "authorizationDigest"]);
+};
+
+const isAuthorizationReadSet = (value: readonly unknown[]): boolean => {
+  const keys = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return false;
+    }
+    const record = item as Record<string, unknown>;
+    if (!Number.isSafeInteger(record.eid) || (record.eid as number) < 0) {
+      return false;
+    }
+    let key: string;
+    if (record.kind === "type" || record.kind === "exists") {
+      if (!hasExactKeys(record, ["kind", "eid"])) return false;
+      key = `${record.kind}:${record.eid as number}`;
+    } else if (
+      record.kind === "field" && typeof record.ident === "string" &&
+      record.ident.length > 0 && hasExactKeys(record, ["kind", "eid", "ident"])
+    ) {
+      key = `field:${record.eid as number}:${record.ident}`;
+    } else {
+      return false;
+    }
+    if (keys.has(key)) return false;
+    keys.add(key);
+  }
+  return true;
+};
+
+const isFenceEntity = (value: unknown): value is NonNullable<
+  InvocationReplayFenceV1["target"]
+> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return Number.isSafeInteger(record.eid) && (record.eid as number) >= 0 &&
+    typeof record.type === "string" && record.type.length > 0 &&
+    (record.referenceEid === null ||
+      (Number.isSafeInteger(record.referenceEid) &&
+        (record.referenceEid as number) >= 0)) &&
+    isReplayTargetPostCommit(record.postCommit) &&
+    hasExactKeys(record, ["eid", "type", "referenceEid", "postCommit"]);
+};
+
+const isInvocationReplayFence = (
+  value: unknown,
+): value is InvocationReplayFenceV1 => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 || !Array.isArray(record.consumedRefs) ||
+    (record.target !== undefined && !isFenceEntity(record.target)) ||
+    !hasExactKeys(record, [
+      "version",
+      ...(record.target === undefined ? [] : ["target"]),
+      "consumedRefs",
+    ])
+  ) return false;
+  const paths = new Set<string>();
+  for (const item of record.consumedRefs) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return false;
+    }
+    const consumed = item as Record<string, unknown>;
+    if (
+      !Array.isArray(consumed.path) ||
+      !consumed.path.every((segment) =>
+        (typeof segment === "string" && segment.length > 0) ||
+        (typeof segment === "number" &&
+          Number.isSafeInteger(segment) && segment >= 0)
+      ) ||
+      !Number.isSafeInteger(consumed.eid) || (consumed.eid as number) < 0 ||
+      typeof consumed.type !== "string" || consumed.type.length === 0 ||
+      !hasExactKeys(consumed, ["path", "eid", "type"])
+    ) return false;
+    const key = JSON.stringify(consumed.path);
+    if (paths.has(key)) return false;
+    paths.add(key);
+  }
+  return true;
+};
+
+const snapshotInvocationReplayFence = (
+  value: InvocationReplayFenceV1,
+): InvocationReplayFenceV1 => {
+  if (!isInvocationReplayFence(value)) {
+    throw new TypeError("completed invocation receipt needs a valid replay fence");
+  }
+  return Object.freeze({
+    version: 1,
+    ...(value.target === undefined
+      ? {}
+      : {
+        target: Object.freeze({
+          eid: value.target.eid,
+          type: value.target.type,
+          referenceEid: value.target.referenceEid,
+          postCommit: value.target.postCommit.kind === "absent"
+            ? Object.freeze({
+              kind: "absent" as const,
+              authorizationDigest: value.target.postCommit.authorizationDigest,
+              authorizationReadSet: Object.freeze(
+                value.target.postCommit.authorizationReadSet.map((entry) =>
+                  Object.freeze({ ...entry })
+                ),
+              ),
+            })
+            : Object.freeze({ ...value.target.postCommit }),
+        }),
+      }),
+    consumedRefs: Object.freeze(value.consumedRefs.map((ref) =>
+      Object.freeze({
+        path: Object.freeze([...ref.path]),
+        eid: ref.eid,
+        type: ref.type,
+      })
+    )),
+  });
+};
+
 /** Pure claim/replay/conflict/recovery decision for one durable key. */
 export const decideInvocationReceipt = (
   stored: StoredInvocationReceipt | undefined,
@@ -313,6 +514,7 @@ export const transitionInvocationReceipt = (
         status: "completed",
         committedT: event.committedT,
         output: event.output,
+        replayFence: snapshotInvocationReplayFence(event.replayFence),
       });
     case "Reject":
       return Object.freeze({
@@ -383,15 +585,6 @@ const isIdentity = (value: Record<string, unknown>): boolean =>
   typeof value.invocationDigest === "string" &&
   DIGEST_RE.test(value.invocationDigest);
 
-const hasExactKeys = (
-  value: Record<string, unknown>,
-  keys: readonly string[],
-): boolean => {
-  const expected = new Set(keys);
-  return Object.keys(value).length === expected.size &&
-    Object.keys(value).every((key) => expected.has(key));
-};
-
 const IDENTITY_KEYS = Object.freeze([
   "version",
   "principalId",
@@ -444,7 +637,13 @@ export const parseStoredInvocationReceipt = (
     record.status === "completed" &&
     Number.isSafeInteger(record.committedT) && (record.committedT as number) >= 0 &&
     Object.hasOwn(record, "output") &&
-    hasExactKeys(record, [...IDENTITY_KEYS, "committedT", "output"])
+    isInvocationReplayFence(record.replayFence) &&
+    hasExactKeys(record, [
+      ...IDENTITY_KEYS,
+      "committedT",
+      "output",
+      "replayFence",
+    ])
   ) return record as StoredInvocationReceipt;
   if (
     record.status === "rejected" && isRejection(record.rejection) &&

@@ -30,15 +30,18 @@ import {
   CatalogId,
   DatabaseId,
   DigestHex,
+  $,
+  all,
   any,
   assembleCatalogDefinitions,
   authorizeCatalogOperation,
-  authorizeCatalogOperationAtBasis,
+  authorizeCatalogOperationReplay,
   claim,
   compileReadAuthorization,
   contains,
   deployCatalogDefinitions,
   executeCatalogOperation,
+  eq,
   hasClass,
   invoke,
   OperationRuntimeFault,
@@ -630,6 +633,138 @@ const buildWorld = async () => {
   };
 };
 
+const ReplayGate = Entity("replayGate", { name: string() });
+const ReplayNoise = Entity("replayNoise", { note: string() });
+const ReplayTarget = Entity("replayTarget", {
+  key: Field.unique(string(), "strict"),
+  title: string(),
+  gate: Ref(ReplayGate),
+}, {
+  operations: (Operation) => ({
+    deleteAndEcho: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({ title: EffectSchema.String }),
+      async run(op) {
+        const row = await op.pull(op.self.eid, [":replayTarget/title"]) as Record<string, unknown>;
+        op.self.delete();
+        return { title: row[":replayTarget/title"] as string };
+      },
+    }),
+    deleteAndConsumeGate: Operation({
+      input: EffectSchema.Struct({ gate: Ref(ReplayGate).schema }),
+      output: EffectSchema.Struct({ title: EffectSchema.String }),
+      async run(op, input) {
+        const row = await op.pull(op.self.eid, [":replayTarget/title"]) as Record<string, unknown>;
+        op.self.delete();
+        (op as any).delete(ReplayGate, input.gate);
+        return { title: row[":replayTarget/title"] as string };
+      },
+    }),
+    archive: Operation({
+      input: EffectSchema.Struct({
+        key: EffectSchema.String,
+        title: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        op.self.set(ReplayTarget.key, input.key);
+        op.self.set(ReplayTarget.title, input.title);
+        return { id: op.self };
+      },
+    }),
+  }),
+});
+const ReplayApp = Schema({
+  replayGate: ReplayGate,
+  replayNoise: ReplayNoise,
+  replayTarget: ReplayTarget,
+});
+const replayDatabase = DatabaseId.make("operation-replay-fence");
+const replayArtifactHash = DigestHex.make("6".repeat(64));
+
+const buildReplayFenceWorld = async () => {
+  const member = hasClass("member");
+  const policy = await Effect.runPromise(compileReadAuthorization({
+    schema: ReplayApp,
+    classes: ["member"],
+    rules: [
+      read(ReplayGate).when(member),
+      read(ReplayNoise).when(member),
+      read(ReplayTarget).when(all(
+        member,
+        $(ReplayTarget).gate.name.eq("Good"),
+        eq(ReplayTarget.title, "Before"),
+      )),
+      invoke(ReplayTarget[OwnedOperations].deleteAndEcho).when(member),
+      invoke(ReplayTarget[OwnedOperations].deleteAndConsumeGate).when(member),
+      invoke(ReplayTarget[OwnedOperations].archive).when(member),
+    ],
+  }));
+  const definitions = await Effect.runPromise(assembleCatalogDefinitions({
+    root: Catalog("replay-fence", { schema: ReplayApp, policy }),
+    artifactHash: replayArtifactHash,
+  }));
+  const deployed = Result.getOrThrow(deployCatalogDefinitions(definitions, [{
+    database: replayDatabase,
+    catalogKey: CatalogId.make("replay-fence"),
+  }]));
+  const installed = Result.getOrThrow(
+    definitions.require(CatalogId.make("replay-fence")),
+  );
+  const conn = await Connection.create({ composition: installed.composition });
+  await conn.transact(schemaTx(ReplayApp));
+  const seed = [
+    {
+      ":db/id": "gate",
+      ":ramose/type": ":replayGate",
+      ":replayGate/name": "Good",
+    },
+    {
+      ":db/id": "noise",
+      ":ramose/type": ":replayNoise",
+      ":replayNoise/note": "initial",
+    },
+    {
+      ":db/id": "target",
+      ":ramose/type": ":replayTarget",
+      ":replayTarget/key": "target-key",
+      ":replayTarget/title": "Before",
+      ":replayTarget/gate": "gate",
+    },
+  ];
+  restoreEngineTypeAssertions(seed);
+  const report = await conn.transact(seed);
+  return {
+    conn,
+    deployed,
+    installed,
+    gate: report.tempids.gate!,
+    noise: report.tempids.noise!,
+    target: report.tempids.target!,
+  };
+};
+
+const replayRuntime = (world: Awaited<ReturnType<typeof buildReplayFenceWorld>>) => ({
+  catalogs: world.deployed,
+  environment: { trusted: true },
+  now: () => 1_700_000_000_000,
+});
+
+const replayInvocation = (
+  world: Awaited<ReturnType<typeof buildReplayFenceWorld>>,
+  localName: "deleteAndEcho" | "deleteAndConsumeGate" | "archive",
+  input: unknown,
+) => ({
+  owner: { kind: "entity" as const, name: "replayTarget" },
+  localName,
+  target: [":replayTarget/key", "target-key"] as [string, unknown],
+  input,
+  caller: caller("member"),
+  database: replayDatabase,
+  catalogKey: world.installed.catalogKey,
+  unitHash: world.installed.unitHash,
+});
+
 const buildSemanticsWorld = async (subjectClaim = "sub") => {
   const policy = await Effect.runPromise(compileReadAuthorization({
     schema: SemanticsApp,
@@ -1116,25 +1251,203 @@ describe("deployed operation runtime", () => {
     );
     expect(executed.output).toEqual({ title: "BEFORE" });
     expect(await world.conn.db().exists(world.item)).toBe(false);
+    expect(executed.replayFence).toEqual({
+      version: 1,
+      target: {
+        eid: world.item,
+        type: "item",
+        referenceEid: world.item,
+        postCommit: {
+          kind: "absent",
+          authorizationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+          authorizationReadSet: [],
+        },
+      },
+      consumedRefs: [],
+    });
     await expect(
       authorizeCatalogOperation(world.conn, runtime, invocation),
     ).rejects.toBeInstanceOf(Unauthorized);
     await expect(
-      authorizeCatalogOperationAtBasis(
+      authorizeCatalogOperationReplay(
         world.conn,
         runtime,
         invocation,
-        executed.report.t,
-      ),
-    ).rejects.toBeInstanceOf(Unauthorized);
-    await expect(
-      authorizeCatalogOperationAtBasis(
-        world.conn,
-        runtime,
-        invocation,
-        executed.report.t - 1,
+        executed.replayFence,
       ),
     ).resolves.toBeUndefined();
+
+    await world.conn.transact([{
+      ":db/id": world.other,
+      ":other/name": "Unrelated later change",
+    }]);
+    await expect(
+      authorizeCatalogOperationReplay(
+        world.conn,
+        runtime,
+        invocation,
+        executed.replayFence,
+      ),
+    ).resolves.toBeUndefined();
+
+  });
+
+  test("binds an absent lookup target to external policy facts but ignores unrelated writes", async () => {
+    const world = await buildReplayFenceWorld();
+    const runtime = replayRuntime(world);
+    const invocation = replayInvocation(world, "deleteAndEcho", {});
+    const executed = await executeCatalogOperation(world.conn, runtime, invocation);
+    expect(executed.output).toEqual({ title: "Before" });
+    expect(await world.conn.db().exists(world.target)).toBe(false);
+    const absentTarget = executed.replayFence.target;
+    expect(absentTarget?.eid).toBe(world.target);
+    expect(absentTarget?.type).toBe("replayTarget");
+    expect(absentTarget?.referenceEid).toBeNull();
+    expect(absentTarget?.postCommit.kind).toBe("absent");
+    if (absentTarget?.postCommit.kind !== "absent") {
+      throw new Error("expected absent replay fence");
+    }
+    expect(/^[0-9a-f]{64}$/.test(
+      absentTarget.postCommit.authorizationDigest,
+    )).toBe(true);
+    expect(absentTarget.postCommit.authorizationReadSet).toContainEqual({
+      kind: "type",
+      eid: world.gate,
+    });
+    expect(absentTarget.postCommit.authorizationReadSet).toContainEqual({
+      kind: "field",
+      eid: world.gate,
+      ident: ":replayGate/name",
+    });
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).resolves.toBeUndefined();
+
+    await world.conn.transact([{
+      ":db/id": world.noise,
+      ":replayNoise/note": "unrelated",
+    }]);
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).resolves.toBeUndefined();
+
+    const replacement = await buildReplayFenceWorld();
+    expect(replacement.target).toBe(world.target);
+    await replacement.conn.transact([
+      { ":db/id": replacement.target, ":replayTarget/key": "replacement-key" },
+      { ":db/id": replacement.gate, ":replayGate/name": "Revoked" },
+    ]);
+    await expect(authorizeCatalogOperationReplay(
+      replacement.conn,
+      replayRuntime(replacement),
+      invocation,
+      executed.replayFence,
+    )).rejects.toBeInstanceOf(Unauthorized);
+
+    await world.conn.transact([{
+      ":db/id": world.gate,
+      ":replayGate/name": "Revoked",
+    }]);
+    expect(await world.conn.db().exists(world.target)).toBe(false);
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).rejects.toBeInstanceOf(Unauthorized);
+  });
+
+  test("replays a self-hidden unresolved lookup only while its full policy witness is unchanged", async () => {
+    const world = await buildReplayFenceWorld();
+    const runtime = replayRuntime(world);
+    const invocation = replayInvocation(world, "archive", {
+      key: "archived-key",
+      title: "Archived",
+    });
+    const executed = await executeCatalogOperation(world.conn, runtime, invocation);
+    expect(executed.output).toEqual({ id: world.target });
+    const hiddenTarget = executed.replayFence.target;
+    expect(hiddenTarget?.eid).toBe(world.target);
+    expect(hiddenTarget?.referenceEid).toBeNull();
+    expect(hiddenTarget?.postCommit.kind).toBe("hidden");
+    if (hiddenTarget?.postCommit.kind !== "hidden") {
+      throw new Error("expected hidden replay fence");
+    }
+    expect(/^[0-9a-f]{64}$/.test(
+      hiddenTarget.postCommit.authorizationDigest,
+    )).toBe(true);
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).resolves.toBeUndefined();
+
+    await world.conn.transact([{
+      ":db/id": world.noise,
+      ":replayNoise/note": "unrelated",
+    }]);
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).resolves.toBeUndefined();
+
+    const targetBeforeRevocation = await world.conn.db().entity(world.target);
+    await world.conn.transact([{
+      ":db/id": world.gate,
+      ":replayGate/name": "Revoked",
+    }]);
+    expect(await world.conn.db().entity(world.target)).toEqual(targetBeforeRevocation);
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).rejects.toBeInstanceOf(Unauthorized);
+  });
+
+  test("keeps a consumed policy dependency in the absent-target witness", async () => {
+    const world = await buildReplayFenceWorld();
+    const runtime = replayRuntime(world);
+    const invocation = replayInvocation(world, "deleteAndConsumeGate", {
+      gate: world.gate,
+    });
+    const executed = await executeCatalogOperation(world.conn, runtime, invocation);
+    expect(await world.conn.db().exists(world.target)).toBe(false);
+    expect(await world.conn.db().exists(world.gate)).toBe(false);
+    expect(executed.replayFence.consumedRefs).toEqual([{
+      path: ["gate"],
+      eid: world.gate,
+      type: "replayGate",
+    }]);
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).resolves.toBeUndefined();
+
+    const replacement = await buildReplayFenceWorld();
+    expect(replacement.target).toBe(world.target);
+    expect(replacement.gate).toBe(world.gate);
+    await replacement.conn.transact([
+      [":db/retractEntity", replacement.target],
+      { ":db/id": replacement.gate, ":replayGate/name": "Revoked" },
+    ]);
+    await expect(authorizeCatalogOperationReplay(
+      replacement.conn,
+      replayRuntime(replacement),
+      invocation,
+      executed.replayFence,
+    )).rejects.toBeInstanceOf(Unauthorized);
   });
 
   test("preserves prototype-bearing values for deployed output codecs", async () => {

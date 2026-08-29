@@ -54,6 +54,9 @@ export interface TransactorTesting {
     request: Request,
     path: string,
     abort: (reason: string) => void,
+    inspect: {
+      readonly operationReceiptCount: () => number;
+    },
   ) => Promise<Response | undefined>;
 }
 
@@ -237,6 +240,9 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
         request,
         url.pathname,
         (reason) => this.ctx.abort(reason),
+        {
+          operationReceiptCount: () => this.core.operationReceiptCount(),
+        },
       );
       if (testAdmin !== undefined) return testAdmin;
     }

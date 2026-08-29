@@ -54,18 +54,49 @@ const preparedFixture = (
   ...overrides,
 });
 
+const replayFence = Object.freeze({
+  version: 1 as const,
+  target: Object.freeze({
+    eid: 1001,
+    type: "issue",
+    referenceEid: null,
+    postCommit: Object.freeze({
+      kind: "absent" as const,
+      authorizationDigest: "c".repeat(64),
+      authorizationReadSet: Object.freeze([]),
+    }),
+  }),
+  consumedRefs: Object.freeze([
+    Object.freeze({
+      path: Object.freeze(["assignee"]),
+      eid: 1002,
+      type: "user",
+    }),
+  ]),
+});
+
 describe("authoritative invocation receipt identity", () => {
-  test("canonical digests ignore JSON key, class, and token-renewal order", async () => {
+  test("canonical digests ignore JSON key and renewable token metadata but preserve class order", async () => {
     const left = await prepare(invocation());
     const right = await prepare(invocation({
       input: { metadata: { a: 1, z: 2 }, reason: "duplicate" },
       caller: {
         claims: { org: "acme", sub: "user-1" },
-        classes: ["operator", "member", "operator"],
+        classes: ["member", "operator"],
         exp: 2_100_000_000,
       },
     }));
     expect(right).toEqual(left);
+
+    const reordered = await prepare(invocation({
+      caller: {
+        claims: { org: "acme", sub: "user-1" },
+        classes: ["operator", "member"],
+        exp: 2_100_000_000,
+      },
+    }));
+    expect(reordered.scopeDigest).not.toBe(left.scopeDigest);
+    expect(reordered.invocationDigest).toBe(left.invocationDigest);
   });
 
   test("operation identity, version, target, input, and scope changes are distinct", async () => {
@@ -134,6 +165,7 @@ describe("authoritative invocation receipt state machine", () => {
       _tag: "Complete",
       committedT: 42,
       output: { id: 1001 },
+      replayFence,
     });
     expect(decideInvocationReceipt(completed, prepared)).toEqual({
       _tag: "Replay",
@@ -151,7 +183,12 @@ describe("authoritative invocation receipt state machine", () => {
     const claim = decideInvocationReceipt(undefined, preparedFixture());
     if (claim._tag !== "Claim") throw new Error("expected claim");
     const events = [
-      { _tag: "Complete", committedT: 8, output: { ok: true } } as const,
+      {
+        _tag: "Complete",
+        committedT: 8,
+        output: { ok: true },
+        replayFence,
+      } as const,
       {
         _tag: "Reject",
         rejection: { kind: "invalid_request" },
@@ -169,6 +206,7 @@ describe("authoritative invocation receipt state machine", () => {
         _tag: "Complete",
         committedT: 99,
         output: "changed",
+        replayFence,
       })).toBe(terminal);
     }
   });
@@ -195,7 +233,9 @@ describe("authoritative invocation receipt serialization", () => {
       _tag: "Complete",
       committedT: 42,
       output: { id: 1001 },
+      replayFence,
     });
+    if (completed.status !== "completed") throw new Error("expected completion");
     expect(publicInvocationReceipt(completed)).toEqual({
       version: 1,
       invocationId: "invocation-01",
@@ -210,6 +250,7 @@ describe("authoritative invocation receipt serialization", () => {
     expect(publicText).not.toContain("invocationDigest");
     expect(publicText).not.toContain("principalId");
     expect(publicText).not.toContain("committedT");
+    expect(publicText).not.toContain("replayFence");
     expect(publicText).not.toContain("receipts");
   });
 
@@ -220,7 +261,9 @@ describe("authoritative invocation receipt serialization", () => {
       _tag: "Complete",
       committedT: 7,
       output: JSON.parse('{"__proto__":"owned","kept":true}'),
+      replayFence,
     });
+    if (completed.status !== "completed") throw new Error("expected completion");
     const decoded = parseStoredInvocationReceipt(
       JSON.parse(JSON.stringify(completed)),
     );
@@ -232,6 +275,13 @@ describe("authoritative invocation receipt serialization", () => {
     expect(() => parseStoredInvocationReceipt({
       ...completed,
       executableSource: "return destroyEverything()",
+    })).toThrow("invalid durable invocation receipt");
+    expect(() => parseStoredInvocationReceipt({
+      ...completed,
+      replayFence: {
+        ...completed.replayFence,
+        consumedRefs: [{ path: ["assignee"], eid: 1002, type: "user", run: "code" }],
+      },
     })).toThrow("invalid durable invocation receipt");
     expect(() => parseAuthoritativeInvocationResult({
       _tag: "Conflict",
