@@ -11,13 +11,15 @@ import { attr, json, localUrls, testAdmin, uniqueDb, type LocalUrls } from "./fi
 import { TEST_CAPABILITY } from "./test-hooks-env.ts";
 
 const fetchPastProxyBlip = async (
-  rec: ReturnType<typeof recordingTransport>,
-  url: string,
+  fetcher: typeof fetch,
+  input: RequestInfo | URL,
+  init?: RequestInit,
 ): Promise<Response> => {
   for (let attempt = 0; ; attempt++) {
-    const response = await rec.fetch(url);
-    if (response.status !== 502 || attempt === 2) return response;
-    await Bun.sleep(50 * (attempt + 1));
+    const response = await fetcher(input, init);
+    if (response.status !== 502 || attempt === 5) return response;
+    await response.body?.cancel().catch(() => undefined);
+    await Bun.sleep(50 * 2 ** attempt);
   }
 };
 
@@ -26,7 +28,7 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
     test("recording fetch forwards /health and records the real 200", async () => {
       const rec = recordingTransport();
       const url = `${target.urls().openUrl.replace(/\/+$/, "")}/health`;
-      const res = await fetchPastProxyBlip(rec, url);
+      const res = await fetchPastProxyBlip(rec.fetch, url);
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body).toEqual({ ok: true, service: "ramose" });
@@ -40,7 +42,7 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       const rec = recordingTransport();
       const db = uniqueDb("rec");
       const res = await fetchPastProxyBlip(
-        rec,
+        rec.fetch,
         `${target.urls().openUrl.replace(/\/+$/, "")}/db/${db}/info`,
       );
       expect(res.status).toBe(401);
@@ -88,7 +90,7 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
           "x-ramose-test-capability": "caller-controlled",
         },
       ]) {
-        const response = await fetch(url, {
+        const response = await fetchPastProxyBlip(fetch, url, {
           method: "POST",
           headers,
           body: JSON.stringify({ action: "status" }),
