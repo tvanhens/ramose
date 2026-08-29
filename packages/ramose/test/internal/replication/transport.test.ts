@@ -8,6 +8,7 @@ import {
 } from "../../../src/internal/replication/protocol.ts";
 import {
   decodeReplicationNdjson,
+  readReplicationFrames,
   replicationActivationAddress,
   replicationCredentialFingerprint,
 } from "../../../src/internal/replication/transport.ts";
@@ -41,6 +42,14 @@ const collect = async (values: AsyncIterable<ReplicationFrame>): Promise<Replica
   for await (const frame of values) frames.push(frame);
   return frames;
 };
+
+const conflict = (body: string): Response => new Response(body, {
+  status: 409,
+  headers: {
+    "cache-control": "no-store",
+    "content-type": "application/x-ndjson",
+  },
+});
 
 test("canonical activation rejects configured non-origin URL components", () => {
   expect(() => replicationActivationAddress({
@@ -99,4 +108,30 @@ test("bounded decoder rejects invalid UTF-8, unterminated, and oversized frames"
   await expect(collect(decodeReplicationNdjson(chunks(
     new Uint8Array(MAX_REPLICATION_FRAME_BYTES + 1).fill(0x20),
   )))).rejects.toThrow(/oversized/);
+});
+
+test("HTTP 409 yields only one identity-free agreement or version terminal", async () => {
+  const updateRequired: ReplicationFrame = {
+    type: "TerminalError",
+    protocol: 1,
+    code: "update-required",
+  };
+  expect(await collect(readReplicationFrames(conflict(
+    `${encodeReplicationFrame(updateRequired)}\n`,
+  )))).toEqual([updateRequired]);
+
+  await expect(collect(readReplicationFrames(conflict(""))))
+    .rejects.toThrow(/exactly one allowed terminal/);
+  await expect(collect(readReplicationFrames(conflict(
+    `${encodeReplicationFrame(updateRequired)}\n${encodeReplicationFrame(ready)}\n`,
+  )))).rejects.toThrow(/exactly one allowed terminal/);
+  await expect(collect(readReplicationFrames(conflict(
+    `${encodeReplicationFrame(ready)}\n`,
+  )))).rejects.toThrow(/exactly one allowed terminal/);
+  await expect(collect(readReplicationFrames(conflict(
+    `${encodeReplicationFrame({ ...updateRequired, identity })}\n`,
+  )))).rejects.toThrow(/exactly one allowed terminal/);
+  await expect(collect(readReplicationFrames(conflict(
+    `${encodeReplicationFrame({ ...updateRequired, code: "closed" })}\n`,
+  )))).rejects.toThrow(/exactly one allowed terminal/);
 });
