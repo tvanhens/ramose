@@ -7,14 +7,13 @@ import {
   type AuthenticatedCaller,
   type OperationInvocation,
 } from "../internal/authorization/index.ts";
-import { stringifyJson } from "../internal/core/json.ts";
+import { fromJson, stringifyJson } from "../internal/core/json.ts";
 import { internalHeaders } from "../internal/transactor/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import { BadRequest, Unauthorized, UpstreamError } from "./errors.ts";
 import {
   isEntityRef,
   parseCatalogProof,
-  readJsonObject,
 } from "./authorized-read.ts";
 import { invalidateBasis } from "./peer.ts";
 
@@ -25,6 +24,25 @@ export type ParsedOperationRequest = Omit<
 
 const bad = (message: string): BadRequest => new BadRequest({ message });
 const deny = (): Unauthorized => new Unauthorized({ status: 403 });
+
+/** Operation input is owned by its deployed codec, not Ramose transport tags. */
+const readOperationJsonObject = (
+  request: Request,
+): Effect.Effect<Record<string, unknown>, BadRequest> =>
+  Effect.tryPromise({
+    try: async () => {
+      const text = await request.text();
+      if (text.trim().length === 0) throw bad("body must be a JSON object");
+      const value: unknown = JSON.parse(text);
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw bad("body must be a JSON object");
+      }
+      return value as Record<string, unknown>;
+    },
+    catch: (cause) =>
+      cause instanceof BadRequest ? cause : bad("body must be a JSON object"),
+  });
+
 const privateFailure = (
   status = 500,
   headers?: Record<string, string>,
@@ -85,7 +103,7 @@ const parseOwner = (
 export const parseOperationRequest = Effect.fn("parseOperationRequest")(function* (
   request: Request,
 ): Effect.fn.Return<ParsedOperationRequest, BadRequest | import("./errors.ts").Unauthorized> {
-  const body = yield* readJsonObject(request);
+  const body = yield* readOperationJsonObject(request);
   const proof = yield* Effect.fromResult(parseCatalogProof(body, request.headers)).pipe(
     Effect.mapError(() => deny()),
   );
@@ -98,12 +116,13 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
   if (typeof record.localName !== "string" || record.localName.length === 0) {
     return yield* bad("operation.localName must be a non-empty string");
   }
+  const target = body.target === undefined ? undefined : fromJson(body.target);
   if (
-    body.target !== undefined &&
+    target !== undefined &&
     !(
-      typeof body.target === "number" && Number.isSafeInteger(body.target) && body.target >= 0
+      typeof target === "number" && Number.isSafeInteger(target) && target >= 0
     ) &&
-    !(Array.isArray(body.target) && isEntityRef(body.target))
+    !(Array.isArray(target) && isEntityRef(target))
   ) {
     return yield* bad("operation target must be an eid or lookup ref");
   }
@@ -111,8 +130,8 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
     ...proof,
     owner,
     localName: record.localName,
-    ...(body.target === undefined ? {} : {
-      target: body.target as Exclude<OperationInvocation["target"], undefined>,
+    ...(target === undefined ? {} : {
+      target: target as Exclude<OperationInvocation["target"], undefined>,
     }),
     input: body.input,
   };

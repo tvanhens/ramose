@@ -102,6 +102,15 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(transportTag.body).toEqual({
         result: { $inst: "application-value" },
       });
+
+      const transportTagInput = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "echoTransportTagInput",
+      }, { $inst: "application-input" });
+      expect(transportTagInput.status).toBe(200);
+      expect(transportTagInput.body).toEqual({
+        result: { $inst: "application-input" },
+      });
     });
 
     test("targeted operation requires both its grant and filtered target visibility", async () => {
@@ -347,6 +356,29 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(inputCrashed.status).toBe(500);
       expect(inputCrashed.body).toEqual({ error: "operation execution failed" });
       expect(JSON.stringify(inputCrashed.body)).not.toContain("input-secret@internal");
+
+      const item = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "create",
+      }, { title: "Field codec" });
+      expect(item.status).toBe(200);
+
+      const invalidField = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "fieldCodec",
+      }, { kind: "invalid" }, item.body.result.id);
+      expect(invalidField.status).toBe(400);
+      expect(JSON.stringify(invalidField.body)).toContain(
+        "invalid operation value for :nativeItem/guarded",
+      );
+
+      const fieldCrashed = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "fieldCodec",
+      }, { kind: "crash" }, item.body.result.id);
+      expect(fieldCrashed.status).toBe(500);
+      expect(fieldCrashed.body).toEqual({ error: "operation execution failed" });
+      expect(JSON.stringify(fieldCrashed.body)).not.toContain("field-secret@internal");
 
       const rejected = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },

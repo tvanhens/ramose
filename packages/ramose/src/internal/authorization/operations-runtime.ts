@@ -189,6 +189,23 @@ const bindingFor = (
 const fieldIdent = (field: FieldDescriptor): string =>
   `:${field.id.owner.name}/${field.id.localName}`;
 
+const validateOperationFieldValue = (
+  definition: InstalledCatalogDefinition,
+  ident: string,
+  value: unknown,
+): void => {
+  try {
+    definition.validateFieldValue(ident, value);
+  } catch (cause) {
+    if (cause instanceof Schema.SchemaError) {
+      throw new InvalidRequest({
+        message: `invalid operation value for ${ident}: ${cause.message}`,
+      });
+    }
+    throw new OperationRuntimeFault("field", cause);
+  }
+};
+
 const fieldTables = (definition: InstalledCatalogDefinition) => {
   const byIdent = new Map<string, FieldDescriptor>();
   for (const field of definition.unit.catalog.fields) byIdent.set(fieldIdent(field), field);
@@ -441,15 +458,7 @@ const createCollector = (args: {
       deferredFields.push({ source: capturedEid, field });
     }
     if (hasValue && field.valueType !== "ref") {
-      try {
-        definition.validateFieldValue(ident, loweredValue);
-      } catch (cause) {
-        throw new InvalidRequest({
-          message: `invalid operation value for ${ident}: ${
-            cause instanceof Error ? cause.message : String(cause)
-          }`,
-        });
-      }
+      validateOperationFieldValue(definition, ident, loweredValue);
     }
     if (kind !== "retract" && field.valueType === "ref") {
       refs.push({ source: capturedEid, field, target: capturedValue });
@@ -544,15 +553,7 @@ const createCollector = (args: {
         if (field.valueType === "ref") {
           refs.push({ source: map[":db/id"], field, target: capturedValue });
         } else {
-          try {
-            definition.validateFieldValue(ident, loweredValue);
-          } catch (cause) {
-            throw new InvalidRequest({
-              message: `invalid operation value for ${ident}: ${
-                cause instanceof Error ? cause.message : String(cause)
-              }`,
-            });
-          }
+          validateOperationFieldValue(definition, ident, loweredValue);
         }
         map[ident] = capturedValue;
       }

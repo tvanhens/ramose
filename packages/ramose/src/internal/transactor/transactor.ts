@@ -839,14 +839,22 @@ export class Transactor {
   private async route(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
     if (path === "/invoke" && request.method === "POST") {
-      const body = fromJson(await request.json()) as { invocation?: OperationInvocation };
+      const body = await request.json() as { invocation?: unknown };
+      const raw = body?.invocation;
+      const invocation = typeof raw === "object" && raw !== null && !Array.isArray(raw)
+        ? {
+          ...raw,
+          ...(Object.hasOwn(raw, "target")
+            ? { target: fromJson((raw as { readonly target?: unknown }).target) }
+            : {}),
+        } as OperationInvocation
+        : undefined;
       if (
-        typeof body?.invocation !== "object" || body.invocation === null ||
-        body.invocation.database !== safeName(this.host)
+        invocation === undefined || invocation.database !== safeName(this.host)
       ) {
         throw new BadRequest({ message: "invalid deployed operation invocation" });
       }
-      return json(await this.invoke(body.invocation));
+      return json(await this.invoke(invocation));
     }
     if (path === "/op-ack" && request.method === "POST") {
       const body = fromJson(await request.json()) as {

@@ -18,6 +18,7 @@ import {
   Trait,
   type AnyQueryObject,
   schemaTx,
+  stored,
   string,
 } from "../../../src/db/internal.ts";
 import {
@@ -134,6 +135,19 @@ const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
   },
 ));
 
+const CrashingFieldValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
+  EffectSchema.String,
+  {
+    decode: SchemaGetter.transform((value) => value),
+    encode: SchemaGetter.transform((value) => {
+      if (value === "explode") {
+        throw new Error("postgres://field-secret@internal/codec");
+      }
+      return value;
+    }),
+  },
+));
+
 let makeHiddenNamesQuery!: () => AnyQueryObject;
 
 const Good = Entity("good", { name: string() }, { traits: [Tagged] });
@@ -157,7 +171,10 @@ const Link = Entity("link", {
 });
 linkDefinitionForOperation = Link;
 
-const Item = Entity("item", { title: string() }, {
+const Item = Entity("item", {
+  title: string(),
+  guarded: Field(stored(CrashingFieldValue, "string"), { optional: true }),
+}, {
   operations: (Operation) => ({
     rename: Operation({
       input: EffectSchema.Struct({ title: EffectSchema.String }),
@@ -253,6 +270,16 @@ const Item = Entity("item", { title: string() }, {
         return {};
       },
     }),
+    fieldCodec: Operation({
+      input: EffectSchema.Struct({
+        kind: EffectSchema.Literals(["invalid", "crash"]),
+      }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        op.self.set(Item.guarded, (input.kind === "invalid" ? 42 : "explode") as never);
+        return {};
+      },
+    }),
     returnUrl: Operation({
       self: false,
       input: EffectSchema.Struct({}),
@@ -336,6 +363,7 @@ const buildWorld = async () => {
       invoke(Item[OwnedOperations].renameAfterEffect).when(hasClass("member")),
       invoke(Item[OwnedOperations].crash).when(hasClass("member")),
       invoke(Item[OwnedOperations].inputCrash).when(hasClass("member")),
+      invoke(Item[OwnedOperations].fieldCodec).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnUrl).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnClass).when(hasClass("member")),
       invoke(Item[OwnedOperations].invalidTransport).when(hasClass("member")),
@@ -786,6 +814,34 @@ describe("deployed operation runtime", () => {
       name: "OperationRuntimeFault",
       message: "operation execution failed",
       stage: "input",
+    });
+    expect(world.conn.t).toBe(initialT);
+  });
+
+  test("distinguishes field schema refusals from unexpected codec defects", async () => {
+    const world = await buildWorld();
+    const invocation = {
+      owner: { kind: "entity" as const, name: "item" },
+      localName: "fieldCodec",
+      target: world.item,
+      caller: caller("member"),
+    };
+    const initialT = world.conn.t;
+
+    await expect(invokeOperation(world, {
+      ...invocation,
+      input: { kind: "invalid" },
+    })).rejects.toMatchObject({
+      _tag: "InvalidRequest",
+      message: expect.stringContaining("invalid operation value for :item/guarded"),
+    });
+    await expect(invokeOperation(world, {
+      ...invocation,
+      input: { kind: "crash" },
+    })).rejects.toMatchObject({
+      name: "OperationRuntimeFault",
+      message: "operation execution failed",
+      stage: "field",
     });
     expect(world.conn.t).toBe(initialT);
   });

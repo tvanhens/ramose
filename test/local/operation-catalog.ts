@@ -12,6 +12,7 @@ import {
   OwnedOperations,
   Ref,
   Schema,
+  stored,
   string,
 } from "ramose/db";
 
@@ -37,6 +38,19 @@ const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
   },
 ));
 
+const CrashingFieldValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
+  EffectSchema.String,
+  {
+    decode: SchemaGetter.transform((value) => value),
+    encode: SchemaGetter.transform((value) => {
+      if (value === "explode") {
+        throw new Error("postgres://field-secret@internal/codec");
+      }
+      return value;
+    }),
+  },
+));
+
 export const Other = Entity("nativeOther", { name: Field.unique(string(), "strict") }, {
   operations: (Operation) => ({
     create: Operation({
@@ -53,6 +67,7 @@ export const Other = Entity("nativeOther", { name: Field.unique(string(), "stric
 export const Item = Entity("nativeItem", {
   title: string(),
   state: string({ default: () => "new" }),
+  guarded: Field(stored(CrashingFieldValue, "string"), { optional: true }),
 }, {
   operations: (Operation) => ({
     create: Operation({
@@ -97,6 +112,24 @@ export const Item = Entity("nativeItem", {
         return {};
       },
     }),
+    fieldCodec: Operation({
+      input: EffectSchema.Struct({
+        kind: EffectSchema.Literals(["invalid", "crash"]),
+      }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        op.self.set(Item.guarded, (input.kind === "invalid" ? 42 : "explode") as never);
+        return {};
+      },
+    }),
+    echoTransportTagInput: Operation({
+      self: false,
+      input: EffectSchema.Struct({ $inst: EffectSchema.String }),
+      output: EffectSchema.Struct({ $inst: EffectSchema.String }),
+      run(_op, input) {
+        return input;
+      },
+    }),
     returnTransportTag: Operation({
       self: false,
       input: EffectSchema.Struct({}),
@@ -137,6 +170,8 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     Policy.invoke(Item[OwnedOperations].deleteHiddenOther).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].crash).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].inputCrash).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].fieldCodec).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].echoTransportTagInput).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].returnTransportTag).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].reject).when(Policy.hasClass("member")),
     Policy.invoke(Other[OwnedOperations].create).when(Policy.hasClass("member")),
