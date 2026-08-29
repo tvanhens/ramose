@@ -119,6 +119,8 @@ type ReferenceWrite = {
   readonly source: unknown;
   readonly field: FieldDescriptor & { readonly valueType: "ref" };
   readonly target: unknown;
+  /** Adds/updates require a live compatible target; retractions only validate their value codec. */
+  readonly requireTarget: boolean;
 };
 
 type DeferredFieldWrite = {
@@ -126,11 +128,16 @@ type DeferredFieldWrite = {
   readonly field: FieldDescriptor;
 };
 
+type DeferredOwnerDelete = {
+  readonly source: unknown;
+};
+
 type Collector = {
   readonly op: unknown;
   readonly tx: TxData;
   readonly refs: readonly ReferenceWrite[];
   readonly deferredFields: readonly DeferredFieldWrite[];
+  readonly ownerDeletes: readonly DeferredOwnerDelete[];
 };
 
 /** Opaque denial shared by every authenticated operation-admission failure. */
@@ -398,6 +405,7 @@ const createCollector = (args: {
   const tx: unknown[] = [];
   const refs: ReferenceWrite[] = [];
   const deferredFields: DeferredFieldWrite[] = [];
+  const ownerDeletes: DeferredOwnerDelete[] = [];
   const deployedDefinitions = new Map<string, RuntimeEntity>(
     args.binding.entityDefinitions.map((entity) => [entity.ns, entity] as const),
   );
@@ -460,8 +468,13 @@ const createCollector = (args: {
     if (hasValue && field.valueType !== "ref") {
       validateOperationFieldValue(definition, ident, loweredValue);
     }
-    if (kind !== "retract" && field.valueType === "ref") {
-      refs.push({ source: capturedEid, field, target: capturedValue });
+    if (hasValue && field.valueType === "ref") {
+      refs.push({
+        source: capturedEid,
+        field,
+        target: capturedValue,
+        requireTarget: kind !== "retract",
+      });
     }
     if (kind === "retract") {
       tx.push(hasValue
@@ -481,6 +494,7 @@ const createCollector = (args: {
     eid: unknown,
     resolveField: (argument: unknown) => FieldDescriptor,
     deferConcreteField = false,
+    deferOwnerDelete = false,
   ): RuntimeHandle => {
     const capturedEid = snapshotStoredValue(descriptor, lowerEntityArg(eid));
     return {
@@ -503,6 +517,7 @@ const createCollector = (args: {
         deferConcreteField,
       ),
       delete: () => {
+        if (deferOwnerDelete) ownerDeletes.push({ source: capturedEid });
         tx.push([":db/retractEntity", capturedEid]);
       },
     };
@@ -521,6 +536,7 @@ const createCollector = (args: {
     eid,
     requireOwnerField,
     descriptor.id.owner.kind === "trait" && args.target === undefined,
+    true,
   );
 
   const addPut = (
@@ -551,7 +567,12 @@ const createCollector = (args: {
         const loweredValue = lowerWriteValue(value);
         const capturedValue = snapshotStoredValue(descriptor, loweredValue);
         if (field.valueType === "ref") {
-          refs.push({ source: map[":db/id"], field, target: capturedValue });
+          refs.push({
+            source: map[":db/id"],
+            field,
+            target: capturedValue,
+            requireTarget: true,
+          });
         } else {
           validateOperationFieldValue(definition, ident, loweredValue);
         }
@@ -682,17 +703,43 @@ const createCollector = (args: {
       }
     },
   };
-  return { op, tx, refs, deferredFields };
+  return { op, tx, refs, deferredFields, ownerDeletes };
 };
 
 /**
- * Materialize exactly the JSON transport value before commit. `toJson`
- * supports Ramose's Date/bytes/bigint vocabulary; the round-trip comparison
- * rejects values JSON would silently omit or coerce (functions, symbols,
- * non-finite numbers), while recursive `toJson` rejects cycles.
+ * Encode operation-owned output without interpreting plain `{ vt, v }`
+ * records as Ramose's internal tagged values. A null-prototype result also
+ * preserves an own `__proto__` key. Native platform values retain the same
+ * Date/bytes/bigint/Set/Map transport vocabulary as the rest of Ramose.
+ */
+const toOperationOutputJson = (value: unknown): unknown => {
+  if (value === null || value === undefined) return value ?? null;
+  if (value instanceof Date || value instanceof Uint8Array) return toJson(value);
+  if (typeof value === "bigint") return Number(value);
+  if (Array.isArray(value)) return value.map(toOperationOutputJson);
+  if (value instanceof Set) return [...value].map(toOperationOutputJson);
+  if (value instanceof Map) {
+    const out = Object.create(null) as Record<string, unknown>;
+    for (const [key, item] of value) out[String(key)] = toOperationOutputJson(item);
+    return out;
+  }
+  if (typeof value === "object") {
+    const out = Object.create(null) as Record<string, unknown>;
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = toOperationOutputJson(item);
+    }
+    return out;
+  }
+  return value;
+};
+
+/**
+ * Materialize exactly the JSON transport value before commit. The round-trip
+ * comparison rejects values JSON would silently omit or coerce (functions,
+ * symbols, non-finite numbers), while recursive encoding rejects cycles.
  */
 const materializeOutputTransport = (value: unknown): unknown => {
-  const wire = toJson(value);
+  const wire = toOperationOutputJson(value);
   const text = JSON.stringify(wire);
   if (text === undefined) {
     throw new TypeError("operation output is not JSON transportable");
@@ -821,9 +868,18 @@ const validateReferenceWrites = async (
 ): Promise<void> => {
   for (const ref of refs) {
     const ident = fieldIdent(ref.field);
-    const source = await resolveReportEntity(report, ref.source);
     const target = await resolveReportEntity(report, ref.target);
-    if (source === undefined || target === undefined || !(await report.dbAfter.exists(target))) {
+    if (target === undefined) {
+      throw new InvalidRequest({ message: `operation ref for ${ident} does not resolve` });
+    }
+    // Handles/tempids/lookups become the stored numeric value only after the
+    // staged transaction resolves. Run the original deployed ref-field codec
+    // on that exact value before the commit, with the same public/private
+    // exception split as every other field.
+    validateOperationFieldValue(definition, ident, target);
+    if (!ref.requireTarget) continue;
+    const source = await resolveReportEntity(report, ref.source);
+    if (source === undefined || !(await report.dbAfter.exists(target))) {
       throw new InvalidRequest({ message: `operation ref for ${ident} does not resolve` });
     }
     const sourceType = await typeName(report.dbAfter, source) ??
@@ -866,6 +922,29 @@ const validateDeferredFieldWrites = async (
     }
     if (runtime.fixed._tag === "fixed") {
       throw rejected(descriptor, "operation cannot mutate an engine-owned fixed field");
+    }
+  }
+};
+
+const validateOwnerDeletes = async (
+  definition: InstalledCatalogDefinition,
+  descriptor: OperationDescriptor,
+  deletes: readonly DeferredOwnerDelete[],
+  report: TxReport,
+): Promise<void> => {
+  for (const deletion of deletes) {
+    const source = await resolveReportEntity(report, deletion.source);
+    const concrete = source === undefined
+      ? undefined
+      : await typeName(report.dbAfter, source) ??
+        await typeName(report.dbBefore, source);
+    if (
+      concrete === undefined ||
+      !typeCompatible(definition, descriptor.id.owner, concrete)
+    ) {
+      throw new InvalidRequest({
+        message: `operation owner delete is incompatible with ${operationLabel(descriptor)}`,
+      });
     }
   }
 };
@@ -987,6 +1066,12 @@ export const executeCatalogOperation = async (
         deployed.definition,
         descriptor,
         collector.deferredFields,
+        report,
+      );
+      await validateOwnerDeletes(
+        deployed.definition,
+        descriptor,
+        collector.ownerDeletes,
         report,
       );
       await validateReferenceWrites(deployed.definition, collector.refs, report);

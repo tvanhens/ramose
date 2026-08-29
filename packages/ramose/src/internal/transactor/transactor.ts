@@ -854,7 +854,12 @@ export class Transactor {
       ) {
         throw new BadRequest({ message: "invalid deployed operation invocation" });
       }
-      return json(await this.invoke(invocation));
+      // Operation output was already materialized as exact JSON before the
+      // commit. Native serialization preserves codec-owned object shapes;
+      // the generic Ramose encoder would reinterpret `{ vt, v }` here.
+      return new Response(JSON.stringify(await this.invoke(invocation)), {
+        headers: { "content-type": "application/json" },
+      });
     }
     if (path === "/op-ack" && request.method === "POST") {
       const body = fromJson(await request.json()) as {

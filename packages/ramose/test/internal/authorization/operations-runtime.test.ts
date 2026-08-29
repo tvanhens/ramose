@@ -72,6 +72,15 @@ const Tagged = Trait("tagged", { tag: string() }, {
         return input;
       },
     }),
+    staticDelete: Operation({
+      self: false,
+      input: EffectSchema.Struct({ id: OperationEntityId }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        op.entity(input.id).delete();
+        return {};
+      },
+    }),
   }),
 });
 
@@ -148,6 +157,17 @@ const CrashingFieldValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
   },
 ));
 
+const InvalidRefValue = EffectSchema.Literals([-1]);
+const CrashingRefValue = EffectSchema.Finite.pipe(EffectSchema.decodeTo(
+  EffectSchema.Finite,
+  {
+    decode: SchemaGetter.transform((value) => value),
+    encode: SchemaGetter.transform(() => {
+      throw new Error("postgres://ref-secret@internal/codec");
+    }),
+  },
+));
+
 let makeHiddenNamesQuery!: () => AnyQueryObject;
 
 const Good = Entity("good", { name: string() }, { traits: [Tagged] });
@@ -174,6 +194,8 @@ linkDefinitionForOperation = Link;
 const Item = Entity("item", {
   title: string(),
   guarded: Field(stored(CrashingFieldValue, "string"), { optional: true }),
+  invalidRef: Field(stored(InvalidRefValue, "ref"), { optional: true }),
+  crashingRef: Field(stored(CrashingRefValue, "ref"), { optional: true }),
 }, {
   operations: (Operation) => ({
     rename: Operation({
@@ -280,6 +302,20 @@ const Item = Entity("item", {
         return {};
       },
     }),
+    refFieldCodec: Operation({
+      input: EffectSchema.Struct({
+        kind: EffectSchema.Literals(["invalid", "crash"]),
+        id: OperationEntityId,
+      }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        op.self.set(
+          input.kind === "invalid" ? Item.invalidRef : Item.crashingRef,
+          input.id as never,
+        );
+        return {};
+      },
+    }),
     returnUrl: Operation({
       self: false,
       input: EffectSchema.Struct({}),
@@ -294,6 +330,25 @@ const Item = Entity("item", {
       output: ClassOutput,
       run() {
         return new ClassOutput({ label: "preserved" });
+      },
+    }),
+    nativeTransport: Operation({
+      self: false,
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Unknown,
+      run() {
+        const ownProto = Object.create(null) as Record<string, unknown>;
+        ownProto.__proto__ = "output-owned";
+        ownProto.kept = true;
+        return {
+          tagged: { vt: 1, v: "codec-owned" },
+          ownProto,
+          date: new Date(0),
+          bytes: new Uint8Array([1, 2, 3]),
+          bigint: 9n,
+          set: new Set(["first", "second"]),
+          map: new Map([["__proto__", "map-owned"], ["key", "value"]]),
+        };
       },
     }),
     invalidTransport: Operation({
@@ -350,6 +405,7 @@ const buildWorld = async () => {
       read(Backlink).when(memberOrReader),
       invoke(Tagged[OwnedOperations].retag).when(memberOrOperator),
       invoke(Tagged[OwnedOperations].staticRetag).when(hasClass("member")),
+      invoke(Tagged[OwnedOperations].staticDelete).when(hasClass("member")),
       invoke(FixedTenant[OwnedOperations].rewriteTenant).when(hasClass("member")),
       invoke(FixedTenant[OwnedOperations].createFixedLink).when(hasClass("member")),
       invoke(Link[OwnedOperations].create).when(hasClass("member")),
@@ -364,8 +420,10 @@ const buildWorld = async () => {
       invoke(Item[OwnedOperations].crash).when(hasClass("member")),
       invoke(Item[OwnedOperations].inputCrash).when(hasClass("member")),
       invoke(Item[OwnedOperations].fieldCodec).when(hasClass("member")),
+      invoke(Item[OwnedOperations].refFieldCodec).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnUrl).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnClass).when(hasClass("member")),
+      invoke(Item[OwnedOperations].nativeTransport).when(hasClass("member")),
       invoke(Item[OwnedOperations].invalidTransport).when(hasClass("member")),
     ],
     claims: [{
@@ -534,6 +592,27 @@ describe("deployed operation runtime", () => {
     expect((await world.conn.db().entity(world.other))?.[":tagged/tag"]).toBeUndefined();
   });
 
+  test("validates a targetless trait owner handle before deleting its composer", async () => {
+    const world = await buildWorld();
+    const initialT = world.conn.t;
+    await expect(invokeOperation(world, {
+      owner: { kind: "trait", name: "tagged" },
+      localName: "staticDelete",
+      input: { id: world.other },
+      caller: caller("member"),
+    })).rejects.toBeInstanceOf(InvalidRequest);
+    expect(world.conn.t).toBe(initialT);
+    expect(await world.conn.db().exists(world.other)).toBe(true);
+
+    await invokeOperation(world, {
+      owner: { kind: "trait", name: "tagged" },
+      localName: "staticDelete",
+      input: { id: world.good },
+      caller: caller("member"),
+    });
+    expect(await world.conn.db().exists(world.good)).toBe(false);
+  });
+
   test("retains fixed composer semantics for a targetless trait handle", async () => {
     const world = await buildWorld();
     const created = await invokeOperation(world, {
@@ -652,6 +731,28 @@ describe("deployed operation runtime", () => {
       caller: caller("member"),
     });
     expect(executed.output).toEqual({ label: "preserved" });
+  });
+
+  test("materializes native transport values without reinterpreting codec-owned records", async () => {
+    const world = await buildWorld();
+    const executed = await invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "nativeTransport",
+      input: {},
+      caller: caller("member"),
+    });
+    const output = executed.output as Record<string, unknown>;
+    expect(output.tagged).toEqual({ vt: 1, v: "codec-owned" });
+    expect(output.date).toEqual({ $inst: 0 });
+    expect(output.bytes).toEqual({ $bytes: "AQID" });
+    expect(output.bigint).toBe(9);
+    expect(output.set).toEqual(["first", "second"]);
+    expect(Object.hasOwn(output.map as object, "__proto__")).toBe(true);
+    expect((output.map as Record<string, unknown>).__proto__).toBe("map-owned");
+    expect((output.map as Record<string, unknown>).key).toBe("value");
+    expect(Object.hasOwn(output.ownProto as object, "__proto__")).toBe(true);
+    expect((output.ownProto as Record<string, unknown>).__proto__).toBe("output-owned");
+    expect((output.ownProto as Record<string, unknown>).kept).toBe(true);
   });
 
   test("rejects silently lossy and cyclic output transport before commit", async () => {
@@ -844,5 +945,35 @@ describe("deployed operation runtime", () => {
       stage: "field",
     });
     expect(world.conn.t).toBe(initialT);
+  });
+
+  test("validates resolved ref values with the deployed field codec", async () => {
+    const world = await buildWorld();
+    const invocation = {
+      owner: { kind: "entity" as const, name: "item" },
+      localName: "refFieldCodec",
+      target: world.item,
+      caller: caller("member"),
+    };
+    const initialT = world.conn.t;
+
+    await expect(invokeOperation(world, {
+      ...invocation,
+      input: { kind: "invalid", id: world.other },
+    })).rejects.toMatchObject({
+      _tag: "InvalidRequest",
+      message: expect.stringContaining("invalid operation value for :item/invalidRef"),
+    });
+    await expect(invokeOperation(world, {
+      ...invocation,
+      input: { kind: "crash", id: world.other },
+    })).rejects.toMatchObject({
+      name: "OperationRuntimeFault",
+      message: "operation execution failed",
+      stage: "field",
+    });
+    expect(world.conn.t).toBe(initialT);
+    expect((await world.conn.db().entity(world.item))?.[":item/invalidRef"]).toBeUndefined();
+    expect((await world.conn.db().entity(world.item))?.[":item/crashingRef"]).toBeUndefined();
   });
 });

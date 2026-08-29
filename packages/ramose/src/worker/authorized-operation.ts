@@ -7,7 +7,7 @@ import {
   type AuthenticatedCaller,
   type OperationInvocation,
 } from "../internal/authorization/index.ts";
-import { fromJson, stringifyJson } from "../internal/core/json.ts";
+import { fromJson, toJson } from "../internal/core/json.ts";
 import { internalHeaders } from "../internal/transactor/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import { BadRequest, Unauthorized, UpstreamError } from "./errors.ts";
@@ -21,6 +21,19 @@ export type ParsedOperationRequest = Omit<
   OperationInvocation,
   "database" | "caller"
 >;
+
+/** Serialize only the target through Ramose's entity-ref transport vocabulary. */
+export const serializeOperationInvocation = (
+  invocation: OperationInvocation,
+): string => {
+  const wireInvocation = {
+    ...invocation,
+    ...(invocation.target === undefined
+      ? {}
+      : { target: toJson(invocation.target) }),
+  };
+  return JSON.stringify({ invocation: wireInvocation });
+};
 
 const bad = (message: string): BadRequest => new BadRequest({ message });
 const deny = (): Unauthorized => new Unauthorized({ status: 403 });
@@ -160,7 +173,9 @@ export const invokeAuthoritativeOperation = async (
           "content-type": "application/json",
           ...internalHeaders(env),
         },
-        body: stringifyJson({ invocation }),
+        // The invocation envelope is ordinary JSON except for the target.
+        // Input and claims remain codec/application-owned exact JSON.
+        body: serializeOperationInvocation(invocation),
       },
     );
     text = await response.text();

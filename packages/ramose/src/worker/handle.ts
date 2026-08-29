@@ -314,7 +314,12 @@ export const handle = (
       }
       // The Worker retains the internal ack basis for invalidation, but an
       // ordinary operation grant does not authorize transaction metadata.
-      return json({ result: ack.output });
+      // The Transactor already committed only after materializing exact JSON.
+      // Do not run codec-owned output through the generic Ramose value encoder.
+      return new Response(JSON.stringify({ result: ack.output }), {
+        status: 200,
+        headers: { "content-type": "application/json", ...CORS },
+      });
     }
     if (catalogs === undefined) return yield* new Unauthorized({});
     if (

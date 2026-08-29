@@ -51,6 +51,17 @@ const CrashingFieldValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
   },
 ));
 
+const InvalidRefValue = EffectSchema.Literals([-1]);
+const CrashingRefValue = EffectSchema.Finite.pipe(EffectSchema.decodeTo(
+  EffectSchema.Finite,
+  {
+    decode: SchemaGetter.transform((value) => value),
+    encode: SchemaGetter.transform(() => {
+      throw new Error("postgres://ref-secret@internal/codec");
+    }),
+  },
+));
+
 export const Other = Entity("nativeOther", { name: Field.unique(string(), "strict") }, {
   operations: (Operation) => ({
     create: Operation({
@@ -68,6 +79,8 @@ export const Item = Entity("nativeItem", {
   title: string(),
   state: string({ default: () => "new" }),
   guarded: Field(stored(CrashingFieldValue, "string"), { optional: true }),
+  invalidRef: Field(stored(InvalidRefValue, "ref"), { optional: true }),
+  crashingRef: Field(stored(CrashingRefValue, "ref"), { optional: true }),
 }, {
   operations: (Operation) => ({
     create: Operation({
@@ -122,6 +135,20 @@ export const Item = Entity("nativeItem", {
         return {};
       },
     }),
+    refFieldCodec: Operation({
+      input: EffectSchema.Struct({
+        kind: EffectSchema.Literals(["invalid", "crash"]),
+        id: OperationEntityId,
+      }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        op.self.set(
+          input.kind === "invalid" ? Item.invalidRef : Item.crashingRef,
+          input.id as never,
+        );
+        return {};
+      },
+    }),
     echoTransportTagInput: Operation({
       self: false,
       input: EffectSchema.Struct({ $inst: EffectSchema.String }),
@@ -136,6 +163,19 @@ export const Item = Entity("nativeItem", {
       output: EffectSchema.Struct({ $inst: EffectSchema.String }),
       run() {
         return { $inst: "application-value" };
+      },
+    }),
+    echoExactWireValues: Operation({
+      self: false,
+      input: EffectSchema.Unknown,
+      output: EffectSchema.Unknown,
+      run(op, input) {
+        return {
+          input,
+          claim: op.principal.claims.transportClaim,
+          tagged: { vt: 1, v: "output-owned" },
+          ownProto: JSON.parse('{"__proto__":"output-owned","kept":true}'),
+        };
       },
     }),
     reject: Operation({
@@ -171,8 +211,10 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     Policy.invoke(Item[OwnedOperations].crash).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].inputCrash).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].fieldCodec).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].refFieldCodec).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].echoTransportTagInput).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].returnTransportTag).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].echoExactWireValues).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].reject).when(Policy.hasClass("member")),
     Policy.invoke(Other[OwnedOperations].create).when(Policy.hasClass("member")),
   ],

@@ -111,6 +111,33 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(transportTagInput.body).toEqual({
         result: { $inst: "application-input" },
       });
+
+      const exactToken = await signToken(database, "member", "user_wire", {
+        transportClaim: "claim-owned",
+      });
+      const exactInput = {
+        tagged: { vt: 3, v: "input-owned" },
+        ownProto: JSON.parse('{"__proto__":"input-owned","kept":true}'),
+      };
+      const exactWire = await invoke(base, database, exactToken, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "echoExactWireValues",
+      }, exactInput);
+      expect(exactWire.status).toBe(200);
+      const exactResult = exactWire.body.result as Record<string, unknown>;
+      expect((exactResult.input as Record<string, unknown>).tagged).toEqual({
+        vt: 3,
+        v: "input-owned",
+      });
+      expect(exactResult.claim).toBe("claim-owned");
+      expect(exactResult.tagged).toEqual({ vt: 1, v: "output-owned" });
+      const inputProto = (exactResult.input as Record<string, unknown>).ownProto as Record<string, unknown>;
+      expect(Object.hasOwn(inputProto, "__proto__")).toBe(true);
+      expect(inputProto.__proto__).toBe("input-owned");
+      const outputProto = exactResult.ownProto as Record<string, unknown>;
+      expect(Object.hasOwn(outputProto, "__proto__")).toBe(true);
+      expect(outputProto.__proto__).toBe("output-owned");
+      expect(outputProto.kept).toBe(true);
     });
 
     test("targeted operation requires both its grant and filtered target visibility", async () => {
@@ -379,6 +406,32 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(fieldCrashed.status).toBe(500);
       expect(fieldCrashed.body).toEqual({ error: "operation execution failed" });
       expect(JSON.stringify(fieldCrashed.body)).not.toContain("field-secret@internal");
+
+      const beforeRefCodec = await testAdmin(base, database, "/query", {
+        query: "[:find ?e :where [?e :nativeItem/title ?title]]",
+      });
+      expect(beforeRefCodec.status).toBe(200);
+      const invalidRef = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "refFieldCodec",
+      }, { kind: "invalid", id: firstUnique.body.result.id }, item.body.result.id);
+      expect(invalidRef.status).toBe(400);
+      expect(JSON.stringify(invalidRef.body)).toContain(
+        "invalid operation value for :nativeItem/invalidRef",
+      );
+
+      const refCrashed = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "refFieldCodec",
+      }, { kind: "crash", id: firstUnique.body.result.id }, item.body.result.id);
+      expect(refCrashed.status).toBe(500);
+      expect(refCrashed.body).toEqual({ error: "operation execution failed" });
+      expect(JSON.stringify(refCrashed.body)).not.toContain("ref-secret@internal");
+      const afterRefCodec = await testAdmin(base, database, "/query", {
+        query: "[:find ?e :where [?e :nativeItem/title ?title]]",
+      });
+      expect(afterRefCodec.status).toBe(200);
+      expect(afterRefCodec.body.t).toBe(beforeRefCodec.body.t);
 
       const rejected = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
