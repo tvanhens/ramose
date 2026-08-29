@@ -5,12 +5,20 @@ import {
   IndexedDbReplicaStorage,
 } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
 import type {
+  Change,
+  LogicalDatom,
   ReplicationIdentity,
   SnapshotDatom,
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
-import { ReplicationSession } from "../../packages/ramose/src/internal/replication/session.ts";
+import {
+  acceptConfirmedCandidate,
+  classifyCandidateFrame,
+  ReplicationSession,
+} from "../../packages/ramose/src/internal/replication/session.ts";
 import {
   replicationActivationAddress,
+  replicationCacheCandidateScope,
+  replicationCacheSelector,
   replicationCredentialFingerprint,
 } from "../../packages/ramose/src/internal/replication/transport.ts";
 import { browserTest } from "./fixtures.ts";
@@ -69,21 +77,23 @@ const install = async (
   storage: IndexedDbReplicaStorage,
   snapshot = opaque("q"),
   revision = opaque("r"),
+  identity = selected,
+  value = "persisted",
 ): Promise<void> => {
   const datoms: readonly SnapshotDatom[] = [{
     entity: opaque("e"),
     field: ":item/name",
-    value: { type: "string", value: "persisted" },
+    value: { type: "string", value },
     op: "add",
   }];
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
+    type: "SnapshotStart", protocol: 1, identity, snapshot, revision,
   });
   await storage.stageSnapshotChunk({
-    type: "SnapshotChunk", protocol: 1, identity: selected, snapshot, index: 0, datoms,
+    type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0, datoms,
   });
   expect(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
+    type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
   }, attributes)).toBeDefined();
 };
 
@@ -111,6 +121,7 @@ browserTest("restores only an exact credential binding and isolates observer fai
     session = await ReplicationSession.open({
       activation,
       credential: "known-credential",
+      cacheKey: "known-account",
       attributes,
       readCompatibilityHash: selected.readCompatibilityHash,
       storage,
@@ -151,9 +162,216 @@ browserTest("restores only an exact credential binding and isolates observer fai
   }
 });
 
-browserTest("additively upgrades and restores a compatible populated version-2 replica", async ({ browser }) => {
-  const sourceName = `ramose-session-v3-source-${browser.uniqueId}`;
-  const legacyName = `ramose-session-v2-${browser.uniqueId}`;
+browserTest("keeps a rotated-token candidate metadata-only until exact frame confirmation", async ({ browser }) => {
+  const name = `ramose-session-candidate-${browser.uniqueId}`;
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    const address = replicationActivationAddress(activation);
+    const selector = await replicationCacheSelector("stable-account", address);
+    const candidateScope = replicationCacheCandidateScope(address);
+    const oldFingerprint = await replicationCredentialFingerprint("old-token", address);
+    const newFingerprint = await replicationCredentialFingerprint("new-token", address);
+    const revision1 = opaque("r");
+    const revision2 = opaque("n");
+    await install(storage, opaque("s"), revision1);
+    await storage.bindAuthenticated({
+      fingerprint: oldFingerprint,
+      selector: { digest: selector, activation: candidateScope },
+      identity: selected,
+    });
+
+    const inspected = await openNative(name);
+    const inspectTx = inspected.transaction(
+      ["replica-credential-bindings-v1", "replica-cache-selectors-v1"],
+      "readonly",
+    );
+    const durableBindings = await Promise.all([
+      requestResult<unknown[]>(inspectTx.objectStore("replica-credential-bindings-v1").getAll()),
+      requestResult<unknown[]>(inspectTx.objectStore("replica-cache-selectors-v1").getAll()),
+    ]);
+    await transactionDone(inspectTx);
+    inspected.close();
+    expect(JSON.stringify(durableBindings)).not.toContain("stable-account");
+    expect(JSON.stringify(durableBindings)).not.toContain("old-token");
+
+    const candidate = await storage.selectCandidate(
+      selector,
+      candidateScope,
+      selected.readCompatibilityHash,
+    );
+    expect(candidate).toEqual({ identity: selected, revision: revision1 });
+    expect(candidate).not.toHaveProperty("db");
+    expect(await storage.restoreBound(
+      newFingerprint,
+      attributes,
+      selected.readCompatibilityHash,
+    )).toBeUndefined();
+
+    const ready = {
+      type: "ResumeReady" as const,
+      protocol: 1 as const,
+      identity: selected,
+      revision: revision1,
+    };
+    const readyDecision = classifyCandidateFrame(candidate!, ready);
+    expect(readyDecision).toBe("current");
+    const current = await acceptConfirmedCandidate(
+      storage,
+      attributes,
+      candidate!,
+      ready,
+    );
+    expect(current!.stale).toBe(false);
+    expect(current!.replica.revision).toBe(revision1);
+
+    const datoms: readonly LogicalDatom[] = [
+      {
+        entity: opaque("e"), field: ":item/name",
+        value: { type: "string", value: "persisted" }, op: "retract",
+      },
+      {
+        entity: opaque("e"), field: ":item/name",
+        value: { type: "string", value: "updated" }, op: "add",
+      },
+    ];
+    const change: Change = {
+      type: "Change", protocol: 1, identity: selected,
+      from: revision1, revision: revision2, datoms,
+    };
+    const changeDecision = classifyCandidateFrame(candidate!, change);
+    expect(changeDecision).toBe("apply-change");
+    const changed = await acceptConfirmedCandidate(
+      storage,
+      attributes,
+      candidate!,
+      change,
+    );
+    expect(changed!.stale).toBe(false);
+    expect(changed!.replica.revision).toBe(revision2);
+
+    const updatedCandidate = await storage.selectCandidate(
+      selector,
+      candidateScope,
+      selected.readCompatibilityHash,
+    );
+    const reset = { type: "Reset" as const, protocol: 1 as const, identity: selected };
+    const resetDecision = classifyCandidateFrame(updatedCandidate!, reset);
+    expect(resetDecision).toBe("publish-stale");
+    const stale = await acceptConfirmedCandidate(
+      storage,
+      attributes,
+      updatedCandidate!,
+      reset,
+    );
+    expect(stale!.stale).toBe(true);
+    expect(stale!.replica.revision).toBe(revision2);
+
+    const replacement = {
+      type: "SnapshotStart" as const,
+      protocol: 1 as const,
+      identity: selected,
+      snapshot: opaque("t"),
+      revision: opaque("3"),
+    };
+    expect((await acceptConfirmedCandidate(
+      storage,
+      attributes,
+      updatedCandidate!,
+      replacement,
+    ))?.stale).toBe(true);
+
+    await storage.bindAuthenticated({
+      fingerprint: newFingerprint,
+      selector: { digest: selector, activation: candidateScope },
+      identity: selected,
+    });
+    expect((await storage.restoreBound(
+      newFingerprint,
+      attributes,
+      selected.readCompatibilityHash,
+    ))?.revision).toBe(revision2);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("wrong-principal selector reuse and offline rotation expose no observer value", async ({ browser }) => {
+  const name = `ramose-session-candidate-deny-${browser.uniqueId}`;
+  const storage = await IndexedDbReplicaStorage.open(name);
+  let session: ReplicationSession | undefined;
+  try {
+    const address = replicationActivationAddress(activation);
+    const selector = await replicationCacheSelector("colliding-account", address);
+    const candidateScope = replicationCacheCandidateScope(address);
+    const wrong = { ...selected, principal: opaque("x") };
+    await install(storage, opaque("s"), opaque("r"));
+    await install(storage, opaque("w"), opaque("z"), wrong, "wrong-principal");
+    await storage.bindAuthenticated({
+      fingerprint: await replicationCredentialFingerprint("wrong-token", address),
+      selector: { digest: selector, activation: candidateScope },
+      identity: wrong,
+    });
+    const candidate = await storage.selectCandidate(
+      selector,
+      candidateScope,
+      selected.readCompatibilityHash,
+    );
+    expect(candidate).toEqual({ identity: wrong, revision: opaque("z") });
+    expect(classifyCandidateFrame(candidate!, {
+      type: "ResumeReady", protocol: 1, identity: selected, revision: opaque("r"),
+    })).toBe("mismatch");
+    expect(await acceptConfirmedCandidate(storage, attributes, candidate!, {
+      type: "ResumeReady", protocol: 1, identity: selected, revision: opaque("r"),
+    })).toBeUndefined();
+    expect(await acceptConfirmedCandidate(storage, attributes, candidate!, {
+      type: "TerminalError", protocol: 1, code: "update-required",
+    })).toBeUndefined();
+
+    session = await ReplicationSession.open({
+      activation,
+      credential: "offline-rotated-token",
+      cacheKey: "colliding-account",
+      attributes,
+      readCompatibilityHash: selected.readCompatibilityHash,
+      storage,
+    });
+    const visible: unknown[] = [];
+    const failed = new Promise<void>((resolve) => {
+      session!.observe((snapshot) => {
+        if (snapshot.value !== undefined) visible.push(snapshot.value);
+        if (snapshot.status === "failed") resolve();
+      });
+    });
+    await failed;
+    expect(visible).toEqual([]);
+    expect(session.snapshot()).toEqual({ status: "failed" });
+
+    expect(await storage.selectCandidate(
+      selector,
+      candidateScope,
+      ReadCompatibilityHash.make(opaque("i")),
+    )).toBeUndefined();
+    expect(await storage.selectCandidate(
+      await replicationCacheSelector("unknown-account", address),
+      candidateScope,
+      selected.readCompatibilityHash,
+    )).toBeUndefined();
+    expect((await storage.restore(
+      selected,
+      attributes,
+      selected.readCompatibilityHash,
+    ))?.revision).toBe(opaque("r"));
+  } finally {
+    await session?.close();
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("additively upgrades and restores a compatible populated version-3 replica", async ({ browser }) => {
+  const sourceName = `ramose-session-v4-source-${browser.uniqueId}`;
+  const legacyName = `ramose-session-v3-${browser.uniqueId}`;
   const source = await IndexedDbReplicaStorage.open(sourceName);
   let upgraded: IndexedDbReplicaStorage | undefined;
   try {
@@ -168,7 +386,7 @@ browserTest("additively upgrades and restores a compatible populated version-2 r
     await transactionDone(sourceTx);
     sourceDb.close();
 
-    const legacy = await openNative(legacyName, 2, (database) => {
+    const legacy = await openNative(legacyName, 3, (database) => {
       database.createObjectStore("replica-committed-v1", { keyPath: "partition" });
       database.createObjectStore("replica-staging-v1", { keyPath: "partition" });
       database.createObjectStore("replica-staging-chunks-v1", { keyPath: ["partition", "index"] });
@@ -187,8 +405,9 @@ browserTest("additively upgrades and restores a compatible populated version-2 r
     upgraded = await IndexedDbReplicaStorage.open(legacyName);
     expect((await upgraded.restore(selected, attributes, selected.readCompatibilityHash))?.revision).toBe(opaque("r"));
     const reopened = await openNative(legacyName);
-    expect(reopened.version).toBe(3);
+    expect(reopened.version).toBe(4);
     expect([...reopened.objectStoreNames]).toContain("replica-credential-bindings-v1");
+    expect([...reopened.objectStoreNames]).toContain("replica-cache-selectors-v1");
     reopened.close();
   } finally {
     source.close();

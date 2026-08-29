@@ -10,6 +10,8 @@ import {
   decodeReplicationNdjson,
   readReplicationFrames,
   replicationActivationAddress,
+  replicationCacheCandidateScope,
+  replicationCacheSelector,
   replicationCredentialFingerprint,
 } from "../../../src/internal/replication/transport.ts";
 
@@ -84,6 +86,41 @@ test("credential fingerprints are full, exact, and activation-bound", async () =
     root: "root",
     graphPath: ["org", "other"],
   }))).not.toBe(first);
+});
+
+test("cache selectors are full, domain-separated, and scoped to origin plus root", async () => {
+  const activation = replicationActivationAddress({
+    server: "https://data.example/",
+    root: "root",
+    graphPath: ["org", "board"],
+  });
+  const first = await replicationCacheSelector("account-1", activation);
+  expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(await replicationCacheSelector("account-1", activation)).toBe(first);
+  expect(await replicationCredentialFingerprint("account-1", activation)).not.toBe(first);
+  expect(await replicationCacheSelector("account-2", activation)).not.toBe(first);
+  expect(await replicationCacheSelector("account-1", replicationActivationAddress({
+    server: "https://other.example",
+    root: "root",
+    graphPath: ["org", "board"],
+  }))).not.toBe(first);
+  expect(await replicationCacheSelector("account-1", replicationActivationAddress({
+    server: "https://data.example",
+    root: "other",
+    graphPath: ["org", "board"],
+  }))).not.toBe(first);
+  expect(await replicationCacheSelector("account-1", replicationActivationAddress({
+    server: "https://data.example",
+    root: "root",
+    graphPath: ["different"],
+  }))).toBe(first);
+  expect(replicationCacheCandidateScope(activation)).not.toBe(
+    replicationCacheCandidateScope(replicationActivationAddress({
+      server: "https://data.example",
+      root: "root",
+      graphPath: ["different"],
+    })),
+  );
 });
 
 test("bounded decoder preserves back-to-back frames across arbitrary chunks", async () => {

@@ -39,12 +39,13 @@ import {
   type CommittedReplica,
 } from "./state.ts";
 
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 const COMMITTED = "replica-committed-v1";
 const STAGING = "replica-staging-v1";
 const STAGING_CHUNKS = "replica-staging-chunks-v1";
 const NODES = "replica-nodes-v1";
 const CREDENTIAL_BINDINGS = "replica-credential-bindings-v1";
+const CACHE_SELECTORS = "replica-cache-selectors-v1";
 const USER_T = 2;
 
 export const DEFAULT_REPLICA_DATABASE_NAME = "ramose-replicas";
@@ -101,6 +102,12 @@ type CredentialBindingRecord = {
   readonly identity: ReplicationIdentity;
 };
 
+type CacheSelectorRecord = {
+  readonly selector: string;
+  readonly activation: string;
+  readonly identity: ReplicationIdentity;
+};
+
 export type RestoredReplica = {
   readonly db: Db;
   readonly revision: string;
@@ -108,6 +115,21 @@ export type RestoredReplica = {
 
 export type BoundRestoredReplica = RestoredReplica & {
   readonly identity: ReplicationIdentity;
+};
+
+/** Metadata-only nomination. Reading this type never constructs a Db or loads a node. */
+export type ReplicaCandidate = {
+  readonly identity: ReplicationIdentity;
+  readonly revision: string;
+};
+
+export type AuthenticatedReplicaBinding = {
+  readonly fingerprint: string;
+  readonly identity: ReplicationIdentity;
+  readonly selector?: {
+    readonly digest: string;
+    readonly activation: string;
+  };
 };
 
 export type ReplicaInstallOptions = {
@@ -445,6 +467,9 @@ export class IndexedDbReplicaStorage {
       if (!database.objectStoreNames.contains(CREDENTIAL_BINDINGS)) {
         database.createObjectStore(CREDENTIAL_BINDINGS, { keyPath: "fingerprint" });
       }
+      if (!database.objectStoreNames.contains(CACHE_SELECTORS)) {
+        database.createObjectStore(CACHE_SELECTORS, { keyPath: ["selector", "activation"] });
+      }
       if ((event as IDBVersionChangeEvent).oldVersion < 3 && request.transaction !== null) {
         const upgrade = request.transaction;
         // Incomplete pre-agreement snapshots have no safe compatibility proof.
@@ -503,7 +528,7 @@ export class IndexedDbReplicaStorage {
   ): Promise<void> {
     const partition = replicaPartitionKey(identity);
     const transaction = this.database.transaction(
-      [COMMITTED, STAGING, STAGING_CHUNKS, NODES, CREDENTIAL_BINDINGS],
+      [COMMITTED, STAGING, STAGING_CHUNKS, NODES, CREDENTIAL_BINDINGS, CACHE_SELECTORS],
       "readwrite",
     );
     transaction.objectStore(COMMITTED).delete(partition);
@@ -519,6 +544,13 @@ export class IndexedDbReplicaStorage {
         if (sameReplicationIdentity(binding.identity, identity)) {
           bindings.delete(binding.fingerprint);
         }
+      }
+    }
+    const selectors = transaction.objectStore(CACHE_SELECTORS);
+    const selectorRecords = await requestResult<CacheSelectorRecord[]>(selectors.getAll());
+    for (const selector of selectorRecords) {
+      if (sameReplicationIdentity(selector.identity, identity)) {
+        selectors.delete([selector.selector, selector.activation]);
       }
     }
     await commitTransaction(transaction);
@@ -555,17 +587,74 @@ export class IndexedDbReplicaStorage {
     identity: ReplicationIdentity,
     options: ReplicaInstallOptions = {},
   ): Promise<void> {
-    const transaction = this.database.transaction(CREDENTIAL_BINDINGS, "readwrite");
+    await this.bindAuthenticated({ fingerprint, identity }, options);
+  }
+
+  /** Atomically bind local selectors only after a current authenticated frame. */
+  async bindAuthenticated(
+    binding: AuthenticatedReplicaBinding,
+    options: ReplicaInstallOptions = {},
+  ): Promise<void> {
+    const stores = binding.selector === undefined
+      ? [CREDENTIAL_BINDINGS]
+      : [CREDENTIAL_BINDINGS, CACHE_SELECTORS];
+    const transaction = this.database.transaction(stores, "readwrite");
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       transaction.objectStore(CREDENTIAL_BINDINGS).put({
-        fingerprint,
-        identity,
+        fingerprint: binding.fingerprint,
+        identity: binding.identity,
       } satisfies CredentialBindingRecord);
+      if (binding.selector !== undefined) {
+        transaction.objectStore(CACHE_SELECTORS).put({
+          selector: binding.selector.digest,
+          activation: binding.selector.activation,
+          identity: binding.identity,
+        } satisfies CacheSelectorRecord);
+      }
       await commitTransaction(transaction);
     } finally {
       removeAbort();
     }
+  }
+
+  /**
+   * Read only authenticated manifest metadata. The candidate remains
+   * quarantined: this method never validates attributes, constructs a Db, or
+   * opens the content-addressed node store.
+   */
+  async selectCandidate(
+    selector: string,
+    activation: string,
+    readCompatibilityHash: ReadCompatibilityHash,
+  ): Promise<ReplicaCandidate | undefined> {
+    const transaction = this.database.transaction([CACHE_SELECTORS, COMMITTED], "readonly");
+    const selected = await requestResult<CacheSelectorRecord | undefined>(
+      transaction.objectStore(CACHE_SELECTORS).get([selector, activation]),
+    );
+    if (selected === undefined) {
+      await transactionDone(transaction);
+      return undefined;
+    }
+    const record = await requestResult<CommittedRecord | undefined>(
+      transaction.objectStore(COMMITTED).get(replicaPartitionKey(selected.identity)),
+    );
+    await transactionDone(transaction);
+    if (record === undefined || record.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION) {
+      return undefined;
+    }
+    if (
+      selected.identity.readCompatibilityHash !== readCompatibilityHash ||
+      record.readCompatibilityHash !== readCompatibilityHash ||
+      record.identity.readCompatibilityHash !== readCompatibilityHash
+    ) {
+      await this.quarantineReplica(selected.identity);
+      return undefined;
+    }
+    if (!sameReplicationIdentity(record.identity, selected.identity)) {
+      throw new Error("cache selector does not match its committed replica");
+    }
+    return Object.freeze({ identity: selected.identity, revision: record.revision });
   }
 
   /** Restore only the exact partition selected by a prior authenticated binding. */

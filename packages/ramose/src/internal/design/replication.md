@@ -121,6 +121,38 @@ bytes.
 The client treats every identity field and revision as opaque. Decoding a JWT
 or an opaque id never grants cache authority.
 
+### Credential renewal and local cache nomination
+
+The browser keeps the exact-credential path and the refreshable account hint
+in separate digest domains. An exact bearer fingerprint includes the complete
+canonical activation address. A previously authenticated exact fingerprint
+may restore its compatible complete replica immediately as stale, including
+while offline.
+
+An optional runtime cache key is weaker. The client hashes the raw value with
+the canonical server origin and configured root using full SHA-256 and
+canonical unpadded base64url. The raw cache key is neither persisted nor sent.
+Under that digest, a separate canonical Graph-path scope lets independently
+activated root and child databases coexist; path text remains operational
+selection metadata and is not part of `readView` or any replica identity.
+
+A changed bearer may read only the nominated identity, revision, and committed
+manifest metadata and may submit that opaque revision on `Activate`. It does
+not load a reachable node, construct a `Db`, publish a session value, or notify
+an observer until a complete strictly decoded identity-bearing response frame
+matches the nominated `ReplicationIdentity` and `readCompatibilityHash`.
+`ResumeReady` restores and publishes current. `Change` applies atomically and
+publishes only the resulting current value. `Reset` or `SnapshotStart`
+confirms identity but not currency, so the old complete value may then be
+published stale while replacement staging continues. Identity-free terminals,
+mismatches, malformed/truncated responses, and transport failure publish no
+candidate value.
+
+Only that authenticated confirmation may atomically bind the current exact
+bearer fingerprint and replace the local selector record. A selector collision
+therefore changes nomination metadata but grants no visibility. These records
+live outside committed, staging, node, and future mutation store families.
+
 ## Logical datoms
 
 A wire datom is:

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ReadCompatibilityHash } from "../../../src/internal/authorization/identities.ts";
 import type { ReplicationIdentity } from "../../../src/internal/replication/protocol.ts";
 import {
+  classifyCandidateFrame,
   classifyReplicationChange,
   replicationTerminalSnapshot,
 } from "../../../src/internal/replication/session.ts";
@@ -24,6 +25,38 @@ const change = (from: string, revision: string) => ({
   from,
   revision,
   datoms: [],
+});
+
+describe("changed-bearer candidate fence", () => {
+  const candidate = { identity, revision: opaque("1") };
+  test("requires exact identity and revision continuity", () => {
+    expect(classifyCandidateFrame(candidate, {
+      type: "ResumeReady", protocol: 1, identity, revision: opaque("1"),
+    })).toBe("current");
+    expect(classifyCandidateFrame(candidate, change(opaque("1"), opaque("2"))))
+      .toBe("apply-change");
+    expect(classifyCandidateFrame(candidate, change(opaque("0"), opaque("1"))))
+      .toBe("current");
+    expect(classifyCandidateFrame(candidate, change(opaque("0"), opaque("2"))))
+      .toBe("mismatch");
+    expect(classifyCandidateFrame(candidate, {
+      type: "ResumeReady", protocol: 1,
+      identity: { ...identity, principal: opaque("x") }, revision: opaque("1"),
+    })).toBe("mismatch");
+  });
+
+  test("reset and snapshot confirmation are stale; terminals disclose nothing", () => {
+    expect(classifyCandidateFrame(candidate, {
+      type: "Reset", protocol: 1, identity,
+    })).toBe("publish-stale");
+    expect(classifyCandidateFrame(candidate, {
+      type: "SnapshotStart", protocol: 1, identity,
+      snapshot: opaque("s"), revision: opaque("2"),
+    })).toBe("publish-stale");
+    expect(classifyCandidateFrame(candidate, {
+      type: "TerminalError", protocol: 1, code: "update-required",
+    })).toBe("wait");
+  });
 });
 
 describe("replication change sequencing", () => {

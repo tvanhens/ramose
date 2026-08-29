@@ -13,6 +13,8 @@ import {
 } from "./protocol.ts";
 
 const CREDENTIAL_BINDING_DOMAIN = "ramose:replication:credential-binding:v1";
+const CACHE_SELECTOR_DOMAIN = "ramose:replication:cache-selector:v1";
+const CACHE_CANDIDATE_SCOPE_DOMAIN = "ramose:replication:cache-candidate-scope:v1";
 const NDJSON_CONTENT_TYPE = "application/x-ndjson";
 const utf8 = new TextEncoder();
 
@@ -96,6 +98,35 @@ export const replicationCredentialFingerprint = async (
   const digest = await crypto.subtle.digest("SHA-256", utf8.encode(material));
   return base64Url(new Uint8Array(digest));
 };
+
+/**
+ * Local-only selector for a refreshable account hint. It deliberately omits
+ * graph path: one configured root owns the selector namespace, while the
+ * authenticated identity still selects one exact replica partition.
+ */
+export const replicationCacheSelector = async (
+  cacheKey: string,
+  activation: ReplicationActivationAddress,
+): Promise<string> => {
+  const material = JSON.stringify({
+    domain: CACHE_SELECTOR_DOMAIN,
+    cacheKey,
+    activation: {
+      origin: activation.origin,
+      root: activation.root,
+    },
+  });
+  const digest = await crypto.subtle.digest("SHA-256", utf8.encode(material));
+  return base64Url(new Uint8Array(digest));
+};
+
+/** Operational route dimension under one account selector; never cache authority. */
+export const replicationCacheCandidateScope = (
+  activation: ReplicationActivationAddress,
+): string => JSON.stringify({
+  domain: CACHE_CANDIDATE_SCOPE_DOMAIN,
+  graphPath: activation.graphPath,
+});
 
 export type OpenReplicationInput = {
   readonly activation: ReplicationActivationAddress;

@@ -6,6 +6,7 @@ import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import {
   IndexedDbReplicaStorage,
   type BoundRestoredReplica,
+  type ReplicaCandidate,
   type RestoredReplica,
 } from "./indexeddb.ts";
 import { sameReplicationIdentity } from "./state.ts";
@@ -14,6 +15,8 @@ import {
   openReplicationResponse,
   readReplicationFrames,
   replicationActivationAddress,
+  replicationCacheCandidateScope,
+  replicationCacheSelector,
   replicationCredentialFingerprint,
   type ReplicationActivationInput,
 } from "./transport.ts";
@@ -37,6 +40,8 @@ export type ReplicationSessionObserver = (snapshot: ReplicationSessionSnapshot) 
 export type ReplicationSessionOptions = {
   readonly activation: ReplicationActivationInput;
   readonly credential: string;
+  /** Local nomination only; it is neither transmitted nor authoritative. */
+  readonly cacheKey?: string;
   readonly attributes: readonly AttributeSpec[];
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly storage: IndexedDbReplicaStorage;
@@ -44,6 +49,13 @@ export type ReplicationSessionOptions = {
 
 type ChangeFrame = Extract<ReplicationFrame, { readonly type: "Change" }>;
 type TerminalFrame = Extract<ReplicationFrame, { readonly type: "TerminalError" }>;
+
+export type CandidateFrameDisposition =
+  | "apply-change"
+  | "current"
+  | "mismatch"
+  | "publish-stale"
+  | "wait";
 
 /** Pure sequencing decision shared with ordinary-frame regression tests. */
 export const classifyReplicationChange = (
@@ -69,6 +81,87 @@ export const replicationTerminalSnapshot = (
 
 const identityOf = (frame: ReplicationFrame): ReplicationIdentity | undefined =>
   "identity" in frame ? frame.identity : undefined;
+
+/** Pure authority fence for one metadata-only changed-bearer candidate. */
+export const classifyCandidateFrame = (
+  candidate: ReplicaCandidate,
+  frame: ReplicationFrame,
+): CandidateFrameDisposition => {
+  const identity = identityOf(frame);
+  if (identity === undefined) return "wait";
+  if (!sameReplicationIdentity(candidate.identity, identity)) return "mismatch";
+  switch (frame.type) {
+    case "ResumeReady":
+      return frame.revision === candidate.revision ? "current" : "mismatch";
+    case "Change":
+      if (frame.revision === candidate.revision) return "current";
+      return frame.from === candidate.revision ? "apply-change" : "mismatch";
+    case "Reset":
+    case "SnapshotStart":
+      return "publish-stale";
+    case "SnapshotChunk":
+    case "SnapshotCommit":
+    case "KeepAlive":
+    case "TerminalError":
+      return "wait";
+  }
+};
+
+export type ConfirmedCandidateValue = {
+  readonly identity: ReplicationIdentity;
+  readonly replica: RestoredReplica;
+  readonly stale: boolean;
+};
+
+/** Cross the storage boundary only after exact authenticated confirmation. */
+export const acceptConfirmedCandidate = async (
+  storage: IndexedDbReplicaStorage,
+  attributes: readonly AttributeSpec[],
+  candidate: ReplicaCandidate,
+  frame: ReplicationFrame,
+  signal?: AbortSignal,
+): Promise<ConfirmedCandidateValue | undefined> => {
+  const disposition = classifyCandidateFrame(candidate, frame);
+  if (disposition === "mismatch" || disposition === "wait") return undefined;
+  if (disposition === "apply-change") {
+    if (frame.type !== "Change") throw new Error("invalid candidate change decision");
+    const replica = await storage.applyChange(
+      frame,
+      signal === undefined ? {} : { signal },
+    );
+    if (replica === undefined || replica.revision !== frame.revision) {
+      throw new Error("confirmed candidate change did not continue the committed revision");
+    }
+    return Object.freeze({ identity: frame.identity, replica, stale: false });
+  }
+  if (disposition === "current") {
+    const replica = await storage.restore(
+      candidate.identity,
+      attributes,
+      candidate.identity.readCompatibilityHash,
+    );
+    if (replica === undefined || replica.revision !== candidate.revision) {
+      throw new Error("confirmed candidate manifest changed before restore");
+    }
+    return Object.freeze({ identity: candidate.identity, replica, stale: false });
+  }
+  if (frame.type === "Reset") {
+    await storage.resetStaging(frame.identity);
+  } else if (frame.type === "SnapshotStart") {
+    await storage.startSnapshot(frame);
+  } else {
+    throw new Error("invalid candidate stale decision");
+  }
+  const replica = await storage.restore(
+    candidate.identity,
+    attributes,
+    candidate.identity.readCompatibilityHash,
+  );
+  if (replica === undefined || replica.revision !== candidate.revision) {
+    throw new Error("confirmed candidate manifest changed before restore");
+  }
+  return Object.freeze({ identity: candidate.identity, replica, stale: true });
+};
 
 const valueFrom = (
   identity: ReplicationIdentity,
@@ -106,11 +199,24 @@ export class ReplicationSession {
   static async open(options: ReplicationSessionOptions): Promise<ReplicationSession> {
     const activation = replicationActivationAddress(options.activation);
     const fingerprint = await replicationCredentialFingerprint(options.credential, activation);
+    const selector = options.cacheKey === undefined
+      ? undefined
+      : await replicationCacheSelector(options.cacheKey, activation);
+    const candidateScope = selector === undefined
+      ? undefined
+      : replicationCacheCandidateScope(activation);
     const restored = await options.storage.restoreBound(
       fingerprint,
       options.attributes,
       options.readCompatibilityHash,
     );
+    let candidate = restored === undefined && selector !== undefined
+      ? await options.storage.selectCandidate(
+        selector,
+        candidateScope!,
+        options.readCompatibilityHash,
+      )
+      : undefined;
     return new ReplicationSession(
       options.storage,
       options.attributes,
@@ -118,12 +224,14 @@ export class ReplicationSession {
       async (session, generation) => {
         let activeIdentity = restored?.identity;
         let responseIdentity: ReplicationIdentity | undefined;
-        let bindingConfirmed = restored !== undefined;
+        let bindingConfirmed = restored !== undefined && selector === undefined;
         try {
           const response = await openReplicationResponse({
             activation,
             credential: options.credential,
-            ...(restored === undefined ? {} : { resumeRevision: restored.revision }),
+            ...(restored === undefined && candidate === undefined
+              ? {}
+              : { resumeRevision: restored?.revision ?? candidate!.revision }),
             signal: session.controller.signal,
             readCompatibilityHash: options.readCompatibilityHash,
           });
@@ -150,13 +258,29 @@ export class ReplicationSession {
                 throw new Error("replication frame identity changed within one response");
               }
               if (!bindingConfirmed) {
-                await options.storage.bindCredential(
-                  fingerprint,
-                  frameIdentity,
+                await options.storage.bindAuthenticated(
+                  {
+                    fingerprint,
+                    identity: frameIdentity,
+                    ...(selector === undefined
+                      ? {}
+                      : { selector: { digest: selector, activation: candidateScope! } }),
+                  },
                   { signal: session.controller.signal },
                 );
                 if (!session.current(generation)) return;
                 bindingConfirmed = true;
+              }
+            }
+            if (candidate !== undefined) {
+              const disposition = classifyCandidateFrame(candidate, frame);
+              if (disposition === "mismatch") {
+                candidate = undefined;
+              } else if (disposition !== "wait") {
+                const selected = candidate;
+                candidate = undefined;
+                await session.acceptCandidate(selected, frame, generation);
+                continue;
               }
             }
             const terminal = await session.accept(frame, generation);
@@ -237,6 +361,32 @@ export class ReplicationSession {
   ): void {
     if (!this.current(generation)) return;
     this.publish({ status: "open", value: valueFrom(identity, replica, stale) });
+  }
+
+  /** Consume the first authoritative frame without an observer-visible candidate flash. */
+  private async acceptCandidate(
+    candidate: ReplicaCandidate,
+    frame: ReplicationFrame,
+    generation: number,
+  ): Promise<void> {
+    if (!this.current(generation)) return;
+    const accepted = await acceptConfirmedCandidate(
+      this.storage,
+      this.attributes,
+      candidate,
+      frame,
+      this.controller.signal,
+    );
+    if (accepted === undefined) throw new Error("candidate confirmation was not actionable");
+    if (!this.current(generation)) return;
+    if (!accepted.stale) {
+      this.publishReplica(accepted.identity, accepted.replica, false, generation);
+    } else {
+      this.publish({
+        status: "connecting",
+        value: valueFrom(accepted.identity, accepted.replica, true),
+      });
+    }
   }
 
   /** Returns true after a terminal frame. */
