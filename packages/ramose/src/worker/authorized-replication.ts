@@ -54,6 +54,7 @@ import {
 
 const encoder = new TextEncoder();
 const ABORTED = Symbol("ramose/replication/aborted");
+const WATCH_FAILED = Symbol("ramose/replication/watch-failed");
 const REPLICATION_CYCLE_INTERVAL_MS = MAX_READ_LEASE_MS;
 
 class ReplicationRuntimeError extends Data.TaggedError(
@@ -100,11 +101,40 @@ export type AuthorizedReplicationInput = {
 
 const frame = <A extends ReplicationFrame>(value: A): A => value;
 
+const abortable = async <A>(
+  promise: Promise<A>,
+  signal: AbortSignal,
+): Promise<A> => {
+  signal.throwIfAborted();
+  let onAbort: (() => void) | undefined;
+  const interrupted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason ?? new Error("replication aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try {
+    return await Promise.race([promise, interrupted]);
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+  }
+};
+
 const atBoundary = async (
   boundaries: RuntimeBoundaries | undefined,
   name: string,
+  signal: AbortSignal,
 ): Promise<void> => {
-  if (boundaries !== undefined) await boundaries.checkpoint(name);
+  signal.throwIfAborted();
+  if (boundaries === undefined) return;
+  try {
+    await abortable(boundaries.checkpoint(name), signal);
+  } catch (cause) {
+    // If the effective watch signal wins the race, dispose the source-only
+    // parked waiter in its creating request context before failing closed.
+    boundaries.checkpointCancel?.(name);
+    throw cause;
+  }
+  signal.throwIfAborted();
 };
 
 const abortPromise = (signal: AbortSignal): Promise<typeof ABORTED> =>
@@ -214,6 +244,7 @@ const snapshotFrames = async function* (
       version.identity,
       candidate.revision,
     );
+    signal.throwIfAborted();
     yield frame({
       type: "SnapshotStart",
       protocol: REPLICATION_PROTOCOL_VERSION,
@@ -243,7 +274,10 @@ const snapshotFrames = async function* (
         ) return false;
         // Authorization may expire while a delayed chunk is checked. Repeat
         // under a fresh complete-path lease rather than emitting on the edge.
-        if (leaseAlive(version)) return true;
+        if (leaseAlive(version)) {
+          signal.throwIfAborted();
+          return true;
+        }
       }
     };
     for await (const entries of snapshotEntryChunks(
@@ -266,11 +300,12 @@ const snapshotFrames = async function* (
         restart = true;
         break;
       }
-      await atBoundary(input.boundaries, "replication.snapshot.chunk");
+      await atBoundary(input.boundaries, "replication.snapshot.chunk", signal);
       if (!await authorizeChunk(entries)) {
         restart = true;
         break;
       }
+      signal.throwIfAborted();
       yield frame({
         type: "SnapshotChunk",
         protocol: REPLICATION_PROTOCOL_VERSION,
@@ -293,8 +328,9 @@ const snapshotFrames = async function* (
     }
     await remember(input, finalState);
     if (!leaseAlive(finalVersion)) continue;
-    await atBoundary(input.boundaries, "replication.snapshot.commit");
+    await atBoundary(input.boundaries, "replication.snapshot.commit", signal);
     if (!leaseAlive(finalVersion)) continue;
+    signal.throwIfAborted();
     yield frame({
       type: "SnapshotCommit",
       protocol: REPLICATION_PROTOCOL_VERSION,
@@ -319,6 +355,7 @@ const resetFrames = async function* (
   if (!sameVersion(expectedPath, expectedIdentity, version)) {
     throw new Error("replication authorization partition changed");
   }
+  signal.throwIfAborted();
   yield frame({
     type: "Reset",
     protocol: REPLICATION_PROTOCOL_VERSION,
@@ -371,7 +408,11 @@ const advanceFrames = async function* (
     let before: Db;
     try {
       before = await reconstruct(async () => {
-        await atBoundary(input.boundaries, "replication.resume.reconstruct");
+        await atBoundary(
+          input.boundaries,
+          "replication.resume.reconstruct",
+          signal,
+        );
         return authorizeAt(version, previous.basisT);
       });
     } catch (cause) {
@@ -447,11 +488,12 @@ const advanceFrames = async function* (
     });
     await remember(input, finalState);
     if (revision === previous.revision) {
-      await atBoundary(input.boundaries, "replication.silent");
+      await atBoundary(input.boundaries, "replication.silent", signal);
       return finalState;
     }
-    await atBoundary(input.boundaries, "replication.change");
+    await atBoundary(input.boundaries, "replication.change", signal);
     if (!leaseAlive(finalVersion)) continue;
+    signal.throwIfAborted();
     yield frame({
       type: "Change",
       protocol: REPLICATION_PROTOCOL_VERSION,
@@ -474,12 +516,15 @@ const replicationFrames = async function* (
     input.initialTarget,
     input.activation.graphPath,
   );
+  let effectiveSignal = signal;
   const run = <A>(effect: Effect.Effect<A, unknown, JwtVerifier>): Promise<A> =>
-    Effect.runPromise(effect.pipe(Effect.provide(context)));
+    Effect.runPromise(effect.pipe(Effect.provide(context)), {
+      signal: effectiveSignal,
+    });
   const deployment = input.env.CF_VERSION_METADATA!.id;
   const origin = new URL(input.request.url).origin;
   const authorize = async (): Promise<AuthorizedVersion> => {
-    signal.throwIfAborted();
+    effectiveSignal.throwIfAborted();
     const version = await run(Effect.gen(function* () {
       const verified = yield* authenticateRequest(input.request);
       const caller = callerFromVerified(verified);
@@ -527,14 +572,14 @@ const replicationFrames = async function* (
         leaseExpiresAt,
       });
     }));
-    signal.throwIfAborted();
+    effectiveSignal.throwIfAborted();
     return version;
   };
   const authorizeAt = (
     version: AuthorizedVersion,
     basisT: number,
   ): Promise<Db> => {
-    signal.throwIfAborted();
+    effectiveSignal.throwIfAborted();
     return run(constructAuthorizedResolvedRequestContext({
       authenticate: Effect.succeed(version.caller),
       bindings: input.bindings,
@@ -544,7 +589,7 @@ const replicationFrames = async function* (
       ),
     }, version.caller).pipe(Effect.map((authorized) => authorized.filteredDb)))
       .then((db) => {
-        signal.throwIfAborted();
+        effectiveSignal.throwIfAborted();
         return db;
       });
   };
@@ -554,11 +599,28 @@ const replicationFrames = async function* (
     input.initialTarget.route.database,
     input.request,
   );
+  const effectiveController = new AbortController();
+  const cancelEffective = () => effectiveController.abort(signal.reason);
+  if (signal.aborted) cancelEffective();
+  else signal.addEventListener("abort", cancelEffective, { once: true });
+  effectiveSignal = effectiveController.signal;
+  const watchFailed: Promise<typeof WATCH_FAILED> = watch.failed.then(
+    (): typeof WATCH_FAILED => {
+      // This source-only marker records the actual watch-close callback
+      // without parking a Promise in a separate request context.
+      input.boundaries?.checkpointReached?.("replication.watch.failed");
+      effectiveController.abort(new Error("replication basis watch closed"));
+      return WATCH_FAILED;
+    },
+  );
   const events = Stream.toAsyncIterable(watch.changes)[Symbol.asyncIterator]();
   const aborted = abortPromise(signal);
   try {
-    const ready = await Promise.race([events.next(), aborted]);
+    const ready = await Promise.race([events.next(), aborted, watchFailed]);
     if (ready === ABORTED) return;
+    if (ready === WATCH_FAILED) {
+      throw new Error("replication basis watch closed");
+    }
     if (ready.done || (ready.value !== "ready" && ready.value !== "change")) {
       throw new Error("replication basis watch did not become ready");
     }
@@ -576,18 +638,22 @@ const replicationFrames = async function* (
         authorize,
         expectedPath,
         initialIdentity,
-        signal,
+        effectiveSignal,
       );
     } else {
       let basisT: number | undefined;
       try {
-        basisT = await resolveReplicationRevision(
-          input.env,
-          input.initialTarget.route.database,
-          resume,
-          initialIdentity.authenticator,
+        basisT = await abortable(
+          resolveReplicationRevision(
+            input.env,
+            input.initialTarget.route.database,
+            resume,
+            initialIdentity.authenticator,
+          ),
+          effectiveSignal,
         );
       } catch {
+        effectiveSignal.throwIfAborted();
         basisT = undefined;
       }
       if (basisT === undefined) {
@@ -596,7 +662,7 @@ const replicationFrames = async function* (
           authorize,
           expectedPath,
           initialIdentity,
-          signal,
+          effectiveSignal,
         );
       } else {
         committed = yield* advanceFrames(
@@ -606,30 +672,36 @@ const replicationFrames = async function* (
           expectedPath,
           initialIdentity,
           { basisT, revision: resume },
-          signal,
+          effectiveSignal,
         );
       }
     }
 
-    const watchFailed = watch.failed.then(() => "watch-failed" as const);
+    effectiveSignal.throwIfAborted();
     // The phase is fixed from the last admitted lease, never from a basis
     // notification or the amount of hidden work in a completed cycle.
     let nextCycleAt = committed.version.leaseExpiresAt;
     let cycle = scheduledCycle(Math.max(0, nextCycleAt - Date.now()));
     try {
       while (!signal.aborted) {
-        let next: "cycle" | "watch-failed" | typeof ABORTED;
+        effectiveSignal.throwIfAborted();
+        let next: "cycle" | typeof WATCH_FAILED | typeof ABORTED;
         if (Date.now() >= nextCycleAt) next = "cycle";
         else next = await Promise.race([cycle.promise, watchFailed, aborted]);
         if (next === ABORTED) return;
-        if (next === "watch-failed") {
+        effectiveSignal.throwIfAborted();
+        if (next === WATCH_FAILED) {
           throw new Error("replication basis watch closed");
         }
 
         cycle.cancel();
         do nextCycleAt += REPLICATION_CYCLE_INTERVAL_MS;
         while (nextCycleAt <= Date.now());
-        await atBoundary(input.boundaries, "replication.cycle");
+        await atBoundary(
+          input.boundaries,
+          "replication.cycle",
+          effectiveSignal,
+        );
         const renewed = await authorize();
         if (!sameVersion(expectedPath, initialIdentity, renewed)) {
           throw new Error("replication authorization partition changed");
@@ -638,7 +710,11 @@ const replicationFrames = async function* (
           // An idle fence must still reauthorize every ancestor, but an
           // unchanged target basis needs no logical database scan.
           committed = Object.freeze({ ...committed, version: renewed });
-          await atBoundary(input.boundaries, "replication.silent");
+          await atBoundary(
+            input.boundaries,
+            "replication.silent",
+            effectiveSignal,
+          );
         } else {
           committed = yield* advanceFrames(
             input,
@@ -647,7 +723,7 @@ const replicationFrames = async function* (
             expectedPath,
             initialIdentity,
             { basisT: committed.basisT, revision: committed.revision },
-            signal,
+            effectiveSignal,
             renewed,
           );
         }
@@ -661,6 +737,7 @@ const replicationFrames = async function* (
       cycle.cancel();
     }
   } finally {
+    signal.removeEventListener("abort", cancelEffective);
     await events.return?.();
   }
 };

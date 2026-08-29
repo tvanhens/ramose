@@ -111,6 +111,13 @@ export const checkpointStatus = (): Record<string, CheckpointArm> => {
   return out;
 };
 
+/** Record an instantaneous boundary without creating a cross-request waiter. */
+export const checkpointReached = (name: string): void => {
+  if (!enabled) return;
+  const arm = arms.get(name);
+  if (arm !== undefined) arm.pending = true;
+};
+
 /**
  * Async barrier. No-op until armed. `wait` parks until `releaseCheckpoint`.
  * `throw` fails the real operation at this boundary.
@@ -160,6 +167,8 @@ export const checkpointSync = (name: string): void => {
 export const testRuntimeBoundaries = Object.freeze({
   checkpoint,
   checkpointSync,
+  checkpointReached,
+  checkpointCancel: releaseCheckpoint,
 });
 
 const json = (body: unknown, status = 200): Response =>

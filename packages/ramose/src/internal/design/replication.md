@@ -178,6 +178,12 @@ A conflated change is also a valid initial-ready handshake because ordered
 WebSocket delivery proves readiness preceded it. Notifications only update
 that latest slot. After the ready handshake, replication does not drain
 notification values; a separate failure-only signal detects watch closure.
+That failure signal is an active abort source from the moment the watch is
+attached, including initial authorization, snapshot projection and chunk
+checks, resume reconstruction, checkpoints, and fixed-cycle waits. A watch
+failure can therefore emit only the opaque `closed` terminal after any
+uncommitted staging frames; it cannot emit another state-bearing frame or a
+snapshot commit. Client cancellation remains distinct and closes silently.
 Notifications never schedule authorization, hashing, diffing, a heartbeat, a
 timer, or a replication-loop iteration. One activity-independent cycle is
 fixed to the settled complete-path lease cadence (no later than five seconds).

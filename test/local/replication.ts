@@ -38,6 +38,7 @@ const INTERRUPT_DATABASE = CONFORMANCE_DATABASES[12]!;
 const NONINTERFERENCE_DATABASE = CONFORMANCE_DATABASES[13]!;
 const RETENTION_ZERO_DATABASE = CONFORMANCE_DATABASES[14]!;
 const RETENTION_PRESSURE_DATABASE = CONFORMANCE_DATABASES[15]!;
+const WATCH_FAILURE_DATABASE = CONFORMANCE_DATABASES[16]!;
 
 const withTimeout = async <A>(
   promise: Promise<A>,
@@ -114,10 +115,11 @@ const waitForCheckpoint = async (
   base: string,
   database: string,
   name: string,
+  scope: "worker" | "replica" | "transactor" = "worker",
 ): Promise<void> => {
   for (let attempt = 0; attempt < 320; attempt++) {
     const status = await testAdmin(base, database, "/checkpoint", {
-      scope: "worker",
+      scope,
       action: "status",
     });
     if (status.body.checkpoints?.[name]?.pending === true) return;
@@ -142,9 +144,10 @@ const armCheckpoint = async (
   base: string,
   database: string,
   name: string,
+  scope: "worker" | "replica" | "transactor" = "worker",
 ): Promise<void> => {
   const response = await testAdmin(base, database, "/checkpoint", {
-    scope: "worker",
+    scope,
     action: "arm-wait",
     name,
   });
@@ -155,9 +158,10 @@ const releaseCheckpoint = async (
   base: string,
   database: string,
   name: string,
+  scope: "worker" | "replica" | "transactor" = "worker",
 ): Promise<void> => {
   const response = await testAdmin(base, database, "/checkpoint", {
-    scope: "worker",
+    scope,
     action: "release",
     name,
   });
@@ -535,14 +539,37 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
           "Omega",
         ]);
 
+        await armCheckpoint(
+          base,
+          world.database,
+          "operation.claimed",
+          "transactor",
+        );
         const revokedFrame = resumed.next();
-        const revoked = await transfer(
+        const revokedRequest = transfer(
           base,
           world.database,
           world.admin,
           world.hiddenId!,
           world.ids.bob,
           "other",
+        );
+        await waitForCheckpoint(
+          base,
+          world.database,
+          "operation.claimed",
+          "transactor",
+        );
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "operation.claimed",
+          "transactor",
+        );
+        const revoked = await withTimeout(
+          revokedRequest,
+          7_000,
+          "revoke operation",
         );
         expect(revoked.status).toBe(200);
         const revoke = await withTimeout(revokedFrame, 7_000, "revoke change");
@@ -551,6 +578,12 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         state = applyObservedFrame(state, revoke.value!);
         expect(titlesOf(state)).toEqual(["Beta", "Gamma", "Omega"]);
       } finally {
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "operation.claimed",
+          "transactor",
+        );
         await releaseCheckpoint(base, world.database, "replication.silent");
         await closeIterator(resumed);
       }
@@ -610,6 +643,166 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         }
       } finally {
         await closeIterator(principalIterator);
+      }
+    });
+
+    test("a real watch failure aborts parked initial snapshot and resume work opaquely", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, WATCH_FAILURE_DATABASE, false);
+      const baselineResponse = await openReplication(
+        base,
+        world.database,
+        world.member,
+      );
+      const baselineIterator = readReplicationNdjson(
+        baselineResponse,
+      )[Symbol.asyncIterator]();
+      const baseline = await collectCommittedSnapshot(baselineIterator);
+      await closeIterator(baselineIterator);
+
+      const expectOpaqueClose = async (
+        pending: Promise<IteratorResult<ObservedReplicationFrame>>,
+        iterator: AsyncIterator<ObservedReplicationFrame>,
+        label: string,
+      ): Promise<void> => {
+        const terminal = await withTimeout(pending, 7_000, `${label} terminal`);
+        expect(terminal.done).toBe(false);
+        expect(terminal.value?.frame).toEqual({
+          type: "TerminalError",
+          protocol: 1,
+          code: "closed",
+          identity: baseline.state.identity,
+        });
+        const ended = await withTimeout(iterator.next(), 7_000, `${label} close`);
+        expect(ended.done).toBe(true);
+      };
+
+      await armCheckpoint(
+        base,
+        world.database,
+        "replication.snapshot.chunk",
+      );
+      await armCheckpoint(
+        base,
+        world.database,
+        "replication.watch.failed",
+      );
+      const snapshotResponse = await openReplication(
+        base,
+        world.database,
+        world.member,
+      );
+      const snapshotIterator = readReplicationNdjson(
+        snapshotResponse,
+      )[Symbol.asyncIterator]();
+      try {
+        const start = await observed(snapshotIterator, "watch-failure snapshot start");
+        expect(start.frame.type).toBe("SnapshotStart");
+        const pending = snapshotIterator.next();
+        await waitForCheckpoint(
+          base,
+          world.database,
+          "replication.snapshot.chunk",
+        );
+        const closedWatch = await testAdmin(
+          base,
+          world.database,
+          "/reconnect",
+          {},
+        );
+        expect(closedWatch.status).toBe(200);
+        await waitForCheckpoint(
+          base,
+          world.database,
+          "replication.watch.failed",
+        );
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "replication.snapshot.chunk",
+        );
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "replication.watch.failed",
+        );
+        await expectOpaqueClose(pending, snapshotIterator, "parked snapshot");
+      } finally {
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "replication.snapshot.chunk",
+        );
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "replication.watch.failed",
+        );
+        await closeIterator(snapshotIterator);
+      }
+
+      await currentBasis(base, world.database);
+      await armCheckpoint(
+        base,
+        world.database,
+        "replication.resume.reconstruct",
+      );
+      await armCheckpoint(
+        base,
+        world.database,
+        "replication.watch.failed",
+      );
+      const resumeResponse = await openReplication(
+        base,
+        world.database,
+        world.member,
+        baseline.state.committed!.revision,
+      );
+      const resumeIterator = readReplicationNdjson(
+        resumeResponse,
+      )[Symbol.asyncIterator]();
+      try {
+        const pending = resumeIterator.next();
+        await waitForCheckpoint(
+          base,
+          world.database,
+          "replication.resume.reconstruct",
+        );
+        const closedWatch = await testAdmin(
+          base,
+          world.database,
+          "/reconnect",
+          {},
+        );
+        expect(closedWatch.status).toBe(200);
+        await waitForCheckpoint(
+          base,
+          world.database,
+          "replication.watch.failed",
+        );
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "replication.resume.reconstruct",
+        );
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "replication.watch.failed",
+        );
+        await expectOpaqueClose(pending, resumeIterator, "parked resume");
+      } finally {
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "replication.resume.reconstruct",
+        );
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "replication.watch.failed",
+        );
+        await closeIterator(resumeIterator);
       }
     });
 

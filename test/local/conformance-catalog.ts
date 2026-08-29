@@ -30,6 +30,7 @@ export const CONFORMANCE_DATABASES = Object.freeze([
   "conformance-replication-noninterference",
   "conformance-replication-retention-zero",
   "conformance-replication-retention-pressure",
+  "conformance-replication-watch-failure",
 ]);
 
 export const ConformanceUser = Entity("conformanceUser", {
