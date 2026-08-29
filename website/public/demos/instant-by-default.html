@@ -398,8 +398,11 @@ document.addEventListener('DOMContentLoaded', async function() {
     const fittedDemo = document.querySelector('.ramose-instant-demo');
     if (fittedDemo) {
       const fitDemo = function() {
+        const viewportWidth = document.documentElement.clientWidth;
+        const mobileScale = viewportWidth <= 896 ? 0.96 : 1;
+        fittedDemo.style.left = ((1 - mobileScale) * viewportWidth / 2) + 'px';
         fittedDemo.style.transform = 'scale(' +
-          document.documentElement.clientWidth / (71 * 16) +
+          viewportWidth * mobileScale / (71 * 16) +
           ')';
       };
       fitDemo();
