@@ -33,6 +33,7 @@ import {
   isSelfRefSchema,
   refTargetOf,
   tryInferDbValueType,
+  type DbValueType,
 } from "../../../db/valueTypes.ts";
 import { InvalidIR } from "../failures.ts";
 import {
@@ -70,6 +71,7 @@ export type DeployedEntityRuntimeDefinition = {
   readonly fields: Readonly<Record<string, {
     readonly ident: string;
     readonly cardinality: "one" | "many";
+    readonly valueType: DbValueType | undefined;
     readonly unique?: "upsert" | "strict";
   }>>;
 };
@@ -653,6 +655,7 @@ const runtimeEntityDefinition = (
     Object.entries(entity.fields).map(([key, field]) => [key, Object.freeze({
       ident: field.ident,
       cardinality: field.cardinality,
+      valueType: field.valueType,
       ...(field.unique === undefined ? {} : { unique: field.unique }),
     })]),
   )),

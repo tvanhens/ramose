@@ -114,6 +114,17 @@ export type PairedCreationDefaults = {
   ) => CreationDefault<unknown>;
 };
 
+/**
+ * Explicit ref values may name handles, tempids, or lookups that become a
+ * concrete stored eid only on the staged transaction basis. The authoritative
+ * operation collector lowers and snapshots those values now, then runs the
+ * original deployed field codec against the resolved numeric eid before
+ * commit.
+ */
+export type CompiledCreationOptions = {
+  readonly deferredReferenceKeys?: ReadonlySet<string>;
+};
+
 const formatPath = (path: readonly string[]): string => path.join(" → ");
 
 const declaredDefault = (
@@ -484,12 +495,30 @@ const decodeCompiledField = (
   }
 };
 
+const snapshotDeferredReference = (
+  field: CompiledCreationField,
+  value: unknown,
+): unknown => {
+  try {
+    if (field.cardinality === "many" && !Array.isArray(value)) {
+      throw new Error("expected an array for a cardinality-many field");
+    }
+    return cloneBindingValue(value);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CreationValueError(
+      `ramose/create: invalid explicit value for ${field.ident}: ${detail}`,
+    );
+  }
+};
+
 /** Resolve creation values without consulting an authoring entity or binding. */
 export const resolveCompiledCreationValues = (
   plan: CompiledCreationPlan,
   input: Readonly<Record<string, unknown>>,
   context: CreationDefaultContext,
   deployedDefaults: PairedCreationDefaults,
+  options: CompiledCreationOptions = {},
 ): Readonly<Record<string, unknown>> => {
   if (!(context.now instanceof Date) || !Number.isFinite(context.now.getTime())) {
     throw new CreationValueError("ramose/create: authoritative now must be a valid Date");
@@ -524,7 +553,9 @@ export const resolveCompiledCreationValues = (
     }
     const explicit = Object.hasOwn(input, field.key) ? input[field.key] : undefined;
     if (explicit !== undefined) {
-      out[field.key] = decodeCompiledField(field, explicit, "explicit value");
+      out[field.key] = options.deferredReferenceKeys?.has(field.key) === true
+        ? snapshotDeferredReference(field, explicit)
+        : decodeCompiledField(field, explicit, "explicit value");
       continue;
     }
 

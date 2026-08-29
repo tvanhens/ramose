@@ -104,7 +104,12 @@ export class OperationRuntimeFault extends Error {
 
 type RuntimeEntity = {
   readonly ns: string;
-  readonly fields?: Readonly<Record<string, { readonly ident?: unknown; readonly cardinality?: unknown; readonly unique?: unknown }>>;
+  readonly fields?: Readonly<Record<string, {
+    readonly ident?: unknown;
+    readonly cardinality?: unknown;
+    readonly unique?: unknown;
+    readonly valueType?: unknown;
+  }>>;
 };
 
 type RuntimeHandle = {
@@ -380,6 +385,31 @@ const isFieldMutable = (
 const isMany = (entity: RuntimeEntity, key: string): boolean =>
   entity.fields?.[key]?.cardinality === "many";
 
+const prepareCreationInput = (
+  entity: RuntimeEntity,
+  values: Readonly<Record<string, unknown>>,
+): {
+  readonly values: Readonly<Record<string, unknown>>;
+  readonly deferredReferenceKeys: ReadonlySet<string>;
+} => {
+  const prepared: Record<string, unknown> = {};
+  const deferredReferenceKeys = new Set<string>();
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && entity.fields?.[key]?.valueType === "ref") {
+      prepared[key] = entity.fields[key]?.cardinality === "many" && Array.isArray(value)
+        ? value.map(lowerWriteValue)
+        : lowerWriteValue(value);
+      deferredReferenceKeys.add(key);
+    } else {
+      prepared[key] = value;
+    }
+  }
+  return {
+    values: prepared,
+    deferredReferenceKeys,
+  };
+};
+
 const uniqueLookup = (
   entity: RuntimeEntity,
   attrs: Readonly<Record<string, unknown>>,
@@ -558,9 +588,18 @@ const createCollector = (args: {
     values: Readonly<Record<string, unknown>>,
     creation: boolean,
   ): RuntimeHandle => {
-    const resolved = creation
-      ? definition.resolveCreationValues(entity.ns, values, { now: args.authoritativeNow })
-      : values;
+    let resolved: Readonly<Record<string, unknown>>;
+    if (creation) {
+      const prepared = prepareCreationInput(entity, values);
+      resolved = definition.resolveCreationValues(
+        entity.ns,
+        prepared.values,
+        { now: args.authoritativeNow },
+        { deferredReferenceKeys: prepared.deferredReferenceKeys },
+      );
+    } else {
+      resolved = values;
+    }
     const map: Record<string, unknown> = {
       ":db/id": snapshotStoredValue(descriptor, lowerEntityArg(eid)),
     };

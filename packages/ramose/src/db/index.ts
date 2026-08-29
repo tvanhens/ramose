@@ -72,6 +72,7 @@ export {
 export { Schema, type AnySchema } from "./Schema.ts";
 export { Entity, type AnyEntity } from "./Entity.ts";
 export { Trait, type AnyTrait } from "./Trait.ts";
+export { Graph } from "./Graph.ts";
 export type { AnyComposer } from "./Composer.ts";
 export {
   Bytes,

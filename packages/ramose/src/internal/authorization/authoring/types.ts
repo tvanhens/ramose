@@ -121,7 +121,7 @@ export const isEntityTarget = (value: unknown): value is AnyEntity =>
   typeof (value as { readonly ns?: unknown }).ns === "string";
 
 export const isTraitTarget = (value: unknown): value is AnyTrait =>
-  typeof value === "object" &&
+  (typeof value === "object" || typeof value === "function") &&
   value !== null &&
   (value as { readonly _tag?: unknown })._tag === "Trait" &&
   typeof (value as { readonly ns?: unknown }).ns === "string";

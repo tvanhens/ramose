@@ -15,6 +15,7 @@ import {
   compileCreationPlan,
   pairDeployedCreationDefaults,
   resolveCompiledCreationValues,
+  type CompiledCreationOptions,
   type CompiledCreationPlan,
   type CompositionValueMetadata,
   type DeployedCreationDefaultBinding,
@@ -106,6 +107,7 @@ export type InstalledCatalogDefinition = {
     entityName: string,
     input: Readonly<Record<string, unknown>>,
     context: CreationDefaultContext,
+    options?: CompiledCreationOptions,
   ) => Readonly<Record<string, unknown>>;
   /** Exact private field codec/fixed binding captured from deployed code. */
   readonly requireFieldRuntime: (
@@ -543,6 +545,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
       entityName: string,
       input: Readonly<Record<string, unknown>>,
       context: CreationDefaultContext,
+      options: CompiledCreationOptions = {},
     ): Readonly<Record<string, unknown>> => {
       const plan = creationByEntity.get(entityName);
       if (plan === undefined) {
@@ -550,7 +553,13 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
           `ramose/create: unknown entity ${JSON.stringify(entityName)} in catalog ${JSON.stringify(catalogKeyText)}`,
         );
       }
-      return resolveCompiledCreationValues(plan, input, context, creationDefaults);
+      return resolveCompiledCreationValues(
+        plan,
+        input,
+        context,
+        creationDefaults,
+        options,
+      );
     });
     const requireFieldRuntime = Object.freeze((
       entityName: string,
