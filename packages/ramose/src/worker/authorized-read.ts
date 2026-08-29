@@ -311,20 +311,10 @@ export const acquireWatchedDb = (
   env: RamoseEnv,
   currentBasis: () => Basis | undefined,
 ): ((database: DatabaseId) => Effect.Effect<Db, RamoseError>) =>
-  acquireWatchedDatabases(env, (database) => {
-    const basis = currentBasis();
-    return basis?.db === database ? basis : undefined;
-  });
-
-/** Build repeated path values from the complete sealed route watch set. */
-export const acquireWatchedDatabases = (
-  env: RamoseEnv,
-  currentBasis: (database: DatabaseId) => Basis | undefined,
-): ((database: DatabaseId) => Effect.Effect<Db, RamoseError>) =>
   (database) =>
     Effect.tryPromise({
       try: async () => {
-        const basis = currentBasis(database);
+        const basis = currentBasis();
         if (basis === undefined || basis.db !== database) {
           throw new Error("live basis unavailable");
         }

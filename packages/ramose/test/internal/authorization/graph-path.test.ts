@@ -491,7 +491,7 @@ describe("authorized Graph paths", () => {
     })).rejects.toBeInstanceOf(Unauthorized);
   });
 
-  test("renews every path segment and finalizes the complete dependency watch scope", async () => {
+  test("renews every path segment from one target wake stream and finalizes its scope", async () => {
     const world = await buildWorld();
     const path = ["acme", "design"] as const;
     const target = await Effect.runPromise(resolver(world, ["member"], path));
@@ -521,7 +521,7 @@ describe("authorized Graph paths", () => {
         provision: () => Effect.void,
         basisChanges,
         expectedLeaseIdentity,
-        interruptAfter: "25 millis",
+        interruptAfter: "100 millis",
       }, nestedNotesQuery).pipe(
         Stream.runForEach((diff) => Queue.offer(output, diff)),
         Effect.forkIn(scope, { startImmediately: true }),
@@ -535,15 +535,23 @@ describe("authorized Graph paths", () => {
         world.leaf.database,
       ]);
 
-      // #390 keeps the Effect clock real. Poll only the observable renewal;
-      // Scope still owns cancellation and the basis-watch finalizer.
+      yield* Queue.offer(basisEvents, "change");
       for (let attempt = 0; attempt < 100 && acquired.length < 6; attempt++) {
-        yield* Effect.sleep("5 millis");
+        yield* Effect.sleep("1 millis");
       }
-      expect(acquired.slice(0, 6)).toEqual([
+      expect(acquired.slice(3, 6)).toEqual([
         world.root.database,
         world.child.database,
         world.leaf.database,
+      ]);
+
+      // #390 keeps the Effect clock real. Poll only the observable renewal;
+      // Scope still owns cancellation and the basis-watch finalizer.
+      acquired.length = 0;
+      for (let attempt = 0; attempt < 200 && acquired.length < 3; attempt++) {
+        yield* Effect.sleep("2 millis");
+      }
+      expect(acquired.slice(0, 3)).toEqual([
         world.root.database,
         world.child.database,
         world.leaf.database,

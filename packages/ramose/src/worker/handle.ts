@@ -29,7 +29,6 @@ import { authenticateRequest } from "./admit.ts";
 import {
   acquireCurrentDb,
   acquireWatchedDb,
-  acquireWatchedDatabases,
   parseOneShotReadRequest,
   provisionResolvedDatabase,
   queryMaxCells,
@@ -60,10 +59,7 @@ import {
   toHttp,
 } from "./errors.ts";
 import { JwtVerifier, fromEnv } from "./jwt.ts";
-import {
-  watchBasisChanges,
-  watchBasisChangesForDatabases,
-} from "./peer.ts";
+import { watchBasisChanges } from "./peer.ts";
 import {
   invokeAuthoritativeOperation,
   parseOperationRequest,
@@ -402,15 +398,19 @@ export const handle = (
       });
       if (rest === "/live") {
         // Admission remains an ordinary complete-path one-shot read. The body
-        // then starts real replica watches for the exact root-through-target
-        // route set and reauthorizes that complete path on every lease.
+        // then watches target changes and reauthorizes that complete path on
+        // every wake and bounded idle renewal.
         const target = yield* executeAuthorizedGraphPathTarget(
           pathInput,
           (authorized) => readTarget(authorized).pipe(Effect.as(authorized)),
         ).pipe(Effect.mapError(mapReadError));
-        const liveWatch = watchBasisChangesForDatabases(
+        // One target wake socket is sufficient for result freshness. Ancestor
+        // changes are authoritative on the next complete-path renewal (and
+        // may use the optional early-invalidation seam); holding one socket
+        // per segment would exceed Cloudflare's connection limit on deep paths.
+        const liveWatch = watchBasisChanges(
           env,
-          target.routes.map((route) => route.database),
+          target.route.database,
           request,
         );
         const stream = executeAuthorizedGraphPathLive({
@@ -418,10 +418,10 @@ export const handle = (
           authenticate: authenticateRequest(request).pipe(
             Effect.map(callerFromVerified),
           ),
-          currentDb: acquireWatchedDatabases(
-            env,
-            (database) => liveWatch.currentBasis(database),
-          ),
+          currentDb: acquireCurrentDb(env, request, {
+            bypassBasisCache: true,
+            authoritativeBasisFence: true,
+          }),
           // Admission already provisioned every authorized child. Renewal is
           // authorization-only and must not create a per-lease write path.
           provision: () => Effect.void,
