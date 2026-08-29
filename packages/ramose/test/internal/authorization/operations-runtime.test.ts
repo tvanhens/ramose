@@ -764,7 +764,7 @@ const buildReplayFenceWorld = async () => {
       ":db/id": "replacement",
       ":ramose/type": ":replayTarget",
       ":replayTarget/key": "replacement-key",
-      ":replayTarget/title": "Before",
+      ":replayTarget/title": "Hidden replacement",
       ":replayTarget/gate": "replacement-gate",
     },
     {
@@ -1478,7 +1478,22 @@ describe("deployed operation runtime", () => {
     expect(hiddenTarget?.referenceEid).toBe(world.replacement);
     expect(hiddenTarget?.postCommit.kind).toBe("hidden");
 
-    // The exact post-commit lookup resolution is compatible with replay, but
+    // The replacement now holding the lookup is not readable by this caller,
+    // while the original target remains independently admissible by eid.
+    await expect(authorizeCatalogOperation(
+      world.conn,
+      runtime,
+      invocation,
+    )).rejects.toBeInstanceOf(Unauthorized);
+    await expect(authorizeCatalogOperation(
+      world.conn,
+      runtime,
+      { ...invocation, target: world.target },
+    )).resolves.toMatchObject({
+      target: { eid: world.target, type: "replayTarget" },
+    });
+
+    // Exact replay follows the stored post-commit resolution only as a fence;
     // admission remains anchored to the originally authorized target eid.
     await expect(authorizeCatalogOperationReplay(
       world.conn,

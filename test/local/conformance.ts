@@ -921,6 +921,13 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
         ConformanceUser.ns,
         { sub: "alice-sub" },
       );
+      const bob = await create(
+        base,
+        database,
+        admin,
+        ConformanceUser.ns,
+        { sub: "bob-lookup-rebind-sub" },
+      );
       const original = await create(
         base,
         database,
@@ -941,8 +948,8 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
         {
           key: "lookup-rebind-second",
           title: "Post-commit lookup owner",
-          owner: alice,
-          org: "acme",
+          owner: bob,
+          org: "other",
         },
       );
       const third = await create(
@@ -985,6 +992,24 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
         result: { id: original },
         receipt: { version: 1, invocationId, status: "completed" },
       });
+      expect((await entity(
+        base,
+        database,
+        member,
+        replacement,
+      )).body).toEqual({ result: null });
+      expect((await entity(
+        base,
+        database,
+        member,
+        original,
+      )).body.result).not.toBeNull();
+      expect((await lookup(base, database, member, target)).body).toEqual({
+        result: null,
+      });
+      expect((await lookup(base, database, admin, target)).body.result).toBe(
+        replacement,
+      );
       const exactRetry = await invoke(
         base,
         database,
@@ -996,9 +1021,6 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(exactRetry.status).toBe(200);
       expect(exactRetry.body).toEqual(completed.body);
-      expect((await lookup(base, database, admin, target)).body.result).toBe(
-        replacement,
-      );
 
       const movedAgain = await invoke(
         base,
