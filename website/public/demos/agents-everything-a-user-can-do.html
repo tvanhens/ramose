@@ -400,10 +400,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     if (fittedDemo) {
       const fitDemo = function() {
         const viewportWidth = document.documentElement.clientWidth;
-        const mobileScale = viewportWidth <= 896 ? 0.96 : 1;
-        fittedDemo.style.left = ((1 - mobileScale) * viewportWidth / 2) + 'px';
+        fittedDemo.style.left = '0';
         fittedDemo.style.transform = 'scale(' +
-          viewportWidth * mobileScale / (40 * 16) +
+          viewportWidth / (40 * 16) +
           ')';
       };
       fitDemo();
