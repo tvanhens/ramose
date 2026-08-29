@@ -330,6 +330,7 @@ document.addEventListener('DOMContentLoaded', async function() {
       demo.removeAttribute('style');
       const section = demo.closest('section');
       if (section) {
+        section.classList.add('ramose-demo-section');
         section.replaceChildren(demo);
         section.removeAttribute('style');
       }
@@ -338,6 +339,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         'html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#090807}',
         'body{position:relative}',
         'x-dc,x-dc>div,x-dc>div>div,x-dc section{display:block!important;width:100%!important;max-width:none!important;margin:0!important;padding:0!important;background:#090807!important}',
+        '.ramose-demo-section{position:static!important}',
         '.ramose-agents-demo{position:absolute;top:0;left:0;width:40rem;min-width:40rem;margin:0;transform-origin:top left}',
         '.ramose-agents-demo>div{border:0!important;border-radius:0!important;box-shadow:none!important}'
       ].join('');
