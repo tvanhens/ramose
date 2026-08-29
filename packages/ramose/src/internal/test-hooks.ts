@@ -22,6 +22,12 @@ export type CheckpointAction = "wait" | "throw";
 
 export type CheckpointScope = "worker" | "transactor" | "replica";
 
+export const MAX_CHECKPOINT_RELEASE_DELAY_MS = 30_000;
+
+export const isCheckpointReleaseDelay = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
+  value <= MAX_CHECKPOINT_RELEASE_DELAY_MS;
+
 export interface CheckpointArm {
   readonly action: CheckpointAction;
   readonly error?: string | undefined;
@@ -31,8 +37,10 @@ export interface CheckpointArm {
 type Arm = {
   action: CheckpointAction;
   error?: string | undefined;
+  releaseAfterMs?: number | undefined;
   wait?: Promise<void>;
   release?: () => void;
+  timer?: ReturnType<typeof setTimeout> | undefined;
   pending: boolean;
 };
 
@@ -54,6 +62,9 @@ export const testHooksArmed = (): boolean => enabled;
 
 export const resetTestHooks = (): void => {
   enabled = false;
+  for (const arm of arms.values()) {
+    if (arm.timer !== undefined) clearTimeout(arm.timer);
+  }
   arms.clear();
 };
 
@@ -61,14 +72,21 @@ export const armCheckpoint = (
   name: string,
   action: CheckpointAction,
   error?: string,
+  releaseAfterMs?: number,
 ): void => {
   enableTestHooks();
   if (action === "wait") {
-    let release: () => void = () => undefined;
-    const wait = new Promise<void>((resolve) => {
-      release = resolve;
+    if (releaseAfterMs !== undefined && !isCheckpointReleaseDelay(releaseAfterMs)) {
+      throw new RangeError(
+        `checkpoint releaseAfterMs must be between 0 and ${MAX_CHECKPOINT_RELEASE_DELAY_MS}`,
+      );
+    }
+    arms.set(name, {
+      action,
+      error,
+      ...(releaseAfterMs === undefined ? {} : { releaseAfterMs }),
+      pending: false,
     });
-    arms.set(name, { action, error, wait, release, pending: false });
     return;
   }
   arms.set(name, { action, error, pending: false });
@@ -76,6 +94,7 @@ export const armCheckpoint = (
 
 export const releaseCheckpoint = (name: string): void => {
   const arm = arms.get(name);
+  if (arm?.timer !== undefined) clearTimeout(arm.timer);
   arm?.release?.();
   arms.delete(name);
 };
@@ -104,8 +123,23 @@ export const checkpoint = async (name: string): Promise<void> => {
     arms.delete(name);
     throw new Error(arm.error ?? `test checkpoint ${name}`);
   }
-  if (arm.action === "wait" && arm.wait !== undefined) {
+  if (arm.action === "wait") {
     arm.pending = true;
+    // Construct the waiter in the request context that reaches the boundary,
+    // not in the earlier admin request that armed it. Workerd forbids safely
+    // resuming a Promise created by a completed request context.
+    if (arm.wait === undefined) {
+      arm.wait = new Promise<void>((resolve) => {
+        arm.release = resolve;
+      });
+    }
+    // A same-isolate timer lets real Worker-boundary tests release the exact
+    // arm they reached even when the local runtime dispatches concurrent admin
+    // requests to another isolate. It exists only for explicitly armed test
+    // hooks and starts after the real boundary is reached.
+    if (arm.releaseAfterMs !== undefined) {
+      arm.timer = setTimeout(() => releaseCheckpoint(name), arm.releaseAfterMs);
+    }
     await arm.wait;
   }
 };
@@ -147,7 +181,12 @@ export const handleIsolateTestAdmin = async (
     return json({ ok: true, aborted: true });
   }
   if (path === "/admin/test/checkpoint" && request.method === "POST") {
-    const body = (await request.json()) as { action?: unknown; name?: unknown; error?: unknown };
+    const body = (await request.json()) as {
+      action?: unknown;
+      name?: unknown;
+      error?: unknown;
+      releaseAfterMs?: unknown;
+    };
     const action = typeof body.action === "string" ? body.action : "";
     const name = typeof body.name === "string" ? body.name : "";
     if (action === "status") return json({ ok: true, checkpoints: checkpointStatus() });
@@ -155,7 +194,16 @@ export const handleIsolateTestAdmin = async (
       return json({ error: "checkpoint needs name" }, 400);
     }
     if (action === "arm-wait") {
-      armCheckpoint(name, "wait");
+      const releaseAfterMs = body.releaseAfterMs;
+      if (
+        releaseAfterMs !== undefined &&
+        !isCheckpointReleaseDelay(releaseAfterMs)
+      ) {
+        return json({
+          error: `checkpoint releaseAfterMs must be between 0 and ${MAX_CHECKPOINT_RELEASE_DELAY_MS}`,
+        }, 400);
+      }
+      armCheckpoint(name, "wait", undefined, releaseAfterMs as number | undefined);
       return json({ ok: true, name, action: "wait" });
     }
     if (action === "arm-throw") {

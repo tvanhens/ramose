@@ -11,6 +11,8 @@ import {
   armCheckpoint,
   checkpointStatus,
   enableTestHooks,
+  isCheckpointReleaseDelay,
+  MAX_CHECKPOINT_RELEASE_DELAY_MS,
   releaseCheckpoint,
   type CheckpointScope,
 } from "../internal/test-hooks.ts";
@@ -106,13 +108,23 @@ const handleCheckpointLocal = (body: {
   action?: unknown;
   name?: unknown;
   error?: unknown;
+  releaseAfterMs?: unknown;
 }): Response => {
   const action = typeof body.action === "string" ? body.action : "";
   const name = typeof body.name === "string" ? body.name : "";
   if (action === "status") return json({ ok: true, checkpoints: checkpointStatus() });
   if (name.length === 0) throw new BadRequest({ message: "checkpoint needs name" });
   if (action === "arm-wait") {
-    armCheckpoint(name, "wait");
+    const releaseAfterMs = body.releaseAfterMs;
+    if (
+      releaseAfterMs !== undefined &&
+      !isCheckpointReleaseDelay(releaseAfterMs)
+    ) {
+      throw new BadRequest({
+        message: `checkpoint releaseAfterMs must be between 0 and ${MAX_CHECKPOINT_RELEASE_DELAY_MS}`,
+      });
+    }
+    armCheckpoint(name, "wait", undefined, releaseAfterMs as number | undefined);
     return json({ ok: true, name, action: "wait" });
   }
   if (action === "arm-throw") {
@@ -243,7 +255,13 @@ export const handleTestAdmin = async (
   }
   if (rest === "/checkpoint") {
     const raw = await request.text();
-    const body = raw.length === 0 ? {} : (JSON.parse(raw) as { scope?: unknown; action?: unknown; name?: unknown; error?: unknown });
+    const body = raw.length === 0 ? {} : (JSON.parse(raw) as {
+      scope?: unknown;
+      action?: unknown;
+      name?: unknown;
+      error?: unknown;
+      releaseAfterMs?: unknown;
+    });
     const scope: CheckpointScope =
       body.scope === "transactor" || body.scope === "replica" || body.scope === "worker"
         ? body.scope

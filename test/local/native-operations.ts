@@ -36,19 +36,21 @@ const install = async (base: string, database: string) => {
   expect(response.status).toBe(200);
 };
 
-const waitForCommitCheckpoint = async (
+const waitForCheckpoint = async (
   base: string,
   database: string,
+  scope: "worker" | "transactor",
+  name: string,
 ): Promise<void> => {
   for (let attempt = 0; attempt < 200; attempt++) {
     const status = await testAdmin(base, database, "/checkpoint", {
-      scope: "transactor",
+      scope,
       action: "status",
     });
-    if (status.body.checkpoints?.["transactor.commit"]?.pending === true) return;
+    if (status.body.checkpoints?.[name]?.pending === true) return;
     await Bun.sleep(25);
   }
-  throw new Error("operation did not reach the transactor commit checkpoint");
+  throw new Error(`operation did not reach the ${scope} ${name} checkpoint`);
 };
 
 export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
@@ -158,7 +160,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       }, { title: "Expired" });
       let released = false;
       try {
-        await waitForCommitCheckpoint(base, database);
+        await waitForCheckpoint(base, database, "transactor", "transactor.commit");
         const untilExpiry = exp * 1_000 - Date.now() + 25;
         if (untilExpiry > 0) await Bun.sleep(untilExpiry);
         // Releasing lets the expiry fence abort this DO. The admin request may
@@ -191,6 +193,65 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       });
       expect(absent.status).toBe(200);
       expect(absent.body.result).toEqual([]);
+    });
+
+    test("an operation expiring after the real DO acknowledgement commits but returns no result", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-response-expiry";
+      await install(base, database);
+      // Initialize the real Replica before arming module-isolate checkpoint
+      // state. DO constructors intentionally reset stale test hooks.
+      const warmed = await testAdmin(base, database, "/query", {
+        query: "[:find ?e :where [?e :nativeItem/title ?title]]",
+      });
+      expect(warmed.status).toBe(200);
+      const exp = Math.floor(Date.now() / 1_000) + 4;
+      const token = await signToken(database, "member", "user_ada", undefined, { exp });
+      const armed = await testAdmin(base, database, "/checkpoint", {
+        scope: "worker",
+        action: "arm-wait",
+        name: "operation.response",
+        // The delay starts only once the real Worker boundary is reached, so
+        // this releases the same isolate-local arm after the JWT is exact-expired.
+        releaseAfterMs: exp * 1_000 - Date.now() + 25,
+      });
+      expect(armed.status).toBe(200);
+
+      const title = "Committed before response expiry";
+      const pending = invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "create",
+      }, { title });
+      await waitForCheckpoint(base, database, "worker", "operation.response");
+
+      // Reaching the Worker checkpoint means the real Transactor returned its
+      // acknowledgement. Fence a real Replica read to that committed basis
+      // while the public operation response remains parked.
+      const basis = await testAdmin(base, database, "/basis", { action: "fetch" }, {
+        "x-ramose-cache-basis": "0",
+      });
+      expect(basis.status).toBe(200);
+      const committedT = basis.body.basis.t as number;
+      const committed = await testAdmin(base, database, "/query", {
+        query: `[:find ?e :where [?e :nativeItem/title ${JSON.stringify(title)}]]`,
+      }, {
+        "x-ramose-min-t": String(committedT),
+      });
+      expect(committed.status).toBe(200);
+      expect(committed.body.result).toEqual([[expect.any(Number)]]);
+
+      const expired = await pending;
+      expect(Date.now()).toBeGreaterThanOrEqual(exp * 1_000);
+      expect(expired.status).toBe(403);
+      expect(expired.body).toEqual({ error: "unauthorized" });
+      expect(Object.hasOwn(expired.body, "result")).toBe(false);
+      expect(Object.hasOwn(expired.body, "t")).toBe(false);
+
+      const persisted = await testAdmin(base, database, "/query", {
+        query: `[:find ?e :where [?e :nativeItem/title ${JSON.stringify(title)}]]`,
+      });
+      expect(persisted.status).toBe(200);
+      expect(persisted.body.result).toEqual([[expect.any(Number)]]);
     });
 
     test("raw writes and stale unit proofs remain closed", async () => {

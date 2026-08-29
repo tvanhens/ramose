@@ -28,6 +28,7 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-static",
   "operations-targeted",
   "operations-expiry",
+  "operations-response-expiry",
   "operations-denials",
 ]);
 

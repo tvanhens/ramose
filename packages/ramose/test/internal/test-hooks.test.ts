@@ -8,6 +8,7 @@ import {
   checkpoint,
   checkpointStatus,
   checkpointSync,
+  MAX_CHECKPOINT_RELEASE_DELAY_MS,
   releaseCheckpoint,
   resetTestHooks,
   testHooksArmed,
@@ -60,5 +61,24 @@ describe("test hooks", () => {
     await parked;
     expect(released).toBe(true);
     expect(checkpointStatus()["replica.apply"]).toBeUndefined();
+  });
+
+  test("an armed wait can release itself in the isolate that reaches it", async () => {
+    resetTestHooks();
+    armCheckpoint("operation.response", "wait", undefined, 5);
+    await checkpoint("operation.response");
+    expect(checkpointStatus()["operation.response"]).toBeUndefined();
+  });
+
+  test("automatic checkpoint release delays are bounded", () => {
+    resetTestHooks();
+    expect(() =>
+      armCheckpoint(
+        "operation.response",
+        "wait",
+        undefined,
+        MAX_CHECKPOINT_RELEASE_DELAY_MS + 1,
+      )
+    ).toThrow(/between 0 and/);
   });
 });

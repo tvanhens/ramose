@@ -34,6 +34,7 @@ import { query } from "../core/query/engine.ts";
 import { pull } from "../core/query/pull.ts";
 import { RAMOSE_TYPE, RAMOSE_TYPE_IDENT, isTxEid } from "../core/schema.ts";
 import type { TxData } from "../core/tx.ts";
+import { toJson } from "../core/json.ts";
 import type {
   FieldDescriptor,
   FieldRefTarget,
@@ -737,7 +738,23 @@ const replaceReadResults = async (
   value: unknown,
   receipts: readonly ReadReceipt[],
   resultingDb: Db,
-): Promise<unknown> => {
+  outputShape: OperationInputShape,
+): Promise<{
+  readonly value: unknown;
+  readonly requireEmptyWireOutput: boolean;
+}> => {
+  // A declared empty struct can permit reads to decide writes, but Effect
+  // struct codecs preserve excess properties and transformations may have a
+  // value-bearing encoded side. Defer changed-receipt admission until the
+  // exact materialized wire value is proven to be `{}` below.
+  if (outputShape._tag === "struct" && outputShape.fields.length === 0) {
+    let changed = false;
+    for (const receipt of receipts) {
+      const after = await receipt.rerun(resultingDb);
+      if (!sameReadResult(receipt.before, after)) changed = true;
+    }
+    return { value, requireEmptyWireOutput: changed };
+  }
   const replacements = new Map<object, unknown>();
   const leafReplacements: ReadLeafReplacement[] = [];
   const collect = (before: unknown, after: unknown, present: boolean): void => {
@@ -817,8 +834,31 @@ const replaceReadResults = async (
     for (const [key, item] of Object.entries(current)) out[key] = visit(item, seen);
     return out;
   };
-  return visit(top);
+  return { value: visit(top), requireEmptyWireOutput: false };
 };
+
+/**
+ * Materialize exactly the JSON transport value before commit. `toJson`
+ * supports Ramose's Date/bytes/bigint vocabulary; the round-trip comparison
+ * rejects values JSON would silently omit or coerce (functions, symbols,
+ * non-finite numbers), while recursive `toJson` rejects cycles.
+ */
+const materializeOutputTransport = (value: unknown): unknown => {
+  const wire = toJson(value);
+  const text = JSON.stringify(wire);
+  if (text === undefined) {
+    throw new TypeError("operation output is not JSON transportable");
+  }
+  const materialized: unknown = JSON.parse(text);
+  if (!sameReadResult(wire, materialized)) {
+    throw new TypeError("operation output changes during JSON transport");
+  }
+  return materialized;
+};
+
+const isExactEmptyWireStruct = (value: unknown): boolean =>
+  typeof value === "object" && value !== null && !Array.isArray(value) &&
+  Object.keys(value).length === 0;
 
 const resolveOutputHandles = async (
   shape: OperationInputShape,
@@ -1175,8 +1215,9 @@ export const executeCatalogOperation = async (
         draft,
         collector.receipts,
         resulting.filteredDb,
+        descriptor.output,
       );
-      const resolved = await resolveOutputHandles(descriptor.output, rematerialized, report);
+      const resolved = await resolveOutputHandles(descriptor.output, rematerialized.value, report);
       await validateVisibleRefs(
         deployed.definition,
         descriptor.output,
@@ -1187,9 +1228,14 @@ export const executeCatalogOperation = async (
       let encoded: unknown;
       try {
         encoded = binding.output.encode(resolved);
+        encoded = materializeOutputTransport(encoded);
       } catch (cause) {
         throw new OperationRuntimeFault("output", cause);
       }
+      if (
+        rematerialized.requireEmptyWireOutput &&
+        !isExactEmptyWireStruct(encoded)
+      ) throw deny();
       return encoded;
     },
     authoritativeNowMs,

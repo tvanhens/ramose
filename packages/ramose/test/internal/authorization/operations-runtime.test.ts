@@ -182,6 +182,38 @@ const Item = Entity("item", { title: string() }, {
         return {};
       },
     }),
+    deleteAfterQuery: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({}),
+      async run(op) {
+        const rows = await op.query(makeItemTitlesQuery()) as readonly unknown[];
+        if (rows.length === 0) throw new Error("expected the target row");
+        op.self.delete();
+        return {};
+      },
+    }),
+    deleteAfterPull: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({}),
+      async run(op) {
+        const row = await op.pull(op.self.eid, [":item/title"]);
+        if (row === null) throw new Error("expected the target row");
+        op.self.delete();
+        return {};
+      },
+    }),
+    deleteAndLeakThroughEmptyStruct: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({}),
+      async run(op) {
+        const row = await op.pull(op.self.eid, [":item/title"]) as Record<string, unknown>;
+        op.self.delete();
+        // Effect struct codecs preserve excess properties. The authoritative
+        // fence must inspect the exact encoded wire value before treating this
+        // declared empty output as non-disclosing.
+        return { title: row[":item/title"] };
+      },
+    }),
     deleteAny: Operation({
       self: false,
       input: EffectSchema.Struct({ id: OperationEntityId }),
@@ -257,6 +289,28 @@ const Item = Entity("item", { title: string() }, {
         return new ClassOutput({ label: "preserved" });
       },
     }),
+    invalidTransport: Operation({
+      input: EffectSchema.Struct({
+        kind: EffectSchema.Literals(["symbol", "function", "nonfinite", "cycle"]),
+      }),
+      output: EffectSchema.Unknown,
+      run(op, input) {
+        op.self.set(Item.title, "Must roll back");
+        switch (input.kind) {
+          case "symbol":
+            return { lost: Symbol("not-json") };
+          case "function":
+            return { lost: () => "not-json" };
+          case "nonfinite":
+            return { changed: Number.POSITIVE_INFINITY };
+          case "cycle": {
+            const output: { self?: unknown } = {};
+            output.self = output;
+            return output;
+          }
+        }
+      },
+    }),
     forgeNestedClaims: Operation({
       self: false,
       input: EffectSchema.Struct({ id: OperationEntityId }),
@@ -308,6 +362,9 @@ const buildWorld = async () => {
       invoke(Item[OwnedOperations].deleteAndEchoTitle).when(hasClass("member")),
       invoke(Item[OwnedOperations].deleteHiddenInput).when(hasClass("member")),
       invoke(Item[OwnedOperations].deleteOnly).when(hasClass("member")),
+      invoke(Item[OwnedOperations].deleteAfterQuery).when(hasClass("member")),
+      invoke(Item[OwnedOperations].deleteAfterPull).when(hasClass("member")),
+      invoke(Item[OwnedOperations].deleteAndLeakThroughEmptyStruct).when(hasClass("member")),
       invoke(Item[OwnedOperations].deleteAny).when(hasClass("member")),
       invoke(Item[OwnedOperations].deleteItemAndBacklink).when(hasClass("member")),
       invoke(Item[OwnedOperations].mutateQueryReceipt).when(hasClass("member")),
@@ -316,6 +373,7 @@ const buildWorld = async () => {
       invoke(Item[OwnedOperations].crash).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnUrl).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnClass).when(hasClass("member")),
+      invoke(Item[OwnedOperations].invalidTransport).when(hasClass("member")),
       invoke(Item[OwnedOperations].forgeNestedClaims).when(hasClass("member")),
     ],
     claims: [{
@@ -557,6 +615,35 @@ describe("deployed operation runtime", () => {
     expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
   });
 
+  test("allows read-modify-write when an exact empty output cannot disclose the read", async () => {
+    for (const localName of ["deleteAfterQuery", "deleteAfterPull"] as const) {
+      const world = await buildWorld();
+      const executed = await invokeOperation(world, {
+        owner: { kind: "entity", name: "item" },
+        localName,
+        target: world.item,
+        input: {},
+        caller: caller("member"),
+      });
+      expect(executed.output).toEqual({});
+      expect(await world.conn.db().exists(world.item)).toBe(false);
+    }
+  });
+
+  test("requires the encoded wire output to be exactly empty before bypassing changed reads", async () => {
+    const world = await buildWorld();
+    const initialT = world.conn.t;
+    await expect(invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "deleteAndLeakThroughEmptyStruct",
+      target: world.item,
+      input: {},
+      caller: caller("member"),
+    })).rejects.toBeInstanceOf(Unauthorized);
+    expect(world.conn.t).toBe(initialT);
+    expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
+  });
+
   test("keeps read results and captured query arguments private from body mutation", async () => {
     const world = await buildWorld();
     const initialT = world.conn.t;
@@ -603,6 +690,25 @@ describe("deployed operation runtime", () => {
       caller: caller("member"),
     });
     expect(executed.output).toEqual({ label: "preserved" });
+  });
+
+  test("rejects silently lossy and cyclic output transport before commit", async () => {
+    for (const kind of ["symbol", "function", "nonfinite", "cycle"] as const) {
+      const world = await buildWorld();
+      const initialT = world.conn.t;
+      await expect(invokeOperation(world, {
+        owner: { kind: "entity", name: "item" },
+        localName: "invalidTransport",
+        target: world.item,
+        input: { kind },
+        caller: caller("member"),
+      })).rejects.toMatchObject({
+        name: "OperationRuntimeFault",
+        stage: "output",
+      });
+      expect(world.conn.t).toBe(initialT);
+      expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
+    }
   });
 
   test("makes catalog-proof and missing-operation denials indistinguishable", async () => {

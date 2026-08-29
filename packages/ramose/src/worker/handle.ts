@@ -16,7 +16,7 @@ import {
   toJson,
 } from "../internal/core/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
-import { testHooksEnabled } from "../internal/test-hooks.ts";
+import { checkpoint, testHooksEnabled } from "../internal/test-hooks.ts";
 import { isUnrecognizedWrites } from "../writes.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -282,17 +282,30 @@ export const handle = (
         return yield* new Unauthorized({ status: 403 });
       }
       const parsed = yield* parseOperationRequest(request);
+      const caller = callerFromVerified(verified);
       const ack = yield* Effect.tryPromise({
         try: () => invokeAuthoritativeOperation(
           env,
           db,
           parsed,
-          callerFromVerified(verified),
+          caller,
         ),
         catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
           stacks: env.RAMOSE_STAGE !== "prod",
         }),
       });
+      // The Transactor fences expiry before commit and acknowledgement. This
+      // final Worker checkpoint is after that awaited hop; once released, the
+      // exact-expiry check and response construction are synchronous.
+      yield* Effect.tryPromise({
+        try: () => checkpoint("operation.response"),
+        catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
+          stacks: env.RAMOSE_STAGE !== "prod",
+        }),
+      });
+      if (!Number.isSafeInteger(caller.exp) || caller.exp * 1_000 <= Date.now()) {
+        return yield* new Unauthorized({ status: 403 });
+      }
       // The Worker retains the internal ack basis for invalidation, but an
       // ordinary operation grant does not authorize transaction metadata.
       return json({ result: ack.output });
