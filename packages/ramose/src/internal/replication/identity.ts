@@ -92,8 +92,15 @@ const graphLineage = async (
   sealing: ServerSealingKey,
   path: GraphPathLeaseIdentity,
 ): Promise<readonly OpaqueReplicationId[]> => {
+  if (path.dependencies.length === 0) return Object.freeze([]);
   const lineage: OpaqueReplicationId[] = [];
-  let parent: string = path.rootDatabase;
+  // Seal the root first so every chained `parent` is one opaque value and a
+  // configured root name can never collide with a sealed lineage element.
+  let parent = await opaqueHmac(
+    sealing,
+    "ramose:replication:graph-lineage-root:v1",
+    path.rootDatabase,
+  );
   for (const dependency of path.dependencies) {
     const sealed = await opaqueHmac(
       sealing,
