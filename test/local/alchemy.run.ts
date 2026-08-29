@@ -18,6 +18,7 @@ import LocalAuthRestartWorker from "./better-auth-restart-worker.ts";
 import LocalAuthRotatedWorker from "./better-auth-rotated-worker.ts";
 import LocalAuthWorker from "./better-auth-worker.ts";
 import {
+  Conformance,
   Empty,
   GraphPaths,
   Jwks,
@@ -53,6 +54,7 @@ export const Stack = Alchemy.Stack(
     const policySchema = yield* PolicySchema;
     const nativeOperations = yield* NativeOperations;
     const graphPaths = yield* GraphPaths;
+    const conformance = yield* Conformance;
     const seeded = yield* Seeded;
     const jwks = yield* Jwks;
     const jwksBound = yield* JwksBound;
@@ -70,6 +72,7 @@ export const Stack = Alchemy.Stack(
       policySchemaUrl: policySchema.url,
       nativeOperationsUrl: nativeOperations.url,
       graphPathsUrl: graphPaths.url,
+      conformanceUrl: conformance.url,
       seededUrl: seeded.url,
       jwksUrl: jwks.url,
       jwksBoundUrl: jwksBound.url,

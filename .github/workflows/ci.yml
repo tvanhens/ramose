@@ -29,8 +29,8 @@ jobs:
       - run: bun run build
       - run: bun run scripts/check-release.ts --built
 
-  local:
-    name: local
+  conformance:
+    name: conformance
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,4 +39,4 @@ jobs:
       # Alchemy local mode (workerd + owned peer). Serial: one sidecar
       # per file. Runs as its own job so it does not erase unit-test
       # wall-clock (issue #331 / #329).
-      - run: bun run test:local
+      - run: bun run test:conformance

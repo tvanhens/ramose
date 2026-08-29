@@ -19,6 +19,7 @@ const empty = import.meta.resolve("./empty-worker.ts");
 const production = import.meta.resolve("./production-worker.ts");
 const operationWorker = import.meta.resolve("./operation-worker.ts");
 const graphPathWorker = import.meta.resolve("./graph-path-worker.ts");
+const conformanceWorker = import.meta.resolve("./conformance-worker.ts");
 
 const jwtAuth = () =>
   ({
@@ -103,6 +104,15 @@ export const GraphPaths = Ramose.Server("GraphPaths", {
   peer: "GraphPathsPeer",
   storage: "GraphPathsStore",
   main: graphPathWorker,
+  auth: jwtAuth(),
+  env: TEST_HOOKS_ENV,
+});
+
+/** Required black-box filtered-Db conformance gate (#422). */
+export const Conformance = Ramose.Server("Conformance", {
+  peer: "ConformancePeer",
+  storage: "ConformanceStore",
+  main: conformanceWorker,
   auth: jwtAuth(),
   env: TEST_HOOKS_ENV,
 });
