@@ -71,6 +71,7 @@ import {
 } from "../runtime-boundaries.ts";
 import {
   authorizeCatalogOperation,
+  authorizeCatalogOperationAtBasis,
   catalogProvisioningAttributes,
   decideInvocationReceipt,
   executeCatalogOperation,
@@ -89,6 +90,7 @@ import {
   type InvocationReceiptEvent,
   type OperationRuntime,
   type PreparedInvocationReceipt,
+  type ResolvedOperationCatalog,
   type SealedInvocationRejection,
   type StoredInvocationReceipt,
   type TerminalInvocationReceipt,
@@ -642,6 +644,63 @@ export class Transactor {
       JSON.stringify(current.rejection);
   }
 
+  private sameDeterministicAdmissionFailure(
+    left: unknown,
+    right: unknown,
+  ): boolean {
+    const leftEvent = this.invocationFailureEvent(left);
+    const rightEvent = this.invocationFailureEvent(right);
+    return leftEvent._tag === "Reject" && rightEvent._tag === "Reject" &&
+      JSON.stringify(leftEvent.rejection) ===
+        JSON.stringify(rightEvent.rejection);
+  }
+
+  /**
+   * A completed operation may make its own target or consumed refs disappear.
+   * Replay that post-commit denial only when the same invocation still admits
+   * immediately before its commit. Current token, catalog, caller, and grant
+   * checks run on both historical fences; no operation body is invoked.
+   */
+  private async replayDenialComesFromOwnCommit(
+    receipt: TerminalInvocationReceipt,
+    currentFailure: unknown,
+    invocation: AuthoritativeOperationInvocation,
+    resolved: ResolvedOperationCatalog,
+  ): Promise<boolean> {
+    if (receipt.status !== "completed" || this.operationRuntime === undefined) {
+      return false;
+    }
+    let postCommitFailure: unknown;
+    try {
+      await authorizeCatalogOperationAtBasis(
+        this.conn,
+        this.operationRuntime,
+        invocation,
+        receipt.committedT,
+        resolved,
+      );
+      return false;
+    } catch (error) {
+      postCommitFailure = error;
+    }
+    if (!this.sameDeterministicAdmissionFailure(
+      currentFailure,
+      postCommitFailure,
+    )) return false;
+    try {
+      await authorizeCatalogOperationAtBasis(
+        this.conn,
+        this.operationRuntime,
+        invocation,
+        receipt.committedT - 1,
+        resolved,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private takeBatch(): Pending[] {
     const max = this.host.config.maxBatch;
     // An operation carries a short-lived authorization lease through native
@@ -735,6 +794,18 @@ export class Transactor {
                 if (
                   replay !== undefined &&
                   this.replayMatchesAdmissionFailure(replay, error)
+                ) {
+                  p.resolve(invocationReceiptOutcome(replay));
+                  continue;
+                }
+                if (
+                  replay !== undefined &&
+                  await this.replayDenialComesFromOwnCommit(
+                    replay,
+                    error,
+                    p.operation,
+                    resolved,
+                  )
                 ) {
                   p.resolve(invocationReceiptOutcome(replay));
                   continue;

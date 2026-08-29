@@ -1111,10 +1111,11 @@ const validateSubjectChecks = async (
  * operation body. Completed receipts use this before replay, so a receipt is
  * never an authorization cache after a target or data-derived view is revoked.
  */
-export const authorizeCatalogOperation = async (
+const authorizeCatalogOperationOnDb = async (
   connection: Connection,
   runtime: OperationRuntime,
   invocation: OperationInvocation,
+  currentDb: Db,
   resolvedCatalog?: ResolvedOperationCatalog,
 ): Promise<CatalogOperationAdmission> => {
   const authorizationCaller = invocation.caller;
@@ -1153,13 +1154,13 @@ export const authorizeCatalogOperation = async (
         routeDatabase: invocation.database,
         catalogKey: invocation.catalogKey,
         unitHash: invocation.unitHash,
-        currentDb: () => Effect.succeed(connection.db()),
+        currentDb: () => Effect.succeed(currentDb),
       }, authorizationCaller)
       : constructAuthorizedResolvedRequestContext({
         authenticate: Effect.succeed(authorizationCaller),
         bindings: runtime.bindings,
         route: resolved.route,
-        currentDb: () => Effect.succeed(connection.db()),
+        currentDb: () => Effect.succeed(currentDb),
       }, authorizationCaller),
   );
   if (!operationGrantAllows(
@@ -1210,6 +1211,50 @@ export const authorizeCatalogOperation = async (
     authoritativeNowMs,
     ...(target === undefined ? {} : { target }),
   });
+};
+
+export const authorizeCatalogOperation = async (
+  connection: Connection,
+  runtime: OperationRuntime,
+  invocation: OperationInvocation,
+  resolvedCatalog?: ResolvedOperationCatalog,
+): Promise<CatalogOperationAdmission> =>
+  authorizeCatalogOperationOnDb(
+    connection,
+    runtime,
+    invocation,
+    connection.db(),
+    resolvedCatalog,
+  );
+
+/**
+ * Admission-only historical fence for completed-receipt replay. Deployment,
+ * caller, grant, and token checks remain current; only database facts are read
+ * at the requested durable writer position. The result cannot execute a body.
+ */
+export const authorizeCatalogOperationAtBasis = async (
+  connection: Connection,
+  runtime: OperationRuntime,
+  invocation: OperationInvocation,
+  basisT: number,
+  resolvedCatalog?: ResolvedOperationCatalog,
+): Promise<void> => {
+  if (
+    !Number.isSafeInteger(basisT) || basisT < 0 ||
+    basisT > connection.t
+  ) {
+    throw new OperationRuntimeFault(
+      "admission",
+      new Error("operation replay basis is outside the durable writer history"),
+    );
+  }
+  await authorizeCatalogOperationOnDb(
+    connection,
+    runtime,
+    invocation,
+    connection.db().asOf(basisT),
+    resolvedCatalog,
+  );
 };
 
 /** Execute one invocation while the Transactor's serialized writer owns the basis. */

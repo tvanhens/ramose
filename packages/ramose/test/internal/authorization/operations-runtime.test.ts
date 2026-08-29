@@ -32,6 +32,8 @@ import {
   DigestHex,
   any,
   assembleCatalogDefinitions,
+  authorizeCatalogOperation,
+  authorizeCatalogOperationAtBasis,
   claim,
   compileReadAuthorization,
   contains,
@@ -1092,15 +1094,47 @@ describe("deployed operation runtime", () => {
 
   test("allows a read to drive writes and return a derived value without post-state reauthorization", async () => {
     const world = await buildWorld();
-    const executed = await invokeOperation(world, {
+    const runtime = {
+      catalogs: world.deployed,
+      environment: { trusted: true },
+      now: () => 1_700_000_000_000,
+    };
+    const invocation = {
       owner: { kind: "entity", name: "item" },
       localName: "deleteAndEchoTitle",
       target: world.item,
       input: {},
       caller: caller("member"),
-    });
+      database,
+      catalogKey: world.installed.catalogKey,
+      unitHash: world.installed.unitHash,
+    } as const;
+    const executed = await executeCatalogOperation(
+      world.conn,
+      runtime,
+      invocation,
+    );
     expect(executed.output).toEqual({ title: "BEFORE" });
     expect(await world.conn.db().exists(world.item)).toBe(false);
+    await expect(
+      authorizeCatalogOperation(world.conn, runtime, invocation),
+    ).rejects.toBeInstanceOf(Unauthorized);
+    await expect(
+      authorizeCatalogOperationAtBasis(
+        world.conn,
+        runtime,
+        invocation,
+        executed.report.t,
+      ),
+    ).rejects.toBeInstanceOf(Unauthorized);
+    await expect(
+      authorizeCatalogOperationAtBasis(
+        world.conn,
+        runtime,
+        invocation,
+        executed.report.t - 1,
+      ),
+    ).resolves.toBeUndefined();
   });
 
   test("preserves prototype-bearing values for deployed output codecs", async () => {

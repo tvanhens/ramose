@@ -230,6 +230,66 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(absent.body.result).toEqual([]);
     });
 
+    test("a self-deleting operation replays after restart without treating its own commit as revocation", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-idempotent-self-delete";
+      await install(base, database);
+      const token = await signToken(database, "member", "user_self_delete");
+      const created = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "create",
+      }, { title: "Erase me" });
+      expect(created.status).toBe(200);
+      const target = created.body.result.id as number;
+      const invocationId = "self-delete-invocation-01";
+      const operation = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "deleteAndEchoTitle",
+      };
+      const completed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        {},
+        target,
+        invocationId,
+      );
+      expect(completed.status).toBe(200);
+      expect(completed.body).toEqual({
+        result: { title: "ERASE ME" },
+        receipt: { version: 1, invocationId, status: "completed" },
+      });
+
+      // Prove replay remains exact after a later unrelated writer position and
+      // a new isolate, while the original target remains absent.
+      const unrelated = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "create",
+      }, { title: "Unrelated later commit" });
+      expect(unrelated.status).toBe(200);
+      const aborted = await testAdmin(base, database, "/abort", {
+        target: "transactor",
+      });
+      expect(aborted.status).toBe(200);
+
+      const replayed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        {},
+        target,
+        invocationId,
+      );
+      expect(replayed.status).toBe(200);
+      expect(replayed.body).toEqual(completed.body);
+      const state = await testAdmin(base, database, "/query", {
+        query: '[:find ?title :where [?e :nativeItem/title ?title]]',
+      });
+      expect(state.body.result).toEqual([["Unrelated later commit"]]);
+    });
+
     test("a disconnected caller retries the exact post-commit result", async () => {
       const base = ctx.urls().nativeOperationsUrl;
       const database = "operations-idempotent-disconnect";
@@ -636,10 +696,21 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(ordinaryRead.status).toBe(200);
       expect(JSON.stringify(ordinaryRead.body)).not.toContain("Hidden");
 
-      const trusted = await invoke(base, database, member, {
+      const invocationId = "consumed-ref-invocation-01";
+      const operation = {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "deleteHiddenOther",
-      }, { id: hiddenId });
+      } as const;
+      const input = { id: hiddenId };
+      const trusted = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        undefined,
+        invocationId,
+      );
       expect(trusted.status).toBe(200);
       expect(trusted.body).toMatchObject({ result: { name: "HIDDEN" } });
 
@@ -648,6 +719,18 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       });
       expect(absent.status).toBe(200);
       expect(absent.body.result).toEqual([]);
+
+      const replayed = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        undefined,
+        invocationId,
+      );
+      expect(replayed.status).toBe(200);
+      expect(replayed.body).toEqual(trusted.body);
     });
 
     test("raw writes and stale unit proofs remain closed", async () => {
