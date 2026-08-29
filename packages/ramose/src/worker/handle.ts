@@ -63,6 +63,7 @@ import { watchBasisChanges } from "./peer.ts";
 import {
   invokeAuthoritativeOperation,
   parseOperationRequest,
+  publicOperationResult,
 } from "./authorized-operation.ts";
 import {
   deployedDatabaseCatalogBindings,
@@ -286,6 +287,7 @@ export const handle = (
             unitHash,
             owner: parsed.owner,
             localName: parsed.localName,
+            invocationId: parsed.invocationId,
             ...(parsed.target === undefined ? {} : { target: parsed.target }),
             input: parsed.input,
           },
@@ -342,12 +344,15 @@ export const handle = (
       if (!Number.isSafeInteger(caller.exp) || caller.exp * 1_000 <= Date.now()) {
         return yield* new Unauthorized({ status: 403 });
       }
-      // The Worker retains the internal ack basis for invalidation, but an
-      // ordinary operation grant does not authorize transaction metadata.
-      // The Transactor already committed only after materializing exact JSON.
-      // Do not run codec-owned output through the generic Ramose value encoder.
-      return new Response(JSON.stringify({ result: ack.output }), {
-        status: 200,
+      // The shared receipt projection strips the internal writer position,
+      // scope, and digests. Codec-owned output stays exact JSON.
+      const projected = publicOperationResult(ack);
+      return new Response(JSON.stringify(
+        projected.status === 200
+          ? projected.body
+          : publicErrorBody(projected.body),
+      ), {
+        status: projected.status,
         headers: { "content-type": "application/json", ...cors },
       });
     }

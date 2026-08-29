@@ -4,6 +4,10 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
   DatabaseId,
+  MAX_INVOCATION_ID_LENGTH,
+  parseAuthoritativeInvocationResult,
+  type AuthoritativeInvocationResult,
+  type AuthoritativeOperationInvocation,
   type AuthenticatedCaller,
   type DatabaseRouteDerivation,
   type OperationInvocation,
@@ -29,6 +33,7 @@ export type ParsedOperationRequest = Omit<
   "database" | "caller" | "catalogKey" | "unitHash" | "routeDerivation"
 > & {
   readonly path: readonly string[];
+  readonly invocationId: string;
   readonly catalogKey?: OperationInvocation["catalogKey"];
   readonly unitHash?: OperationInvocation["unitHash"];
 };
@@ -40,7 +45,7 @@ type RoutedOperationRequest = Omit<ParsedOperationRequest, "path"> & {
 
 /** Serialize only the target through Ramose's entity-ref transport vocabulary. */
 export const serializeOperationInvocation = (
-  invocation: OperationInvocation,
+  invocation: AuthoritativeOperationInvocation,
 ): string => {
   const wireInvocation = {
     ...invocation,
@@ -155,6 +160,14 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
   if (typeof record.localName !== "string" || record.localName.length === 0) {
     return yield* bad("operation.localName must be a non-empty string");
   }
+  if (
+    typeof body.invocationId !== "string" || body.invocationId.length === 0 ||
+    body.invocationId.length > MAX_INVOCATION_ID_LENGTH
+  ) {
+    return yield* bad(
+      `invocationId must be a non-empty string of at most ${MAX_INVOCATION_ID_LENGTH} characters`,
+    );
+  }
   const target = body.target === undefined ? undefined : fromJson(body.target);
   if (
     target !== undefined &&
@@ -170,6 +183,7 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
     path,
     owner,
     localName: record.localName,
+    invocationId: body.invocationId,
     ...(target === undefined ? {} : {
       target: target as Exclude<OperationInvocation["target"], undefined>,
     }),
@@ -183,8 +197,8 @@ export const invokeAuthoritativeOperation = async (
   parsed: RoutedOperationRequest,
   caller: AuthenticatedCaller,
   routeDerivation?: DatabaseRouteDerivation,
-): Promise<{ readonly t: number; readonly output: unknown }> => {
-  const invocation: OperationInvocation = {
+): Promise<AuthoritativeInvocationResult> => {
+  const invocation: AuthoritativeOperationInvocation = {
     ...parsed,
     database: DatabaseId.make(database),
     caller,
@@ -219,13 +233,95 @@ export const invokeAuthoritativeOperation = async (
   // The Transactor already materialized output as exact JSON before commit.
   // Decode only the acknowledgement envelope; interpreting transport-tag
   // shaped output here would silently change the declared codec result.
-  const ack = JSON.parse(text) as { readonly t?: unknown; readonly output?: unknown };
-  if (!Number.isSafeInteger(ack.t) || (ack.t as number) < 0) {
+  let result: AuthoritativeInvocationResult;
+  try {
+    result = parseAuthoritativeInvocationResult(
+      JSON.parse(text),
+      invocation.invocationId,
+    );
+  } catch {
     throw new UpstreamError({
       status: 502,
       body: JSON.stringify({ error: "transactor returned an invalid operation result" }),
     });
   }
-  invalidateBasis(database);
-  return { t: ack.t as number, output: ack.output };
+  if (result._tag === "Completed") invalidateBasis(database);
+  return result;
+};
+
+export type PublicOperationResult = {
+  readonly status: number;
+  readonly body: Record<string, unknown>;
+};
+
+/** One sealed HTTP projection used by `/op`; MCP and offline map the same outcome. */
+export const publicOperationResult = (
+  result: AuthoritativeInvocationResult,
+): PublicOperationResult => {
+  if (result._tag === "Conflict") {
+    return {
+      status: 409,
+      body: { error: "request rejected", code: "invocation_conflict" },
+    };
+  }
+  if (result._tag === "Completed") {
+    return {
+      status: 200,
+      body: { result: result.output, receipt: result.receipt },
+    };
+  }
+  if (result._tag === "Failed") {
+    return {
+      status: 500,
+      body: {
+        error: "internal error",
+        code: "invocation_failed",
+        receipt: result.receipt,
+      },
+    };
+  }
+  if (result._tag === "Indeterminate") {
+    return {
+      status: 409,
+      body: {
+        error: "request state is indeterminate",
+        code: "invocation_indeterminate",
+        receipt: result.receipt,
+      },
+    };
+  }
+  switch (result.rejection.kind) {
+    case "unauthorized":
+      return {
+        status: 403,
+        body: { error: "unauthorized", receipt: result.receipt },
+      };
+    case "invalid_request":
+      return {
+        status: 400,
+        body: { error: "invalid request", receipt: result.receipt },
+      };
+    case "request_rejected":
+      return {
+        status: 409,
+        body: { error: "request rejected", receipt: result.receipt },
+      };
+    case "operation_rejected":
+      return {
+        status: 409,
+        body: {
+          error: result.rejection.message,
+          tag: "OperationRejected",
+          message: result.rejection.message,
+          operation: result.rejection.operation,
+          ...(result.rejection.step === undefined
+            ? {}
+            : { step: result.rejection.step }),
+          ...(result.rejection.reason === undefined
+            ? {}
+            : { reason: result.rejection.reason }),
+          receipt: result.receipt,
+        },
+      };
+  }
 };

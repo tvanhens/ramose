@@ -89,12 +89,14 @@ const invoke = (
   operation: OperationAddress,
   input: unknown,
   target?: number,
+  invocationId: string = crypto.randomUUID(),
 ) => json(base, `/db/${database}/op`, {
   method: "POST",
   token,
   headers: { "content-type": "application/json", ...originHeaders },
   body: JSON.stringify({
     ...conformanceProof,
+    invocationId,
     operation,
     input,
     ...(target === undefined ? {} : { target }),
@@ -188,7 +190,12 @@ const create = async (
     localName: "create",
   }, input);
   expect(response.status).toBe(200);
-  expect(response.body).toEqual({ result: { id: expect.any(Number) } });
+  expect(typeof response.body.result.id).toBe("number");
+  expect(response.body.receipt).toEqual({
+    version: 1,
+    invocationId: expect.any(String),
+    status: "completed",
+  });
   return response.body.result.id as number;
 };
 
@@ -566,6 +573,94 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
         { asOf: absent.visibleT },
       );
       expect(sortedResult(adminAsOf)).toEqual(["Beta", "Gamma", "Omega"]);
+    });
+
+    test("receipt replay reauthorizes a revoked target without running its body", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = CONFORMANCE_DATABASES[6]!;
+      await install(base, database);
+      const admin = await signToken(database, "admin", "admin-sub", {
+        org: "admin-org",
+      });
+      const member = await signToken(database, "member", "alice-sub", {
+        org: "acme",
+      });
+      const alice = await create(
+        base,
+        database,
+        admin,
+        ConformanceUser.ns,
+        { sub: "alice-sub" },
+      );
+      const bob = await create(
+        base,
+        database,
+        admin,
+        ConformanceUser.ns,
+        { sub: "bob-sub" },
+      );
+      const issue = await create(
+        base,
+        database,
+        admin,
+        ConformanceIssue.ns,
+        {
+          key: "receipt-revocation",
+          title: "Before invocation",
+          owner: alice,
+          org: "acme",
+        },
+      );
+      const invocationId = "revoked-target-invocation-01";
+      const operation = {
+        owner: { kind: "entity" as const, name: ConformanceIssue.ns },
+        localName: "rename",
+      };
+      const input = { title: "Original invocation" };
+      const completed = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        issue,
+        invocationId,
+      );
+      expect(completed.status).toBe(200);
+      expect(completed.body).toEqual({
+        result: { id: issue, title: "Original invocation" },
+        receipt: { version: 1, invocationId, status: "completed" },
+      });
+
+      const transferred = await invoke(base, database, admin, {
+        owner: { kind: "entity", name: ConformanceIssue.ns },
+        localName: "transfer",
+      }, { owner: bob, org: "other" }, issue);
+      expect(transferred.status).toBe(200);
+      const renamed = await invoke(base, database, admin, operation, {
+        title: "After revocation",
+      }, issue);
+      expect(renamed.status).toBe(200);
+      const beforeReplay = await currentBasis(base, database);
+
+      const replayed = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        issue,
+        invocationId,
+      );
+      expect(replayed.status).toBe(403);
+      expect(replayed.body).toEqual({ error: "unauthorized" });
+      expect(await currentBasis(base, database)).toBe(beforeReplay);
+      const stored = await testAdmin(base, database, "/query", {
+        entity: issue,
+      });
+      expect(stored.body.entity[":conformanceIssue/title"]).toBe(
+        "After revocation",
+      );
     });
 
     test("JWT, catalog proof, metadata, and errors fail closed opaquely", async () => {

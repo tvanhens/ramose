@@ -37,6 +37,7 @@ export * from "./graph-path.ts";
 export * from "./graph-path-live.ts";
 export * from "./identities.ts";
 export * from "./install.ts";
+export * from "./invocation-receipts.ts";
 export * from "./ir.ts";
 export * from "./json.ts";
 export * from "./live.ts";

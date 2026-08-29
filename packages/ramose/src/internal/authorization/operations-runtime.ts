@@ -107,6 +107,29 @@ export type ResolvedOperationCatalog = {
   readonly route?: ResolvedDatabaseRoute;
 };
 
+const OPERATION_ADMISSION: unique symbol = Symbol("ramose.operation-admission");
+
+/**
+ * Opaque, request-local proof that the deployed operation, caller, target,
+ * input references, and authorization lease passed on the writer's current
+ * basis. It contains private runnable capabilities and is never serialized.
+ */
+export type CatalogOperationAdmission = {
+  readonly [OPERATION_ADMISSION]: {
+    readonly connection: Connection;
+    readonly runtime: OperationRuntime;
+    readonly invocation: OperationInvocation;
+  };
+  readonly resolved: ResolvedOperationCatalog;
+  readonly binding: DeployedOperationBinding;
+  readonly descriptor: OperationDescriptor;
+  readonly context: AuthorizedRequestContext;
+  readonly decoded: unknown;
+  readonly expiresAtSeconds: number;
+  readonly authoritativeNowMs: number;
+  readonly target?: { readonly eid: number; readonly type: string };
+};
+
 /**
  * Resolve the exact runnable definition before operation admission. Dynamic
  * derivations arrive only over the internal Worker→DO channel and are checked
@@ -1083,13 +1106,17 @@ const validateSubjectChecks = async (
   }
 };
 
-/** Execute one invocation while the Transactor's serialized writer owns the basis. */
-export const executeCatalogOperation = async (
+/**
+ * Re-run every current-basis admission check without invoking the native
+ * operation body. Completed receipts use this before replay, so a receipt is
+ * never an authorization cache after a target or data-derived view is revoked.
+ */
+export const authorizeCatalogOperation = async (
   connection: Connection,
   runtime: OperationRuntime,
   invocation: OperationInvocation,
   resolvedCatalog?: ResolvedOperationCatalog,
-): Promise<OperationExecution> => {
+): Promise<CatalogOperationAdmission> => {
   const authorizationCaller = invocation.caller;
   // Admission finishes before native code runs. Keep the later lease fences
   // on this primitive snapshot; body-visible claims are intentionally ordinary
@@ -1171,6 +1198,56 @@ export const executeCatalogOperation = async (
     context.currentDb,
     target?.type ?? (descriptor.id.owner.kind === "entity" ? descriptor.id.owner.name : undefined),
   );
+
+  return Object.freeze({
+    [OPERATION_ADMISSION]: { connection, runtime, invocation },
+    resolved,
+    binding,
+    descriptor,
+    context,
+    decoded,
+    expiresAtSeconds,
+    authoritativeNowMs,
+    ...(target === undefined ? {} : { target }),
+  });
+};
+
+/** Execute one invocation while the Transactor's serialized writer owns the basis. */
+export const executeCatalogOperation = async (
+  connection: Connection,
+  runtime: OperationRuntime,
+  invocation: OperationInvocation,
+  resolvedCatalog?: ResolvedOperationCatalog,
+  admitted?: CatalogOperationAdmission,
+): Promise<OperationExecution> => {
+  const admission = admitted ?? await authorizeCatalogOperation(
+    connection,
+    runtime,
+    invocation,
+    resolvedCatalog,
+  );
+  const owner = admission[OPERATION_ADMISSION];
+  if (
+    owner.connection !== connection || owner.runtime !== runtime ||
+    owner.invocation !== invocation
+  ) {
+    throw new OperationRuntimeFault(
+      "admission",
+      new Error("operation admission belongs to a different invocation"),
+    );
+  }
+  const {
+    authoritativeNowMs,
+    binding,
+    context,
+    decoded,
+    descriptor,
+    expiresAtSeconds,
+    resolved,
+    target,
+  } = admission;
+  const authorizationCaller = invocation.caller;
+  const deployed = resolved.deployed;
 
   const collector = createCollector({
     definition: deployed.definition,

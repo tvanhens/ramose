@@ -90,11 +90,17 @@ const invoke = (
   headers: { "content-type": "application/json" },
   body: JSON.stringify({
     ...(options.at === undefined ? graphPathRootProof : { at: options.at }),
+    invocationId: crypto.randomUUID(),
     operation,
     input,
     ...(options.target === undefined ? {} : { target: options.target }),
   }),
 });
+
+const withoutReceipt = (body: Record<string, unknown>) => {
+  const { receipt: _receipt, ...rest } = body;
+  return rest;
+};
 
 const nestedEntity = (
   base: string,
@@ -301,8 +307,12 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
       expect(hiddenTarget.status).toBe(403);
       expect(nonexistentTarget.status).toBe(403);
       expect(nonComposerTarget.status).toBe(403);
-      expect(hiddenTarget.body).toEqual(nonexistentTarget.body);
-      expect(nonComposerTarget.body).toEqual(nonexistentTarget.body);
+      expect(withoutReceipt(hiddenTarget.body)).toEqual(
+        withoutReceipt(nonexistentTarget.body),
+      );
+      expect(withoutReceipt(nonComposerTarget.body)).toEqual(
+        withoutReceipt(nonexistentTarget.body),
+      );
 
       const visibleLink = await invoke(base, member, {
         owner: { kind: "entity", name: GateLink.ns },

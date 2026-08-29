@@ -18,6 +18,7 @@ export const PUBLIC_OBSERVATION_ALLOWLIST = Object.freeze({
     "step",
     "reason",
     "code",
+    "receipt",
   ] as const),
   responseHeaders: Object.freeze([
     "content-type",
@@ -43,6 +44,30 @@ const RESPONSE_HEADERS = new Set<string>(
 const ERROR_FIELDS = new Set<string>(
   PUBLIC_OBSERVATION_ALLOWLIST.errorFields,
 );
+const RECEIPT_STATUSES = new Set([
+  "completed",
+  "rejected",
+  "failed",
+  "indeterminate",
+]);
+
+const publicReceipt = (value: unknown): Record<string, unknown> | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const receipt = value as Record<string, unknown>;
+  if (
+    receipt.version !== 1 || typeof receipt.invocationId !== "string" ||
+    receipt.invocationId.length === 0 || receipt.invocationId.length > 256 ||
+    typeof receipt.status !== "string" ||
+    !RECEIPT_STATUSES.has(receipt.status)
+  ) return undefined;
+  return {
+    version: 1,
+    invocationId: receipt.invocationId,
+    status: receipt.status,
+  };
+};
 
 /** Defense-in-depth field selection for every framework-generated error. */
 export const publicErrorBody = (
@@ -50,7 +75,13 @@ export const publicErrorBody = (
 ): Record<string, unknown> => {
   const out: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(body)) {
-    if (ERROR_FIELDS.has(name) && value !== undefined) out[name] = value;
+    if (!ERROR_FIELDS.has(name) || value === undefined) continue;
+    if (name === "receipt") {
+      const receipt = publicReceipt(value);
+      if (receipt !== undefined) out.receipt = receipt;
+      continue;
+    }
+    out[name] = value;
   }
   return out;
 };

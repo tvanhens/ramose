@@ -53,6 +53,12 @@ import {
 } from "../core/index.ts";
 import type { CompositionIndex } from "../core/composition.ts";
 import type { Principal } from "../../worker/auth.ts";
+import {
+  InvalidRequest,
+  OperationRejected,
+  TxRejected,
+  Unauthorized,
+} from "../../db/Errors.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
 import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError } from "./errors.ts";
@@ -64,14 +70,28 @@ import {
   type RuntimeBoundaries,
 } from "../runtime-boundaries.ts";
 import {
+  authorizeCatalogOperation,
   catalogProvisioningAttributes,
+  decideInvocationReceipt,
   executeCatalogOperation,
+  invocationReceiptOutcome,
   OperationRuntimeFault,
   opaqueOperationDenial,
+  parseStoredInvocationReceipt,
+  prepareInvocationReceipt,
   resolveOperationCatalog,
+  transitionInvocationReceipt,
+  type AuthoritativeInvocationResult,
+  type AuthoritativeOperationInvocation,
+  type CatalogOperationAdmission,
+  type ClaimedInvocationReceipt,
   type InstalledCatalogDefinition,
-  type OperationInvocation,
+  type InvocationReceiptEvent,
   type OperationRuntime,
+  type PreparedInvocationReceipt,
+  type SealedInvocationRejection,
+  type StoredInvocationReceipt,
+  type TerminalInvocationReceipt,
 } from "../authorization/index.ts";
 
 export { TransactorDeadError };
@@ -105,14 +125,9 @@ export interface TxAck {
   /** facts that landed, already filtered for this principal */
   datoms: WireDatom[];
   clientTxId?: string;
-  /** Encoded operation output; present when this ack is an operation replay. */
-  output?: unknown;
 }
 
-export interface OperationAck {
-  readonly t: number;
-  readonly output: unknown;
-}
+export type OperationAck = AuthoritativeInvocationResult;
 
 export interface TransactorStats {
   txs: number;
@@ -141,27 +156,15 @@ interface Pending {
   principal?: Principal | undefined;
   /** opaque client id; a replay of a recent id returns the original ack */
   clientTxId?: string | undefined;
-  /** Encoded operation output to persist with the ack (effects must not re-run). */
-  opOutput?: unknown;
   /**
    * Peer-owned write (principal provisioning). Skips `checkTx` and the
    * pre-write provision hook — the ops *are* the provision.
    */
   system?: boolean | undefined;
-  /**
-   * Worker already authorized this tx as a named operation. Skips the
-   * raw-transact data deny (schema / superuser only).
-   */
-  fromOperation?: boolean | undefined;
   /** Native deployed invocation; mutually exclusive with raw `tx`. */
-  operation?: OperationInvocation | undefined;
+  operation?: AuthoritativeOperationInvocation | undefined;
   resolve: (r: TxAck | OperationAck) => void;
   reject: (e: unknown) => void;
-}
-
-interface StoredOpAck {
-  readonly k: string;
-  readonly ack: TxAck;
 }
 
 /** How many recent `clientTxId`s this instance remembers. FIFO once full. */
@@ -200,8 +203,6 @@ export class Transactor {
   private dead: string | undefined;
   /** recent `clientTxReplayKey(principal, clientTxId)` → original ack; replay must not assign a second `t` */
   private readonly recentAcks = new Map<string, TxAck>();
-  /** persisted operation acks (includes `output`); loaded from `meta.op_acks` */
-  private readonly recentOpAcks = new Map<string, TxAck>();
   readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0, commitMs: 0, resolveMs: 0, loopMs: 0, fenceMs: 0 };
   /** metrics: tx/s over the last 10 s, batch-size and commit-latency distributions */
   readonly txRate = new RateMeter(10_000);
@@ -258,6 +259,16 @@ export class Transactor {
     const sql = this.host.sql;
     sql.exec(`CREATE TABLE IF NOT EXISTS log (t INTEGER PRIMARY KEY, tx_instant INTEGER NOT NULL, datoms BLOB NOT NULL)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS operation_receipts (
+      principal_id TEXT NOT NULL,
+      invocation_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      receipt TEXT NOT NULL,
+      PRIMARY KEY (principal_id, invocation_id)
+    )`);
+    sql.exec(`CREATE INDEX IF NOT EXISTS operation_receipts_status
+      ON operation_receipts (status)`);
+    this.recoverAbandonedInvocationReceipts();
     this.store = new R2NodeStore(this.host.bucket, { codec: gzipCodec, maxNodes: 4096 });
 
     let rec = this.getMeta<RootRecord>("root") ?? (await readCurrentRoot(this.host.bucket));
@@ -286,10 +297,6 @@ export class Transactor {
     });
     if (this.deployedComposition !== undefined) {
       this.conn.bindComposition(this.deployedComposition.index);
-    }
-    for (const row of this.getMeta<StoredOpAck[]>("op_acks") ?? []) {
-      this.recentOpAcks.set(row.k, row.ack);
-      this.recentAcks.set(row.k, row.ack);
     }
     // txs already in the log but not yet indexed count toward the next index run
     this.txSinceIndex = Math.max(0, this.conn.t - roots.t);
@@ -322,6 +329,117 @@ export class Transactor {
     // DO SqlStorage binds ArrayBuffer; bun:sqlite binds Uint8Array. A fresh ArrayBuffer works for both.
     const buf = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
     this.host.sql.exec(`INSERT INTO log (t, tx_instant, datoms) VALUES (?, ?, ?)`, e.t, e.txInstant, buf);
+  }
+
+  private readInvocationReceipt(
+    principalId: string,
+    invocationId: string,
+  ): StoredInvocationReceipt | undefined {
+    const row = this.host.sql.exec(
+      `SELECT status, receipt FROM operation_receipts
+       WHERE principal_id = ? AND invocation_id = ?`,
+      principalId,
+      invocationId,
+    ).toArray()[0];
+    if (row === undefined) return undefined;
+    const receipt = parseStoredInvocationReceipt(JSON.parse(row.receipt as string));
+    if (row.status !== receipt.status) {
+      throw new TypeError("durable invocation receipt status mismatch");
+    }
+    return receipt;
+  }
+
+  private insertInvocationReceipt(receipt: ClaimedInvocationReceipt): void {
+    this.host.sql.exec(
+      `INSERT INTO operation_receipts
+       (principal_id, invocation_id, status, receipt) VALUES (?, ?, ?, ?)`,
+      receipt.principalId,
+      receipt.invocationId,
+      receipt.status,
+      JSON.stringify(receipt),
+    );
+  }
+
+  private replaceInvocationReceipt(receipt: TerminalInvocationReceipt): void {
+    this.host.sql.exec(
+      `UPDATE operation_receipts SET status = ?, receipt = ?
+       WHERE principal_id = ? AND invocation_id = ?`,
+      receipt.status,
+      JSON.stringify(receipt),
+      receipt.principalId,
+      receipt.invocationId,
+    );
+  }
+
+  /** A claimed row from a discarded isolate may have crossed a native effect. */
+  private recoverAbandonedInvocationReceipts(): void {
+    this.host.transactionSync(() => {
+      const rows = this.host.sql.exec(
+        `SELECT status, receipt FROM operation_receipts WHERE status = 'claimed'`,
+      ).toArray();
+      for (const row of rows) {
+        const stored = parseStoredInvocationReceipt(
+          JSON.parse(row.receipt as string),
+        );
+        if (row.status !== stored.status || stored.status !== "claimed") {
+          throw new TypeError("durable invocation receipt status mismatch");
+        }
+        this.replaceInvocationReceipt(
+          transitionInvocationReceipt(stored, { _tag: "Recover" }),
+        );
+      }
+    });
+  }
+
+  private claimInvocationReceipt(
+    prepared: PreparedInvocationReceipt,
+  ) {
+    return this.host.transactionSync(() => {
+      const stored = this.readInvocationReceipt(
+        prepared.principalId,
+        prepared.invocationId,
+      );
+      const decision = decideInvocationReceipt(stored, prepared);
+      if (decision._tag === "Claim") {
+        this.insertInvocationReceipt(decision.receipt);
+      } else if (decision._tag === "Recover") {
+        this.replaceInvocationReceipt(decision.receipt);
+      }
+      return decision;
+    });
+  }
+
+  private assertClaimIdentity(
+    stored: StoredInvocationReceipt | undefined,
+    claim: ClaimedInvocationReceipt,
+  ): asserts stored is ClaimedInvocationReceipt {
+    if (
+      stored?.status !== "claimed" || stored.version !== claim.version ||
+      stored.principalId !== claim.principalId ||
+      stored.invocationId !== claim.invocationId ||
+      stored.scopeDigest !== claim.scopeDigest ||
+      stored.invocationDigest !== claim.invocationDigest
+    ) {
+      throw new Error("durable invocation claim changed before completion");
+    }
+  }
+
+  private finishInvocationReceipt(
+    claim: ClaimedInvocationReceipt,
+    event: InvocationReceiptEvent,
+    insideTransaction = false,
+  ): TerminalInvocationReceipt {
+    const finish = () => {
+      const stored = this.readInvocationReceipt(
+        claim.principalId,
+        claim.invocationId,
+      );
+      this.assertClaimIdentity(stored, claim);
+      const terminal = transitionInvocationReceipt(stored, event);
+      this.replaceInvocationReceipt(terminal);
+      return terminal;
+    };
+    return insideTransaction ? finish() : this.host.transactionSync(finish);
   }
   /** Log entries with from < t <= to (ascending). */
   readLogEntries(from: number, to = Number.MAX_SAFE_INTEGER, limit = 100_000): LogEntry[] {
@@ -398,12 +516,12 @@ export class Transactor {
     tx: TxData,
     principal?: Principal,
     clientTxId?: string,
-    extras?: { readonly opOutput?: unknown; readonly system?: boolean; readonly fromOperation?: boolean },
+    extras?: { readonly system?: boolean },
   ): Promise<TxAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     if (clientTxId !== undefined) {
       const key = clientTxReplayKey(principal, clientTxId);
-      const hit = this.recentOpAcks.get(key) ?? this.recentAcks.get(key);
+      const hit = this.recentAcks.get(key);
       if (hit) return Promise.resolve(hit);
     }
     return new Promise<TxAck>((resolve, reject) => {
@@ -411,9 +529,7 @@ export class Transactor {
         tx,
         principal,
         clientTxId,
-        opOutput: extras?.opOutput,
         system: extras?.system || undefined,
-        fromOperation: extras?.fromOperation || undefined,
         resolve: resolve as (result: TxAck | OperationAck) => void,
         reject,
       });
@@ -425,7 +541,7 @@ export class Transactor {
   }
 
   /** Submit one exact deployed-catalog invocation to the serialized writer. */
-  invoke(invocation: OperationInvocation): Promise<OperationAck> {
+  invoke(invocation: AuthoritativeOperationInvocation): Promise<OperationAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     if (this.operationRuntime === undefined) {
       return Promise.reject(opaqueOperationDenial());
@@ -500,28 +616,51 @@ export class Transactor {
     return { eid: principal.eid ?? null, class: principal.class };
   }
 
-  private rememberAck(id: string, ack: TxAck, persist: boolean): void {
+  private rememberAck(id: string, ack: TxAck): void {
     this.recentAcks.set(id, ack);
     while (this.recentAcks.size > RECENT_CLIENT_TX_LIMIT) {
       const first = this.recentAcks.keys().next().value;
       if (first === undefined) break;
       this.recentAcks.delete(first);
     }
-    if (persist) {
-      this.recentOpAcks.set(id, ack);
-      const list = [...this.recentOpAcks.entries()].map(([k, a]) => ({ k, ack: a }));
-      const trimmed = list.length > RECENT_CLIENT_TX_LIMIT ? list.slice(-RECENT_CLIENT_TX_LIMIT) : list;
-      if (trimmed.length < list.length) {
-        this.recentOpAcks.clear();
-        for (const row of trimmed) this.recentOpAcks.set(row.k, row.ack);
-      }
-      this.setMeta("op_acks", trimmed);
-    }
   }
 
-  lookupOpAck(principal: Principal | undefined, clientOpId: string): TxAck | undefined {
-    const key = clientTxReplayKey(principal, clientOpId);
-    return this.recentOpAcks.get(key) ?? this.recentAcks.get(key);
+  private invocationFailureEvent(
+    error: unknown,
+  ): InvocationReceiptEvent {
+    let rejection: SealedInvocationRejection | undefined;
+    if (error instanceof Unauthorized) {
+      rejection = { kind: "unauthorized" };
+    } else if (error instanceof InvalidRequest) {
+      rejection = { kind: "invalid_request" };
+    } else if (error instanceof OperationRejected) {
+      rejection = {
+        kind: "operation_rejected",
+        message: error.message,
+        operation: error.operation,
+        ...(error.step === undefined ? {} : { step: error.step }),
+        ...(error.reason === undefined ? {} : { reason: error.reason }),
+      };
+    } else if (error instanceof TxRejected || error instanceof TxError) {
+      rejection = { kind: "request_rejected" };
+    }
+    return rejection === undefined
+      ? { _tag: "Fail" }
+      : { _tag: "Reject", rejection };
+  }
+
+  /** Preserve an exact sealed failure only when current admission fails alike. */
+  private replayMatchesAdmissionFailure(
+    receipt: TerminalInvocationReceipt,
+    error: unknown,
+  ): boolean {
+    const current = this.invocationFailureEvent(error);
+    if (receipt.status === "failed") return current._tag === "Fail";
+    if (receipt.status !== "rejected" || current._tag !== "Reject") {
+      return false;
+    }
+    return JSON.stringify(receipt.rejection) ===
+      JSON.stringify(current.rejection);
   }
 
   private takeBatch(): Pending[] {
@@ -566,23 +705,35 @@ export class Transactor {
           p: Pending;
           ack: TxAck | OperationAck;
           assertFresh?: () => void;
+          receiptCompletion?: {
+            readonly claim: ClaimedInvocationReceipt;
+            readonly event: InvocationReceiptEvent & {
+              readonly _tag: "Complete";
+            };
+          };
         }[] = [];
         const batchAcks = new Map<string, TxAck>();
         const tResolve = performance.now();
         for (const p of batch) {
-          if (p.clientTxId !== undefined) {
-            const key = clientTxReplayKey(p.principal, p.clientTxId);
-            const hit = this.recentAcks.get(key) ?? batchAcks.get(key);
-            if (hit) {
-              p.resolve(hit);
-              continue;
-            }
-          }
-          try {
-            let rep;
-            let ack: TxAck | OperationAck;
-            let assertFresh: (() => void) | undefined;
-            if (p.operation !== undefined) {
+          if (p.operation !== undefined) {
+            let claim: ClaimedInvocationReceipt | undefined;
+            let replay: TerminalInvocationReceipt | undefined;
+            try {
+              const prepared = await Effect.runPromise(
+                prepareInvocationReceipt(p.operation),
+              );
+              const decision = this.claimInvocationReceipt(prepared);
+              if (decision._tag === "Conflict") {
+                this.stats.rejected++;
+                p.resolve({ _tag: "Conflict" });
+                continue;
+              }
+              if (decision._tag === "Replay" || decision._tag === "Recover") {
+                replay = decision.receipt;
+              } else {
+                claim = decision.receipt;
+                await this.boundaries.checkpoint("operation.claimed");
+              }
               if (this.operationRuntime === undefined) {
                 throw opaqueOperationDenial();
               }
@@ -593,34 +744,118 @@ export class Transactor {
                 resolved.deployed.definition.unitHash,
                 resolved.deployed.definition.composition,
               );
+              let admission: CatalogOperationAdmission;
+              try {
+                admission = await authorizeCatalogOperation(
+                  this.conn,
+                  this.operationRuntime,
+                  p.operation,
+                  resolved,
+                );
+              } catch (error) {
+                if (
+                  replay !== undefined &&
+                  this.replayMatchesAdmissionFailure(replay, error)
+                ) {
+                  p.resolve(invocationReceiptOutcome(replay));
+                  continue;
+                }
+                throw error;
+              }
+              if (replay !== undefined) {
+                p.resolve(invocationReceiptOutcome(replay));
+                continue;
+              }
+              if (claim === undefined) {
+                throw new Error("operation execution has no durable claim");
+              }
               const executed = await executeCatalogOperation(
                 this.conn,
                 this.operationRuntime,
                 p.operation,
                 resolved,
+                admission,
               );
-              rep = executed.report;
-              ack = { t: rep.t, output: executed.output };
-              assertFresh = executed.assertFresh;
-            } else {
-              if (!p.system) await this.applyProvision(p, entries);
-              const tx = await this.authorize(p);
-              rep = await this.conn.transact(tx);
-              ack = {
-                t: rep.t,
-                txEid: rep.txEid,
-                tempids: rep.tempids,
-                datoms: await this.ackDatoms(rep.txData, p.principal),
-                ...(p.clientTxId !== undefined ? { clientTxId: p.clientTxId } : {}),
-                ...(p.opOutput !== undefined ? { output: p.opOutput } : {}),
+              const rep = executed.report;
+              const event = {
+                _tag: "Complete" as const,
+                committedT: rep.t,
+                output: executed.output,
               };
+              const terminal = transitionInvocationReceipt(claim, event);
+              const txInstant = rep.txData[0]?.v as number;
+              entries.push({ t: rep.t, txInstant, datoms: rep.txData });
+              acks.push({
+                p,
+                ack: invocationReceiptOutcome(terminal),
+                assertFresh: executed.assertFresh,
+                receiptCompletion: { claim, event },
+              });
+            } catch (err) {
+              if (err instanceof OperationRuntimeFault) {
+                this.log.error("operation.failed", {
+                  stage: err.stage,
+                  error: err.detail instanceof Error
+                    ? err.detail.message
+                    : String(err.detail),
+                });
+              }
+              if (claim !== undefined) {
+                try {
+                  const terminal = this.finishInvocationReceipt(
+                    claim,
+                    this.invocationFailureEvent(err),
+                  );
+                  this.stats.rejected++;
+                  this.log.warn("operation.rejected", {
+                    status: terminal.status,
+                  });
+                  p.resolve(invocationReceiptOutcome(terminal));
+                } catch (storageError) {
+                  this.die(
+                    `receipt write failed: ${storageError instanceof Error ? storageError.message : String(storageError)}`,
+                    storageError,
+                    [p],
+                  );
+                  return;
+                }
+              } else {
+                const e = this.scrub(err, p);
+                this.stats.rejected++;
+                this.log.warn("tx.rejected", {
+                  code: (e as { readonly code?: unknown })?.code,
+                  error: e instanceof Error ? e.message : String(e),
+                });
+                p.reject(e);
+              }
             }
+            continue;
+          }
+          if (p.clientTxId !== undefined) {
+            const key = clientTxReplayKey(p.principal, p.clientTxId);
+            const hit = this.recentAcks.get(key) ?? batchAcks.get(key);
+            if (hit) {
+              p.resolve(hit);
+              continue;
+            }
+          }
+          try {
+            if (!p.system) await this.applyProvision(p, entries);
+            const tx = await this.authorize(p);
+            const rep = await this.conn.transact(tx);
+            const ack: TxAck = {
+              t: rep.t,
+              txEid: rep.txEid,
+              tempids: rep.tempids,
+              datoms: await this.ackDatoms(rep.txData, p.principal),
+              ...(p.clientTxId !== undefined ? { clientTxId: p.clientTxId } : {}),
+            };
             const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
             entries.push({ t: rep.t, txInstant, datoms: rep.txData });
-            if (p.clientTxId !== undefined && p.operation === undefined) {
+            if (p.clientTxId !== undefined) {
               batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack as TxAck);
             }
-            acks.push({ p, ack, ...(assertFresh === undefined ? {} : { assertFresh }) });
+            acks.push({ p, ack });
           } catch (err) {
             if (err instanceof OperationRuntimeFault) {
               this.log.error("operation.failed", {
@@ -651,15 +886,14 @@ export class Transactor {
             this.boundaries.checkpointSync("transactor.commit.write");
             for (const e of entries) this.appendLogRow(e);
             this.setMeta("next_eid", this.conn.nextEntityId);
-            const persist = [...batchAcks].filter(([, a]) => a.output !== undefined);
-            if (persist.length > 0) {
-              for (const [id, ack] of persist) this.recentOpAcks.set(id, ack);
-              this.setMeta(
-                "op_acks",
-                [...this.recentOpAcks.entries()]
-                  .map(([k, a]) => ({ k, ack: a }))
-                  .slice(-RECENT_CLIENT_TX_LIMIT),
-              );
+            for (const pending of acks) {
+              if (pending.receiptCompletion !== undefined) {
+                this.finishInvocationReceipt(
+                  pending.receiptCompletion.claim,
+                  pending.receiptCompletion.event,
+                  true,
+                );
+              }
             }
           });
         } catch (err) {
@@ -682,7 +916,7 @@ export class Transactor {
         this.commitLatency.observe(writeMs);
         this.resolveLatency.observe(resolveMs);
         this.log.debug("tx.commit", { t: this.conn.t, batch: entries.length, datoms: entries.reduce((n, e) => n + e.datoms.length, 0), writeMs: round(writeMs), queued: this.queue.length, txsSinceIndex: this.txSinceIndex });
-        for (const [id, ack] of batchAcks) this.rememberAck(id, ack, ack.output !== undefined);
+        for (const [id, ack] of batchAcks) this.rememberAck(id, ack);
         for (const a of acks) {
           try {
             // A post-commit expiry cannot undo an authorized atomic write, but
@@ -894,7 +1128,7 @@ export class Transactor {
           ...(Object.hasOwn(raw, "target")
             ? { target: fromJson((raw as { readonly target?: unknown }).target) }
             : {}),
-        } as OperationInvocation
+        } as AuthoritativeOperationInvocation
         : undefined;
       if (
         invocation === undefined || invocation.database !== safeName(this.host)
@@ -908,37 +1142,15 @@ export class Transactor {
         headers: { "content-type": "application/json" },
       });
     }
-    if (path === "/op-ack" && request.method === "POST") {
-      const body = fromJson(await request.json()) as {
-        clientOpId?: unknown;
-        principal?: unknown;
-        ack?: TxAck;
-      };
-      if (typeof body.clientOpId !== "string" || body.clientOpId.length === 0) {
-        throw new BadRequest({ message: "body must be { clientOpId }" });
-      }
-      const principal = asPrincipal(body.principal);
-      if (body.ack !== undefined && body.ack !== null) {
-        const key = clientTxReplayKey(principal, body.clientOpId);
-        this.rememberAck(key, { ...body.ack, clientTxId: body.clientOpId }, true);
-        return json({ ack: body.ack });
-      }
-      return json({ ack: this.lookupOpAck(principal, body.clientOpId) ?? null });
-    }
     if (path === "/transact" && request.method === "POST") {
       const body = fromJson(await request.json()) as {
         tx?: TxData;
         principal?: unknown;
         clientTxId?: unknown;
-        opOutput?: unknown;
-        fromOperation?: unknown;
       };
       if (!body || !Array.isArray(body.tx)) throw new BadRequest({ message: "body must be { tx: [...] }" });
       const clientTxId = typeof body.clientTxId === "string" && body.clientTxId.length > 0 ? body.clientTxId : undefined;
-      const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId, {
-        opOutput: body.opOutput,
-        fromOperation: body.fromOperation === true,
-      });
+      const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId);
       return json(ack);
     }
     if (path === "/provision" && request.method === "POST") {

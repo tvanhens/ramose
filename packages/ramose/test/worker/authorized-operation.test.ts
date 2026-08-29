@@ -4,7 +4,7 @@ import {
   CatalogId,
   CatalogUnitHash,
   DatabaseId,
-  type OperationInvocation,
+  type AuthoritativeOperationInvocation,
 } from "../../src/internal/authorization/index.ts";
 import {
   parseOperationRequest,
@@ -20,6 +20,7 @@ describe("operation invocation transport", () => {
       unitHash: "unit",
       owner: { kind: "entity", name: "item" },
       localName: "inspect",
+      invocationId: "invocation-transport",
       target: [":item/when", new Date(0)],
       input: {
         tagged: { vt: 1, v: "input-owned" },
@@ -37,7 +38,7 @@ describe("operation invocation transport", () => {
         rootDatabase: DatabaseId.make("operation-root"),
         graphs: [{ graphEntity: 1000, catalogKey: CatalogId.make("child") }],
       },
-    } as unknown as OperationInvocation;
+    } as unknown as AuthoritativeOperationInvocation;
 
     const parsed = JSON.parse(serializeOperationInvocation(invocation)) as {
       invocation: Record<string, unknown>;
@@ -71,6 +72,7 @@ describe("operation invocation transport", () => {
             owner: { kind: "entity", name: "pathNote" },
             localName: "create",
           },
+          invocationId: "nested-invocation",
           input: { text: "hello" },
         }),
       },
@@ -95,6 +97,7 @@ describe("operation invocation transport", () => {
             owner: { kind: "entity", name: "item" },
             localName: "create",
           },
+          invocationId: "root-invocation",
           input: {},
         }),
       },
@@ -102,5 +105,30 @@ describe("operation invocation transport", () => {
     expect(parsed.path).toEqual([]);
     expect(parsed.catalogKey).toBe(catalogKey);
     expect(parsed.unitHash).toBe(unitHash);
+  });
+
+  test("requires one bounded caller invocation id", async () => {
+    const request = (invocationId?: string) => new Request(
+      "https://peer.test/db/root/op",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          catalog: "root",
+          unitHash: "a".repeat(64),
+          operation: {
+            owner: { kind: "entity", name: "item" },
+            localName: "create",
+          },
+          ...(invocationId === undefined ? {} : { invocationId }),
+          input: {},
+        }),
+      },
+    );
+    for (const invocationId of [undefined, "", "x".repeat(257)]) {
+      await expect(
+        Effect.runPromise(parseOperationRequest(request(invocationId))),
+      ).rejects.toThrow("invocationId must be a non-empty string");
+    }
   });
 });

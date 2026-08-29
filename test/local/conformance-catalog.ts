@@ -20,6 +20,7 @@ export const CONFORMANCE_DATABASES = Object.freeze([
   "conformance-history-b",
   "conformance-live",
   "conformance-expiry",
+  "conformance-idempotent-revocation",
 ]);
 
 export const ConformanceUser = Entity("conformanceUser", {

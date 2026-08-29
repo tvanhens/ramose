@@ -245,7 +245,6 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       (
         url.pathname === "/transact" ||
         url.pathname === "/provision" ||
-        url.pathname === "/op-ack" ||
         url.pathname.startsWith("/admin/")
       )
     ) {

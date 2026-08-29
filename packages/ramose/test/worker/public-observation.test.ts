@@ -49,7 +49,22 @@ describe("public observation allowlist", () => {
       cells: 42,
       limit: 10,
       transaction: 17,
-    })).toEqual({ error: "invalid request", code: "safe-code" });
+      receipt: {
+        version: 1,
+        invocationId: "invocation-1",
+        status: "failed",
+        scopeDigest: "private",
+        committedT: 17,
+      },
+    })).toEqual({
+      error: "invalid request",
+      code: "safe-code",
+      receipt: {
+        version: 1,
+        invocationId: "invocation-1",
+        status: "failed",
+      },
+    });
   });
 
   test("internal, timing, cache, and deployment headers are never public", () => {
