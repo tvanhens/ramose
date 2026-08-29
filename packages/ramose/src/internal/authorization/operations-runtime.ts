@@ -777,6 +777,13 @@ const materializeOutputTransport = (value: unknown): unknown => {
   return materialized;
 };
 
+/** Resolve current lookup meaning first, then the pre-write subject it named. */
+const resolveReportLookup = async (
+  report: TxReport,
+  lookup: [string, unknown],
+): Promise<number | undefined> =>
+  await report.dbAfter.entid(lookup) ?? await report.dbBefore.entid(lookup);
+
 const resolveOutputHandles = async (
   shape: OperationInputShape,
   value: unknown,
@@ -790,7 +797,7 @@ const resolveOutputHandles = async (
       if (eid !== undefined) return eid;
     }
     if (Array.isArray(lowered)) {
-      const eid = await report.dbAfter.entid(lowered as [string, unknown]);
+      const eid = await resolveReportLookup(report, lowered as [string, unknown]);
       if (eid !== undefined) return eid;
     }
     throw new InvalidRequest({ message: "operation output contains an unresolved entity handle" });
@@ -882,7 +889,7 @@ const resolveReportEntity = async (
   if (typeof value === "number") return value;
   if (typeof value === "string") return report.tempids[value];
   if (Array.isArray(value) && asLookupRef(value) !== undefined) {
-    return report.dbAfter.entid(value as [string, unknown]);
+    return resolveReportLookup(report, value as [string, unknown]);
   }
   return undefined;
 };

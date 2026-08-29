@@ -385,6 +385,7 @@ makeHiddenNamesQuery = () => Query.from(Hidden).select({ name: Hidden.name });
 const App = Schema({ good: Good, other: Other, hidden: Hidden, link: Link, item: Item, backlink: Backlink });
 
 const SemanticsShared = Trait("semanticsShared", {
+  key: Field.unique(string(), "upsert", { optional: true }),
   note: string({ optional: true }),
 }, {
   operations: (Operation) => ({
@@ -472,6 +473,50 @@ const SemanticsOwner = Entity("semanticsOwner", { name: string() }, {
           runtime.update(SemanticsHidden, input.id, { note: "helper" });
         }
         return {};
+      },
+    }),
+    lookupHelper: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        action: EffectSchema.Literals([
+          "handleSet",
+          "directSet",
+          "handleRemove",
+          "directRemove",
+          "handleDelete",
+          "directDelete",
+          "put",
+          "update",
+        ]),
+        key: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({
+        id: EffectSchema.optionalKey(OperationEntityId),
+      }),
+      run(op, input) {
+        const runtime = op as any;
+        const subject = [":semanticsShared/key", input.key];
+        const next = `${input.key}-next`;
+        const handle = runtime.entity(SemanticsHidden, subject);
+        if (input.action === "handleSet") handle.set(SemanticsShared.key, next);
+        if (input.action === "directSet") {
+          runtime.set(SemanticsHidden, subject, SemanticsShared.key, next);
+        }
+        if (input.action === "handleRemove") {
+          handle.remove(SemanticsShared.key, input.key);
+        }
+        if (input.action === "directRemove") {
+          runtime.remove(SemanticsHidden, subject, SemanticsShared.key, input.key);
+        }
+        if (input.action === "handleDelete") handle.delete();
+        if (input.action === "directDelete") runtime.delete(SemanticsHidden, subject);
+        if (input.action === "put") {
+          runtime.put(SemanticsHidden, subject, { key: next });
+        }
+        if (input.action === "update") {
+          runtime.update(SemanticsHidden, subject, { key: next });
+        }
+        return input.action.endsWith("Delete") ? {} : { id: handle };
       },
     }),
     principalIdentity: Operation({
@@ -594,6 +639,7 @@ const buildSemanticsWorld = async (subjectClaim = "sub") => {
       invoke(SemanticsShared[OwnedOperations].helper).when(hasClass("member")),
       invoke(SemanticsOwner[OwnedOperations].ownerHelper).when(hasClass("member")),
       invoke(SemanticsOwner[OwnedOperations].explicitHelper).when(hasClass("member")),
+      invoke(SemanticsOwner[OwnedOperations].lookupHelper).when(hasClass("member")),
       invoke(SemanticsOwner[OwnedOperations].principalIdentity).when(hasClass("member")),
     ],
     principal: { subjectClaim },
@@ -616,18 +662,21 @@ const buildSemanticsWorld = async (subjectClaim = "sub") => {
       ":db/id": "owner",
       ":ramose/type": ":semanticsOwner",
       ":semanticsOwner/name": "Owner",
+      ":semanticsShared/key": "owner-key",
       ":semanticsShared/note": "seed",
     },
     {
       ":db/id": "other",
       ":ramose/type": ":semanticsOther",
       ":semanticsOther/name": "Other",
+      ":semanticsShared/key": "other-key",
       ":semanticsShared/note": "seed",
     },
     {
       ":db/id": "hidden",
       ":ramose/type": ":semanticsHidden",
       ":semanticsHidden/name": "Hidden",
+      ":semanticsShared/key": "hidden-key",
       ":semanticsShared/note": "seed",
     },
     {
@@ -908,6 +957,51 @@ describe("deployed operation runtime", () => {
         caller: caller("member"),
       });
       expect(await deletion.conn.db().exists(deletion.hidden)).toBe(false);
+    }
+  });
+
+  test("resolves definition-directed lookup subjects on the pre-write basis", async () => {
+    const actions = [
+      "handleSet",
+      "directSet",
+      "handleRemove",
+      "directRemove",
+      "handleDelete",
+      "directDelete",
+      "put",
+      "update",
+    ] as const;
+
+    const wrong = await buildSemanticsWorld();
+    const wrongT = wrong.conn.t;
+    for (const action of actions) {
+      await expect(invokeSemanticsOperation(wrong, {
+        owner: { kind: "entity", name: "semanticsOwner" },
+        localName: "lookupHelper",
+        input: { action, key: "other-key" },
+        caller: caller("member"),
+      })).rejects.toBeDefined();
+      expect(wrong.conn.t).toBe(wrongT);
+    }
+    expect((await wrong.conn.db().entity(wrong.other))?.[":semanticsShared/key"])
+      .toBe("other-key");
+
+    for (const action of actions) {
+      const valid = await buildSemanticsWorld();
+      const executed = await invokeSemanticsOperation(valid, {
+        owner: { kind: "entity", name: "semanticsOwner" },
+        localName: "lookupHelper",
+        input: { action, key: "hidden-key" },
+        caller: caller("member"),
+      });
+      if (action.endsWith("Delete")) {
+        expect(executed.output).toEqual({});
+        expect(await valid.conn.db().exists(valid.hidden)).toBe(false);
+      } else {
+        expect(executed.output).toEqual({ id: valid.hidden });
+        const key = (await valid.conn.db().entity(valid.hidden))?.[":semanticsShared/key"];
+        expect(key).toBe(action.endsWith("Remove") ? undefined : "hidden-key-next");
+      }
     }
   });
 
