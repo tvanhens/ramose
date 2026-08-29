@@ -84,6 +84,22 @@ export const createServer = (options: ServerOptions = {}) => ({
       enabled
     ) {
       try {
+        const proofMatch = /^\/__test__\/db\/([^/]+)\/catalog-proof$/.exec(
+          new URL(request.url).pathname,
+        );
+        if (proofMatch !== null && request.method === "GET") {
+          const proof = options.operationCatalogs?.proof(
+            decodeURIComponent(proofMatch[1]!),
+          );
+          return proof === undefined
+            ? new Response(JSON.stringify({ error: "not found" }), {
+              status: 404,
+              headers: { "content-type": "application/json" },
+            })
+            : new Response(JSON.stringify(proof), {
+              headers: { "content-type": "application/json" },
+            });
+        }
         return await handleTestAdmin(request, runtimeEnv, new URL(request.url));
       } catch (cause) {
         return respond(asTestAdminError(cause), request, runtimeEnv);

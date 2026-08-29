@@ -142,6 +142,5 @@ export const conformanceCatalog = Catalog("local-conformance", {
 
 export const conformanceCatalogDeployment = Object.freeze({
   root: conformanceCatalog,
-  artifactHash: "4".repeat(64),
   deployments: CONFORMANCE_DATABASES.map((database) => ({ database })),
 });

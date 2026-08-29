@@ -158,7 +158,7 @@ export type CatalogDefinitionBoundRef = {
 
 export type AssembleCatalogDefinitionsInput = {
   readonly root: CatalogDefinition;
-  /** SHA-256 of the immutable deployed bundle containing these definitions. */
+  /** SHA-256 identity of the immutable deployment containing these definitions. */
   readonly artifactHash: DigestHex;
 };
 

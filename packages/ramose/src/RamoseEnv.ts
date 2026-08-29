@@ -14,7 +14,7 @@ export interface RamoseEnv {
   STORE: R2Bucket;
   TRANSACTOR: DurableObjectNamespace;
   REPLICA: DurableObjectNamespace;
-  /** Cloudflare version metadata used to fence live-query lease renewal. */
+  /** Cloudflare version metadata used for catalog identity and live-query fences. */
   CF_VERSION_METADATA?: {
     readonly id: string;
     readonly tag: string;

@@ -1,11 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { schemaTx } from "../../packages/ramose/src/db/internal.ts";
 import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
 import {
   OperationSchema,
 } from "./operation-catalog.ts";
-import { operationProof } from "./operation-proof.ts";
+import { loadOperationProof, operationProof } from "./operation-proof.ts";
 
 const invoke = async (
   base: string,
@@ -55,6 +55,8 @@ const waitForCheckpoint = async (
 
 export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
   describe("native deployed operations", () => {
+    beforeAll(() => loadOperationProof(ctx.urls().nativeOperationsUrl));
+
     test("static operation commits through the real Worker/Transactor/R2 topology", async () => {
       const base = ctx.urls().nativeOperationsUrl;
       const database = "operations-static";

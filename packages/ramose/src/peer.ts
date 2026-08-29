@@ -208,7 +208,7 @@ export const validatePeerWiring = (worker: unknown): string | undefined => {
   }
 
   if (!isVersionMetadataBinding(env[PEER_BINDINGS.versionMetadata])) {
-    return "ramose: CF_VERSION_METADATA must be Cloudflare.Workers.VersionMetadata() so live-query renewals can fence deployments";
+    return "ramose: CF_VERSION_METADATA must be Cloudflare.Workers.VersionMetadata() so catalog identity and live queries can fence deployments";
   }
 
   const compatibility = workerProps(worker)?.compatibility;

@@ -227,6 +227,5 @@ export const operationCatalog = Catalog("local-native-operations", {
 
 export const operationCatalogDeployment = Object.freeze({
   root: operationCatalog,
-  artifactHash: "7".repeat(64),
   deployments: OPERATION_DATABASES.map((database) => ({ database })),
 });

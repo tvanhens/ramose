@@ -1,16 +1,11 @@
-/** Host-side copy of the public startup assembly, used only to form test requests. */
+/** Runtime-bound proof used only to form requests against the real local Worker. */
 
-import * as Effect from "effect/Effect";
-import { deployOperationCatalogs } from "../../packages/ramose/src/worker/operation-catalogs.ts";
-import {
-  OPERATION_DATABASES,
-  operationCatalogDeployment,
-} from "./operation-catalog.ts";
+import type { OperationCatalogProof } from "ramose/worker";
+import { catalogProof } from "./fixtures.ts";
+import { OPERATION_DATABASES } from "./operation-catalog.ts";
 
-const catalogs = await Effect.runPromise(
-  deployOperationCatalogs(operationCatalogDeployment),
-);
-const proof = catalogs.proof(OPERATION_DATABASES[0]!);
-if (proof === undefined) throw new Error("local operation catalog proof is missing");
+export let operationProof: OperationCatalogProof;
 
-export const operationProof = proof;
+export const loadOperationProof = async (base: string): Promise<void> => {
+  operationProof = await catalogProof(base, OPERATION_DATABASES[0]!);
+};

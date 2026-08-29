@@ -207,7 +207,7 @@ export const OperationDescriptor = Schema.Struct({
   /** Hashes of the exact Effect Schema definitions retained by deployed code. */
   inputSchemaHash: DigestHex,
   outputSchemaHash: DigestHex,
-  /** Build-artifact digest identifying the deployed operation implementation. */
+  /** Deployment digest identifying the deployed operation implementation. */
   bodyHash: DigestHex,
   /** Canonical composer entity types for a targeted trait operation; empty otherwise. */
   composers: Schema.Array(EntityId),

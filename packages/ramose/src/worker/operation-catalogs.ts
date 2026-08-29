@@ -18,6 +18,7 @@ import {
   DatabaseId,
   type DigestHex,
 } from "../internal/authorization/identities.ts";
+import { sha256Hex } from "../internal/core/bytes.ts";
 
 const OperationCatalogsTypeId = Symbol.for("ramose/worker/OperationCatalogs");
 
@@ -44,8 +45,6 @@ export interface OperationCatalogDeployment {
 
 export interface DeployOperationCatalogsInput {
   readonly root: CatalogDefinition;
-  /** SHA-256 of the immutable deployed bundle containing the operation bodies. */
-  readonly artifactHash: string;
   readonly deployments: readonly OperationCatalogDeployment[];
 }
 
@@ -65,6 +64,27 @@ const deploymentError = (cause: unknown): OperationCatalogDeploymentError =>
   new OperationCatalogDeploymentError({
     message: cause instanceof Error ? cause.message : String(cause),
   });
+
+const DEPLOYMENT_ID_DOMAIN = "ramose:worker-deployment:v1\0";
+const textEncoder = new TextEncoder();
+
+const artifactHashForDeployment = (
+  metadata: unknown,
+): Effect.Effect<DigestHex, OperationCatalogDeploymentError> => {
+  const id = typeof metadata === "object" && metadata !== null
+    ? (metadata as { readonly id?: unknown }).id
+    : undefined;
+  if (typeof id !== "string" || !/^[\x21-\x7e]{1,256}$/.test(id)) {
+    return Effect.fail(new OperationCatalogDeploymentError({
+      message:
+        "CF_VERSION_METADATA.id must be a non-empty deployment version string",
+    }));
+  }
+  return Effect.tryPromise({
+    try: () => sha256Hex(textEncoder.encode(`${DEPLOYMENT_ID_DOMAIN}${id}`)),
+    catch: deploymentError,
+  }).pipe(Effect.map((digest) => digest as DigestHex));
+};
 
 const wrapOperationCatalogs = (
   deployed: DeployedCatalogDefinitions,
@@ -114,13 +134,16 @@ export const deployedDatabaseCatalogBindings = (
  * Assemble reachable code definitions and bind them to route databases.
  * Run this Effect once in the Worker module shared with `createTransactorDO`.
  */
-export const deployOperationCatalogs = Effect.fn(
+export const deployOperationCatalogsForVersion = Effect.fn(
   "Worker.deployOperationCatalogs",
-)(function* (input: DeployOperationCatalogsInput) {
+)(function* (
+  input: DeployOperationCatalogsInput,
+  versionMetadata: unknown,
+) {
+  const artifactHash = yield* artifactHashForDeployment(versionMetadata);
   const definitions = yield* assembleCatalogDefinitions({
     root: input.root,
-    // The assembler validates the public string before using the brand.
-    artifactHash: input.artifactHash as DigestHex,
+    artifactHash,
   });
   const deployed = yield* Effect.fromResult(deployCatalogDefinitions(
     definitions,

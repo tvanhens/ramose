@@ -10,7 +10,7 @@
  * - `operations.contract.ts`: minimal public health/metadata surface
  */
 
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { Query } from "ramose/db";
 import { lowerQueryObject, schemaTx } from "../../packages/ramose/src/db/internal.ts";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
@@ -25,7 +25,10 @@ import {
   ConformanceSchema,
   ConformanceUser,
 } from "./conformance-catalog.ts";
-import { conformanceProof } from "./conformance-proof.ts";
+import {
+  conformanceProof,
+  loadConformanceProof,
+} from "./conformance-proof.ts";
 import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
 
 const TITLES =
@@ -431,6 +434,8 @@ const openLive = async (
 
 export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
   describe("required real-stack filtered-Db conformance", () => {
+    beforeAll(() => loadConformanceProof(ctx.urls().conformanceUrl));
+
     test("paired worlds have identical public reads despite hidden datoms", async () => {
       const base = ctx.urls().conformanceUrl;
       const absent = await seedWorld(base, CONFORMANCE_DATABASES[0]!, false);

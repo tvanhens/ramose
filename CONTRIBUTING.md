@@ -95,6 +95,7 @@ Allowed instrumentation wraps a real implementation and forwards to it:
 - `test/support/recorder.ts` / `test/support/live.ts` — recording `fetch` and `WebSocket` that always call through
 - Checkpoints in `packages/ramose/src/internal/test-hooks.ts` (`transactor.commit`, `replica.apply`, `session.notify`, `indexer.run`)
 - `POST /__test__/db/:name/r2|storage|basis|checkpoint|abort|transact|query|index|info|log|sessions` — write/corrupt real local R2, exercise storage tiers over real local R2/Cache bindings, invoke the real Worker basis cache/fetch/invalidation path, arm/release/throw at a checkpoint, abort a DO isolate, forward `{ tx }` / `{ query | pull | entity }` to the real Transactor / Replica DO, run or inspect the real transactor/indexer, read its real SQLite log, or inspect real hibernation attachments (status and body pass through; nothing invents success)
+- `GET /__test__/db/:name/catalog-proof` — read the exact deployment-bound proof from the real test Worker registry so data-plane conformance requests cannot fabricate or copy a host-side deployment identity
 - `GET /__test__/db/:name/session|watch|subscribe` with a WebSocket upgrade — forward to the real Replica DO session/basis-watch endpoint or the real Transactor subscriber; a session `token` is verified by the deployed peer's real JWT verifier
 
 These routes are 404 unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`. They must not invent a successful transact, query, or frame.

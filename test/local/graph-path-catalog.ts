@@ -302,6 +302,5 @@ export const graphPathCatalog = Catalog("local-graph-root", {
 
 export const graphPathCatalogDeployment = Object.freeze({
   root: graphPathCatalog,
-  artifactHash: "c".repeat(64),
   deployments: [{ database: GRAPH_PATH_ROOT_DATABASE }],
 });

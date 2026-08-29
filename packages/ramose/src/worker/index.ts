@@ -11,6 +11,7 @@
  * supported package graph contains no test or admin assembly.
  */
 
+import { env } from "cloudflare:workers";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import {
   createTransactorDO as createInternalTransactorDO,
@@ -21,6 +22,8 @@ import { runFetch, type ServerOptions as RuntimeServerOptions } from "./handle.t
 import {
   deployedDatabaseCatalogBindings,
   deployedOperationCatalogs,
+  deployOperationCatalogsForVersion,
+  type DeployOperationCatalogsInput,
   type OperationCatalogs,
 } from "./operation-catalogs.ts";
 type WorkerDurableObjectClass = new (
@@ -31,6 +34,15 @@ type WorkerDurableObjectClass = new (
 /** Cloudflare class exports with the internal binding shape erased. */
 export const TransactorDO = InternalTransactorDO as unknown as WorkerDurableObjectClass;
 export const QueryReplicaDO = InternalQueryReplicaDO as unknown as WorkerDurableObjectClass;
+/**
+ * Assemble native catalogs against Cloudflare's immutable Worker version.
+ * Requires the `CF_VERSION_METADATA` binding that `Ramose.Server` installs.
+ */
+export const deployOperationCatalogs = (input: DeployOperationCatalogsInput) =>
+  deployOperationCatalogsForVersion(
+    input,
+    (env as Partial<RamoseEnv>).CF_VERSION_METADATA,
+  );
 /** Build the Transactor class from the same opaque registry as `createServer`. */
 export const createTransactorDO = (
   operationCatalogs: OperationCatalogs,
@@ -40,7 +52,6 @@ export const createTransactorDO = (
     deployedDatabaseCatalogBindings(operationCatalogs),
   ) as unknown as WorkerDurableObjectClass;
 export {
-  deployOperationCatalogs,
   OperationCatalogDeploymentError,
   type DeployOperationCatalogsInput,
   type OperationCatalogDeployment,

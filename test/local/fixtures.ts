@@ -102,6 +102,27 @@ export const json = async (
   }
 };
 
+/** Read the exact runtime-bound proof through source-only test instrumentation. */
+export const catalogProof = async (
+  base: string,
+  database: string,
+): Promise<{ readonly catalog: string; readonly unitHash: string }> => {
+  const response = await json(
+    base,
+    `/__test__/db/${encodeURIComponent(database)}/catalog-proof`,
+  );
+  if (
+    response.status !== 200 ||
+    typeof response.body?.catalog !== "string" ||
+    !/^[0-9a-f]{64}$/.test(response.body?.unitHash)
+  ) {
+    throw new Error(
+      `catalog proof ${database} failed (${response.status}): ${JSON.stringify(response.body)}`,
+    );
+  }
+  return response.body as { readonly catalog: string; readonly unitHash: string };
+};
+
 export const attr = (
   ident: string,
   type: string,

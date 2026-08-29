@@ -7,6 +7,7 @@ import {
   createServer,
   createTransactorDO,
   deployOperationCatalogs,
+  type DeployOperationCatalogsInput,
   type OperationCatalogDeploymentError,
   type OperationCatalogs,
 } from "ramose/worker";
@@ -17,12 +18,15 @@ const root = Catalog("consumer-operations", {
   policy: Policy.compileReadAuthorization({ schema: Empty, rules: [] }),
 });
 
+type CallerArtifactHashIsNotPublic = "artifactHash" extends
+  keyof DeployOperationCatalogsInput ? never : true;
+export const callerArtifactHashIsNotPublic: CallerArtifactHashIsNotPublic = true;
+
 export const consumerOperationCatalogs: Effect.Effect<
   OperationCatalogs,
   OperationCatalogDeploymentError
 > = deployOperationCatalogs({
     root,
-    artifactHash: "9".repeat(64),
     deployments: [{ database: "consumer-db" }],
   });
 

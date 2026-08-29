@@ -763,7 +763,7 @@ export const snapshotOwnedOperations = (
  * Deterministically lower every operation reachable from one catalog's schema
  * components. Repeated reachability of the same definition is idempotent;
  * owner/local collisions between different definitions fail. `artifactHash`
- * must identify the immutable deployed bundle. All caller-owned values are
+ * must identify the immutable deployment. All caller-owned values are
  * synchronously normalized before the first hashing effect can yield.
  */
 export const lowerOwnedOperationSnapshots = Effect.fn(
