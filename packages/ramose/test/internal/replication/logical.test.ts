@@ -13,10 +13,16 @@ import {
   makeLogicalIdentityEncoder,
   projectLogicalValueParts,
   type ClientReplicationState,
+  type ServerSealingKey,
   type ReplicationFrame,
   type ReplicationIdentity,
   type SnapshotLogicalValue,
 } from "../../../src/internal/replication/index.ts";
+
+const sealing: ServerSealingKey = {
+  keyId: "bbbbbbbbbbbbbbbbbbbbbb",
+  material: "s".repeat(43),
+};
 
 const opaque = (character: string): string => character.repeat(43);
 const identity: ReplicationIdentity = {
@@ -51,7 +57,7 @@ describe("large logical replication values", () => {
       t: 1,
       op: true,
     };
-    const logical = makeLogicalIdentityEncoder("s".repeat(32), opaque("Z"));
+    const logical = makeLogicalIdentityEncoder(sealing, opaque("Z"));
     const values: SnapshotLogicalValue[] = [];
     for await (const value of projectLogicalValueParts(raw, logical)) {
       values.push(value);
@@ -113,7 +119,7 @@ describe("large logical replication values", () => {
   });
 
   test("the real projector round-trips both valid stored double infinities", async () => {
-    const logical = makeLogicalIdentityEncoder("s".repeat(32), opaque("Z"));
+    const logical = makeLogicalIdentityEncoder(sealing, opaque("Z"));
     const projected: SnapshotLogicalValue[] = [];
     for (const [index, value] of [
       Number.POSITIVE_INFINITY,

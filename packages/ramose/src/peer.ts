@@ -183,6 +183,16 @@ export const workerEnvOf = (worker: unknown): Record<string, unknown> | undefine
  * Deploy-time check of a user-owned Worker. Returns an error message, or
  * `undefined` when the worker is not a Cloudflare Worker (a URL, or
  * `{ url }`) — those forms have no bindings to validate.
+ *
+ * Escape-hatch stability contract: the durable server identity/sealing root
+ * lives in a fixed-name instance of the `REPLICA` namespace, which this check
+ * already requires and pins to `QueryReplicaDO`. So an escape-hatch Worker
+ * gets the same stable identity root with no extra binding — what the user
+ * owns is keeping `REPLICA` pointed at the *same* Durable Object namespace
+ * across deployments. Repointing it at a new namespace (or deleting the
+ * namespace's storage) is an explicit identity-root replacement: every derived
+ * identity changes and durable state sealed under the old root is quarantined,
+ * exactly as a lost key must be.
  */
 export const validatePeerWiring = (worker: unknown): string | undefined => {
   if (typeof worker === "string") return undefined;
@@ -263,7 +273,16 @@ const storageDecl = (storage: PeerStorage | undefined) => {
   return storage;
 };
 
-/** Fresh deployment-owned Worker-to-DO capability; never caller-configurable. */
+/**
+ * Fresh deployment-owned Worker-to-DO capability; never caller-configurable.
+ *
+ * This value rotates on every deployment *on purpose* — an old deployment must
+ * lose the ability to address the Durable Objects. It is therefore **not** an
+ * identity root: replication identities, entity identities, and revisions are
+ * sealed with the durable, once-generated root held in Durable Object state
+ * (`internal/replication/server-identity.ts`), so an ordinary redeploy rotates
+ * this capability and preserves every identity and persisted revision.
+ */
 const ownedInternalSecret = (): Redacted.Redacted<string> => {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);

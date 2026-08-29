@@ -11,6 +11,7 @@ import { bytesToBase64 } from "../core/log.ts";
 import { canonicalizeJson } from "../authorization/canonical-json.ts";
 import type { JsonValue } from "../authorization/json.ts";
 import { makeEntityIdentity, opaqueDigest } from "./identity.ts";
+import type { ServerSealingKey } from "./server-identity.ts";
 import {
   MAX_REPLICATION_CHANGE_BYTES,
   MAX_REPLICATION_DATOMS_PER_CHANGE,
@@ -47,7 +48,7 @@ export type LogicalIdentityEncoder = {
 };
 
 export const makeLogicalIdentityEncoder = (
-  secret: string,
+  sealing: ServerSealingKey,
   database: string,
 ): LogicalIdentityEncoder => {
   const cache = new Map<number, Promise<OpaqueReplicationId>>();
@@ -63,7 +64,7 @@ export const makeLogicalIdentityEncoder = (
       if (cache.size >= MAX_ENTITY_CACHE) {
         cache.delete(cache.keys().next().value!);
       }
-      identity = makeEntityIdentity(secret, database, eid);
+      identity = makeEntityIdentity(sealing, database, eid);
       cache.set(eid, identity);
       return identity;
     },

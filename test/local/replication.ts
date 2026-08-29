@@ -64,7 +64,7 @@ const withTimeout = async <A>(
   }
 };
 
-const openReplication = (
+export const openReplication = (
   base: string,
   database: string,
   token: string,
@@ -112,7 +112,7 @@ const observed = async (
   return next.value;
 };
 
-const closeIterator = async (
+export const closeIterator = async (
   iterator: AsyncIterator<ObservedReplicationFrame>,
 ): Promise<void> => {
   await iterator.return?.(undefined);

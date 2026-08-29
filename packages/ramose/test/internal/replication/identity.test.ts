@@ -11,10 +11,14 @@ import {
   makeEntityIdentity,
   makeReplicationIdentity,
   makeRevision,
+  type ServerSealingKey,
 } from "../../../src/internal/replication/index.ts";
 import { replicaPartitionKey } from "../../../src/internal/replication/indexeddb.ts";
 
-const secret = "replication-test-secret-that-is-long-enough";
+const sealing: ServerSealingKey = {
+  keyId: "aaaaaaaaaaaaaaaaaaaaaa",
+  material: "replication-test-sealing-root-material------",
+};
 const digest = (character: string) => character.repeat(64);
 const compatibility = (character: string) => ReadCompatibilityHash.make(character.repeat(43));
 const caller = (exp: number, org = "acme", sub = "user-1"): AuthenticatedCaller => ({
@@ -50,7 +54,7 @@ const make = (options: {
   compatibility?: ReadCompatibilityHash;
   policy?: string;
 } = {}) => makeReplicationIdentity({
-  secret,
+  sealing,
   origin: "https://ramose.test",
   caller: options.caller ?? caller(2_000_000_000),
   path: options.path ?? path(),
@@ -97,11 +101,11 @@ describe("opaque replication identities", () => {
     const operationOnly = await make({ path: path("child-db", "issues", digest("c")) });
     expect(operationOnly).toEqual(baseline);
     expect(replicaPartitionKey(operationOnly)).toBe(replicaPartitionKey(baseline));
-    expect(await makeEntityIdentity(secret, operationOnly.authenticator, 42)).toBe(
-      await makeEntityIdentity(secret, baseline.authenticator, 42),
+    expect(await makeEntityIdentity(sealing, operationOnly.authenticator, 42)).toBe(
+      await makeEntityIdentity(sealing, baseline.authenticator, 42),
     );
-    expect(await makeRevision(secret, operationOnly, "S".repeat(43))).toBe(
-      await makeRevision(secret, baseline, "S".repeat(43)),
+    expect(await makeRevision(sealing, operationOnly, "S".repeat(43))).toBe(
+      await makeRevision(sealing, baseline, "S".repeat(43)),
     );
     const catalogOnly = await make({ path: path("child-db", "other-catalog", digest("c")) });
     expect(catalogOnly.readView).toBe(baseline.readView);
@@ -110,12 +114,12 @@ describe("opaque replication identities", () => {
 
   test("entity identities and revisions are stable opaque PRF outputs within one partition", async () => {
     const identity = await make();
-    const entity = await makeEntityIdentity(secret, identity.authenticator, 42);
+    const entity = await makeEntityIdentity(sealing, identity.authenticator, 42);
     expect(entity).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(await makeEntityIdentity(secret, identity.authenticator, 42)).toBe(entity);
-    expect(await makeEntityIdentity(secret, identity.authenticator, 43)).not.toBe(entity);
-    const revision = await makeRevision(secret, identity, "S".repeat(43));
+    expect(await makeEntityIdentity(sealing, identity.authenticator, 42)).toBe(entity);
+    expect(await makeEntityIdentity(sealing, identity.authenticator, 43)).not.toBe(entity);
+    const revision = await makeRevision(sealing, identity, "S".repeat(43));
     expect(revision).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(await makeRevision(secret, identity, "S".repeat(43))).toBe(revision);
+    expect(await makeRevision(sealing, identity, "S".repeat(43))).toBe(revision);
   });
 });

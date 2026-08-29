@@ -12,6 +12,10 @@ import { type RamoseEnv, internalHeaders } from "../internal/transactor/index.ts
 import type { Basis } from "../internal/replica/index.ts";
 import type { LiveBasisEvent } from "../internal/authorization/live.ts";
 import { Unauthorized } from "../db/Errors.ts";
+import {
+  SERVER_IDENTITY_INCOMPATIBLE,
+  ServerIdentityIncompatible,
+} from "../internal/replication/server-identity.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
@@ -223,6 +227,29 @@ export type ReplicationRevisionRecord = {
   readonly revision: string;
   readonly binding: string;
   readonly basisT: number;
+  /** Key id of the durable identity/sealing root this revision was sealed with. */
+  readonly keyId: string;
+};
+
+/**
+ * A store that persisted revisions under a different identity/sealing root
+ * refuses this one. The durable state stays quarantined: never read back,
+ * never overwritten, never silently reused.
+ */
+const rejectQuarantined = async (
+  response: Response,
+  keyId: string,
+): Promise<void> => {
+  if (response.status !== 409) return;
+  const body = (await response.clone().json().catch(() => undefined)) as {
+    readonly error?: unknown;
+    readonly persisted?: unknown;
+  } | undefined;
+  if (body?.error !== SERVER_IDENTITY_INCOMPATIBLE) return;
+  throw new ServerIdentityIncompatible({
+    persisted: typeof body.persisted === "string" ? body.persisted : "unknown",
+    current: keyId,
+  });
 };
 
 /**
@@ -267,6 +294,7 @@ export const rememberReplicationRevision = async (
       body: JSON.stringify({ action: "remember", ...record }),
     },
   );
+  await rejectQuarantined(response, record.keyId);
   if (!response.ok) throw new UpstreamError({
     status: response.status,
     body: await response.text(),
@@ -279,6 +307,7 @@ export const resolveReplicationRevision = async (
   database: string,
   revision: string,
   binding: string,
+  keyId: string,
 ): Promise<number | undefined> => {
   const response = await replicationRevisionStore(
     env,
@@ -292,9 +321,10 @@ export const resolveReplicationRevision = async (
         "content-type": "application/json",
         ...internalHeaders(env),
       },
-      body: JSON.stringify({ action: "resolve", revision, binding }),
+      body: JSON.stringify({ action: "resolve", revision, binding, keyId }),
     },
   );
+  await rejectQuarantined(response, keyId);
   if (!response.ok) throw new UpstreamError({
     status: response.status,
     body: await response.text(),

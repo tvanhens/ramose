@@ -28,8 +28,14 @@ import {
   fetchBasisWithStats,
   invalidateBasis,
   nearestReplica,
+  replicationRevisionStoreId,
 } from "./peer.ts";
 import { handleStorageTestAdmin } from "./storage-test-admin.ts";
+import {
+  clearServerIdentityRootCache,
+  serverIdentityRoot,
+  serverIdentityRootId,
+} from "./server-identity.ts";
 
 const json = (
   body: unknown,
@@ -253,6 +259,73 @@ const forward = async (
   }
 };
 
+/**
+ * Real durable identity/sealing root, read through the same internal boundary
+ * production uses. Key material never crosses this route: only the public key
+ * id, and one boolean proving the root is not the rotating Worker→DO
+ * capability.
+ */
+const handleServerIdentity = async (
+  request: Request,
+  env: RamoseEnv,
+): Promise<Response> => {
+  const body = (await request.json()) as { action?: unknown };
+  if (body.action === "forget-isolate-cache") {
+    clearServerIdentityRootCache();
+    return json({ ok: true, forgotten: true });
+  }
+  if (body.action !== "probe") {
+    throw new BadRequest({
+      message: "server-identity action must be probe|forget-isolate-cache",
+    });
+  }
+  const root = await serverIdentityRoot(env);
+  return json({
+    ok: true,
+    version: root.version,
+    keyId: root.keyId,
+    createdAt: root.createdAt,
+    objectId: serverIdentityRootId(env).toString(),
+    // Separation of the two roles, asserted without revealing either secret.
+    isInternalSecret: root.key === env.RAMOSE_INTERNAL_SECRET,
+  });
+};
+
+/** Direct access to one real replication-revision store, by explicit key id. */
+const handleReplicationRevision = async (
+  request: Request,
+  env: RamoseEnv,
+  db: string,
+): Promise<Response> => {
+  const body = (await request.json()) as {
+    action?: unknown;
+    revision?: unknown;
+    binding?: unknown;
+    basisT?: unknown;
+    keyId?: unknown;
+  };
+  if (
+    typeof body.binding !== "string" ||
+    typeof body.keyId !== "string" ||
+    typeof body.revision !== "string"
+  ) {
+    throw new BadRequest({
+      message: "replication-revision needs revision, binding and keyId",
+    });
+  }
+  const response = await env.REPLICA.get(
+    replicationRevisionStoreId(env, db, body.binding),
+  ).fetch(`https://replica/replication/revision?db=${encodeURIComponent(db)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...internalHeaders(env) },
+    body: JSON.stringify(body),
+  });
+  return new Response(response.body, {
+    status: response.status,
+    headers: { "content-type": "application/json" },
+  });
+};
+
 /** Worker entry for `/__test__/db/:name/...`. Caller already checked the env gate. */
 export const handleTestAdmin = async (
   request: Request,
@@ -308,6 +381,10 @@ export const handleTestAdmin = async (
   }
   if (request.method !== "POST") throw new BadRequest({ message: "test admin is POST" });
   if (rest === "/r2") return handleR2(request, env, db);
+  if (rest === "/server-identity") return handleServerIdentity(request, env);
+  if (rest === "/replication-revision") {
+    return handleReplicationRevision(request, env, db);
+  }
   if (rest === "/storage") return handleStorageTestAdmin(request, env, db);
   if (rest === "/basis") {
     const body = (await request.json()) as { action?: unknown };

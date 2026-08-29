@@ -37,7 +37,10 @@ import {
   sameReplicationIdentity,
   snapshotEntryChunks,
   REPLICATION_PROTOCOL_VERSION,
+  sealingKeyOf,
   type ActivationRequest,
+  type ServerIdentityRoot,
+  type ServerSealingKey,
   type LogicalIdentityEncoder,
   type OpaqueReplicationId,
   type ReplicationFrame,
@@ -45,6 +48,7 @@ import {
 } from "../internal/replication/index.ts";
 import { callerFromVerified } from "../internal/authorization/request.ts";
 import { authenticateRequest } from "./admit.ts";
+import { serverIdentityRoot } from "./server-identity.ts";
 import { acquireCurrentDb } from "./authorized-read.ts";
 import { JwtVerifier } from "./jwt.ts";
 import {
@@ -98,6 +102,16 @@ export type AuthorizedReplicationInput = {
   readonly initialTarget: AuthorizedGraphPathTarget;
   readonly headers: Record<string, string>;
   readonly boundaries?: RuntimeBoundaries;
+};
+
+/**
+ * Everything downstream of admission derives identities from the durable
+ * identity/sealing root, resolved once per stream and never from the rotating
+ * `RAMOSE_INTERNAL_SECRET` (which stays the Worker→DO capability only).
+ */
+type ReplicationRun = AuthorizedReplicationInput & {
+  readonly identityRoot: ServerIdentityRoot;
+  readonly sealing: ServerSealingKey;
 };
 
 const frame = <A extends ReplicationFrame>(value: A): A => value;
@@ -170,16 +184,16 @@ const leaseAlive = (version: AuthorizedVersion): boolean =>
   Date.now() < version.leaseExpiresAt;
 
 const identityEncoder = (
-  input: AuthorizedReplicationInput,
+  input: ReplicationRun,
   version: AuthorizedVersion,
 ): LogicalIdentityEncoder =>
   makeLogicalIdentityEncoder(
-    input.env.RAMOSE_INTERNAL_SECRET,
+    input.sealing,
     version.identity.authenticator,
   );
 
 const currentState = async (
-  input: AuthorizedReplicationInput,
+  input: ReplicationRun,
   version: AuthorizedVersion,
   logical: LogicalIdentityEncoder,
   signal: AbortSignal,
@@ -193,7 +207,7 @@ const currentState = async (
     version,
     basisT: version.target.context.currentDb.basisT,
     revision: await makeRevision(
-      input.env.RAMOSE_INTERNAL_SECRET,
+      input.sealing,
       version.identity,
       stateDigest,
     ),
@@ -201,7 +215,7 @@ const currentState = async (
 };
 
 const remember = (
-  input: AuthorizedReplicationInput,
+  input: ReplicationRun,
   state: ServerReplicaState,
 ): Promise<void> =>
   rememberReplicationRevision(
@@ -211,6 +225,7 @@ const remember = (
       revision: state.revision,
       binding: state.version.identity.authenticator,
       basisT: state.basisT,
+      keyId: input.identityRoot.keyId,
     },
   );
 
@@ -223,7 +238,7 @@ const sameVersion = (
   sameReplicationIdentity(expectedIdentity, version.identity);
 
 const snapshotFrames = async function* (
-  input: AuthorizedReplicationInput,
+  input: ReplicationRun,
   authorize: () => Promise<AuthorizedVersion>,
   expectedPath: GraphPathLeaseIdentity,
   expectedIdentity: ReplicationIdentity,
@@ -241,7 +256,7 @@ const snapshotFrames = async function* (
     // before any state-dependent frame crosses the boundary.
     if (!leaseAlive(version)) continue;
     const snapshot = await makeSnapshotIdentity(
-      input.env.RAMOSE_INTERNAL_SECRET,
+      input.sealing,
       version.identity,
       candidate.revision,
     );
@@ -346,7 +361,7 @@ const snapshotFrames = async function* (
 
 /** Every reset is preceded by a fresh complete-path authorization fence. */
 const resetFrames = async function* (
-  input: AuthorizedReplicationInput,
+  input: ReplicationRun,
   authorize: () => Promise<AuthorizedVersion>,
   expectedPath: GraphPathLeaseIdentity,
   expectedIdentity: ReplicationIdentity,
@@ -372,7 +387,7 @@ const resetFrames = async function* (
 };
 
 const advanceFrames = async function* (
-  input: AuthorizedReplicationInput,
+  input: ReplicationRun,
   authorize: () => Promise<AuthorizedVersion>,
   authorizeAt: (version: AuthorizedVersion, basisT: number) => Promise<Db>,
   expectedPath: GraphPathLeaseIdentity,
@@ -448,7 +463,7 @@ const advanceFrames = async function* (
       );
     }
     const beforeRevision = await makeRevision(
-      input.env.RAMOSE_INTERNAL_SECRET,
+      input.sealing,
       expectedIdentity,
       delta.previousStateDigest,
     );
@@ -462,7 +477,7 @@ const advanceFrames = async function* (
       );
     }
     const revision = await makeRevision(
-      input.env.RAMOSE_INTERNAL_SECRET,
+      input.sealing,
       expectedIdentity,
       delta.stateDigest,
     );
@@ -546,7 +561,7 @@ const advanceFrames = async function* (
 };
 
 const replicationFrames = async function* (
-  input: AuthorizedReplicationInput,
+  input: ReplicationRun,
   initialIdentity: ReplicationIdentity,
   context: Context.Context<JwtVerifier>,
   signal: AbortSignal,
@@ -591,7 +606,7 @@ const replicationFrames = async function* (
       );
       const identity = yield* Effect.tryPromise({
         try: async () => makeReplicationIdentity({
-          secret: input.env.RAMOSE_INTERNAL_SECRET,
+          sealing: input.sealing,
           origin,
           caller,
           path: pathIdentity,
@@ -687,11 +702,16 @@ const replicationFrames = async function* (
             input.initialTarget.route.database,
             resume,
             initialIdentity.authenticator,
+            input.identityRoot.keyId,
           ),
           effectiveSignal,
         );
       } catch {
         effectiveSignal.throwIfAborted();
+        // A revision store sealed under a replaced identity root reports a
+        // typed `ServerIdentityIncompatible`; like any other non-authoritative
+        // resume failure it quarantines that state and falls through to a full
+        // authorized reset instead of reusing it.
         basisT = undefined;
       }
       if (basisT === undefined) {
@@ -834,9 +854,18 @@ export const authorizedReplicationResponse = (
       input.initialTarget,
       input.activation.graphPath,
     );
+    const identityRoot = yield* Effect.tryPromise({
+      try: () => serverIdentityRoot(input.env),
+      catch: (cause) => runtimeError("server identity root unavailable", cause),
+    });
+    const run: ReplicationRun = {
+      ...input,
+      identityRoot,
+      sealing: sealingKeyOf(identityRoot),
+    };
     const initialIdentity = yield* Effect.tryPromise({
       try: async () => makeReplicationIdentity({
-        secret: input.env.RAMOSE_INTERNAL_SECRET,
+        sealing: run.sealing,
         origin: new URL(input.request.url).origin,
         caller: input.initialCaller,
         path: initialPath,
@@ -849,7 +878,7 @@ export const authorizedReplicationResponse = (
     const guarded = async function* (): AsyncGenerator<ReplicationFrame, void, undefined> {
       try {
         yield* replicationFrames(
-          input,
+          run,
           initialIdentity,
           context,
           controller.signal,

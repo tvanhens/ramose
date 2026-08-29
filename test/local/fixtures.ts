@@ -164,6 +164,8 @@ export const testAdmin = async (
     | "/index"
     | "/info"
     | "/operation-receipts"
+    | "/server-identity"
+    | "/replication-revision"
     | "/log",
   body: unknown,
   headers?: Record<string, string>,
