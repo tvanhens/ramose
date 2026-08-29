@@ -672,6 +672,24 @@ const ReplayTarget = Entity("replayTarget", {
         return { id: op.self };
       },
     }),
+    moveLookup: Operation({
+      input: EffectSchema.Struct({
+        replacement: OperationEntityId,
+        archivedKey: EffectSchema.String,
+        lookupKey: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        op.self.set(ReplayTarget.key, input.archivedKey);
+        op.set(
+          ReplayTarget,
+          input.replacement,
+          ReplayTarget.key,
+          input.lookupKey,
+        );
+        return { id: op.self };
+      },
+    }),
   }),
 });
 const ReplayApp = Schema({
@@ -698,6 +716,7 @@ const buildReplayFenceWorld = async () => {
       invoke(ReplayTarget[OwnedOperations].deleteAndEcho).when(member),
       invoke(ReplayTarget[OwnedOperations].deleteAndConsumeGate).when(member),
       invoke(ReplayTarget[OwnedOperations].archive).when(member),
+      invoke(ReplayTarget[OwnedOperations].moveLookup).when(member),
     ],
   }));
   const definitions = await Effect.runPromise(assembleCatalogDefinitions({
@@ -720,6 +739,16 @@ const buildReplayFenceWorld = async () => {
       ":replayGate/name": "Good",
     },
     {
+      ":db/id": "replacement-gate",
+      ":ramose/type": ":replayGate",
+      ":replayGate/name": "Good",
+    },
+    {
+      ":db/id": "third-gate",
+      ":ramose/type": ":replayGate",
+      ":replayGate/name": "Good",
+    },
+    {
       ":db/id": "noise",
       ":ramose/type": ":replayNoise",
       ":replayNoise/note": "initial",
@@ -731,6 +760,20 @@ const buildReplayFenceWorld = async () => {
       ":replayTarget/title": "Before",
       ":replayTarget/gate": "gate",
     },
+    {
+      ":db/id": "replacement",
+      ":ramose/type": ":replayTarget",
+      ":replayTarget/key": "replacement-key",
+      ":replayTarget/title": "Before",
+      ":replayTarget/gate": "replacement-gate",
+    },
+    {
+      ":db/id": "third",
+      ":ramose/type": ":replayTarget",
+      ":replayTarget/key": "third-key",
+      ":replayTarget/title": "Before",
+      ":replayTarget/gate": "third-gate",
+    },
   ];
   restoreEngineTypeAssertions(seed);
   const report = await conn.transact(seed);
@@ -741,6 +784,8 @@ const buildReplayFenceWorld = async () => {
     gate: report.tempids.gate!,
     noise: report.tempids.noise!,
     target: report.tempids.target!,
+    replacement: report.tempids.replacement!,
+    third: report.tempids.third!,
   };
 };
 
@@ -752,7 +797,7 @@ const replayRuntime = (world: Awaited<ReturnType<typeof buildReplayFenceWorld>>)
 
 const replayInvocation = (
   world: Awaited<ReturnType<typeof buildReplayFenceWorld>>,
-  localName: "deleteAndEcho" | "deleteAndConsumeGate" | "archive",
+  localName: "deleteAndEcho" | "deleteAndConsumeGate" | "archive" | "moveLookup",
   input: unknown,
 ) => ({
   owner: { kind: "entity" as const, name: "replayTarget" },
@@ -1340,7 +1385,7 @@ describe("deployed operation runtime", () => {
     const replacement = await buildReplayFenceWorld();
     expect(replacement.target).toBe(world.target);
     await replacement.conn.transact([
-      { ":db/id": replacement.target, ":replayTarget/key": "replacement-key" },
+      { ":db/id": replacement.target, ":replayTarget/key": "resurrected-key" },
       { ":db/id": replacement.gate, ":replayGate/name": "Revoked" },
     ]);
     await expect(authorizeCatalogOperationReplay(
@@ -1412,6 +1457,72 @@ describe("deployed operation runtime", () => {
       invocation,
       executed.replayFence,
     )).rejects.toBeInstanceOf(Unauthorized);
+  });
+
+  test("replays an exact post-commit lookup rebind without admitting its replacement", async () => {
+    const world = await buildReplayFenceWorld();
+    const runtime = replayRuntime(world);
+    const invocation = replayInvocation(world, "moveLookup", {
+      replacement: world.replacement,
+      archivedKey: "archived-key",
+      lookupKey: "target-key",
+    });
+    const executed = await executeCatalogOperation(world.conn, runtime, invocation);
+    expect(executed.output).toEqual({ id: world.target });
+    expect(await world.conn.db().entid([
+      ":replayTarget/key",
+      "target-key",
+    ])).toBe(world.replacement);
+    const hiddenTarget = executed.replayFence.target;
+    expect(hiddenTarget?.eid).toBe(world.target);
+    expect(hiddenTarget?.referenceEid).toBe(world.replacement);
+    expect(hiddenTarget?.postCommit.kind).toBe("hidden");
+
+    // The exact post-commit lookup resolution is compatible with replay, but
+    // admission remains anchored to the originally authorized target eid.
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).resolves.toBeUndefined();
+
+    await world.conn.transact([
+      {
+        ":db/id": world.replacement,
+        ":replayTarget/key": "replacement-after",
+      },
+      { ":db/id": world.third, ":replayTarget/key": "target-key" },
+    ]);
+    const beforeThirdDenial = world.conn.t;
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).rejects.toBeInstanceOf(Unauthorized);
+    expect(world.conn.t).toBe(beforeThirdDenial);
+    expect(await world.conn.db().entid([
+      ":replayTarget/key",
+      "target-key",
+    ])).toBe(world.third);
+
+    await world.conn.transact([{
+      ":db/id": world.third,
+      ":replayTarget/key": "third-after",
+    }]);
+    const beforeNullDenial = world.conn.t;
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).rejects.toBeInstanceOf(Unauthorized);
+    expect(world.conn.t).toBe(beforeNullDenial);
+    expect(await world.conn.db().entid([
+      ":replayTarget/key",
+      "target-key",
+    ])).toBeUndefined();
   });
 
   test("keeps a consumed policy dependency in the absent-target witness", async () => {

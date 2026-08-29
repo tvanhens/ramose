@@ -904,6 +904,157 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(await currentBasis(base, database)).toBe(beforeReplay);
     });
 
+    test("lookup replay accepts its exact post-commit rebind but never a later replacement", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = CONFORMANCE_DATABASES[9]!;
+      await install(base, database);
+      const admin = await signToken(database, "admin", "admin-sub", {
+        org: "admin-org",
+      });
+      const member = await signToken(database, "member", "alice-sub", {
+        org: "acme",
+      });
+      const alice = await create(
+        base,
+        database,
+        admin,
+        ConformanceUser.ns,
+        { sub: "alice-sub" },
+      );
+      const original = await create(
+        base,
+        database,
+        admin,
+        ConformanceIssue.ns,
+        {
+          key: "lookup-rebind-original",
+          title: "Original operation subject",
+          owner: alice,
+          org: "acme",
+        },
+      );
+      const replacement = await create(
+        base,
+        database,
+        admin,
+        ConformanceIssue.ns,
+        {
+          key: "lookup-rebind-second",
+          title: "Post-commit lookup owner",
+          owner: alice,
+          org: "acme",
+        },
+      );
+      const third = await create(
+        base,
+        database,
+        admin,
+        ConformanceIssue.ns,
+        {
+          key: "lookup-rebind-third",
+          title: "Later lookup owner",
+          owner: alice,
+          org: "acme",
+        },
+      );
+      const operation = {
+        owner: { kind: "entity" as const, name: ConformanceIssue.ns },
+        localName: "moveLookup",
+      };
+      const target = [
+        ":conformanceIssue/key",
+        "lookup-rebind-original",
+      ] as const;
+      const input = {
+        replacement,
+        archivedKey: "lookup-rebind-archived",
+        lookupKey: "lookup-rebind-original",
+      };
+      const invocationId = "lookup-rebind-invocation-01";
+      const completed = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        target,
+        invocationId,
+      );
+      expect(completed.status).toBe(200);
+      expect(completed.body).toEqual({
+        result: { id: original },
+        receipt: { version: 1, invocationId, status: "completed" },
+      });
+      const exactRetry = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        target,
+        invocationId,
+      );
+      expect(exactRetry.status).toBe(200);
+      expect(exactRetry.body).toEqual(completed.body);
+      expect((await lookup(base, database, admin, target)).body.result).toBe(
+        replacement,
+      );
+
+      const movedAgain = await invoke(
+        base,
+        database,
+        admin,
+        operation,
+        {
+          replacement: third,
+          archivedKey: "lookup-rebind-second-after",
+          lookupKey: "lookup-rebind-original",
+        },
+        replacement,
+      );
+      expect(movedAgain.status).toBe(200);
+      expect((await lookup(base, database, admin, target)).body.result).toBe(
+        third,
+      );
+      const beforeThirdDenial = await currentBasis(base, database);
+      const deniedThird = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        target,
+        invocationId,
+      );
+      expect(deniedThird.status).toBe(403);
+      expect(deniedThird.body).toEqual({ error: "unauthorized" });
+      expect(await currentBasis(base, database)).toBe(beforeThirdDenial);
+
+      const cleared = await invoke(base, database, admin, {
+        owner: { kind: "entity", name: ConformanceIssue.ns },
+        localName: "archive",
+      }, {
+        key: "lookup-rebind-third-after",
+        owner: alice,
+        org: "acme",
+      }, third);
+      expect(cleared.status).toBe(200);
+      expect((await lookup(base, database, admin, target)).body.result).toBeNull();
+      const beforeNullDenial = await currentBasis(base, database);
+      const deniedNull = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        target,
+        invocationId,
+      );
+      expect(deniedNull.status).toBe(403);
+      expect(deniedNull.body).toEqual({ error: "unauthorized" });
+      expect(await currentBasis(base, database)).toBe(beforeNullDenial);
+    });
+
     test("JWT, catalog proof, metadata, and errors fail closed opaquely", async () => {
       const base = ctx.urls().conformanceUrl;
       const database = CONFORMANCE_DATABASES[0]!;

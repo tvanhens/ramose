@@ -1542,7 +1542,6 @@ const authorizeCatalogOperationOnDb = async (
   let target: { readonly eid: number; readonly type: string } | undefined;
   if (descriptor.id.target === "required") {
     if (invocation.target === undefined) throw deny();
-    target = await resolveVisibleTarget(context, invocation.target);
     if (replayFence !== undefined) {
       const fenced = replayFence.target;
       if (fenced === undefined) {
@@ -1558,62 +1557,64 @@ const authorizeCatalogOperationOnDb = async (
         (typeof invocation.target === "number" &&
           invocation.target !== fenced.eid) ||
         (typeof invocation.target !== "number" &&
-          currentReferenceEid !== null && currentReferenceEid !== fenced.eid) ||
-        (target !== undefined && target.eid !== fenced.eid)
+          currentReferenceEid !== fenced.referenceEid) ||
+        !typeCompatible(
+          deployed.definition,
+          descriptor.id.owner,
+          fenced.type,
+        )
       ) throw deny();
 
       // Always inspect the originally resolved eid directly. A lookup that no
-      // longer resolves must not hide a later resurrection under other data.
+      // longer resolves or now resolves to the exact post-commit replacement
+      // must not substitute that row as the operation subject.
       const fencedExists = await context.currentDb.exists(fenced.eid);
-      if (target === undefined) {
-        if (
-          !typeCompatible(
-            deployed.definition,
-            descriptor.id.owner,
-            fenced.type,
-          ) ||
-          currentReferenceEid !== fenced.referenceEid
-        ) throw deny();
-        switch (fenced.postCommit.kind) {
-          case "visible":
-            throw deny();
-          case "absent":
-            if (fencedExists) throw deny();
-            {
-              const currentDigest = await authorizationReadSetDigest(
-                context.principal,
-                context.currentDb,
-                fenced.eid,
-                invocation.target,
-                fenced.postCommit.authorizationReadSet,
-              );
-              if (currentDigest !== fenced.postCommit.authorizationDigest) {
-                throw deny();
-              }
-            }
-            break;
-          case "hidden": {
-            if (!fencedExists) throw deny();
-            const authorization = await targetAuthorizationState(
-              deployed.definition,
+      switch (fenced.postCommit.kind) {
+        case "visible": {
+          target = await resolveVisibleTarget(context, invocation.target);
+          if (
+            !fencedExists ||
+            target === undefined ||
+            target.eid !== fenced.eid
+          ) throw deny();
+          break;
+        }
+        case "absent":
+          if (fencedExists) throw deny();
+          {
+            const currentDigest = await authorizationReadSetDigest(
               context.principal,
               context.currentDb,
               fenced.eid,
               invocation.target,
+              fenced.postCommit.authorizationReadSet,
             );
-            if (
-              authorization.visible ||
-              authorization.digest !== fenced.postCommit.authorizationDigest
-            ) throw deny();
-            break;
+            if (currentDigest !== fenced.postCommit.authorizationDigest) {
+              throw deny();
+            }
           }
+          target = { eid: fenced.eid, type: fenced.type };
+          break;
+        case "hidden": {
+          if (!fencedExists) throw deny();
+          const authorization = await targetAuthorizationState(
+            deployed.definition,
+            context.principal,
+            context.currentDb,
+            fenced.eid,
+            invocation.target,
+          );
+          if (
+            authorization.visible ||
+            authorization.digest !== fenced.postCommit.authorizationDigest
+          ) throw deny();
+          target = { eid: fenced.eid, type: fenced.type };
+          break;
         }
-        target = { eid: fenced.eid, type: fenced.type };
-      } else if (!fencedExists) {
-        throw deny();
       }
-    } else if (target === undefined) {
-      throw deny();
+    } else {
+      target = await resolveVisibleTarget(context, invocation.target);
+      if (target === undefined) throw deny();
     }
     if (target === undefined || !typeCompatible(deployed.definition, descriptor.id.owner, target.type)) {
       throw deny();

@@ -23,6 +23,7 @@ export const CONFORMANCE_DATABASES = Object.freeze([
   "conformance-idempotent-revocation",
   "conformance-idempotent-self-delete",
   "conformance-idempotent-self-hidden",
+  "conformance-idempotent-lookup-rebind",
 ]);
 
 export const ConformanceUser = Entity("conformanceUser", {
@@ -127,6 +128,24 @@ export const ConformanceIssue = Entity("conformanceIssue", {
         return { id: op.self };
       },
     }),
+    moveLookup: Operation({
+      input: EffectSchema.Struct({
+        replacement: EntityId,
+        archivedKey: EffectSchema.String,
+        lookupKey: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        op.self.set(ConformanceIssue.key, input.archivedKey);
+        op.set(
+          ConformanceIssue,
+          input.replacement,
+          ConformanceIssue.key,
+          input.lookupKey,
+        );
+        return { id: op.self };
+      },
+    }),
   }),
 });
 
@@ -178,6 +197,9 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
       Policy.any(member, admin),
     ),
     Policy.invoke(ConformanceIssue[OwnedOperations].transfer).when(
+      Policy.any(member, admin),
+    ),
+    Policy.invoke(ConformanceIssue[OwnedOperations].moveLookup).when(
       Policy.any(member, admin),
     ),
   ],
