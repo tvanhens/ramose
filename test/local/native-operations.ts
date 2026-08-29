@@ -36,6 +36,21 @@ const install = async (base: string, database: string) => {
   expect(response.status).toBe(200);
 };
 
+const waitForCommitCheckpoint = async (
+  base: string,
+  database: string,
+): Promise<void> => {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const status = await testAdmin(base, database, "/checkpoint", {
+      scope: "transactor",
+      action: "status",
+    });
+    if (status.body.checkpoints?.["transactor.commit"]?.pending === true) return;
+    await Bun.sleep(25);
+  }
+  throw new Error("operation did not reach the transactor commit checkpoint");
+};
+
 export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
   describe("native deployed operations", () => {
     test("static operation commits through the real Worker/Transactor/R2 topology", async () => {
@@ -50,16 +65,24 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(created.status).toBe(200);
       expect(created.body).toEqual({
         result: { id: expect.any(Number) },
-        t: expect.any(Number),
       });
-      expect(created.res.headers.get("x-ramose-basis-t")).toBe(String(created.body.t));
+      expect(Object.hasOwn(created.body, "t")).toBe(false);
+      expect(created.res.headers.get("x-ramose-basis-t")).toBeNull();
+
+      // Test-only instrumentation may observe the internal basis to fence the
+      // real Replica read; the public operation response above may not.
+      const basis = await testAdmin(base, database, "/basis", { action: "fetch" }, {
+        "x-ramose-cache-basis": "0",
+      });
+      expect(basis.status).toBe(200);
+      const committedT = basis.body.basis.t as number;
 
       const readBack = await json(base, `/db/${database}/entity/${created.body.result.id}`, {
         token,
         headers: {
           "x-ramose-catalog": operationProof.catalog,
           "x-ramose-unit-hash": operationProof.unitHash,
-          "x-ramose-min-t": String(created.body.t),
+          "x-ramose-min-t": String(committedT),
         },
       });
       expect(readBack.status).toBe(200);
@@ -114,6 +137,60 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(invalidInput.status).toBe(400);
       expect(invalidInput.res.headers.get("access-control-allow-origin")).toBe("*");
       expect(invalidInput.res.headers.get("access-control-allow-methods")).toContain("POST");
+    });
+
+    test("an operation expiring at the real DO commit fence fails atomically", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-expiry";
+      await install(base, database);
+      const exp = Math.floor(Date.now() / 1_000) + 4;
+      const token = await signToken(database, "member", "user_ada", undefined, { exp });
+      const armed = await testAdmin(base, database, "/checkpoint", {
+        scope: "transactor",
+        action: "arm-wait",
+        name: "transactor.commit",
+      });
+      expect(armed.status).toBe(200);
+
+      const pending = invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "create",
+      }, { title: "Expired" });
+      let released = false;
+      try {
+        await waitForCommitCheckpoint(base, database);
+        const untilExpiry = exp * 1_000 - Date.now() + 25;
+        if (untilExpiry > 0) await Bun.sleep(untilExpiry);
+        // Releasing lets the expiry fence abort this DO. The admin request may
+        // therefore observe that same abort (500) even though it released the
+        // real checkpoint, so the operation result is the authoritative check.
+        await testAdmin(base, database, "/checkpoint", {
+          scope: "transactor",
+          action: "release",
+          name: "transactor.commit",
+        });
+        released = true;
+      } finally {
+        if (!released) {
+          await testAdmin(base, database, "/checkpoint", {
+            scope: "transactor",
+            action: "release",
+            name: "transactor.commit",
+          });
+        }
+      }
+
+      const expired = await pending;
+      expect(expired.status).toBe(500);
+      expect(expired.body).toEqual({ error: "operation execution failed" });
+      expect(Object.hasOwn(expired.body, "t")).toBe(false);
+      expect(expired.res.headers.get("x-ramose-basis-t")).toBeNull();
+
+      const absent = await testAdmin(base, database, "/query", {
+        query: '[:find ?e :where [?e :nativeItem/title "Expired"]]',
+      });
+      expect(absent.status).toBe(200);
+      expect(absent.body.result).toEqual([]);
     });
 
     test("raw writes and stale unit proofs remain closed", async () => {

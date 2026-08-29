@@ -123,10 +123,19 @@ describe("transact", () => {
     expect(rr.txData.length).toBe(1);
     await conn.transact([[":db/retract", a, ":user/tags"]]);
     expect((await conn.db().entity(a))![":user/tags"]).toBeUndefined();
-    await conn.transact([[":db/retractEntity", a]]);
+    const deleted = await conn.transact([[":db/retractEntity", a]]);
     expect(await conn.db().entity(a)).toBeUndefined();
     expect(await conn.db().entity(addr)).toBeUndefined(); // component
     expect((await conn.db().entity(b))![":user/friends"]).toBeUndefined(); // incoming ref removed
+    const rootOps = deleted.txOps.filter((op) => op.e === a);
+    const componentOps = deleted.txOps.filter((op) => op.e === addr);
+    const incomingOps = deleted.txOps.filter((op) => op.e === b);
+    expect(rootOps.length).toBeGreaterThan(0);
+    expect(rootOps.every((op) => op.fromRetractEntity && op.retractEntityRoot)).toBe(true);
+    expect(componentOps.length).toBeGreaterThan(0);
+    expect(componentOps.every((op) => op.fromRetractEntity && !op.retractEntityRoot)).toBe(true);
+    expect(incomingOps.length).toBeGreaterThan(0);
+    expect(incomingOps.every((op) => op.fromRetractEntity && !op.retractEntityRoot)).toBe(true);
     // history still has everything
     expect((await conn.db().history().datomsArray(Index.EAVT, { e: a })).length).toBeGreaterThan(0);
   });

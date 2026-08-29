@@ -87,19 +87,32 @@ export const invokeAuthoritativeOperation = async (
     caller,
   };
   const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
-  const response = await stub.fetch(
-    `https://transactor/invoke?db=${encodeURIComponent(database)}`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...internalHeaders(env),
+  const privateFailure = (): UpstreamError => new UpstreamError({
+    status: 500,
+    body: JSON.stringify({ error: "operation execution failed" }),
+  });
+  let response: Response;
+  let text: string;
+  try {
+    response = await stub.fetch(
+      `https://transactor/invoke?db=${encodeURIComponent(database)}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...internalHeaders(env),
+        },
+        body: stringifyJson({ invocation }),
       },
-      body: stringifyJson({ invocation }),
-    },
-  );
-  const text = await response.text();
+    );
+    text = await response.text();
+  } catch {
+    // A DO abort may carry storage or authorization-fence detail. None of it
+    // is public operation output, even in non-production stages.
+    throw privateFailure();
+  }
   if (!response.ok) {
+    if (response.status >= 500) throw privateFailure();
     throw new UpstreamError({
       status: response.status,
       body: text,

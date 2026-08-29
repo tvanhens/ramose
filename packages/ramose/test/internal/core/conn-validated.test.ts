@@ -16,6 +16,17 @@ test("validated transaction failure leaves the connection basis untouched", asyn
   expect(conn.t).toBe(beforeT);
   expect(await conn.db().entid([":item/name", "not-committed"])).toBeUndefined();
 
+  await expect(conn.transactValidated(
+    [{ ":item/name": "not-applied" }],
+    () => undefined,
+    1_700_000_000_000,
+    () => {
+      throw new Error("pre-apply rejected");
+    },
+  )).rejects.toThrow("pre-apply rejected");
+  expect(conn.t).toBe(beforeT);
+  expect(await conn.db().entid([":item/name", "not-applied"])).toBeUndefined();
+
   const committed = await conn.transactValidated(
     [{ ":item/name": "committed" }],
     ({ dbAfter }) => dbAfter.entid([":item/name", "committed"]),

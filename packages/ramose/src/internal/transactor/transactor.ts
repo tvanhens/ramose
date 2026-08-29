@@ -471,10 +471,14 @@ export class Transactor {
 
   private takeBatch(): Pending[] {
     const max = this.host.config.maxBatch;
-    if (max > 0 && this.queue.length > max) return this.queue.splice(0, max);
-    const b = this.queue;
-    this.queue = [];
-    return b;
+    // An operation carries a short-lived authorization lease through native
+    // awaited work. Keep it in a one-entry durable batch so a pre-commit
+    // expiry can discard this DO instance without rejecting unrelated writes.
+    if (this.queue[0]?.operation !== undefined) return this.queue.splice(0, 1);
+    const operationAt = this.queue.findIndex((pending) => pending.operation !== undefined);
+    const available = operationAt < 0 ? this.queue.length : operationAt;
+    const count = max > 0 ? Math.min(available, max) : available;
+    return this.queue.splice(0, count);
   }
 
   private async commitLoop(): Promise<void> {
@@ -503,7 +507,11 @@ export class Transactor {
         const tLoop = performance.now();
         const batch = this.takeBatch();
         const entries: LogEntry[] = [];
-        const acks: { p: Pending; ack: TxAck | OperationAck }[] = [];
+        const acks: {
+          p: Pending;
+          ack: TxAck | OperationAck;
+          assertFresh?: () => void;
+        }[] = [];
         const batchAcks = new Map<string, TxAck>();
         const tResolve = performance.now();
         for (const p of batch) {
@@ -518,6 +526,7 @@ export class Transactor {
           try {
             let rep;
             let ack: TxAck | OperationAck;
+            let assertFresh: (() => void) | undefined;
             if (p.operation !== undefined) {
               if (this.operationRuntime === undefined) {
                 throw new BadRequest({ message: "deployed operations are not configured" });
@@ -545,6 +554,7 @@ export class Transactor {
               );
               rep = executed.report;
               ack = { t: rep.t, output: executed.output };
+              assertFresh = executed.assertFresh;
             } else {
               if (!p.system) await this.applyProvision(p, entries);
               const tx = await this.authorize(p);
@@ -563,7 +573,7 @@ export class Transactor {
             if (p.clientTxId !== undefined && p.operation === undefined) {
               batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack as TxAck);
             }
-            acks.push({ p, ack });
+            acks.push({ p, ack, ...(assertFresh === undefined ? {} : { assertFresh }) });
           } catch (err) {
             if (err instanceof OperationRuntimeFault) {
               this.log.error("operation.failed", {
@@ -585,6 +595,10 @@ export class Transactor {
         const tWrite = performance.now();
         try {
           await checkpoint("transactor.commit");
+          // Fresh clocks after the final async checkpoint and immediately
+          // before the irreversible storage transaction. Operation batches
+          // are isolated, so expiry can abort/rebuild without collateral loss.
+          for (const pending of acks) pending.assertFresh?.();
           // ONE storage write for the whole batch (group commit).
           this.host.transactionSync(() => {
             checkpointSync("transactor.commit.write");
@@ -622,7 +636,17 @@ export class Transactor {
         this.resolveLatency.observe(resolveMs);
         this.log.debug("tx.commit", { t: this.conn.t, batch: entries.length, datoms: entries.reduce((n, e) => n + e.datoms.length, 0), writeMs: round(writeMs), queued: this.queue.length, txsSinceIndex: this.txSinceIndex });
         for (const [id, ack] of batchAcks) this.rememberAck(id, ack, ack.output !== undefined);
-        for (const a of acks) a.p.resolve(a.ack);
+        for (const a of acks) {
+          try {
+            // A post-commit expiry cannot undo an authorized atomic write, but
+            // REV-5 still forbids emitting its result under an expired lease.
+            a.assertFresh?.();
+            a.p.resolve(a.ack);
+          } catch (err) {
+            this.stats.rejected++;
+            a.p.reject(err);
+          }
+        }
         // dequeue → ack wall clock; "other" = loopMs - resolveMs - commitMs
         const loopMs = performance.now() - tLoop;
         this.stats.loopMs += loopMs;

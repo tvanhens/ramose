@@ -14,6 +14,11 @@ import type {
   OpPrincipal,
   OperationEffectContext,
 } from "../../db/Operation.ts";
+import { cloneBindingValue } from "../../db/Binding.ts";
+import {
+  isQueryObject,
+  tryLowerQueryObject,
+} from "../../db/query/query.ts";
 import { lowerAttr } from "../../db/attrRef.ts";
 import {
   asLookupRef,
@@ -73,6 +78,8 @@ export type OperationInvocation = {
 export type OperationExecution = {
   readonly report: TxReport;
   readonly output: unknown;
+  /** Private lease fence retained by the serialized Transactor only. */
+  readonly assertFresh: () => void;
 };
 
 export type OperationRuntime = {
@@ -141,6 +148,26 @@ const rejected = (
   ...(step === undefined ? {} : { step }),
   ...(reason === undefined ? {} : { reason }),
 });
+
+const requireFreshAuthorization = (
+  runtime: OperationRuntime,
+  caller: AuthenticatedCaller,
+  descriptor: OperationDescriptor,
+): number => {
+  let now: number;
+  try {
+    now = runtime.now();
+  } catch (cause) {
+    throw new OperationRuntimeFault("clock", cause);
+  }
+  if (!Number.isFinite(now)) {
+    throw rejected(descriptor, "authoritative operation clock is invalid");
+  }
+  if (!Number.isSafeInteger(caller.exp) || caller.exp * 1_000 <= now) {
+    throw deny();
+  }
+  return now;
+};
 
 const descriptorKey = (owner: OwnerRef, localName: string): string =>
   `${owner.kind}\0${owner.name}\0${localName}`;
@@ -288,6 +315,66 @@ const isolateCaller = (caller: AuthenticatedCaller): AuthenticatedCaller =>
     exp: caller.exp,
   });
 
+/**
+ * Private snapshot for filtered read values and their inert arguments. The
+ * snapshot is never exposed to operation code, and containers are frozen so
+ * later reruns cannot observe body-owned mutation.
+ */
+const snapshotReadValue = (
+  value: unknown,
+  seen = new WeakMap<object, unknown>(),
+): unknown => {
+  if (typeof value !== "object" || value === null) return value;
+  const prior = seen.get(value);
+  if (prior !== undefined) return prior;
+  if (value instanceof Date) return Object.freeze(new Date(value.getTime()));
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof URL) return Object.freeze(new URL(value.href));
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    seen.set(value, out);
+    for (const item of value) out.push(snapshotReadValue(item, seen));
+    return Object.freeze(out);
+  }
+  if (value instanceof Map) {
+    const out = new Map<unknown, unknown>();
+    seen.set(value, out);
+    for (const [key, item] of value) {
+      out.set(snapshotReadValue(key, seen), snapshotReadValue(item, seen));
+    }
+    return Object.freeze(out);
+  }
+  if (value instanceof Set) {
+    const out = new Set<unknown>();
+    seen.set(value, out);
+    for (const item of value) out.add(snapshotReadValue(item, seen));
+    return Object.freeze(out);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  const out = Object.create(prototype) as Record<PropertyKey, unknown>;
+  seen.set(value, out);
+  for (const key of Reflect.ownKeys(value)) {
+    const property = Object.getOwnPropertyDescriptor(value, key);
+    if (property === undefined) continue;
+    Object.defineProperty(out, key, "value" in property
+      ? { ...property, value: snapshotReadValue(property.value, seen) }
+      : property);
+  }
+  return Object.freeze(out);
+};
+
+/** Capture exactly the stored-data vocabulary without retaining body values. */
+const snapshotStoredValue = (
+  descriptor: OperationDescriptor,
+  value: unknown,
+): unknown => {
+  try {
+    return cloneBindingValue(value);
+  } catch {
+    throw rejected(descriptor, "operation produced an unsupported stored value");
+  }
+};
+
 const attrsOf = (
   value: unknown,
   descriptor: OperationDescriptor,
@@ -304,9 +391,8 @@ const runtimeEntity = (value: unknown): RuntimeEntity | undefined => {
   return typeof candidate.ns === "string" ? candidate : undefined;
 };
 
-const fieldFromArgument = (
+const deployedFieldFromArgument = (
   definition: InstalledCatalogDefinition,
-  entityName: string,
   argument: unknown,
   descriptor: OperationDescriptor,
 ): FieldDescriptor => {
@@ -318,8 +404,18 @@ const fieldFromArgument = (
   }
   const field = fieldTables(definition).get(ident);
   if (field === undefined) throw rejected(descriptor, "operation used an undeployed field");
+  return field;
+};
+
+const fieldFromArgument = (
+  definition: InstalledCatalogDefinition,
+  entityName: string,
+  argument: unknown,
+  descriptor: OperationDescriptor,
+): FieldDescriptor => {
+  const field = deployedFieldFromArgument(definition, argument, descriptor);
   try {
-    definition.requireFieldRuntime(entityName, ident);
+    definition.requireFieldRuntime(entityName, fieldIdent(field));
   } catch {
     throw rejected(descriptor, "operation field is incompatible with its entity definition");
   }
@@ -383,10 +479,13 @@ const createCollector = (args: {
   const requireOwnerField = (argument: unknown): FieldDescriptor => {
     const concrete = args.target?.type ??
       (descriptor.id.owner.kind === "entity" ? descriptor.id.owner.name : undefined);
-    if (concrete === undefined) {
-      throw rejected(descriptor, "static trait operations have no owner entity handle");
-    }
-    const field = fieldFromArgument(definition, concrete, argument, descriptor);
+    // A targetless trait handle does not know its concrete composer until the
+    // staged transaction resolves its eid. Validate trait ownership here and
+    // defer concrete composition/fixed-value checks to the authoritative
+    // resulting transaction report.
+    const field = concrete === undefined
+      ? deployedFieldFromArgument(definition, argument, descriptor)
+      : fieldFromArgument(definition, concrete, argument, descriptor);
     const owner = field.id.owner;
     const allowed = owner.kind === "entity"
       ? descriptor.id.owner.kind === "entity" && owner.name === descriptor.id.owner.name
@@ -395,7 +494,7 @@ const createCollector = (args: {
         (descriptor.id.owner.kind === "entity" &&
           definition.composition.transitiveTraits(`:${descriptor.id.owner.name}`).includes(`:${owner.name}`));
     if (!allowed) throw rejected(descriptor, "operation used a field outside its owner");
-    if (!isFieldMutable(definition, concrete, field)) {
+    if (concrete !== undefined && !isFieldMutable(definition, concrete, field)) {
       throw rejected(descriptor, "operation cannot mutate an engine-owned fixed field");
     }
     return field;
@@ -409,38 +508,42 @@ const createCollector = (args: {
     hasValue = true,
   ): void => {
     const ident = fieldIdent(field);
+    const capturedEid = snapshotStoredValue(descriptor, lowerEntityArg(eid));
     if (kind === "retract") {
       tx.push(hasValue
-        ? [":db/retract", lowerEntityArg(eid), ident, lowerWriteValue(value)]
-        : [":db/retract", lowerEntityArg(eid), ident]);
+        ? [":db/retract", capturedEid, ident, snapshotStoredValue(descriptor, lowerWriteValue(value))]
+        : [":db/retract", capturedEid, ident]);
       return;
     }
     tx.push([
       kind === "add" ? ":db/add" : ":db/update",
-      lowerEntityArg(eid),
+      capturedEid,
       ident,
-      lowerWriteValue(value),
+      snapshotStoredValue(descriptor, lowerWriteValue(value)),
     ]);
   };
 
   const makeHandle = (
     eid: unknown,
     resolveField: (argument: unknown) => FieldDescriptor,
-  ): RuntimeHandle => ({
-    _tag: "TxHandle",
-    eid,
-    set: (field, value) => appendWrite("add", eid, resolveField(field), value),
-    remove: (field, value) => appendWrite(
-      "retract",
-      eid,
-      resolveField(field),
-      value,
-      value !== undefined,
-    ),
-    delete: () => {
-      tx.push([":db/retractEntity", lowerEntityArg(eid)]);
-    },
-  });
+  ): RuntimeHandle => {
+    const capturedEid = snapshotStoredValue(descriptor, lowerEntityArg(eid));
+    return {
+      _tag: "TxHandle",
+      eid: capturedEid,
+      set: (field, value) => appendWrite("add", capturedEid, resolveField(field), value),
+      remove: (field, value) => appendWrite(
+        "retract",
+        capturedEid,
+        resolveField(field),
+        value,
+        value !== undefined,
+      ),
+      delete: () => {
+        tx.push([":db/retractEntity", capturedEid]);
+      },
+    };
+  };
 
   const explicitHandle = (entity: RuntimeEntity, eid: unknown): RuntimeHandle =>
     makeHandle(eid, (argument) => {
@@ -462,7 +565,9 @@ const createCollector = (args: {
     const resolved = creation
       ? definition.resolveCreationValues(entity.ns, values, { now: args.authoritativeNow })
       : values;
-    const map: Record<string, unknown> = { ":db/id": lowerEntityArg(eid) };
+    const map: Record<string, unknown> = {
+      ":db/id": snapshotStoredValue(descriptor, lowerEntityArg(eid)),
+    };
     map[RAMOSE_TYPE_IDENT] = `:${entity.ns}`;
     markEngineTypeAssertion(map);
     for (const [key, value] of Object.entries(resolved)) {
@@ -475,7 +580,7 @@ const createCollector = (args: {
       if (isMany(entity, key) && Array.isArray(value)) {
         for (const item of value) appendWrite("add", eid, field, item);
       } else {
-        map[fieldIdent(field)] = lowerWriteValue(value);
+        map[fieldIdent(field)] = snapshotStoredValue(descriptor, lowerWriteValue(value));
       }
     }
     tx.push(map);
@@ -514,7 +619,7 @@ const createCollector = (args: {
       }
       wrote = true;
     }
-    if (!wrote) tx.push([":db/update", eid]);
+    if (!wrote) tx.push([":db/update", snapshotStoredValue(descriptor, eid)]);
     return explicitHandle(entity, eid);
   };
 
@@ -571,22 +676,37 @@ const createCollector = (args: {
     },
     put,
     update,
-    query: async (input: string | object) => {
-      const before = await query(args.context.filteredDb, input);
-      receipts.push({ before, rerun: (db) => query(db, input) });
+    query: async (input: unknown) => {
+      if (!isQueryObject(input)) {
+        throw rejected(descriptor, "operation query needs a deployed Query value");
+      }
+      // Lower synchronously before the first await, then retain only a private
+      // immutable wire AST/finalizer. Mutating the authored query object after
+      // calling op.query cannot alter either execution or the resulting rerun.
+      const lowered = tryLowerQueryObject(input);
+      const capturedQuery = snapshotReadValue(lowered.query) as object;
+      const runQuery = async (db: Db): Promise<unknown> =>
+        lowered.finalize(await query(db, capturedQuery));
+      const before = await runQuery(args.context.filteredDb);
+      receipts.push({ before: snapshotReadValue(before), rerun: runQuery });
       return before;
     },
     pull: async (subject: unknown, pattern: unknown) => {
-      const ref = lowerEntityArg(subject);
+      // Capture both arguments before any await so later body mutation cannot
+      // rewrite the authoritative rerun.
+      const ref = snapshotReadValue(lowerEntityArg(subject));
+      const capturedPattern = snapshotReadValue(pattern);
       const eid = typeof ref === "number"
         ? ref
         : Array.isArray(ref) && asLookupRef(ref) !== undefined
           ? await args.context.filteredDb.entid(ref as [string, unknown])
           : undefined;
-      const before = eid === undefined ? null : await pull(args.context.filteredDb, eid, pattern as never);
+      const before = eid === undefined
+        ? null
+        : await pull(args.context.filteredDb, eid, capturedPattern as never);
       receipts.push({
-        before,
-        rerun: async (db) => eid === undefined ? null : pull(db, eid, pattern as never),
+        before: snapshotReadValue(before),
+        rerun: async (db) => eid === undefined ? null : pull(db, eid, capturedPattern as never),
       });
       return before;
     },
@@ -840,9 +960,13 @@ const validateProducedTransaction = async (args: {
     }
     const isTarget = args.target?.eid === eid;
     const hasDirectOperationDatom = report.txOps.some((op) =>
-      op.e === eid && !op.fromRetractEntity
+      op.e === eid && (!op.fromRetractEntity || op.retractEntityRoot)
     );
-    if (hasDirectOperationDatom && !isTarget && !allowedTypes.has(concrete)) {
+    const ownerCompatible = typeCompatible(definition, descriptor.id.owner, concrete);
+    if (
+      hasDirectOperationDatom && !isTarget &&
+      !ownerCompatible && !allowedTypes.has(concrete)
+    ) {
       throw rejected(descriptor, "operation changed an entity outside its declared write set");
     }
     if (beforeType === undefined && afterType !== undefined && !candidateEids.has(eid)) {
@@ -950,14 +1074,11 @@ export const executeCatalogOperation = async (
   const binding = bindingFor(deployed.definition, invocation.owner, invocation.localName);
   if (binding === undefined) throw deny();
   const descriptor = binding.descriptor;
-  const authoritativeNowMs = runtime.now();
-  if (!Number.isFinite(authoritativeNowMs)) {
-    throw rejected(descriptor, "authoritative operation clock is invalid");
-  }
-  if (
-    !Number.isSafeInteger(authorizationCaller.exp) ||
-    authorizationCaller.exp * 1_000 <= authoritativeNowMs
-  ) throw deny();
+  const authoritativeNowMs = requireFreshAuthorization(
+    runtime,
+    authorizationCaller,
+    descriptor,
+  );
   const requestInput = {
     authenticate: Effect.succeed(authorizationCaller),
     catalogs: runtime.catalogs.catalogs,
@@ -1063,6 +1184,13 @@ export const executeCatalogOperation = async (
       return encoded;
     },
     authoritativeNowMs,
+    // Synchronous Connection pre-apply hook: every body/effect/read/output
+    // await is complete, and no further await can intervene before commit.
+    () => requireFreshAuthorization(runtime, authorizationCaller, descriptor),
   );
-  return { report: staged.report, output: staged.value };
+  return {
+    report: staged.report,
+    output: staged.value,
+    assertFresh: () => requireFreshAuthorization(runtime, authorizationCaller, descriptor),
+  };
 };

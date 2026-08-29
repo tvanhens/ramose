@@ -102,6 +102,8 @@ export interface ExpandedOp {
   readonly implicit: boolean;
   /** retract emitted by a :db/retractEntity closure */
   readonly fromRetractEntity: boolean;
+  /** subject is the explicit root of the current :db/retractEntity op */
+  readonly retractEntityRoot: boolean;
   /** Protected type assertion emitted by the typed transaction builder. */
   readonly engineTypeAssertion: boolean;
 }
@@ -304,6 +306,7 @@ export async function expandTx(
   const closureCap = options.closureCap ?? Number.POSITIVE_INFINITY;
   let closureCount = 0;
   let inRetractEntity = false;
+  let retractEntityRoot: number | undefined;
   const record = (
     kind: "add" | "retract",
     e: number,
@@ -320,6 +323,7 @@ export async function expandTx(
       datom: d,
       implicit,
       fromRetractEntity: inRetractEntity,
+      retractEntityRoot: inRetractEntity && e === retractEntityRoot,
       engineTypeAssertion,
     });
     if (inRetractEntity && ++closureCount > closureCap) {
@@ -933,10 +937,12 @@ export async function expandTx(
       const e = await resolveEntity(op.e, false);
       if (e === undefined) continue; // unresolved tempid → nothing to retract
       inRetractEntity = true;
+      retractEntityRoot = e;
       try {
         await retractEntity(e);
       } finally {
         inRetractEntity = false;
+        retractEntityRoot = undefined;
       }
       continue;
     }

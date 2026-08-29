@@ -11,9 +11,11 @@ import {
   EntityId as OperationEntityId,
   Field,
   OwnedOperations,
+  Query,
   Ref,
   Schema,
   Trait,
+  type AnyQueryObject,
   schemaTx,
   string,
 } from "../../../src/db/internal.ts";
@@ -52,6 +54,18 @@ const Tagged = Trait("tagged", { tag: string() }, {
         return { id: op.self, tag: input.tag };
       },
     }),
+    staticRetag: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        id: OperationEntityId,
+        tag: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({ id: OperationEntityId, tag: EffectSchema.String }),
+      run(op, input) {
+        op.entity(input.id).set(Tagged.tag, input.tag);
+        return input;
+      },
+    }),
   }),
 });
 
@@ -68,6 +82,8 @@ const LabelsBinding = FixedLabels(() => tenantCatalog);
 const RenamedRefOutput = EffectSchema.Struct({
   id: OperationEntityId,
 }).pipe(EffectSchema.encodeKeys({ id: "wire_id" }));
+
+let makeItemTitlesQuery!: () => AnyQueryObject;
 
 const Good = Entity("good", { name: string() }, { traits: [Tagged] });
 const Other = Entity("other", { name: string() });
@@ -158,6 +174,57 @@ const Item = Entity("item", { title: string() }, {
         return {};
       },
     }),
+    deleteAny: Operation({
+      self: false,
+      input: EffectSchema.Struct({ id: OperationEntityId }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        op.entity(input.id).delete();
+        return {};
+      },
+    }),
+    deleteItemAndBacklink: Operation({
+      input: EffectSchema.Struct({ backlink: OperationEntityId }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        op.self.delete();
+        op.entity(input.backlink).delete();
+        return {};
+      },
+    }),
+    mutateQueryReceipt: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({ title: EffectSchema.String }),
+      async run(op) {
+        const authored = makeItemTitlesQuery();
+        const pending = op.query(authored) as Promise<readonly { readonly title: string }[]>;
+        Reflect.set(authored, "limitN", 0);
+        const rows = await pending;
+        const title = rows[0]?.title ?? "missing";
+        Reflect.set(rows, "length", 0);
+        op.self.delete();
+        return { title: title.toUpperCase() };
+      },
+    }),
+    pullAfterPatternMutation: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({ title: EffectSchema.String }),
+      async run(op) {
+        const pattern = [":item/title"];
+        const row = await op.pull(op.self.eid, pattern) as Record<string, unknown>;
+        pattern.length = 0;
+        return { title: row[":item/title"] as string };
+      },
+    }),
+    renameAfterEffect: Operation({
+      input: EffectSchema.Struct({ title: EffectSchema.String }),
+      output: EffectSchema.Struct({}),
+      async run(op, input) {
+        await op.effect("before-write", async () => undefined);
+        op.self.set(Item.title, input.title);
+        return {};
+      },
+    }),
     crash: Operation({
       self: false,
       input: EffectSchema.Struct({}),
@@ -191,6 +258,8 @@ const Backlink = Entity("backlink", {
   item: Ref(Item, { optional: true }),
 });
 
+makeItemTitlesQuery = () => Query.from(Item).select({ title: Item.title });
+
 const App = Schema({ good: Good, other: Other, hidden: Hidden, link: Link, item: Item, backlink: Backlink });
 
 const memberOrReader = any(hasClass("member"), hasClass("reader"));
@@ -211,7 +280,9 @@ const buildWorld = async () => {
       read(Hidden).when(any(hasClass("reader"), contains(claim("teams"), "reader"))),
       read(Link).when(memberOrReader),
       read(Item).when(memberOrReader),
+      read(Backlink).when(memberOrReader),
       invoke(Tagged[OwnedOperations].retag).when(memberOrOperator),
+      invoke(Tagged[OwnedOperations].staticRetag).when(hasClass("member")),
       invoke(Link[OwnedOperations].create).when(hasClass("member")),
       invoke(Link[OwnedOperations].forgeFixed).when(hasClass("member")),
       invoke(Item[OwnedOperations].rename).when(memberOrOperator),
@@ -221,6 +292,11 @@ const buildWorld = async () => {
       invoke(Item[OwnedOperations].deleteAndEchoTitle).when(hasClass("member")),
       invoke(Item[OwnedOperations].deleteHiddenInput).when(hasClass("member")),
       invoke(Item[OwnedOperations].deleteOnly).when(hasClass("member")),
+      invoke(Item[OwnedOperations].deleteAny).when(hasClass("member")),
+      invoke(Item[OwnedOperations].deleteItemAndBacklink).when(hasClass("member")),
+      invoke(Item[OwnedOperations].mutateQueryReceipt).when(hasClass("member")),
+      invoke(Item[OwnedOperations].pullAfterPatternMutation).when(hasClass("member")),
+      invoke(Item[OwnedOperations].renameAfterEffect).when(hasClass("member")),
       invoke(Item[OwnedOperations].crash).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnUrl).when(hasClass("member")),
       invoke(Item[OwnedOperations].forgeNestedClaims).when(hasClass("member")),
@@ -369,6 +445,28 @@ describe("deployed operation runtime", () => {
     expect((await world.conn.db().entity(world.good))?.[":tagged/tag"]).toBe("new");
   });
 
+  test("resolves targetless trait owner handles on the authoritative basis", async () => {
+    const world = await buildWorld();
+    const executed = await invokeOperation(world, {
+      owner: { kind: "trait", name: "tagged" },
+      localName: "staticRetag",
+      input: { id: world.good, tag: "static" },
+      caller: caller("member"),
+    });
+    expect(executed.output).toEqual({ id: world.good, tag: "static" });
+    expect((await world.conn.db().entity(world.good))?.[":tagged/tag"]).toBe("static");
+
+    const beforeT = world.conn.t;
+    await expect(invokeOperation(world, {
+      owner: { kind: "trait", name: "tagged" },
+      localName: "staticRetag",
+      input: { id: world.other, tag: "forged" },
+      caller: caller("member"),
+    })).rejects.toBeDefined();
+    expect(world.conn.t).toBe(beforeT);
+    expect((await world.conn.db().entity(world.other))?.[":tagged/tag"]).toBeUndefined();
+  });
+
   test("rejects incompatible trait refs and protected type changes before commit", async () => {
     const world = await buildWorld();
     const initialT = world.conn.t;
@@ -442,6 +540,32 @@ describe("deployed operation runtime", () => {
     expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
   });
 
+  test("keeps read results and captured query arguments private from body mutation", async () => {
+    const world = await buildWorld();
+    const initialT = world.conn.t;
+    await expect(invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "mutateQueryReceipt",
+      target: world.item,
+      input: {},
+      caller: caller("member"),
+    })).rejects.toBeInstanceOf(Unauthorized);
+    expect(world.conn.t).toBe(initialT);
+    expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
+  });
+
+  test("captures pull arguments before returning control to native code", async () => {
+    const world = await buildWorld();
+    const executed = await invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "pullAfterPatternMutation",
+      target: world.item,
+      input: {},
+      caller: caller("member"),
+    });
+    expect(executed.output).toEqual({ title: "Before" });
+  });
+
   test("preserves prototype-bearing values for deployed output codecs", async () => {
     const world = await buildWorld();
     const executed = await invokeOperation(world, {
@@ -494,6 +618,61 @@ describe("deployed operation runtime", () => {
     });
     expect(await world.conn.db().exists(world.item)).toBe(false);
     expect((await world.conn.db().entity(world.backlink))?.[":backlink/item"]).toBeUndefined();
+  });
+
+  test("treats retractEntity roots as direct writes and cleanup as generated", async () => {
+    const wrongRoot = await buildWorld();
+    const wrongRootT = wrongRoot.conn.t;
+    await expect(invokeOperation(wrongRoot, {
+      owner: { kind: "entity", name: "item" },
+      localName: "deleteAny",
+      input: { id: wrongRoot.other },
+      caller: caller("member"),
+    })).rejects.toMatchObject({ _tag: "OperationRejected" });
+    expect(wrongRoot.conn.t).toBe(wrongRootT);
+    expect(await wrongRoot.conn.db().exists(wrongRoot.other)).toBe(true);
+
+    const mixed = await buildWorld();
+    const mixedT = mixed.conn.t;
+    await expect(invokeOperation(mixed, {
+      owner: { kind: "entity", name: "item" },
+      localName: "deleteItemAndBacklink",
+      target: mixed.item,
+      input: { backlink: mixed.backlink },
+      caller: caller("member"),
+    })).rejects.toMatchObject({ _tag: "OperationRejected" });
+    expect(mixed.conn.t).toBe(mixedT);
+    expect(await mixed.conn.db().exists(mixed.item)).toBe(true);
+    expect(await mixed.conn.db().exists(mixed.backlink)).toBe(true);
+    expect((await mixed.conn.db().entity(mixed.backlink))?.[":backlink/item"]).toBe(mixed.item);
+  });
+
+  test("rechecks JWT expiry after awaited native work and before commit", async () => {
+    const world = await buildWorld();
+    const initialT = world.conn.t;
+    const exp = 1_700_000_001;
+    let clockReads = 0;
+    await expect(executeCatalogOperation(world.conn, {
+      catalogs: world.deployed,
+      environment: { trusted: true },
+      now: () => clockReads++ === 0 ? exp * 1_000 - 1 : exp * 1_000,
+    }, {
+      database,
+      catalogKey: world.installed.catalogKey,
+      unitHash: world.installed.unitHash,
+      owner: { kind: "entity", name: "item" },
+      localName: "renameAfterEffect",
+      target: world.item,
+      input: { title: "Expired" },
+      caller: {
+        claims: { sub: "member-subject" },
+        classes: ["member"],
+        exp,
+      },
+    })).rejects.toBeInstanceOf(Unauthorized);
+    expect(clockReads).toBe(2);
+    expect(world.conn.t).toBe(initialT);
+    expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
   });
 
   test("classifies unexpected native exceptions as private runtime faults", async () => {

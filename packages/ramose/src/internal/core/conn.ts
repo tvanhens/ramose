@@ -242,6 +242,7 @@ export class Connection {
     txData: TxData,
     validate: (report: TxReport) => Promise<A> | A,
     txInstant: number = this.now(),
+    beforeApply: () => void = () => undefined,
   ): Promise<ValidatedTxReport<A>> {
     const run = async (): Promise<ValidatedTxReport<A>> => {
       const dbBefore = this.db();
@@ -285,6 +286,10 @@ export class Connection {
         tempids: res.tempids,
       };
       const value = await validate(report);
+      // Deliberately synchronous: callers with an expiring authorization
+      // lease can make one final decision with no awaited gap before state is
+      // applied to this serialized writer.
+      beforeApply();
       this.nextEid = res.nextEid;
       this.schema = schemaAfter;
       this.novelty.add(res.datoms, (a) => this.schema.isAvet(a), (a) => this.schema.isVaet(a));

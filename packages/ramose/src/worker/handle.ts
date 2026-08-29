@@ -292,11 +292,9 @@ export const handle = (
           stacks: env.RAMOSE_STAGE !== "prod",
         }),
       });
-      return json(
-        { result: ack.output, t: ack.t },
-        200,
-        { "x-ramose-basis-t": String(ack.t) },
-      );
+      // The Worker retains the internal ack basis for invalidation, but an
+      // ordinary operation grant does not authorize transaction metadata.
+      return json({ result: ack.output });
     }
     if (
       !((rest === "/query" || rest === "/pull" || rest === "/live") && request.method === "POST") &&
