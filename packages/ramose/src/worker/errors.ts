@@ -11,7 +11,11 @@ import {
   QueryBudgetExceeded,
   Unauthorized,
 } from "../db/Errors.ts";
-import { QueryBudgetError } from "../internal/core/index.ts";
+import {
+  QueryBudgetError,
+  QueryError,
+  QueryParseError,
+} from "../internal/core/index.ts";
 import * as Data from "effect/Data";
 
 export { OperationRejected, QueryBudgetExceeded, Unauthorized };
@@ -73,6 +77,12 @@ export function fromThrown(
       cells: error.cells,
       limit: error.limit,
       spentBy: error.spentBy,
+    });
+  }
+  if (error instanceof QueryParseError || error instanceof QueryError) {
+    return new BadRequest({
+      message: error.message,
+      trace: options.stacks ? error.stack : undefined,
     });
   }
   return new Internal({

@@ -8,7 +8,11 @@
  * import `cloudflare:workers`), so the pure mapping is tested directly.
  */
 import { describe, expect, test } from "bun:test";
-import { QueryBudgetError } from "../../src/internal/core/index.ts";
+import {
+  QueryBudgetError,
+  QueryError,
+  QueryParseError,
+} from "../../src/internal/core/index.ts";
 import { fromResponse, Unavailable } from "../../src/db/Errors.ts";
 import * as Effect from "effect/Effect";
 import { BadRequest, Internal, NotFound, OperationRejected, QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, isRamoseError, toHttp } from "../../src/worker/errors.ts";
@@ -174,6 +178,20 @@ describe("operation Transactor failure restatement", () => {
 });
 
 describe("fromThrown", () => {
+  test("typed query failures preserve an opaque client-error status", () => {
+    for (const error of [
+      new QueryParseError("query is missing :find"),
+      new QueryError("unknown attribute :hidden/value"),
+    ]) {
+      const classified = fromThrown(error, { stacks: true });
+      expect(classified).toBeInstanceOf(BadRequest);
+      expect(toHttp(classified)).toEqual({
+        status: 400,
+        body: { error: "invalid request" },
+      });
+    }
+  });
+
   test("private message text never selects a public status", () => {
     for (const msg of ["unknown attribute :p/nope", "?x is not bound", "insufficient bindings", "EDN parse error", "QueryError: bad find"]) {
       expect(fromThrown(new Error(msg))._tag).toBe("Internal");
