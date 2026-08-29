@@ -83,6 +83,14 @@ const RenamedRefOutput = EffectSchema.Struct({
   id: OperationEntityId,
 }).pipe(EffectSchema.encodeKeys({ id: "wire_id" }));
 
+class ClassOutput extends EffectSchema.Class<ClassOutput>("ClassOutput")({
+  label: EffectSchema.String,
+}) {
+  get displayLabel(): string {
+    return `class:${this.label}`;
+  }
+}
+
 let makeItemTitlesQuery!: () => AnyQueryObject;
 
 const Good = Entity("good", { name: string() }, { traits: [Tagged] });
@@ -241,6 +249,14 @@ const Item = Entity("item", { title: string() }, {
         return new URL("https://ramose.ai/operations") as never;
       },
     }),
+    returnClass: Operation({
+      self: false,
+      input: EffectSchema.Struct({}),
+      output: ClassOutput,
+      run() {
+        return new ClassOutput({ label: "preserved" });
+      },
+    }),
     forgeNestedClaims: Operation({
       self: false,
       input: EffectSchema.Struct({ id: OperationEntityId }),
@@ -299,6 +315,7 @@ const buildWorld = async () => {
       invoke(Item[OwnedOperations].renameAfterEffect).when(hasClass("member")),
       invoke(Item[OwnedOperations].crash).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnUrl).when(hasClass("member")),
+      invoke(Item[OwnedOperations].returnClass).when(hasClass("member")),
       invoke(Item[OwnedOperations].forgeNestedClaims).when(hasClass("member")),
     ],
     claims: [{
@@ -575,6 +592,61 @@ describe("deployed operation runtime", () => {
       caller: caller("member"),
     });
     expect(executed.output).toBe("https://ramose.ai/operations");
+  });
+
+  test("preserves schema class prototypes while resolving output shapes", async () => {
+    const world = await buildWorld();
+    const executed = await invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "returnClass",
+      input: {},
+      caller: caller("member"),
+    });
+    expect(executed.output).toEqual({ label: "preserved" });
+  });
+
+  test("makes catalog-proof and missing-operation denials indistinguishable", async () => {
+    const world = await buildWorld();
+    const captureDenial = async (result: Promise<unknown>): Promise<Unauthorized> => {
+      try {
+        await result;
+      } catch (cause) {
+        expect(cause).toBeInstanceOf(Unauthorized);
+        return cause as Unauthorized;
+      }
+      throw new Error("expected operation denial");
+    };
+    const missing = await captureDenial(invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "missing",
+      input: {},
+      caller: caller("member"),
+    }));
+    const mismatched = await captureDenial(executeCatalogOperation(world.conn, {
+      catalogs: world.deployed,
+      environment: { trusted: true },
+      now: () => 1_700_000_000_000,
+    }, {
+      database,
+      catalogKey: CatalogId.make("wrong"),
+      unitHash: world.installed.unitHash,
+      owner: { kind: "entity", name: "item" },
+      localName: "rename",
+      target: world.item,
+      input: { title: "Denied" },
+      caller: caller("member"),
+    }));
+    expect({
+      status: mismatched.status,
+      message: mismatched.message,
+      code: mismatched.code,
+      attr: mismatched.attr,
+    }).toEqual({
+      status: missing.status,
+      message: missing.message,
+      code: missing.code,
+      attr: missing.attr,
+    });
   });
 
   test("isolates nested authenticated claims from native operation code", async () => {

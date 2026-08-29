@@ -10,7 +10,7 @@ import {
 import { parseJson, stringifyJson } from "../internal/core/json.ts";
 import { internalHeaders } from "../internal/transactor/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
-import { BadRequest, UpstreamError } from "./errors.ts";
+import { BadRequest, Unauthorized, UpstreamError } from "./errors.ts";
 import {
   isEntityRef,
   parseCatalogProof,
@@ -24,6 +24,7 @@ export type ParsedOperationRequest = Omit<
 >;
 
 const bad = (message: string): BadRequest => new BadRequest({ message });
+const deny = (): Unauthorized => new Unauthorized({ status: 403 });
 
 const parseOwner = (
   value: unknown,
@@ -45,7 +46,9 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
   request: Request,
 ): Effect.fn.Return<ParsedOperationRequest, BadRequest | import("./errors.ts").Unauthorized> {
   const body = yield* readJsonObject(request);
-  const proof = yield* Effect.fromResult(parseCatalogProof(body, request.headers));
+  const proof = yield* Effect.fromResult(parseCatalogProof(body, request.headers)).pipe(
+    Effect.mapError(() => deny()),
+  );
   const operation = body.operation;
   if (typeof operation !== "object" || operation === null || Array.isArray(operation)) {
     return yield* bad("body.operation must be { owner, localName }");

@@ -277,9 +277,10 @@ export const handle = (
       return yield* new BadRequest({ message: "invalid database name" });
     }
     const catalogs = peer.operationCatalogs?.catalogs ?? peer.catalogs;
-    if (catalogs === undefined) return yield* new Unauthorized({});
     if (rest === "/op" && request.method === "POST") {
-      if (peer.operationCatalogs === undefined) return yield* new Unauthorized({});
+      if (peer.operationCatalogs === undefined) {
+        return yield* new Unauthorized({ status: 403 });
+      }
       const parsed = yield* parseOperationRequest(request);
       const ack = yield* Effect.tryPromise({
         try: () => invokeAuthoritativeOperation(
@@ -296,6 +297,7 @@ export const handle = (
       // ordinary operation grant does not authorize transaction metadata.
       return json({ result: ack.output });
     }
+    if (catalogs === undefined) return yield* new Unauthorized({});
     if (
       !((rest === "/query" || rest === "/pull" || rest === "/live") && request.method === "POST") &&
       !(/^\/entity\/\d+$/.test(rest) && request.method === "GET")

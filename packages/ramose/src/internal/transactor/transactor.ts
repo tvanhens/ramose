@@ -62,7 +62,7 @@ import { checkpoint, checkpointSync } from "../test-hooks.ts";
 import {
   executeCatalogOperation,
   OperationRuntimeFault,
-  opaqueCatalogDenial,
+  opaqueOperationDenial,
   resolveDeployedCatalogDefinition,
   type OperationInvocation,
   type OperationRuntime,
@@ -422,7 +422,7 @@ export class Transactor {
   invoke(invocation: OperationInvocation): Promise<OperationAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     if (this.operationRuntime === undefined) {
-      return Promise.reject(new BadRequest({ message: "deployed operations are not configured" }));
+      return Promise.reject(opaqueOperationDenial());
     }
     return new Promise<OperationAck>((resolve, reject) => {
       this.queue.push({
@@ -529,7 +529,7 @@ export class Transactor {
             let assertFresh: (() => void) | undefined;
             if (p.operation !== undefined) {
               if (this.operationRuntime === undefined) {
-                throw new BadRequest({ message: "deployed operations are not configured" });
+                throw opaqueOperationDenial();
               }
               const resolved = resolveDeployedCatalogDefinition(
                 this.operationRuntime.catalogs,
@@ -540,7 +540,7 @@ export class Transactor {
                 },
               );
               if (Result.isFailure(resolved)) {
-                throw opaqueCatalogDenial(resolved.failure);
+                throw opaqueOperationDenial();
               }
               const deployed = resolved.success;
               this.bindComposition(

@@ -228,7 +228,13 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           input: { title: "stale" },
         }),
       });
-      expect(stale.status).toBe(401);
+      const missingOperation = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "missing",
+      }, {});
+      expect(stale.status).toBe(403);
+      expect(missingOperation.status).toBe(403);
+      expect(stale.body).toEqual(missingOperation.body);
     });
   });
 };

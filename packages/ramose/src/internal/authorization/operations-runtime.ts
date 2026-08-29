@@ -41,7 +41,6 @@ import type {
   OperationInputShape,
 } from "./catalog.ts";
 import {
-  opaqueCatalogDenial,
   requireCatalogKey,
   requireUnitHash,
 } from "./deployed.ts";
@@ -132,7 +131,11 @@ type Collector = {
   readonly receipts: readonly ReadReceipt[];
 };
 
-const deny = (): Unauthorized => new Unauthorized({ status: 403 });
+/** Opaque denial shared by every authenticated operation-admission failure. */
+export const opaqueOperationDenial = (): Unauthorized =>
+  new Unauthorized({ status: 403 });
+
+const deny = opaqueOperationDenial;
 
 const operationLabel = (descriptor: OperationDescriptor): string =>
   `${descriptor.id.owner.name}/${descriptor.id.localName}`;
@@ -854,7 +857,10 @@ const resolveOutputHandles = async (
       typeof current === "object" && current !== null && !Array.isArray(current)
     ) {
       const fields = new Map(currentShape.fields.map((field) => [field.key, field.shape] as const));
-      const out: Record<string, unknown> = {};
+      // Decoded Effect schemas may be prototype-bearing classes. Preserve
+      // their runtime representation while recursively replacing actual ref
+      // slots; the deployed encoder is authoritative for the final value.
+      const out: Record<string, unknown> = Object.create(Object.getPrototypeOf(current));
       for (const [key, item] of Object.entries(current)) {
         const fieldShape = fields.get(key);
         out[key] = fieldShape === undefined ? item : await visit(fieldShape, item);
@@ -1059,18 +1065,21 @@ export const executeCatalogOperation = async (
       catalogKey: invocation.catalogKey,
       unitHash: invocation.unitHash,
     }),
-    (failure) => {
-      throw opaqueCatalogDenial(failure);
+    () => {
+      throw deny();
     },
   );
   // Defense in depth: the read adapter and runnable definition must remain
   // the exact same deployment-owned unit.
-  Result.getOrThrow(requireCatalogKey(invocation.catalogKey, deployed.definition.catalogKey));
-  Result.getOrThrow(requireUnitHash(
+  if (Result.isFailure(requireCatalogKey(
+    invocation.catalogKey,
+    deployed.definition.catalogKey,
+  ))) throw deny();
+  if (Result.isFailure(requireUnitHash(
     invocation.unitHash,
     deployed.definition.unitHash,
     deployed.definition.catalogKey,
-  ));
+  ))) throw deny();
   const binding = bindingFor(deployed.definition, invocation.owner, invocation.localName);
   if (binding === undefined) throw deny();
   const descriptor = binding.descriptor;
