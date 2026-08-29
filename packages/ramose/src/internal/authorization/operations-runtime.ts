@@ -81,6 +81,19 @@ export type OperationRuntime = {
   readonly now: () => number;
 };
 
+/** Private operation defect: the public HTTP boundary sees only `message`. */
+export class OperationRuntimeFault extends Error {
+  readonly stage: string;
+  readonly detail: unknown;
+
+  constructor(stage: string, detail: unknown) {
+    super("operation execution failed");
+    this.name = "OperationRuntimeFault";
+    this.stage = stage;
+    this.detail = detail;
+  }
+}
+
 type RuntimeEntity = {
   readonly ns: string;
   readonly fields?: Readonly<Record<string, { readonly ident?: unknown; readonly cardinality?: unknown; readonly unique?: unknown }>>;
@@ -219,6 +232,39 @@ const sameManyValue = (left: unknown, right: unknown): boolean => {
 const isPlainRecord = (value: object): value is Record<string, unknown> => {
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+};
+
+const sameReadResult = (
+  left: unknown,
+  right: unknown,
+  seen = new WeakMap<object, object>(),
+): boolean => {
+  if (sameValue(left, right)) return true;
+  if (
+    typeof left !== "object" || left === null ||
+    typeof right !== "object" || right === null
+  ) return false;
+  if (
+    !(Array.isArray(left) || isPlainRecord(left)) ||
+    !(Array.isArray(right) || isPlainRecord(right)) ||
+    Array.isArray(left) !== Array.isArray(right)
+  ) return false;
+  const prior = seen.get(left);
+  if (prior !== undefined) return prior === right;
+  seen.set(left, right);
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length &&
+      left.every((value, index) => sameReadResult(value, right[index], seen));
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) =>
+      Object.hasOwn(rightRecord, key) &&
+      sameReadResult(leftRecord[key], rightRecord[key], seen)
+    );
 };
 
 const cloneAndFreezeJson = (value: unknown): unknown => {
@@ -551,12 +597,11 @@ const createCollector = (args: {
       try {
         return await run(effectContext);
       } catch (cause) {
-        throw rejected(
-          descriptor,
-          "operation effect failed",
-          name,
-          cause instanceof Error ? cause.message : String(cause),
-        );
+        if (
+          cause instanceof Unauthorized || cause instanceof InvalidRequest ||
+          cause instanceof OperationRejected || cause instanceof OperationRuntimeFault
+        ) throw cause;
+        throw new OperationRuntimeFault(`effect:${name}`, cause);
       }
     },
   };
@@ -606,6 +651,12 @@ const replaceReadResults = async (
   let top = value;
   for (const receipt of receipts) {
     const after = await receipt.rerun(resultingDb);
+    // With ordinary JavaScript bodies there is no sound way to propagate
+    // taint through arbitrary scalar transformations. If a representation
+    // observed before the write would change in the resulting authorized
+    // snapshot, reject the invocation atomically instead of risking a stale
+    // derived disclosure.
+    if (!sameReadResult(receipt.before, after)) throw deny();
     if (Object.is(top, receipt.before)) top = after;
     collect(receipt.before, after, true);
   }
@@ -695,7 +746,7 @@ const resolveOutputHandles = async (
   return visit(shape, value);
 };
 
-const filterOutputRefs = async (
+const validateVisibleRefs = async (
   definition: InstalledCatalogDefinition,
   shape: OperationInputShape,
   value: unknown,
@@ -714,7 +765,7 @@ const filterOutputRefs = async (
     case "array":
       if (Array.isArray(value)) {
         for (const item of value) {
-          await filterOutputRefs(definition, shape.items, item, resulting, selfType);
+          await validateVisibleRefs(definition, shape.items, item, resulting, selfType);
         }
       }
       return;
@@ -722,7 +773,7 @@ const filterOutputRefs = async (
       if (typeof value === "object" && value !== null && !Array.isArray(value)) {
         for (const field of shape.fields) {
           if (Object.hasOwn(value, field.key)) {
-            await filterOutputRefs(
+            await validateVisibleRefs(
               definition,
               field.shape,
               (value as Record<string, unknown>)[field.key],
@@ -788,7 +839,10 @@ const validateProducedTransaction = async (args: {
       continue;
     }
     const isTarget = args.target?.eid === eid;
-    if (!isTarget && !allowedTypes.has(concrete)) {
+    const hasDirectOperationDatom = report.txOps.some((op) =>
+      op.e === eid && !op.fromRetractEntity
+    );
+    if (hasDirectOperationDatom && !isTarget && !allowedTypes.has(concrete)) {
       throw rejected(descriptor, "operation changed an entity outside its declared write set");
     }
     if (beforeType === undefined && afterType !== undefined && !candidateEids.has(eid)) {
@@ -941,6 +995,13 @@ export const executeCatalogOperation = async (
       message: `invalid operation input: ${cause instanceof Error ? cause.message : String(cause)}`,
     });
   }
+  await validateVisibleRefs(
+    deployed.definition,
+    descriptor.input,
+    decoded,
+    context,
+    target?.type ?? (descriptor.id.owner.kind === "entity" ? descriptor.id.owner.name : undefined),
+  );
 
   const collector = createCollector({
     definition: deployed.definition,
@@ -959,14 +1020,9 @@ export const executeCatalogOperation = async (
   } catch (cause) {
     if (
       cause instanceof Unauthorized || cause instanceof InvalidRequest ||
-      cause instanceof OperationRejected
+      cause instanceof OperationRejected || cause instanceof OperationRuntimeFault
     ) throw cause;
-    throw rejected(
-      descriptor,
-      "operation body failed",
-      undefined,
-      cause instanceof Error ? cause.message : String(cause),
-    );
+    throw new OperationRuntimeFault("body", cause);
   }
 
   const staged = await connection.transactValidated(
@@ -991,7 +1047,7 @@ export const executeCatalogOperation = async (
         resulting.filteredDb,
       );
       const resolved = await resolveOutputHandles(descriptor.output, rematerialized, report);
-      await filterOutputRefs(
+      await validateVisibleRefs(
         deployed.definition,
         descriptor.output,
         resolved,
@@ -1002,12 +1058,7 @@ export const executeCatalogOperation = async (
       try {
         encoded = binding.output.encode(resolved);
       } catch (cause) {
-        throw rejected(
-          descriptor,
-          "operation output failed deployed schema validation",
-          undefined,
-          cause instanceof Error ? cause.message : String(cause),
-        );
+        throw new OperationRuntimeFault("output", cause);
       }
       return encoded;
     },

@@ -129,6 +129,14 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       });
       expect(raw.status).toBe(401);
 
+      const crashed = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "crash",
+      }, {});
+      expect(crashed.status).toBe(500);
+      expect(crashed.body.error).toBe("operation execution failed");
+      expect(JSON.stringify(crashed.body)).not.toContain("secret@internal");
+
       const stale = await json(base, `/db/${database}/op`, {
         method: "POST",
         token,

@@ -61,6 +61,7 @@ import { TxMetrics } from "./observability.ts";
 import { checkpoint, checkpointSync } from "../test-hooks.ts";
 import {
   executeCatalogOperation,
+  OperationRuntimeFault,
   opaqueCatalogDenial,
   resolveDeployedCatalogDefinition,
   type OperationInvocation,
@@ -564,6 +565,12 @@ export class Transactor {
             }
             acks.push({ p, ack });
           } catch (err) {
+            if (err instanceof OperationRuntimeFault) {
+              this.log.error("operation.failed", {
+                stage: err.stage,
+                error: err.detail instanceof Error ? err.detail.message : String(err.detail),
+              });
+            }
             const e = this.scrub(err, p);
             this.stats.rejected++;
             this.log.warn("tx.rejected", { code: (e as any)?.code, error: e instanceof Error ? e.message : String(e) });

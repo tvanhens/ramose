@@ -31,6 +31,7 @@ import {
   executeCatalogOperation,
   hasClass,
   invoke,
+  OperationRuntimeFault,
   read,
   type AuthenticatedCaller,
   type OperationInvocation,
@@ -136,7 +137,33 @@ const Item = Entity("item", { title: string() }, {
       async run(op) {
         const row = await op.pull(op.self.eid, [":item/title"]) as Record<string, unknown>;
         op.self.delete();
-        return { title: row[":item/title"] as string };
+        return { title: (row[":item/title"] as string).toUpperCase() };
+      },
+    }),
+    deleteHiddenInput: Operation({
+      self: false,
+      writes: [Hidden],
+      input: EffectSchema.Struct({ id: Ref(Hidden).schema }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        op.delete(Hidden, input.id);
+        return {};
+      },
+    }),
+    deleteOnly: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({}),
+      run(op) {
+        op.self.delete();
+        return {};
+      },
+    }),
+    crash: Operation({
+      self: false,
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({}),
+      run() {
+        throw new Error("postgres://secret@internal/operation");
       },
     }),
     returnUrl: Operation({
@@ -160,7 +187,11 @@ const Item = Entity("item", { title: string() }, {
   }),
 });
 
-const App = Schema({ good: Good, other: Other, hidden: Hidden, link: Link, item: Item });
+const Backlink = Entity("backlink", {
+  item: Ref(Item, { optional: true }),
+});
+
+const App = Schema({ good: Good, other: Other, hidden: Hidden, link: Link, item: Item, backlink: Backlink });
 
 const memberOrReader = any(hasClass("member"), hasClass("reader"));
 const memberOrOperator = any(hasClass("member"), hasClass("operator"));
@@ -188,6 +219,9 @@ const buildWorld = async () => {
       invoke(Item[OwnedOperations].echoRef).when(hasClass("member")),
       invoke(Item[OwnedOperations].echoRenamedRef).when(hasClass("member")),
       invoke(Item[OwnedOperations].deleteAndEchoTitle).when(hasClass("member")),
+      invoke(Item[OwnedOperations].deleteHiddenInput).when(hasClass("member")),
+      invoke(Item[OwnedOperations].deleteOnly).when(hasClass("member")),
+      invoke(Item[OwnedOperations].crash).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnUrl).when(hasClass("member")),
       invoke(Item[OwnedOperations].forgeNestedClaims).when(hasClass("member")),
     ],
@@ -216,6 +250,7 @@ const buildWorld = async () => {
     { ":db/id": "other", ":ramose/type": ":other", ":other/name": "Other" },
     { ":db/id": "hidden", ":ramose/type": ":hidden", ":hidden/name": "Hidden" },
     { ":db/id": "item", ":ramose/type": ":item", ":item/title": "Before" },
+    { ":db/id": "backlink", ":ramose/type": ":backlink", ":backlink/item": "item" },
   ];
   restoreEngineTypeAssertions(seed);
   const report = await conn.transact(seed);
@@ -227,6 +262,7 @@ const buildWorld = async () => {
     other: report.tempids.other!,
     hidden: report.tempids.hidden!,
     item: report.tempids.item!,
+    backlink: report.tempids.backlink!,
   };
 };
 
@@ -432,5 +468,44 @@ describe("deployed operation runtime", () => {
     })).rejects.toBeInstanceOf(Unauthorized);
     expect(authenticated.claims.teams).toEqual(["member"]);
     expect(world.conn.t).toBe(initialT);
+  });
+
+  test("validates decoded input refs before native operation code runs", async () => {
+    const world = await buildWorld();
+    const initialT = world.conn.t;
+    await expect(invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "deleteHiddenInput",
+      input: { id: world.hidden },
+      caller: caller("member"),
+    })).rejects.toBeInstanceOf(Unauthorized);
+    expect(await world.conn.db().exists(world.hidden)).toBe(true);
+    expect(world.conn.t).toBe(initialT);
+  });
+
+  test("permits engine-generated incoming-ref cleanup during deletion", async () => {
+    const world = await buildWorld();
+    await invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "deleteOnly",
+      target: world.item,
+      input: {},
+      caller: caller("member"),
+    });
+    expect(await world.conn.db().exists(world.item)).toBe(false);
+    expect((await world.conn.db().entity(world.backlink))?.[":backlink/item"]).toBeUndefined();
+  });
+
+  test("classifies unexpected native exceptions as private runtime faults", async () => {
+    const world = await buildWorld();
+    await expect(invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "crash",
+      input: {},
+      caller: caller("member"),
+    })).rejects.toMatchObject({
+      name: "OperationRuntimeFault",
+      message: "operation execution failed",
+    } satisfies Partial<OperationRuntimeFault>);
   });
 });

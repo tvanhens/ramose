@@ -17,7 +17,7 @@ import { DB_IDENT, FIRST_USER_EID, Schema, bootstrapDatoms } from "./schema.ts";
 import { MemStore } from "./store.ts";
 import { type BuildOptions, type NodeSource, type NodeStore, buildTree, mergeTree } from "./tree.ts";
 import type { CompositionIndex } from "./composition.ts";
-import { type TxData, processTx } from "./tx.ts";
+import { type ExpandedOp, type TxData, expandTx } from "./tx.ts";
 
 export interface TxReport {
   dbBefore: Db;
@@ -25,6 +25,8 @@ export interface TxReport {
   t: number;
   txEid: number;
   txData: Datom[];
+  /** Per-datom engine provenance; excludes the transaction instant. */
+  txOps: ExpandedOp[];
   tempids: Record<string, number>;
 }
 
@@ -244,7 +246,7 @@ export class Connection {
     const run = async (): Promise<ValidatedTxReport<A>> => {
       const dbBefore = this.db();
       const t = this.basisT + 1;
-      const res = await processTx(
+      const res = await expandTx(
         dbBefore,
         txData,
         t,
@@ -279,6 +281,7 @@ export class Connection {
         t,
         txEid: res.txEid,
         txData: res.datoms,
+        txOps: res.ops,
         tempids: res.tempids,
       };
       const value = await validate(report);

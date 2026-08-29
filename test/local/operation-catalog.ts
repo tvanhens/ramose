@@ -64,6 +64,14 @@ export const Item = Entity("nativeItem", {
         return { id: op.self, title: input.title };
       },
     }),
+    crash: Operation({
+      self: false,
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({}),
+      run() {
+        throw new Error("postgres://secret@internal/operation");
+      },
+    }),
   }),
 });
 
@@ -77,6 +85,7 @@ const policy = await Effect.runPromise(compileReadAuthorization({
     read(Other).when(hasClass("member")),
     invoke(Item[OwnedOperations].create).when(hasClass("member")),
     invoke(Item[OwnedOperations].rename).when(any(hasClass("member"), hasClass("operator"))),
+    invoke(Item[OwnedOperations].crash).when(hasClass("member")),
     invoke(Other[OwnedOperations].create).when(hasClass("member")),
   ],
 }));
