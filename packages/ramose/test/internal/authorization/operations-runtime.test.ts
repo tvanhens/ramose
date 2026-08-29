@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as EffectSchema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import { Catalog } from "../../../src/Catalog.ts";
 import type { CatalogDefinition } from "../../../src/Catalog.ts";
 import {
@@ -120,6 +121,19 @@ class ClassOutput extends EffectSchema.Class<ClassOutput>("ClassOutput")({
   }
 }
 
+const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
+  EffectSchema.String,
+  {
+    decode: SchemaGetter.transform((value) => {
+      if (value === "explode") {
+        throw new Error("postgres://input-secret@internal/codec");
+      }
+      return value;
+    }),
+    encode: SchemaGetter.transform((value) => value),
+  },
+));
+
 let makeHiddenNamesQuery!: () => AnyQueryObject;
 
 const Good = Entity("good", { name: string() }, { traits: [Tagged] });
@@ -231,6 +245,14 @@ const Item = Entity("item", { title: string() }, {
         throw new Error("postgres://secret@internal/operation");
       },
     }),
+    inputCrash: Operation({
+      self: false,
+      input: EffectSchema.Struct({ value: CrashingInputValue }),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
     returnUrl: Operation({
       self: false,
       input: EffectSchema.Struct({}),
@@ -313,6 +335,7 @@ const buildWorld = async () => {
       invoke(Item[OwnedOperations].deleteOnly).when(hasClass("member")),
       invoke(Item[OwnedOperations].renameAfterEffect).when(hasClass("member")),
       invoke(Item[OwnedOperations].crash).when(hasClass("member")),
+      invoke(Item[OwnedOperations].inputCrash).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnUrl).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnClass).when(hasClass("member")),
       invoke(Item[OwnedOperations].invalidTransport).when(hasClass("member")),
@@ -738,5 +761,32 @@ describe("deployed operation runtime", () => {
       name: "OperationRuntimeFault",
       message: "operation execution failed",
     } satisfies Partial<OperationRuntimeFault>);
+  });
+
+  test("distinguishes schema input refusals from unexpected codec defects", async () => {
+    const world = await buildWorld();
+    const invocation = {
+      owner: { kind: "entity" as const, name: "item" },
+      localName: "inputCrash",
+      caller: caller("member"),
+    };
+    const initialT = world.conn.t;
+
+    await expect(invokeOperation(world, {
+      ...invocation,
+      input: { value: 42 },
+    })).rejects.toMatchObject({
+      _tag: "InvalidRequest",
+      message: expect.stringContaining("invalid operation input"),
+    });
+    await expect(invokeOperation(world, {
+      ...invocation,
+      input: { value: "explode" },
+    })).rejects.toMatchObject({
+      name: "OperationRuntimeFault",
+      message: "operation execution failed",
+      stage: "input",
+    });
+    expect(world.conn.t).toBe(initialT);
   });
 });

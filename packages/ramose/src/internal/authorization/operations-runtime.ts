@@ -2,6 +2,7 @@
 
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import {
   InvalidRequest,
   OperationRejected,
@@ -941,9 +942,12 @@ export const executeCatalogOperation = async (
   try {
     decoded = binding.input.decode(invocation.input);
   } catch (cause) {
-    throw new InvalidRequest({
-      message: `invalid operation input: ${cause instanceof Error ? cause.message : String(cause)}`,
-    });
+    if (cause instanceof Schema.SchemaError) {
+      throw new InvalidRequest({
+        message: `invalid operation input: ${cause.message}`,
+      });
+    }
+    throw new OperationRuntimeFault("input", cause);
   }
   await validateAuthoritativeRefs(
     deployed.definition,

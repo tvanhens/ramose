@@ -2,6 +2,7 @@
 
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import { Catalog, Policy } from "ramose";
 import {
   Entity,
@@ -22,6 +23,19 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-denials",
   "operations-trusted",
 ]);
+
+const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
+  EffectSchema.String,
+  {
+    decode: SchemaGetter.transform((value) => {
+      if (value === "explode") {
+        throw new Error("postgres://input-secret@internal/codec");
+      }
+      return value;
+    }),
+    encode: SchemaGetter.transform((value) => value),
+  },
+));
 
 export const Other = Entity("nativeOther", { name: Field.unique(string(), "strict") }, {
   operations: (Operation) => ({
@@ -75,6 +89,14 @@ export const Item = Entity("nativeItem", {
         throw new Error("postgres://secret@internal/operation");
       },
     }),
+    inputCrash: Operation({
+      self: false,
+      input: EffectSchema.Struct({ value: CrashingInputValue }),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
     returnTransportTag: Operation({
       self: false,
       input: EffectSchema.Struct({}),
@@ -114,6 +136,7 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     )),
     Policy.invoke(Item[OwnedOperations].deleteHiddenOther).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].crash).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].inputCrash).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].returnTransportTag).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].reject).when(Policy.hasClass("member")),
     Policy.invoke(Other[OwnedOperations].create).when(Policy.hasClass("member")),

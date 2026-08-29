@@ -333,6 +333,21 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(crashed.body.error).toBe("operation execution failed");
       expect(JSON.stringify(crashed.body)).not.toContain("secret@internal");
 
+      const invalidInput = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "inputCrash",
+      }, { value: 42 });
+      expect(invalidInput.status).toBe(400);
+      expect(JSON.stringify(invalidInput.body)).toContain("invalid operation input");
+
+      const inputCrashed = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "inputCrash",
+      }, { value: "explode" });
+      expect(inputCrashed.status).toBe(500);
+      expect(inputCrashed.body).toEqual({ error: "operation execution failed" });
+      expect(JSON.stringify(inputCrashed.body)).not.toContain("input-secret@internal");
+
       const rejected = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "reject",
