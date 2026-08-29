@@ -400,6 +400,28 @@ export type _catalogVersionMismatchOnBarrel = Expect<
 export type _deployedCatalogsServiceOffBarrel = Expect<
   Equal<Extends<"DeployedCatalogsService", keyof AuthExports>, false>
 >;
+type ResolvedDatabaseRouteType = import(
+  "../../../src/internal/authorization/index.ts"
+).ResolvedDatabaseRoute;
+type UnsealedDatabaseRoute = {
+  readonly database: DatabaseId;
+  readonly deployed: DeployedCatalogType;
+};
+export type _resolvedDatabaseRouteIsOpaque = Expect<
+  Equal<Extends<UnsealedDatabaseRoute, ResolvedDatabaseRouteType>, false>
+>;
+type AuthorizedResolvedRequestInputType = import(
+  "../../../src/internal/authorization/index.ts"
+).AuthorizedResolvedRequestInput;
+export type _resolvedRequestDoesNotAcceptPairableProof = Expect<
+  Equal<
+    Extract<
+      keyof AuthorizedResolvedRequestInputType,
+      "routeDatabase" | "database" | "catalogKey" | "unitHash"
+    >,
+    never
+  >
+>;
 export type _partialBoundNotTemplate = Expect<
   Equal<Extends<PartialBound, PolicyTemplateIR>, false>
 >;
@@ -1127,6 +1149,9 @@ describe("legacy authorization names cannot be imported", () => {
     expect("requireUnitHash" in ir).toBe(true);
     expect("CatalogVersionMismatch" in ir).toBe(true);
     expect("opaqueCatalogDenial" in ir).toBe(true);
+    expect("deployDatabaseCatalogBindings" in ir).toBe(true);
+    expect("acquireResolvedDatabase" in ir).toBe(true);
+    expect("executeAuthorizedResolvedRequest" in ir).toBe(true);
     expect("DeployedCatalogsService" in ir).toBe(false);
     expect("compareAndSwapCatalogUnit" in ir).toBe(false);
     expect("loadCatalogUnitAtBasis" in ir).toBe(false);
@@ -1157,6 +1182,9 @@ describe("legacy authorization names cannot be imported", () => {
     expect("requireCatalogKey" in root).toBe(false);
     expect("requireUnitHash" in root).toBe(false);
     expect("opaqueCatalogDenial" in root).toBe(false);
+    expect("deployDatabaseCatalogBindings" in root).toBe(false);
+    expect("acquireResolvedDatabase" in root).toBe(false);
+    expect("executeAuthorizedResolvedRequest" in root).toBe(false);
     expect("sealInstalledCatalogUnit" in root).toBe(false);
     expect("InstalledCatalogUnit" in db).toBe(false);
     expect("sealInstalledCatalogUnit" in db).toBe(false);
@@ -1166,6 +1194,9 @@ describe("legacy authorization names cannot be imported", () => {
     expect("runOneShotRead" in db).toBe(false);
     expect("OneShotReadError" in db).toBe(false);
     expect("executeAuthorizedLive" in db).toBe(false);
+    expect("deployDatabaseCatalogBindings" in db).toBe(false);
+    expect("acquireResolvedDatabase" in db).toBe(false);
+    expect("executeAuthorizedResolvedRequest" in db).toBe(false);
     expect("diffAuthorizedResults" in db).toBe(false);
     expect("callerFromVerified" in db).toBe(false);
     expect("uniqueCanonicalTypeName" in db).toBe(false);

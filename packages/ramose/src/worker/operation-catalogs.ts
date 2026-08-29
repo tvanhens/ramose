@@ -10,6 +10,10 @@ import {
   type DeployedCatalogDefinitions,
 } from "../internal/authorization/definitions.ts";
 import {
+  deployDatabaseCatalogBindings,
+  type DatabaseCatalogBindings,
+} from "../internal/authorization/database-bindings.ts";
+import {
   CatalogId,
   DatabaseId,
   type DigestHex,
@@ -50,7 +54,12 @@ export class OperationCatalogDeploymentError extends Data.TaggedError(
   "OperationCatalogDeploymentError",
 )<{ readonly message: string }> {}
 
-const registries = new WeakMap<OperationCatalogs, DeployedCatalogDefinitions>();
+type OperationCatalogState = {
+  readonly deployed: DeployedCatalogDefinitions;
+  readonly bindings: DatabaseCatalogBindings;
+};
+
+const registries = new WeakMap<OperationCatalogs, OperationCatalogState>();
 
 const deploymentError = (cause: unknown): OperationCatalogDeploymentError =>
   new OperationCatalogDeploymentError({
@@ -59,6 +68,7 @@ const deploymentError = (cause: unknown): OperationCatalogDeploymentError =>
 
 const wrapOperationCatalogs = (
   deployed: DeployedCatalogDefinitions,
+  bindings: DatabaseCatalogBindings,
 ): OperationCatalogs => {
   const operationCatalogs: OperationCatalogs = Object.freeze({
     [OperationCatalogsTypeId]: OperationCatalogsTypeId as typeof OperationCatalogsTypeId,
@@ -74,7 +84,7 @@ const wrapOperationCatalogs = (
         });
     },
   });
-  registries.set(operationCatalogs, deployed);
+  registries.set(operationCatalogs, { deployed, bindings });
   return operationCatalogs;
 };
 
@@ -82,11 +92,22 @@ const wrapOperationCatalogs = (
 export const deployedOperationCatalogs = (
   operationCatalogs: OperationCatalogs,
 ): DeployedCatalogDefinitions => {
-  const deployed = registries.get(operationCatalogs);
-  if (deployed === undefined) {
+  const state = registries.get(operationCatalogs);
+  if (state === undefined) {
     throw new Error("operation catalogs were not created by deployOperationCatalogs");
   }
-  return deployed;
+  return state.deployed;
+};
+
+/** @internal Graph routing plumbing; not re-exported from `ramose/worker`. */
+export const deployedDatabaseCatalogBindings = (
+  operationCatalogs: OperationCatalogs,
+): DatabaseCatalogBindings => {
+  const state = registries.get(operationCatalogs);
+  if (state === undefined) {
+    throw new Error("operation catalogs were not created by deployOperationCatalogs");
+  }
+  return state.bindings;
 };
 
 /**
@@ -108,5 +129,8 @@ export const deployOperationCatalogs = Effect.fn(
       catalogKey: CatalogId.make(deployment.catalogKey ?? input.root.key),
     })),
   ));
-  return wrapOperationCatalogs(deployed);
+  const bindings = yield* Effect.fromResult(
+    deployDatabaseCatalogBindings(definitions, deployed),
+  );
+  return wrapOperationCatalogs(deployed, bindings);
 }, Effect.mapError(deploymentError));

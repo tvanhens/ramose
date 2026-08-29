@@ -28,6 +28,7 @@ export * from "./catalog.ts";
 export * from "./catalog-unit.ts";
 export * from "./composition.ts";
 export * from "./decode.ts";
+export * from "./database-bindings.ts";
 export * from "./deployed.ts";
 export * from "./definitions.ts";
 export * from "./expr.ts";

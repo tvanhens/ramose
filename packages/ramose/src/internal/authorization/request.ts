@@ -24,6 +24,14 @@ import { MAX_READ_LEASE_MS } from "./bounds.ts";
 import type { InstalledCatalogUnitV2 } from "./catalog-unit.ts";
 import { compositionFromUnit } from "./composition.ts";
 import {
+  InvalidResolvedDatabaseRoute,
+  acquireResolvedDatabase,
+  opaqueDatabaseBindingDenial,
+  resolveBoundCatalogDefinition,
+  type DatabaseCatalogBindings,
+  type ResolvedDatabaseRoute,
+} from "./database-bindings.ts";
+import {
   opaqueCatalogDenial,
   resolveDeployedCatalog,
   type DeployedCatalogs,
@@ -65,6 +73,20 @@ export type AuthorizedRequestInput<R = never, EDb = unknown> = {
   readonly catalogKey: CatalogId;
   readonly unitHash: CatalogUnitHash;
   /** Trusted route-database snapshot. Failures stay infrastructure errors. */
+  readonly currentDb: (database: DatabaseId) => Effect.Effect<Db, EDb, R>;
+  readonly view?: AuthorizedRequestView;
+  readonly interruptAfter?: Duration.Input;
+};
+
+/**
+ * Request input for an already resolved configured-root or dynamic-child
+ * route. No database, catalog key, or unit hash can be independently paired.
+ */
+export type AuthorizedResolvedRequestInput<R = never, EDb = unknown> = {
+  readonly authenticate: Effect.Effect<AuthenticatedCaller, Unauthorized, R>;
+  readonly bindings: DatabaseCatalogBindings;
+  readonly route: ResolvedDatabaseRoute;
+  /** Real database acquisition keyed only by the validated sealed route. */
   readonly currentDb: (database: DatabaseId) => Effect.Effect<Db, EDb, R>;
   readonly view?: AuthorizedRequestView;
   readonly interruptAfter?: Duration.Input;
@@ -232,6 +254,17 @@ type AdmittedCaller = {
   readonly subject: string;
 };
 
+const admitCatalogCaller = (
+  unit: InstalledCatalogUnitV2,
+  caller: AuthenticatedCaller,
+): Effect.Effect<AdmittedCaller, Unauthorized> =>
+  Effect.gen(function* () {
+    yield* Effect.fromResult(requirePreparedUnit(unit));
+    const subject = yield* Effect.fromResult(selectSubject(caller, unit));
+    yield* Effect.fromResult(validateCallerClaims(caller.claims, unit.policy.claims));
+    return { unit, subject };
+  }).pipe(Effect.catchCause(() => Effect.fail(deny())));
+
 /** Catalog proof and caller claims. Defects collapse to Unauthorized. */
 const admitDeployedCaller = <R, EDb>(
   input: AuthorizedRequestInput<R, EDb>,
@@ -245,10 +278,7 @@ const admitDeployedCaller = <R, EDb>(
         unitHash: input.unitHash,
       }),
     ).pipe(Effect.mapError(opaqueCatalogDenial));
-    yield* Effect.fromResult(requirePreparedUnit(deployed.unit));
-    const subject = yield* Effect.fromResult(selectSubject(caller, deployed.unit));
-    yield* Effect.fromResult(validateCallerClaims(caller.claims, deployed.unit.policy.claims));
-    return { unit: deployed.unit, subject };
+    return yield* admitCatalogCaller(deployed.unit, caller);
   }).pipe(Effect.catchCause(() => Effect.fail(deny())));
 
 /** Principal bind + predicate compile. Defects collapse to Unauthorized. */
@@ -271,20 +301,17 @@ const bindReadPredicate = (
     return { principal, predicate };
   }).pipe(Effect.catchCause(() => Effect.fail(deny())));
 
-/**
- * Admit the caller, acquire the route database, then filter that value.
- * `currentDb` errors are infrastructure and pass through unchanged.
- */
-export const constructAuthorizedRequestContext = <R, EDb>(
-  input: AuthorizedRequestInput<R, EDb>,
+const constructFilteredContext = (
+  admitted: AdmittedCaller,
   caller: AuthenticatedCaller,
-): Effect.Effect<AuthorizedRequestContext, Unauthorized | EDb, R> =>
+  currentDb: Db,
+  view: AuthorizedRequestView | undefined,
+): Effect.Effect<AuthorizedRequestContext, Unauthorized> =>
   Effect.gen(function* () {
-    const admitted = yield* admitDeployedCaller(input, caller);
     const composition = yield* Effect.fromResult(compositionFromUnit(admitted.unit)).pipe(
       Effect.mapError(() => deny()),
     );
-    const current = (yield* input.currentDb(input.routeDatabase)).withComposition(composition);
+    const current = currentDb.withComposition(composition);
     const bound = yield* bindReadPredicate(
       admitted.unit,
       admitted.subject,
@@ -295,39 +322,104 @@ export const constructAuthorizedRequestContext = <R, EDb>(
       unit: admitted.unit,
       principal: bound.principal,
       currentDb: current,
-      filteredDb: requestedView(current, input.view).filter(bound.predicate),
+      filteredDb: requestedView(current, view).filter(bound.predicate),
     };
   });
+
+/**
+ * Admit the caller, acquire the route database, then filter that value.
+ * `currentDb` errors are infrastructure and pass through unchanged.
+ */
+export const constructAuthorizedRequestContext = <R, EDb>(
+  input: AuthorizedRequestInput<R, EDb>,
+  caller: AuthenticatedCaller,
+): Effect.Effect<AuthorizedRequestContext, Unauthorized | EDb, R> =>
+  Effect.gen(function* () {
+    const admitted = yield* admitDeployedCaller(input, caller);
+    const current = yield* input.currentDb(input.routeDatabase);
+    return yield* constructFilteredContext(admitted, caller, current, input.view);
+  });
+
+/**
+ * Authorize and acquire a configured root or dynamic child only through its
+ * opaque server-owned binding. Invalid/foreign/stale routes deny before the
+ * real acquisition callback runs.
+ */
+export const constructAuthorizedResolvedRequestContext = <R, EDb>(
+  input: AuthorizedResolvedRequestInput<R, EDb>,
+  caller: AuthenticatedCaller,
+): Effect.Effect<AuthorizedRequestContext, Unauthorized | EDb, R> =>
+  Effect.gen(function* () {
+    const resolved = yield* Effect.fromResult(
+      resolveBoundCatalogDefinition(input.bindings, input.route),
+    ).pipe(Effect.mapError(opaqueDatabaseBindingDenial));
+    const admitted = yield* admitCatalogCaller(resolved.definition.unit, caller);
+    const current = yield* acquireResolvedDatabase(
+      input.bindings,
+      input.route,
+      input.currentDb,
+    ).pipe(Effect.mapError((error) =>
+      error instanceof InvalidResolvedDatabaseRoute
+        ? opaqueDatabaseBindingDenial(error)
+        : error
+    ));
+    return yield* constructFilteredContext(admitted, caller, current, input.view);
+  });
+
+type AuthorizedLeaseInput<R> = {
+  readonly authenticate: Effect.Effect<AuthenticatedCaller, Unauthorized, R>;
+  readonly interruptAfter?: Duration.Input;
+};
+
+const executeWithinAuthorizedLease = <A, E, R>(
+  input: AuthorizedLeaseInput<R>,
+  execute: (caller: AuthenticatedCaller) => Effect.Effect<A, E, R>,
+): Effect.Effect<A, Unauthorized | E, R> => {
+  const limit = Duration.fromInputUnsafe(input.interruptAfter ?? MAX_READ_LEASE_MS);
+  const program = Effect.gen(function* () {
+    const caller = yield* input.authenticate.pipe(Effect.mapError(() => deny()));
+    const nowMs = yield* Clock.currentTimeMillis;
+    const duration = yield* Effect.fromResult(leaseDuration(caller.exp, nowMs, limit));
+    return yield* execute(caller).pipe(
+      Effect.timeoutOrElse({
+        duration,
+        orElse: () => Effect.fail(deny()),
+      }),
+    );
+  });
+  return program.pipe(
+    Effect.timeoutOrElse({
+      duration: limit,
+      orElse: () => Effect.fail(deny()),
+    }),
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause) ? Effect.fail(deny()) : Effect.failCause(cause)
+    ),
+  );
+};
 
 export const executeAuthorizedRequest = Effect.fn("Authorization.executeAuthorizedRequest")(
   function* <A, E, R, EDb = unknown>(
     input: AuthorizedRequestInput<R, EDb>,
     execute: (filteredDb: Db) => Effect.Effect<A, E, R>,
   ): Effect.fn.Return<A, Unauthorized | E | EDb, R> {
-    const limit = Duration.fromInputUnsafe(input.interruptAfter ?? MAX_READ_LEASE_MS);
-    const program = Effect.gen(function* () {
-      const caller = yield* input.authenticate.pipe(Effect.mapError(() => deny()));
-      const nowMs = yield* Clock.currentTimeMillis;
-      const duration = yield* Effect.fromResult(leaseDuration(caller.exp, nowMs, limit));
-      const rest = Effect.gen(function* () {
-        const context = yield* constructAuthorizedRequestContext(input, caller);
-        return yield* execute(context.filteredDb);
-      });
-      return yield* rest.pipe(
-        Effect.timeoutOrElse({
-          duration,
-          orElse: () => Effect.fail(deny()),
-        }),
-      );
-    });
-    return yield* program.pipe(
-      Effect.timeoutOrElse({
-        duration: limit,
-        orElse: () => Effect.fail(deny()),
-      }),
-      Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause) ? Effect.fail(deny()) : Effect.failCause(cause),
-      ),
+    return yield* executeWithinAuthorizedLease(input, (caller) =>
+      constructAuthorizedRequestContext(input, caller).pipe(
+        Effect.flatMap((context) => execute(context.filteredDb)),
+      )
     );
   },
 );
+
+export const executeAuthorizedResolvedRequest = Effect.fn(
+  "Authorization.executeAuthorizedResolvedRequest",
+)(function* <A, E, R, EDb = unknown>(
+  input: AuthorizedResolvedRequestInput<R, EDb>,
+  execute: (filteredDb: Db) => Effect.Effect<A, E, R>,
+): Effect.fn.Return<A, Unauthorized | E | EDb, R> {
+  return yield* executeWithinAuthorizedLease(input, (caller) =>
+    constructAuthorizedResolvedRequestContext(input, caller).pipe(
+      Effect.flatMap((context) => execute(context.filteredDb)),
+    )
+  );
+});
