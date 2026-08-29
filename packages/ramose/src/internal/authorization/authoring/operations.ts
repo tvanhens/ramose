@@ -560,6 +560,7 @@ export const lowerOperationSchema = (
   const record = schema as Schema.Top & {
     readonly fields?: Readonly<Record<PropertyKey, Schema.Top>>;
     readonly value?: Schema.Top;
+    readonly to?: Schema.Top;
   };
   if (record.fields !== undefined) {
     const keys = Reflect.ownKeys(record.fields);
@@ -583,6 +584,13 @@ export const lowerOperationSchema = (
       _tag: "array",
       items: lowerOperationSchema(catalog, record.value, next),
     };
+  }
+  // Effect transformations expose their decoded schema as `to`. Operation
+  // bodies and the authoritative ref filter both work on that decoded value;
+  // the original codec remains responsible for the potentially different
+  // wire representation.
+  if (record.to !== undefined && record.to !== schema) {
+    return lowerOperationSchema(catalog, record.to, next);
   }
   if (astContainsSuspend(schema.ast)) {
     throw new Error(

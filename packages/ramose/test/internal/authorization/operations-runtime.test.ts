@@ -9,6 +9,7 @@ import type { CatalogDefinition } from "../../../src/Catalog.ts";
 import {
   Entity,
   EntityId as OperationEntityId,
+  Field,
   OwnedOperations,
   Ref,
   Schema,
@@ -23,7 +24,9 @@ import {
   DigestHex,
   any,
   assembleCatalogDefinitions,
+  claim,
   compileReadAuthorization,
+  contains,
   deployCatalogDefinitions,
   executeCatalogOperation,
   hasClass,
@@ -54,8 +57,16 @@ const Tagged = Trait("tagged", { tag: string() }, {
 const FixedTenant = Trait("fixedTenant", { tenant: string() }, {
   bind: () => ({ values: { tenant: "acme" } }),
 });
+const FixedLabels = Trait("fixedLabels", { labels: Field.many(string()) }, {
+  bind: () => ({ values: { labels: ["z-last", "a-first"] } }),
+});
 let tenantCatalog!: CatalogDefinition;
 const TenantBinding = FixedTenant(() => tenantCatalog);
+const LabelsBinding = FixedLabels(() => tenantCatalog);
+
+const RenamedRefOutput = EffectSchema.Struct({
+  id: OperationEntityId,
+}).pipe(EffectSchema.encodeKeys({ id: "wire_id" }));
 
 const Good = Entity("good", { name: string() }, { traits: [Tagged] });
 const Other = Entity("other", { name: string() });
@@ -64,7 +75,7 @@ const Link = Entity("link", {
   target: Ref(Tagged),
   label: string({ default: () => "default-label" }),
 }, {
-  traits: [TenantBinding],
+  traits: [TenantBinding, LabelsBinding],
   operations: (Operation) => ({
     create: Operation({
       self: false,
@@ -111,6 +122,41 @@ const Item = Entity("item", { title: string() }, {
         return input;
       },
     }),
+    echoRenamedRef: Operation({
+      self: false,
+      input: EffectSchema.Struct({ id: OperationEntityId }),
+      output: RenamedRefOutput,
+      run(_op, input) {
+        return input;
+      },
+    }),
+    deleteAndEchoTitle: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({ title: EffectSchema.String }),
+      async run(op) {
+        const row = await op.pull(op.self.eid, [":item/title"]) as Record<string, unknown>;
+        op.self.delete();
+        return { title: row[":item/title"] as string };
+      },
+    }),
+    returnUrl: Operation({
+      self: false,
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.URLFromString,
+      run() {
+        return new URL("https://ramose.ai/operations") as never;
+      },
+    }),
+    forgeNestedClaims: Operation({
+      self: false,
+      input: EffectSchema.Struct({ id: OperationEntityId }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        const teams = op.principal.claims.teams;
+        if (Array.isArray(teams)) Reflect.set(teams, 0, "reader");
+        return input;
+      },
+    }),
   }),
 });
 
@@ -131,7 +177,7 @@ const buildWorld = async () => {
     rules: [
       read(Good).when(memberOrReader),
       read(Other).when(memberOrReader),
-      read(Hidden).when(hasClass("reader")),
+      read(Hidden).when(any(hasClass("reader"), contains(claim("teams"), "reader"))),
       read(Link).when(memberOrReader),
       read(Item).when(memberOrReader),
       invoke(Tagged[OwnedOperations].retag).when(memberOrOperator),
@@ -140,7 +186,19 @@ const buildWorld = async () => {
       invoke(Item[OwnedOperations].rename).when(memberOrOperator),
       invoke(Item[OwnedOperations].forgeType).when(hasClass("member")),
       invoke(Item[OwnedOperations].echoRef).when(hasClass("member")),
+      invoke(Item[OwnedOperations].echoRenamedRef).when(hasClass("member")),
+      invoke(Item[OwnedOperations].deleteAndEchoTitle).when(hasClass("member")),
+      invoke(Item[OwnedOperations].returnUrl).when(hasClass("member")),
+      invoke(Item[OwnedOperations].forgeNestedClaims).when(hasClass("member")),
     ],
+    claims: [{
+      key: "teams",
+      optional: true,
+      shape: {
+        _tag: "array",
+        items: { _tag: "scalar", valueType: "string" },
+      },
+    }],
   }));
   const definitions = await Effect.runPromise(assembleCatalogDefinitions({
     root: Catalog("runtime", { schema: App, policy }),
@@ -209,6 +267,7 @@ describe("deployed operation runtime", () => {
       ":link/target": world.good,
       ":link/label": "default-label",
       ":fixedTenant/tenant": "acme",
+      ":fixedLabels/labels": ["a-first", "z-last"],
     });
   });
 
@@ -318,6 +377,60 @@ describe("deployed operation runtime", () => {
       input: { id: world.hidden },
       caller: caller("member"),
     })).rejects.toBeInstanceOf(Unauthorized);
+    expect(world.conn.t).toBe(initialT);
+  });
+
+  test("checks decoded refs before transformed output encoding", async () => {
+    const world = await buildWorld();
+    const initialT = world.conn.t;
+    await expect(invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "echoRenamedRef",
+      input: { id: world.hidden },
+      caller: caller("member"),
+    })).rejects.toBeInstanceOf(Unauthorized);
+    expect(world.conn.t).toBe(initialT);
+  });
+
+  test("reauthorizes scalar values derived from pre-write reads", async () => {
+    const world = await buildWorld();
+    const initialT = world.conn.t;
+    await expect(invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "deleteAndEchoTitle",
+      target: world.item,
+      input: {},
+      caller: caller("member"),
+    })).rejects.toBeInstanceOf(Unauthorized);
+    expect(world.conn.t).toBe(initialT);
+    expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
+  });
+
+  test("preserves prototype-bearing values for deployed output codecs", async () => {
+    const world = await buildWorld();
+    const executed = await invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "returnUrl",
+      input: {},
+      caller: caller("member"),
+    });
+    expect(executed.output).toBe("https://ramose.ai/operations");
+  });
+
+  test("isolates nested authenticated claims from native operation code", async () => {
+    const world = await buildWorld();
+    const authenticated = {
+      ...caller("member"),
+      claims: { sub: "member-subject", teams: ["member"] },
+    } satisfies AuthenticatedCaller;
+    const initialT = world.conn.t;
+    await expect(invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "forgeNestedClaims",
+      input: { id: world.hidden },
+      caller: authenticated,
+    })).rejects.toBeInstanceOf(Unauthorized);
+    expect(authenticated.claims.teams).toEqual(["member"]);
     expect(world.conn.t).toBe(initialT);
   });
 });

@@ -123,12 +123,13 @@ export interface RequestInfo {
   route: Route;
 }
 
-const respond = (err: RamoseError): Response => {
+/** Pure HTTP restatement used by the request boundary and unit tests. */
+export const respond = (err: RamoseError): Response => {
   const h = toHttp(err);
   if (h.raw !== undefined) {
     return new Response(h.raw, {
       status: h.status,
-      headers: h.headers ?? { "content-type": "application/json", ...CORS },
+      headers: { "content-type": "application/json", ...h.headers, ...CORS },
     });
   }
   return json(h.body ?? {}, h.status);

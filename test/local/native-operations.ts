@@ -106,6 +106,14 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(grantedButHidden.status).toBe(403);
       expect(nonexistent.status).toBe(403);
       expect(grantedButHidden.body).toEqual(nonexistent.body);
+
+      const invalidInput = await invoke(base, database, member, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "rename",
+      }, { title: 42 }, item.body.result.id);
+      expect(invalidInput.status).toBe(400);
+      expect(invalidInput.res.headers.get("access-control-allow-origin")).toBe("*");
+      expect(invalidInput.res.headers.get("access-control-allow-methods")).toContain("POST");
     });
 
     test("raw writes and stale unit proofs remain closed", async () => {

@@ -99,6 +99,12 @@ type ReadReceipt = {
   readonly rerun: (db: Db) => Promise<unknown>;
 };
 
+type ReadLeafReplacement = {
+  readonly before: unknown;
+  readonly after: unknown;
+  readonly present: boolean;
+};
+
 type Collector = {
   readonly op: unknown;
   readonly tx: TxData;
@@ -201,6 +207,40 @@ const sameValue = (left: unknown, right: unknown): boolean => {
   }
   return false;
 };
+
+const sameManyValue = (left: unknown, right: unknown): boolean => {
+  if (!Array.isArray(left) || !Array.isArray(right)) return false;
+  return (
+    left.every((value) => right.some((candidate) => sameValue(value, candidate))) &&
+    right.every((value) => left.some((candidate) => sameValue(value, candidate)))
+  );
+};
+
+const isPlainRecord = (value: object): value is Record<string, unknown> => {
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+};
+
+const cloneAndFreezeJson = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(cloneAndFreezeJson));
+  }
+  if (typeof value === "object" && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      out[key] = cloneAndFreezeJson(child);
+    }
+    return Object.freeze(out);
+  }
+  return value;
+};
+
+const isolateCaller = (caller: AuthenticatedCaller): AuthenticatedCaller =>
+  Object.freeze({
+    claims: cloneAndFreezeJson(caller.claims) as AuthenticatedCaller["claims"],
+    classes: Object.freeze([...caller.classes]),
+    exp: caller.exp,
+  });
 
 const attrsOf = (
   value: unknown,
@@ -531,16 +571,61 @@ const replaceReadResults = async (
   resultingDb: Db,
 ): Promise<unknown> => {
   const replacements = new Map<object, unknown>();
+  const leafReplacements: ReadLeafReplacement[] = [];
+  const collect = (before: unknown, after: unknown, present: boolean): void => {
+    if (typeof before !== "object" || before === null) {
+      leafReplacements.push({ before, after, present });
+      return;
+    }
+    if (before instanceof Date || before instanceof Uint8Array || !(
+      Array.isArray(before) || isPlainRecord(before)
+    )) {
+      leafReplacements.push({ before, after, present });
+      return;
+    }
+    replacements.set(before, present ? after : undefined);
+    if (Array.isArray(before)) {
+      const afterArray = Array.isArray(after) ? after : undefined;
+      for (let index = 0; index < before.length; index++) {
+        collect(before[index], afterArray?.[index], afterArray !== undefined && index in afterArray);
+      }
+      return;
+    }
+    const afterRecord =
+      typeof after === "object" && after !== null && isPlainRecord(after)
+        ? after
+        : undefined;
+    for (const [key, child] of Object.entries(before)) {
+      collect(
+        child,
+        afterRecord?.[key],
+        afterRecord !== undefined && Object.hasOwn(afterRecord, key),
+      );
+    }
+  };
   let top = value;
   for (const receipt of receipts) {
     const after = await receipt.rerun(resultingDb);
     if (Object.is(top, receipt.before)) top = after;
-    if ((typeof receipt.before === "object" || typeof receipt.before === "function") && receipt.before !== null) {
-      replacements.set(receipt.before as object, after);
-    }
+    collect(receipt.before, after, true);
   }
   const visit = (current: unknown, seen = new WeakMap<object, unknown>()): unknown => {
-    if (typeof current !== "object" || current === null || current instanceof Date || current instanceof Uint8Array) {
+    if (typeof current !== "object" || current === null) {
+      const candidates = leafReplacements.filter((replacement) =>
+        sameValue(current, replacement.before)
+      );
+      if (candidates.length === 0) return current;
+      if (candidates.some((candidate) => !candidate.present)) throw deny();
+      const [first] = candidates;
+      if (
+        first === undefined ||
+        candidates.some((candidate) => !sameValue(candidate.after, first.after))
+      ) throw deny();
+      return first.after;
+    }
+    if (current instanceof Date || current instanceof Uint8Array || !(
+      Array.isArray(current) || isPlainRecord(current)
+    )) {
       return current;
     }
     const replacement = replacements.get(current);
@@ -553,7 +638,7 @@ const replaceReadResults = async (
       for (const item of current) out.push(visit(item, seen));
       return out;
     }
-    const out: Record<string, unknown> = {};
+    const out: Record<string, unknown> = Object.create(Object.getPrototypeOf(current));
     seen.set(current, out);
     for (const [key, item] of Object.entries(current)) out[key] = visit(item, seen);
     return out;
@@ -767,7 +852,11 @@ const validateProducedTransaction = async (args: {
         const actual = runtime.cardinality === "many"
           ? datoms.map(jsValue)
           : datoms.length === 1 ? jsValue(datoms[0]!) : undefined;
-        if (!sameValue(actual, runtime.fixed.value)) {
+        if (!(
+          runtime.cardinality === "many"
+            ? sameManyValue(actual, runtime.fixed.value)
+            : sameValue(actual, runtime.fixed.value)
+        )) {
           throw rejected(descriptor, "operation violated an engine-owned fixed value");
         }
       }
@@ -781,6 +870,11 @@ export const executeCatalogOperation = async (
   runtime: OperationRuntime,
   invocation: OperationInvocation,
 ): Promise<OperationExecution> => {
+  // The body receives a deeply immutable copy. Authorization retains a
+  // distinct copy so trusted native code cannot rewrite authenticated claims
+  // before resulting-snapshot filtering runs.
+  const authorizationCaller = isolateCaller(invocation.caller);
+  const bodyCaller = isolateCaller(authorizationCaller);
   const deployed = Result.getOrElse(
     resolveDeployedCatalogDefinition(runtime.catalogs, {
       database: invocation.database,
@@ -807,11 +901,11 @@ export const executeCatalogOperation = async (
     throw rejected(descriptor, "authoritative operation clock is invalid");
   }
   if (
-    !Number.isSafeInteger(invocation.caller.exp) ||
-    invocation.caller.exp * 1_000 <= authoritativeNowMs
+    !Number.isSafeInteger(authorizationCaller.exp) ||
+    authorizationCaller.exp * 1_000 <= authoritativeNowMs
   ) throw deny();
   const requestInput = {
-    authenticate: Effect.succeed(invocation.caller),
+    authenticate: Effect.succeed(authorizationCaller),
     catalogs: runtime.catalogs.catalogs,
     routeDatabase: invocation.database,
     catalogKey: invocation.catalogKey,
@@ -819,12 +913,12 @@ export const executeCatalogOperation = async (
     currentDb: () => Effect.succeed(connection.db()),
   };
   const context = await Effect.runPromise(
-    constructAuthorizedRequestContext(requestInput, invocation.caller),
+    constructAuthorizedRequestContext(requestInput, authorizationCaller),
   );
   if (!operationGrantAllows(
     deployed.definition.unit,
     descriptor,
-    invocation.caller,
+    authorizationCaller,
     context.principal.subject,
   )) throw deny();
 
@@ -852,7 +946,7 @@ export const executeCatalogOperation = async (
     definition: deployed.definition,
     descriptor,
     context,
-    caller: invocation.caller,
+    caller: bodyCaller,
     database: invocation.database,
     environment: runtime.environment,
     authoritativeNow: new Date(authoritativeNowMs),
@@ -888,7 +982,7 @@ export const executeCatalogOperation = async (
       const resulting = await Effect.runPromise(
         constructAuthorizedRequestContext(
           { ...requestInput, currentDb: () => Effect.succeed(report.dbAfter) },
-          invocation.caller,
+          authorizationCaller,
         ),
       );
       const rematerialized = await replaceReadResults(
@@ -897,6 +991,13 @@ export const executeCatalogOperation = async (
         resulting.filteredDb,
       );
       const resolved = await resolveOutputHandles(descriptor.output, rematerialized, report);
+      await filterOutputRefs(
+        deployed.definition,
+        descriptor.output,
+        resolved,
+        resulting,
+        target?.type ?? (descriptor.id.owner.kind === "entity" ? descriptor.id.owner.name : undefined),
+      );
       let encoded: unknown;
       try {
         encoded = binding.output.encode(resolved);
@@ -908,13 +1009,6 @@ export const executeCatalogOperation = async (
           cause instanceof Error ? cause.message : String(cause),
         );
       }
-      await filterOutputRefs(
-        deployed.definition,
-        descriptor.output,
-        encoded,
-        resulting,
-        target?.type ?? (descriptor.id.owner.kind === "entity" ? descriptor.id.owner.name : undefined),
-      );
       return encoded;
     },
     authoritativeNowMs,

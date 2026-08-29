@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { QueryBudgetError } from "../../src/internal/core/index.ts";
 import * as Effect from "effect/Effect";
 import { BadRequest, Internal, NotFound, OperationRejected, QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, isRamoseError, toHttp } from "../../src/worker/errors.ts";
+import { respond } from "../../src/worker/handle.ts";
 
 describe("tagged failure → status/body", () => {
   test("NotFound → 404 { error }", () => {
@@ -63,6 +64,19 @@ describe("tagged failure → status/body", () => {
   test("UpstreamError passes the DO response through verbatim", () => {
     const headers = { "content-type": "application/json", "x-ramose-ms": "3" };
     expect(toHttp(new UpstreamError({ status: 409, body: '{"error":"cas failed"}', headers }))).toEqual({ status: 409, raw: '{"error":"cas failed"}', headers });
+  });
+
+  test("Worker restatement adds public CORS to Transactor errors", async () => {
+    const response = respond(new UpstreamError({
+      status: 409,
+      body: '{"error":"operation failed"}',
+      headers: { "content-type": "application/json", "x-ramose-ms": "3" },
+    }));
+    expect(response.status).toBe(409);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("access-control-allow-methods")).toContain("POST");
+    expect(response.headers.get("x-ramose-ms")).toBe("3");
+    expect(await response.text()).toBe('{"error":"operation failed"}');
   });
 });
 
