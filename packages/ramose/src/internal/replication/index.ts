@@ -1,4 +1,6 @@
 export * from "./identity.ts";
 export * from "./logical.ts";
 export * from "./protocol.ts";
+export * from "./session.ts";
 export * from "./state.ts";
+export * from "./transport.ts";

@@ -38,11 +38,12 @@ import {
   type CommittedReplica,
 } from "./state.ts";
 
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const COMMITTED = "replica-committed-v1";
 const STAGING = "replica-staging-v1";
 const STAGING_CHUNKS = "replica-staging-chunks-v1";
 const NODES = "replica-nodes-v1";
+const CREDENTIAL_BINDINGS = "replica-credential-bindings-v1";
 const USER_T = 2;
 
 export const DEFAULT_REPLICA_DATABASE_NAME = "ramose-replicas";
@@ -92,9 +93,18 @@ type NodeRecord = {
   readonly body: Uint8Array;
 };
 
+type CredentialBindingRecord = {
+  readonly fingerprint: string;
+  readonly identity: ReplicationIdentity;
+};
+
 export type RestoredReplica = {
   readonly db: Db;
   readonly revision: string;
+};
+
+export type BoundRestoredReplica = RestoredReplica & {
+  readonly identity: ReplicationIdentity;
 };
 
 export type ReplicaInstallOptions = {
@@ -403,10 +413,21 @@ export class IndexedDbReplicaStorage {
     const request = indexedDB.open(name, DATABASE_VERSION);
     request.addEventListener("upgradeneeded", () => {
       const database = request.result;
-      database.createObjectStore(COMMITTED, { keyPath: "partition" });
-      database.createObjectStore(STAGING, { keyPath: "partition" });
-      database.createObjectStore(STAGING_CHUNKS, { keyPath: ["partition", "index"] });
-      database.createObjectStore(NODES, { keyPath: ["partition", "hash"] });
+      if (!database.objectStoreNames.contains(COMMITTED)) {
+        database.createObjectStore(COMMITTED, { keyPath: "partition" });
+      }
+      if (!database.objectStoreNames.contains(STAGING)) {
+        database.createObjectStore(STAGING, { keyPath: "partition" });
+      }
+      if (!database.objectStoreNames.contains(STAGING_CHUNKS)) {
+        database.createObjectStore(STAGING_CHUNKS, { keyPath: ["partition", "index"] });
+      }
+      if (!database.objectStoreNames.contains(NODES)) {
+        database.createObjectStore(NODES, { keyPath: ["partition", "hash"] });
+      }
+      if (!database.objectStoreNames.contains(CREDENTIAL_BINDINGS)) {
+        database.createObjectStore(CREDENTIAL_BINDINGS, { keyPath: "fingerprint" });
+      }
     });
     const database = await requestResult(request);
     database.addEventListener("versionchange", () => database.close());
@@ -437,6 +458,70 @@ export class IndexedDbReplicaStorage {
       throw new Error("replica attribute metadata is incompatible with the committed read view");
     }
     return { db: dbFromRecord(this.database, record), revision: record.revision };
+  }
+
+  /** Bind only a locally digested credential; the raw credential never enters IndexedDB. */
+  async bindCredential(
+    fingerprint: string,
+    identity: ReplicationIdentity,
+    options: ReplicaInstallOptions = {},
+  ): Promise<void> {
+    const transaction = this.database.transaction(CREDENTIAL_BINDINGS, "readwrite");
+    const removeAbort = abortWithSignal(transaction, options.signal);
+    try {
+      transaction.objectStore(CREDENTIAL_BINDINGS).put({
+        fingerprint,
+        identity,
+      } satisfies CredentialBindingRecord);
+      await commitTransaction(transaction);
+    } finally {
+      removeAbort();
+    }
+  }
+
+  /** Restore only the exact partition selected by a prior authenticated binding. */
+  async restoreBound(
+    fingerprint: string,
+    attributes: readonly AttributeSpec[],
+  ): Promise<BoundRestoredReplica | undefined> {
+    const transaction = this.database.transaction(
+      [CREDENTIAL_BINDINGS, COMMITTED],
+      "readonly",
+    );
+    const binding = await requestResult<CredentialBindingRecord | undefined>(
+      transaction.objectStore(CREDENTIAL_BINDINGS).get(fingerprint),
+    );
+    if (binding === undefined) {
+      await transactionDone(transaction);
+      return undefined;
+    }
+    const record = await requestResult<CommittedRecord | undefined>(
+      transaction.objectStore(COMMITTED).get(replicaPartitionKey(binding.identity)),
+    );
+    await transactionDone(transaction);
+    if (record === undefined || record.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION) {
+      return undefined;
+    }
+    if (!sameJson(record.attributes, normalizeAttributes(attributes))) {
+      throw new Error("replica attribute metadata is incompatible with the committed read view");
+    }
+    if (!sameReplicationIdentity(record.identity, binding.identity)) {
+      throw new Error("credential binding does not match its committed replica");
+    }
+    return {
+      identity: binding.identity,
+      db: dbFromRecord(this.database, record),
+      revision: record.revision,
+    };
+  }
+
+  /** Reset abandons only incomplete staging; a same-identity committed value survives. */
+  async resetStaging(identity: ReplicationIdentity): Promise<void> {
+    const partition = replicaPartitionKey(identity);
+    const transaction = this.database.transaction([STAGING, STAGING_CHUNKS], "readwrite");
+    transaction.objectStore(STAGING).delete(partition);
+    transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
+    await commitTransaction(transaction);
   }
 
   async startSnapshot(frame: SnapshotStart): Promise<void> {

@@ -7,6 +7,7 @@ import {
   applyReplicationFrame,
   decodeReplicationFrame,
   emptyClientReplicationState,
+  readReplicationFrames,
   type ClientReplicationState,
 } from "../../packages/ramose/src/internal/replication/index.ts";
 import {
@@ -557,6 +558,33 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(zero.frames[0]).not.toMatch(
         /basisT|txEid|attributeEid|hidden|count|timing|queue/,
       );
+
+      const controller = new AbortController();
+      const response = await openReplication(
+        base,
+        world.database,
+        world.member,
+        revision,
+        1,
+        controller.signal,
+      );
+      const production = readReplicationFrames(
+        response,
+        controller.signal,
+      )[Symbol.asyncIterator]();
+      const acknowledgement = await withTimeout(
+        production.next(),
+        7_000,
+        "production resume acknowledgement",
+      );
+      expect(acknowledgement.value?.type).toBe("ResumeReady");
+      const parked = production.next();
+      controller.abort();
+      await expect(withTimeout(
+        parked,
+        7_000,
+        "production reader cancellation",
+      )).rejects.toMatchObject({ name: "AbortError" });
     });
 
     test("refresh resume converges grants/revocations and claim/principal replacements reset", async () => {
