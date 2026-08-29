@@ -289,12 +289,12 @@ describe("the server's auth env", () => {
     const databaseHasAuth: DatabaseHasAuth = false;
     expect(databaseHasAuth).toBe(false);
     type HasOperations = "operations" extends keyof ServerProps ? true : false;
-    const hasOperations: HasOperations = true;
+    const hasOperations: HasOperations = false;
     type HasWrites = "writes" extends keyof ServerProps ? true : false;
     const hasWrites: HasWrites = false;
     type HasToken = "token" extends keyof ServerProps ? true : false;
     const hasToken: HasToken = false;
-    expect([hasOperations, hasWrites, hasToken]).toEqual([true, false, false]);
+    expect([hasOperations, hasWrites, hasToken]).toEqual([false, false, false]);
   });
 
   test("Output / Effect-valued JWKS and origins pass through un-normalised", () => {

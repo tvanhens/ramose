@@ -28,7 +28,6 @@
  */
 
 import * as Ramose from "ramose";
-import { operations } from "./operations.ts";
 
 /**
  * The owned peer. Server declares the Worker, both Durable Object classes,
@@ -36,5 +35,4 @@ import { operations } from "./operations.ts";
  */
 export const Server = Ramose.Server("Ramose", {
   main: import.meta.resolve("./peer.ts"),
-  operations,
 });

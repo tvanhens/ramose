@@ -10,7 +10,6 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Ramose from "ramose";
 import { AUD, ISS, JWKS } from "./auth-keys.ts";
 import { Open } from "./open.ts";
-import { operations } from "./ops.ts";
 import { TEST_HOOKS_ENV } from "./test-hooks-env.ts";
 
 export { Open };
@@ -65,7 +64,6 @@ export const Policy = Ramose.Server("Policy", {
   peer: "PolicyPeer",
   storage: "PolicyStore",
   main: worker,
-  operations,
   auth: {
     ...jwtAuth(),
     allowedOrigins: ["https://app.acme.test"],

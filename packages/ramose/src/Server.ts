@@ -16,7 +16,7 @@
  * @example The owned form
  * ```typescript
  * export const Server = Ramose.Server("Ramose", {
- *   operations,
+ *   main: import.meta.resolve("./peer.ts"),
  *   auth: { jwt: AUTH },
  * });
  * ```
@@ -33,7 +33,6 @@ import * as Schedule from "effect/Schedule";
 import { type AuthConfig, DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
 export { DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
 import { InvalidRequest, NetworkError } from "./db/Errors.ts";
-import type { AnyOperations } from "./db/Operation.ts";
 import {
   declareOwnedPeer,
   ownedPeerDurableObjects,
@@ -161,11 +160,6 @@ export type ServerProps = {
   peer?: string;
   /** Zone routes on the owned Worker (`/db/*` on a custom hostname). */
   routes?: PeerRoute[];
-  /**
-   * Application authoring registry retained by the deployment definition.
-   * It is never published by `/health` or used as a runtime catalog.
-   */
-  operations?: AnyOperations;
   /** Override the URL resolved from `worker` — a custom domain, say. */
   url?: string;
   /**
