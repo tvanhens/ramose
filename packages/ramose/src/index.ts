@@ -58,9 +58,8 @@ export {
   Server,
 } from "./Server.ts";
 
-// ── peer constants ─────────────────────────────────────────────────────────
-export { PEER_COMPAT, PEER_BINDINGS, PEER_DO_CLASSES } from "./peer.ts";
-export type { RamoseEnv } from "./RamoseEnv.ts";
+// ── peer compatibility ─────────────────────────────────────────────────────
+export { PEER_COMPAT } from "./peer.ts";
 
 export { providers, Providers } from "./Providers.ts";
 

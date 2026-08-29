@@ -156,6 +156,12 @@ export const checkpointSync = (name: string): void => {
   throw new Error(arm.error ?? `test checkpoint ${name}`);
 };
 
+/** Injected only by the repository's explicit source-only testing assembly. */
+export const testRuntimeBoundaries = Object.freeze({
+  checkpoint,
+  checkpointSync,
+});
+
 const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
     status,

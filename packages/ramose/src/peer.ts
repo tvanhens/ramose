@@ -9,6 +9,7 @@
 import type { Bucket } from "alchemy/Cloudflare/R2";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import type { RamoseEnv } from "./RamoseEnv.ts";
 import { workerEntry } from "./workerEntry.ts";
 
@@ -30,11 +31,13 @@ export const PEER_BINDINGS = {
   transactor: "TRANSACTOR",
   replica: "REPLICA",
   versionMetadata: "CF_VERSION_METADATA",
+  internalSecret: "RAMOSE_INTERNAL_SECRET",
 } as const satisfies {
   store: keyof RamoseEnv;
   transactor: keyof RamoseEnv;
   replica: keyof RamoseEnv;
   versionMetadata: keyof RamoseEnv;
+  internalSecret: keyof RamoseEnv;
 };
 
 /** Durable Object `className`s the `ramose/worker` entry exports. */
@@ -196,11 +199,12 @@ export const validatePeerWiring = (worker: unknown): string | undefined => {
     PEER_BINDINGS.transactor,
     PEER_BINDINGS.replica,
     PEER_BINDINGS.versionMetadata,
+    PEER_BINDINGS.internalSecret,
   ]) {
     if (env[key] === undefined) missing.push(key);
   }
   if (missing.length > 0) {
-    return `ramose: the server Worker is missing env binding${missing.length === 1 ? "" : "s"} ${missing.join(", ")} — those names are fixed (STORE / TRANSACTOR / REPLICA / CF_VERSION_METADATA)`;
+    return `ramose: the server Worker is missing required internal binding${missing.length === 1 ? "" : "s"} ${missing.join(", ")}`;
   }
 
   if (!isVersionMetadataBinding(env[PEER_BINDINGS.versionMetadata])) {
@@ -259,6 +263,15 @@ const storageDecl = (storage: PeerStorage | undefined) => {
   return storage;
 };
 
+/** Fresh deployment-owned Worker-to-DO capability; never caller-configurable. */
+const ownedInternalSecret = (): Redacted.Redacted<string> => {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Redacted.make(
+    Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+  );
+};
+
 /**
  * The two Durable Object *declarations* a hand-written stack writes at
  * module scope (`Cloudflare.DurableObject("TransactorDO", …)`). Alchemy
@@ -305,6 +318,9 @@ export const declareOwnedPeer = (options: OwnedPeerOptions & {
         [PEER_BINDINGS.versionMetadata]: Cloudflare.Workers.VersionMetadata(),
         ...options.env,
         ...options.authEnv,
+        // Fixed last: ordinary app configuration cannot replace this
+        // deployment-owned capability with a caller-known value.
+        [PEER_BINDINGS.internalSecret]: ownedInternalSecret(),
       },
       ...(options.routes !== undefined ? { routes: options.routes.map(cloudflareRoute) } : {}),
     });

@@ -59,7 +59,10 @@ import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError }
 import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
-import { checkpoint, checkpointSync } from "../test-hooks.ts";
+import {
+  inertRuntimeBoundaries,
+  type RuntimeBoundaries,
+} from "../runtime-boundaries.ts";
 import {
   catalogProvisioningAttributes,
   executeCatalogOperation,
@@ -219,6 +222,7 @@ export class Transactor {
   constructor(
     readonly host: TransactorHost,
     private readonly operationRuntime?: OperationRuntime,
+    private readonly boundaries: RuntimeBoundaries = inertRuntimeBoundaries,
   ) {
     this.log = componentLogger("transactor", () => ({ db: safeName(host) }));
     this.metrics = new TxMetrics(host.analytics);
@@ -297,7 +301,7 @@ export class Transactor {
       logKeepTxs: c.logKeepTxs,
       gcEveryN: c.gcEveryNIndexes,
       retainRoots: c.retainRoots,
-    });
+    }, this.boundaries);
     if (this.conn.t > roots.t) await this.indexer.schedule();
     this.log.info("boot", { t: this.conn.t, rootT: roots.t, novelty: this.conn.noveltyCount, nextEid: this.conn.nextEntityId, fresh: !this.getMeta("root") });
   }
@@ -637,14 +641,14 @@ export class Transactor {
         if (entries.length === 0) continue;
         const tWrite = performance.now();
         try {
-          await checkpoint("transactor.commit");
+          await this.boundaries.checkpoint("transactor.commit");
           // Fresh clocks after the final async checkpoint and immediately
           // before the irreversible storage transaction. Operation batches
           // are isolated, so expiry can abort/rebuild without collateral loss.
           for (const pending of acks) pending.assertFresh?.();
           // ONE storage write for the whole batch (group commit).
           this.host.transactionSync(() => {
-            checkpointSync("transactor.commit.write");
+            this.boundaries.checkpointSync("transactor.commit.write");
             for (const e of entries) this.appendLogRow(e);
             this.setMeta("next_eid", this.conn.nextEntityId);
             const persist = [...batchAcks].filter(([, a]) => a.output !== undefined);

@@ -64,7 +64,7 @@ export function registerAuthContract(target: AuthTarget): void {
         token: jwt,
       });
       expect(bound.status).toBe(400);
-      expect(bound.body).toMatchObject({ error: "invalid database name" });
+      expect(bound.body).toEqual({ error: "invalid request" });
       expect((await json(jwksUrlOnlyUrl, "/db/-invalid/info", { token: jwt })).status).toBe(401);
     });
 
@@ -119,7 +119,7 @@ export function registerAuthContract(target: AuthTarget): void {
       const jwt = await signToken("acme", "member");
       const admitted = await json(policyUrl, path, { token: jwt });
       expect(admitted.status).toBe(400);
-      expect(admitted.body).toMatchObject({ error: "invalid database name" });
+      expect(admitted.body).toEqual({ error: "invalid request" });
     });
 
     test("WebSocket query and Bearer credentials cross real admission", async () => {

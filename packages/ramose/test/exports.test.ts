@@ -39,6 +39,15 @@ const CUT = [
   "ramose/query",
   "ramose/schema",
   "ramose/workerEntry",
+  "ramose/RamoseEnv",
+  "ramose/worker/errors",
+  "ramose/worker/handle",
+  "ramose/worker/operation-catalogs",
+  "ramose/worker/peer",
+  "ramose/worker/public-observation",
+  "ramose/worker/storage-test-admin",
+  "ramose/worker/test-admin",
+  "ramose/worker/testing",
 ] as const;
 
 const resolve = (spec: string): string => Bun.resolveSync(spec, import.meta.path);

@@ -1,9 +1,8 @@
 /**
  * The Worker's HTTP boundary is one Effect per request whose failures are
  * tagged (src/errors.ts). These tests pin the tag → status/body mapping to
- * exactly what the Worker returned before it was an Effect (the client parses
- * `error`/`code`; the 413 body carries the budget fields), and check that
- * `Effect.catchTags` dispatches on those tags.
+ * the deliberately small public observation vocabulary, and check that
+ * `Effect.catchTags` dispatches on every internal tag.
  *
  * index.ts itself cannot be imported here (it re-exports the DO classes, which
  * import `cloudflare:workers`), so the pure mapping is tested directly.
@@ -19,33 +18,40 @@ import { operationFailureFromResponse } from "../../src/worker/authorized-operat
 describe("tagged failure → status/body", () => {
   test("NotFound → 404 { error }", () => {
     expect(toHttp(new NotFound({}))).toEqual({ status: 404, body: { error: "not found" } });
-    expect(toHttp(new NotFound({ message: "no such route" })).body).toEqual({ error: "no such route" });
+    expect(toHttp(new NotFound({ message: "secret route name" })).body).toEqual({ error: "not found" });
   });
 
-  test("BadRequest → 400, stack only when carried", () => {
-    expect(toHttp(new BadRequest({ message: "invalid database name" }))).toEqual({ status: 400, body: { error: "invalid database name", stack: undefined } });
-    expect(toHttp(new BadRequest({ message: "boom", trace: "at x" })).body?.stack).toBe("at x");
+  test("BadRequest → an opaque 400", () => {
+    expect(toHttp(new BadRequest({ message: "invalid secret attribute" }))).toEqual({
+      status: 400,
+      body: { error: "invalid request" },
+    });
+    expect(toHttp(new BadRequest({ message: "boom", trace: "at x" })).body).toEqual({
+      error: "invalid request",
+    });
   });
 
   test("Unauthorized → 401 { error: unauthorized }", () => {
     expect(toHttp(new Unauthorized({}))).toEqual({ status: 401, body: { error: "unauthorized" } });
   });
 
-  test("QueryBudgetExceeded → 413 with code/clause/cells/limit", () => {
+  test("QueryBudgetExceeded → 413 without clause/count/limit diagnostics", () => {
     const err = fromThrown(new QueryBudgetError("[?e :p/friend ?f]", 900, 500));
     expect(err._tag).toBe("QueryBudgetExceeded");
     const http = toHttp(err);
     expect(http.status).toBe(413);
     expect(http.body?.code).toBe("query/budget-exceeded");
-    expect(http.body?.clause).toBe("[?e :p/friend ?f]");
-    expect(http.body?.cells).toBe(900);
-    expect(http.body?.limit).toBe(500);
-    expect(http.body?.spentBy).toBe("caller");
-    expect(String(http.body?.error)).toContain("query aborted");
+    expect(http.body).toEqual({
+      error: "query budget exceeded",
+      code: "query/budget-exceeded",
+    });
   });
 
-  test("Internal → 500 { error, stack? }", () => {
-    expect(toHttp(new Internal({ message: "kaboom" }))).toEqual({ status: 500, body: { error: "kaboom", stack: undefined } });
+  test("Internal → an opaque 500", () => {
+    expect(toHttp(new Internal({ message: "postgres://secret" }))).toEqual({
+      status: 500,
+      body: { error: "internal error" },
+    });
   });
 
   test("OperationRejected → 409 { tag, operation, step?, reason? }", () => {
@@ -54,7 +60,7 @@ describe("tagged failure → status/body", () => {
     ).toEqual({
       status: 409,
       body: {
-        error: "OperationRejected",
+        error: "gone",
         tag: "OperationRejected",
         message: "gone",
         operation: "issue/close",
@@ -63,9 +69,16 @@ describe("tagged failure → status/body", () => {
     });
   });
 
-  test("UpstreamError passes the DO response through verbatim", () => {
+  test("UpstreamError preserves safe status semantics without DO detail", () => {
     const headers = { "content-type": "application/json", "x-ramose-ms": "3" };
-    expect(toHttp(new UpstreamError({ status: 409, body: '{"error":"cas failed"}', headers }))).toEqual({ status: 409, raw: '{"error":"cas failed"}', headers });
+    expect(toHttp(new UpstreamError({ status: 409, body: '{"error":"cas failed"}', headers }))).toEqual({
+      status: 409,
+      body: { error: "request rejected" },
+    });
+    expect(toHttp(new UpstreamError({ status: 400, body: '{"error":"secret attr"}' }))).toEqual({
+      status: 400,
+      body: { error: "invalid request" },
+    });
   });
 
   test("Worker restatement adds public CORS to Transactor errors", async () => {
@@ -77,13 +90,13 @@ describe("tagged failure → status/body", () => {
     expect(response.status).toBe(409);
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
     expect(response.headers.get("access-control-allow-methods")).toContain("POST");
-    expect(response.headers.get("x-ramose-ms")).toBe("3");
-    expect(await response.text()).toBe('{"error":"operation failed"}');
+    expect(response.headers.get("x-ramose-ms")).toBeNull();
+    expect(await response.text()).toBe('{"error":"request rejected"}');
   });
 });
 
 describe("operation Transactor failure restatement", () => {
-  test("preserves intentional OperationRejected and scrubs engine conflicts", async () => {
+  test("preserves intentional OperationRejected and restates engine conflicts", async () => {
     const intentionalBody = JSON.stringify({
       error: "domain refused",
       tag: "OperationRejected",
@@ -97,7 +110,13 @@ describe("operation Transactor failure restatement", () => {
     ));
     expect(intentional.status).toBe(409);
     const intentionalJson = await intentional.json() as Record<string, unknown>;
-    expect(intentionalJson).toEqual(JSON.parse(intentionalBody));
+    expect(intentionalJson).toEqual({
+      error: "domain refused",
+      tag: "OperationRejected",
+      message: "domain refused",
+      operation: "item/reject",
+      reason: "intentional",
+    });
     expect(fromResponse(
       intentional.status,
       intentionalJson,
@@ -115,7 +134,7 @@ describe("operation Transactor failure restatement", () => {
     ));
     expect(engine.status).toBe(409);
     expect(await engine.json() as Record<string, unknown>).toEqual({
-      error: "operation execution failed",
+      error: "request rejected",
     });
   });
 
@@ -134,7 +153,7 @@ describe("operation Transactor failure restatement", () => {
     expect(response.headers.get("x-private-detail")).toBeNull();
     const responseJson = await response.json() as Record<string, unknown>;
     expect(responseJson).toEqual({
-      error: "operation execution failed",
+      error: "unavailable",
     });
     const clientError = fromResponse(response.status, responseJson, response.headers);
     expect(clientError).toBeInstanceOf(Unavailable);
@@ -149,26 +168,28 @@ describe("operation Transactor failure restatement", () => {
     ));
     expect(response.status).toBe(500);
     expect(await response.json() as Record<string, unknown>).toEqual({
-      error: "operation execution failed",
+      error: "internal error",
     });
   });
 });
 
 describe("fromThrown", () => {
-  test("client-fault messages → 400, everything else → 500 (same regex as before)", () => {
+  test("private message text never selects a public status", () => {
     for (const msg of ["unknown attribute :p/nope", "?x is not bound", "insufficient bindings", "EDN parse error", "QueryError: bad find"]) {
-      expect(fromThrown(new Error(msg))._tag).toBe("BadRequest");
+      expect(fromThrown(new Error(msg))._tag).toBe("Internal");
     }
     expect(fromThrown(new Error("R2 unavailable"))._tag).toBe("Internal");
     expect(fromThrown("string thrown")._tag).toBe("Internal");
-    expect(toHttp(fromThrown("string thrown")).body?.error).toBe("string thrown");
+    expect(toHttp(fromThrown("string thrown")).body?.error).toBe("internal error");
   });
 
-  test("stacks only when asked (off-prod), for both 400 and 500", () => {
-    expect(toHttp(fromThrown(new Error("EDN parse"), { stacks: true })).body?.stack).toBeString();
-    expect(toHttp(fromThrown(new Error("EDN parse"), { stacks: false })).body?.stack).toBeUndefined();
-    expect(toHttp(fromThrown(new Error("nope"), { stacks: true })).body?.stack).toBeString();
-    expect(toHttp(fromThrown(new Error("nope"))).body?.stack).toBeUndefined();
+  test("stacks never cross the public mapping", () => {
+    expect(toHttp(fromThrown(new Error("EDN parse"), { stacks: true })).body).toEqual({
+      error: "internal error",
+    });
+    expect(toHttp(fromThrown(new Error("nope"))).body).toEqual({
+      error: "internal error",
+    });
   });
 
   test("a tagged failure thrown inside a route body is passed through unchanged", () => {

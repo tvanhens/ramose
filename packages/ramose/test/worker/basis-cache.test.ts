@@ -12,7 +12,6 @@ import {
   coloHint,
   effectiveBasisMinT,
   hintOf,
-  minTOf,
   shouldReplaceCachedBasis,
   wantsBasisCache,
 } from "../../src/worker/peer.ts";
@@ -30,32 +29,27 @@ const req = (
 };
 
 describe("basis-cache request policy", () => {
-  test("cache enablement honors header, environment, and explicit bypass precedence", () => {
+  test("cache enablement is deployment-owned and public headers are ignored", () => {
     expect(wantsBasisCache(req())).toBe(true);
-    expect(wantsBasisCache(req({ "x-ramose-cache-basis": "0" }))).toBe(false);
+    expect(wantsBasisCache(req({ "x-ramose-cache-basis": "0" }))).toBe(true);
     expect(wantsBasisCache(req(), { RAMOSE_CACHE_BASIS: "0" })).toBe(false);
     expect(wantsBasisCache(req({ "x-ramose-cache-basis": "1" }), {
       RAMOSE_CACHE_BASIS: "0",
-    })).toBe(true);
+    })).toBe(false);
     expect(basisCacheEnabled(req(), undefined, { bypassCache: true })).toBe(false);
   });
 
-  test("cache mode selects ttl by default and lets the request override the environment", () => {
+  test("cache mode selects ttl by default and ignores public headers", () => {
     expect(cacheModeOf(req())).toBe("ttl");
     expect(cacheModeOf(req(), { RAMOSE_CACHE_MODE: "peer" })).toBe("peer");
     expect(cacheModeOf(req({ "x-ramose-cache-mode": "ttl" }), {
       RAMOSE_CACHE_MODE: "peer",
-    })).toBe("ttl");
-    expect(cacheModeOf(req({ "x-ramose-cache-mode": "peer" }))).toBe("peer");
+    })).toBe("peer");
+    expect(cacheModeOf(req({ "x-ramose-cache-mode": "peer" }))).toBe("ttl");
     expect(cacheModeOf(req({ "x-ramose-cache-mode": "unknown" }))).toBe("ttl");
   });
 
-  test("min-T accepts finite non-negative values and composes with an authoritative fence", () => {
-    expect(minTOf(req())).toBeUndefined();
-    expect(minTOf(req({ "x-ramose-min-t": "" }))).toBeUndefined();
-    expect(minTOf(req({ "x-ramose-min-t": "9" }))).toBe(9);
-    expect(minTOf(req({ "x-ramose-min-t": "-1" }))).toBeUndefined();
-    expect(minTOf(req({ "x-ramose-min-t": "nope" }))).toBeUndefined();
+  test("trusted minimum-basis input composes with an authoritative fence", () => {
     expect(effectiveBasisMinT(undefined, undefined)).toBeUndefined();
     expect(effectiveBasisMinT(7, undefined)).toBe(7);
     expect(effectiveBasisMinT(undefined, 8)).toBe(8);
@@ -126,18 +120,18 @@ describe("colo to replica hint policy", () => {
     expect(coloHint(undefined)).toBeUndefined();
   });
 
-  test("header wins over environment and auto falls back from colo to continent", () => {
+  test("deployment config wins and public headers cannot select a replica", () => {
     expect(hintOf(req())).toBe("enam");
     expect(hintOf(req({}, { continent: "NA", colo: "SJC" }))).toBe("wnam");
     expect(hintOf(req({}, { continent: "NA" }))).toBe("wnam");
-    expect(hintOf(req({ "x-ramose-replica-hint": "continent" }))).toBe("wnam");
+    expect(hintOf(req({ "x-ramose-replica-hint": "continent" }))).toBe("enam");
     expect(hintOf(req(), { RAMOSE_REPLICA_HINT: "continent" })).toBe("wnam");
     expect(hintOf(req({ "x-ramose-replica-hint": "enam" }))).toBe("enam");
     expect(hintOf(req({ "x-ramose-replica-hint": "auto" }))).toBe("enam");
-    expect(hintOf(req({ "x-ramose-replica-hint": "bogus" }))).toBe("wnam");
+    expect(hintOf(req({ "x-ramose-replica-hint": "bogus" }))).toBe("enam");
     expect(hintOf(req({ "x-ramose-replica-hint": "wnam" }), {
       RAMOSE_REPLICA_HINT: "auto",
-    })).toBe("wnam");
+    })).toBe("enam");
     expect(hintOf(req({}, { continent: "EU", colo: "LHR" }))).toBe("weur");
   });
 });

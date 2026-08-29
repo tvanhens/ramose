@@ -16,6 +16,7 @@ import {
   uniqueDb,
   type LocalUrls,
 } from "./fixtures.ts";
+import { TEST_CAPABILITY } from "./test-hooks-env.ts";
 
 type AdminResponse = Awaited<ReturnType<typeof testAdmin>>;
 type SocketHarness = {
@@ -97,6 +98,7 @@ const subscriberUrl = (base: string, db: string, from: number): URL => {
     base,
   );
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("__ramose_test_capability", TEST_CAPABILITY);
   return url;
 };
 

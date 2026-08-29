@@ -229,7 +229,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
 
       const expired = await pending;
       expect(expired.status).toBe(500);
-      expect(expired.body).toEqual({ error: "operation execution failed" });
+      expect(expired.body).toEqual({ error: "internal error" });
       expect(Object.hasOwn(expired.body, "t")).toBe(false);
       expect(expired.res.headers.get("x-ramose-basis-t")).toBeNull();
 
@@ -358,7 +358,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { name: "Conflict" });
       expect(conflict.status).toBe(409);
-      expect(conflict.body).toEqual({ error: "operation execution failed" });
+      expect(conflict.body).toEqual({ error: "request rejected" });
       expect(JSON.stringify(conflict.body)).not.toContain(String(firstUnique.body.result.id));
 
       const crashed = await invoke(base, database, token, {
@@ -366,7 +366,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "crash",
       }, {});
       expect(crashed.status).toBe(500);
-      expect(crashed.body.error).toBe("operation execution failed");
+      expect(crashed.body.error).toBe("internal error");
       expect(JSON.stringify(crashed.body)).not.toContain("secret@internal");
 
       const invalidInput = await invoke(base, database, token, {
@@ -374,14 +374,14 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "inputCrash",
       }, { value: 42 });
       expect(invalidInput.status).toBe(400);
-      expect(JSON.stringify(invalidInput.body)).toContain("invalid operation input");
+      expect(invalidInput.body).toEqual({ error: "invalid request" });
 
       const inputCrashed = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "inputCrash",
       }, { value: "explode" });
       expect(inputCrashed.status).toBe(500);
-      expect(inputCrashed.body).toEqual({ error: "operation execution failed" });
+      expect(inputCrashed.body).toEqual({ error: "internal error" });
       expect(JSON.stringify(inputCrashed.body)).not.toContain("input-secret@internal");
 
       const item = await invoke(base, database, token, {
@@ -395,16 +395,14 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "fieldCodec",
       }, { kind: "invalid" }, item.body.result.id);
       expect(invalidField.status).toBe(400);
-      expect(JSON.stringify(invalidField.body)).toContain(
-        "invalid operation value for :nativeItem/guarded",
-      );
+      expect(invalidField.body).toEqual({ error: "invalid request" });
 
       const fieldCrashed = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "fieldCodec",
       }, { kind: "crash" }, item.body.result.id);
       expect(fieldCrashed.status).toBe(500);
-      expect(fieldCrashed.body).toEqual({ error: "operation execution failed" });
+      expect(fieldCrashed.body).toEqual({ error: "internal error" });
       expect(JSON.stringify(fieldCrashed.body)).not.toContain("field-secret@internal");
 
       const beforeRefCodec = await testAdmin(base, database, "/query", {
@@ -416,16 +414,14 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "refFieldCodec",
       }, { kind: "invalid", id: firstUnique.body.result.id }, item.body.result.id);
       expect(invalidRef.status).toBe(400);
-      expect(JSON.stringify(invalidRef.body)).toContain(
-        "invalid operation value for :nativeItem/invalidRef",
-      );
+      expect(invalidRef.body).toEqual({ error: "invalid request" });
 
       const refCrashed = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "refFieldCodec",
       }, { kind: "crash", id: firstUnique.body.result.id }, item.body.result.id);
       expect(refCrashed.status).toBe(500);
-      expect(refCrashed.body).toEqual({ error: "operation execution failed" });
+      expect(refCrashed.body).toEqual({ error: "internal error" });
       expect(JSON.stringify(refCrashed.body)).not.toContain("ref-secret@internal");
       const afterRefCodec = await testAdmin(base, database, "/query", {
         query: "[:find ?e :where [?e :nativeItem/title ?title]]",

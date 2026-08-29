@@ -10,20 +10,14 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Cloudflare from "alchemy/Cloudflare";
-import * as Redacted from "effect/Redacted";
-import { OperationsCoverageError } from "../src/db/Errors.ts";
 import { Database, isDatabase } from "../src/Database.ts";
 import {
   AUTH_ENV_KEYS,
   authEnv,
   checkAuth,
   compareAuthToWorker,
-  compareOperationsToHealth,
-  coverageTimeoutMs,
   DEFAULT_JWT_MAX_TTL,
-  internalSecret,
   isServer,
-  PROBE_DEFAULTS,
   resolveWorker,
   Server,
   type ServerProps,
@@ -37,9 +31,6 @@ import {
   validatePeerWiring,
 } from "../src/peer.ts";
 import { workerEntry } from "../src/workerEntry.ts";
-import * as Schema from "effect/Schema";
-import { Operation, defineOperations } from "../src/db/internal.ts";
-import { Movies, User } from "./db/fixture.ts";
 
 describe("identity", () => {
   test("the resource classes carry their types", () => {
@@ -136,6 +127,7 @@ describe("PEER_COMPAT", () => {
       transactor: "TRANSACTOR",
       replica: "REPLICA",
       versionMetadata: "CF_VERSION_METADATA",
+      internalSecret: "RAMOSE_INTERNAL_SECRET",
     });
     expect(PEER_DO_CLASSES).toEqual({ transactor: "TransactorDO", replica: "QueryReplicaDO" });
   });
@@ -160,6 +152,7 @@ describe("escape-hatch wiring", () => {
     TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
     REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
     CF_VERSION_METADATA: Cloudflare.Workers.VersionMetadata(),
+    RAMOSE_INTERNAL_SECRET: "deployment-owned-capability",
   };
 
   test("a URL worker has nothing to validate", () => {
@@ -189,6 +182,7 @@ describe("escape-hatch wiring", () => {
             Props: { className: "QueryReplicaDO" },
           },
           CF_VERSION_METADATA: Cloudflare.Workers.VersionMetadata(),
+          RAMOSE_INTERNAL_SECRET: "deployment-owned-capability",
         }),
       ),
     ).toBeUndefined();
@@ -196,13 +190,13 @@ describe("escape-hatch wiring", () => {
 
   test("a missing binding is a deploy error", () => {
     const { REPLICA: _r, ...partial } = dos;
-    expect(validatePeerWiring(peer(partial))).toMatch(/missing env binding.*REPLICA/);
+    expect(validatePeerWiring(peer(partial))).toMatch(/missing required internal binding.*REPLICA/);
   });
 
   test("live renewal requirements fail at deploy time", () => {
     const { CF_VERSION_METADATA: _version, ...withoutVersion } = dos;
     expect(validatePeerWiring(peer(withoutVersion))).toMatch(
-      /missing env binding CF_VERSION_METADATA/,
+      /missing required internal binding CF_VERSION_METADATA/,
     );
     expect(
       validatePeerWiring(peer({ ...dos, CF_VERSION_METADATA: "not-a-binding" })),
@@ -250,7 +244,6 @@ describe("the server's auth env", () => {
       aud: "RAMOSE_JWT_AUD",
       maxTtl: "RAMOSE_JWT_MAX_TTL",
       allowedOrigins: "RAMOSE_ALLOWED_ORIGINS",
-      internalSecret: "RAMOSE_INTERNAL_SECRET",
     });
     expect(DEFAULT_JWT_MAX_TTL).toBe(900);
   });
@@ -262,7 +255,7 @@ describe("the server's auth env", () => {
   });
 
   test("issuers and origins are comma-separated sets, from a list or a string", () => {
-    const { [AUTH_ENV_KEYS.internalSecret]: _secret, ...env } = authEnv({
+    const env = authEnv({
       jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
       issuers: ["https://auth.acme.example", " https://auth.other.example "],
       aud: "ramose:peer:prod",
@@ -278,36 +271,12 @@ describe("the server's auth env", () => {
     });
   });
 
-  test("the Worker→DO secret stays Redacted, so it lands as a secret binding", () => {
-    const env = authEnv({ internalSecret: "sh4red" });
-    const bound = env[AUTH_ENV_KEYS.internalSecret];
-    expect(Redacted.isRedacted(bound)).toBe(true);
-    expect(Redacted.value(bound as Redacted.Redacted<string>)).toBe("sh4red");
-  });
-
-  test("a pinned secret is bound; verifier keys alone do not mint one", () => {
-    const env = authEnv({
-      jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
-      issuers: "https://auth.acme.example",
-      aud: "ramose:peer:prod",
-      internalSecret: "sh4red",
-    });
-    expect(Redacted.value(env[AUTH_ENV_KEYS.internalSecret] as Redacted.Redacted<string>)).toBe(
-      "sh4red",
-    );
-    expect(authEnv({ jwksUrl: "https://auth.acme.example/.well-known/jwks.json" })).toEqual({
-      RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
-    });
-    expect(authEnv({ jwksJson: '{"keys":[]}' })).toEqual({ RAMOSE_JWKS_JSON: '{"keys":[]}' });
-    expect(authEnv({})[AUTH_ENV_KEYS.internalSecret]).toBeUndefined();
-  });
-
-  test("an unpinned internal secret is minted, and is not the same twice", () => {
-    const a = Redacted.value(internalSecret());
-    expect(a).toMatch(/^[0-9a-f]{64}$/);
-    expect(a).not.toBe(Redacted.value(internalSecret()));
-    expect(Redacted.value(internalSecret("pinned"))).toBe("pinned");
-    expect(Redacted.value(internalSecret(Redacted.make("pinned")))).toBe("pinned");
+  test("auth configuration cannot supply the Worker-to-DO capability", () => {
+    type HasInternalSecret = "internalSecret" extends keyof NonNullable<ServerProps["auth"]>
+      ? true
+      : false;
+    const hasInternalSecret: HasInternalSecret = false;
+    expect(hasInternalSecret).toBe(false);
   });
 
   test("`auth` is a prop of the server, and the attributes are unchanged", () => {
@@ -336,7 +305,6 @@ describe("the server's auth env", () => {
       issuers: "https://auth.example",
       aud: "ramose:peer",
       allowedOrigins,
-      internalSecret: "sh4red",
     });
     expect(env[AUTH_ENV_KEYS.jwksUrl]).toBe(jwksUrl);
     expect(env[AUTH_ENV_KEYS.allowedOrigins]).toBe(allowedOrigins);
@@ -348,7 +316,6 @@ describe("owned form binds auth onto the Worker", () => {
     jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
     issuers: "https://auth.acme.example",
     aud: "ramose:peer:prod",
-    internalSecret: "sh4red",
   };
 
   test("authEnv binds verifier keys and no seed token", () => {
@@ -357,9 +324,6 @@ describe("owned form binds auth onto the Worker", () => {
     expect(bindings[AUTH_ENV_KEYS.issuers]).toBe(auth.issuers);
     expect(bindings[AUTH_ENV_KEYS.aud]).toBe(auth.aud);
     expect(bindings.RAMOSE_TOKEN).toBeUndefined();
-    expect(Redacted.value(bindings[AUTH_ENV_KEYS.internalSecret] as Redacted.Redacted<string>)).toBe(
-      "sh4red",
-    );
     expect(authEnv(undefined).RAMOSE_TOKEN).toBeUndefined();
   });
 
@@ -500,57 +464,5 @@ describe("hatch form compares auth against the Worker env", () => {
         hatch({ ...matching, RAMOSE_JWKS_URL: { interpolate: "https://auth.example/jwks" } }),
       ),
     ).toMatch(/diverge on RAMOSE_JWKS_URL/);
-  });
-});
-
-describe("operations coverage vs /health", () => {
-  const createUser = Operation(
-    "user/create",
-    { input: Schema.Struct({}), output: Schema.Struct({}) },
-    () => ({}),
-  );
-  const setName = Operation(
-    "user/set-name",
-    {
-      on: User,
-      input: Schema.Struct({ name: Schema.String }),
-      output: Schema.Struct({}),
-    },
-    () => ({}),
-  );
-  const client = defineOperations(Movies, { createUser, setName });
-
-  test("unset operations skips", () => {
-    expect(compareOperationsToHealth(undefined, { operations: [] })).toBeUndefined();
-  });
-
-  test("matching ids pass; extra peer ops pass", () => {
-    expect(
-      compareOperationsToHealth(client, {
-        operations: ["user/create", "user/set-name", "user/extra"],
-      }),
-    ).toBeUndefined();
-  });
-
-  test("a missing id is a named deploy error", () => {
-    const error = compareOperationsToHealth(client, { operations: ["user/create"] });
-    expect(error).toBeInstanceOf(OperationsCoverageError);
-    expect(error?.missing).toEqual(["user/set-name"]);
-    expect(error?.message).toMatch(/missing operations: user\/set-name/);
-  });
-
-  test("a health body with no operations list is an empty registry", () => {
-    const error = compareOperationsToHealth(client, { ok: true });
-    expect(error).toBeInstanceOf(OperationsCoverageError);
-    expect(error?.missing).toEqual(["user/create", "user/set-name"]);
-  });
-
-  test("coverage fetch uses the caller's probe.timeoutMs", () => {
-    expect(coverageTimeoutMs({ timeoutMs: 60_000 }, PROBE_DEFAULTS.live)).toBe(60_000);
-    expect(coverageTimeoutMs({ timeoutMs: 60_000 }, PROBE_DEFAULTS.local)).toBe(60_000);
-    expect(coverageTimeoutMs(undefined, PROBE_DEFAULTS.live)).toBe(PROBE_DEFAULTS.live.timeoutMs);
-    expect(coverageTimeoutMs({}, PROBE_DEFAULTS.local)).toBe(PROBE_DEFAULTS.local.timeoutMs);
-    expect(coverageTimeoutMs(false, PROBE_DEFAULTS.live)).toBe(PROBE_DEFAULTS.live.timeoutMs);
-    expect(coverageTimeoutMs(false, PROBE_DEFAULTS.local)).toBe(PROBE_DEFAULTS.local.timeoutMs);
   });
 });

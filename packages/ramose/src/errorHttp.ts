@@ -5,12 +5,16 @@
  * 9-arm `catchTags`. Does not live on `ramose/db`, so the browser graph
  * stays free of an HTTP helper. Import from `ramose` or `ramose/worker`.
  *
- * The peer Worker's own `toHttp` stays in `worker/errors.ts`: it maps
- * worker-only tags (`UpstreamError`, `Internal` with a stack, …) and
- * keeps the historical body fields. This helper is the app-path contract.
+ * This helper and the peer Worker share the same public field/header
+ * allowlist. Rich tagged errors remain useful inside trusted code, but their
+ * engine and policy detail is not a public transport contract.
  */
 
 import { type DbError, InternalError, isDatabaseError } from "./db/Errors.ts";
+import {
+  publicErrorBody,
+  publicResponseHeaders,
+} from "./worker/public-observation.ts";
 
 export interface ErrorHttp {
   readonly status: number;
@@ -18,71 +22,65 @@ export interface ErrorHttp {
   readonly headers?: Record<string, string>;
 }
 
-const messageOf = (err: { readonly message?: string; readonly _tag: string }): string =>
-  typeof err.message === "string" && err.message.length > 0 ? err.message : err._tag;
-
-/** Status + JSON body for a {@link DbError}. Total over the union. */
-export const errorToHttp = (err: DbError): ErrorHttp => {
+const errorToHttpUnchecked = (err: DbError): ErrorHttp => {
   switch (err._tag) {
     case "TxRejected":
       return {
         status: 409,
-        body: {
-          error: err.message,
-          tag: "TxRejected",
-          code: err.code,
-          ...(err.attr === undefined ? {} : { attr: err.attr }),
-        },
+        body: { error: "request rejected" },
       };
     case "Unavailable":
       return {
         status: 503,
-        body: { error: err.message, tag: "Unavailable", retryAfterMs: err.retryAfterMs },
+        body: { error: "unavailable" },
         headers: { "retry-after": String(Math.ceil(err.retryAfterMs / 1000)) },
       };
     case "InvalidRequest":
-      return { status: 400, body: { error: err.message, tag: "InvalidRequest" } };
+      return { status: 400, body: { error: "invalid request" } };
     case "DatabaseNotFound":
-      return { status: 404, body: { error: err.message, tag: "DatabaseNotFound" } };
+      return { status: 404, body: { error: "not found" } };
     case "Unauthorized":
       return {
         status: err.status ?? (err.code === "policy" ? 403 : 401),
-        body: {
-          error: messageOf(err),
-          tag: "Unauthorized",
-          ...(err.code === undefined ? {} : { code: err.code }),
-          ...(err.attr === undefined ? {} : { attr: err.attr }),
-        },
+        body: { error: "unauthorized" },
       };
     case "QueryBudgetExceeded":
       return {
         status: 413,
         body: {
-          error: err.message,
-          tag: "QueryBudgetExceeded",
-          code: err.code,
-          clause: err.clause,
-          cells: err.cells,
-          limit: err.limit,
-          spentBy: err.spentBy ?? "caller",
+          error: "query budget exceeded",
+          code: "query/budget-exceeded",
         },
       };
     case "InternalError":
-      return { status: 500, body: { error: err.message, tag: "InternalError" } };
+      return { status: 500, body: { error: "internal error" } };
     case "NetworkError":
-      return { status: 502, body: { error: err.message, tag: "NetworkError" } };
+      return { status: 500, body: { error: "internal error" } };
     case "OperationRejected":
       return {
         status: 409,
         body: {
           error: err.message,
           tag: "OperationRejected",
+          message: err.message,
           operation: err.operation,
           ...(err.step === undefined ? {} : { step: err.step }),
           ...(err.reason === undefined ? {} : { reason: err.reason }),
         },
       };
   }
+};
+
+/** Status + allowlisted JSON body/headers for a {@link DbError}. */
+export const errorToHttp = (err: DbError): ErrorHttp => {
+  const http = errorToHttpUnchecked(err);
+  return {
+    ...http,
+    body: publicErrorBody(http.body),
+    ...(http.headers === undefined
+      ? {}
+      : { headers: publicResponseHeaders(http.headers) }),
+  };
 };
 
 /** HTTP status for a {@link DbError}. */
@@ -96,7 +94,10 @@ export const errorResponse = (err: DbError): Response => {
   const http = errorToHttp(err);
   return new Response(JSON.stringify(http.body), {
     status: http.status,
-    headers: { "content-type": "application/json", ...http.headers },
+    headers: {
+      "content-type": "application/json",
+      ...publicResponseHeaders(http.headers),
+    },
   });
 };
 

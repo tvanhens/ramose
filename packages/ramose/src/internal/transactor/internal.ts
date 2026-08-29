@@ -1,7 +1,8 @@
 /**
  * Worker→DO shared secret. The Transactor and QueryReplica objects are only
- * ever reached from the peer Worker; when `RAMOSE_INTERNAL_SECRET` is set every
- * internal fetch (including `/subscribe`) must carry it. Unset = no gate.
+ * ever reached from the peer Worker. Every internal fetch (including
+ * `/subscribe`) must carry the deployment-owned capability. Missing binding
+ * fails closed.
  */
 
 import type { RamoseEnv } from "./env.ts";
@@ -10,7 +11,7 @@ export const INTERNAL_HEADER = "x-ramose-internal";
 
 type SecretEnv = Pick<RamoseEnv, "RAMOSE_INTERNAL_SECRET">;
 
-/** The header to put on a Worker→DO (or DO→DO) fetch; empty when no secret is configured. */
+/** The header to put on a Worker→DO (or DO→DO) fetch. */
 export function internalHeaders(env: SecretEnv): Record<string, string> {
   const secret = env.RAMOSE_INTERNAL_SECRET;
   return secret ? { [INTERNAL_HEADER]: secret } : {};
@@ -24,15 +25,18 @@ function same(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** Does this request carry the internal secret (always true when none is configured)? */
+/** Does this request carry the deployment-owned internal capability? */
 export function isInternal(env: SecretEnv, request: Request): boolean {
   const secret = env.RAMOSE_INTERNAL_SECRET;
-  if (!secret) return true;
+  if (!secret) return false;
   return same(request.headers.get(INTERNAL_HEADER) ?? "", secret);
 }
 
-/** 401 when the gate is armed and the request did not present the secret. */
+/** Uniform refusal when the capability is missing or incorrect. */
 export function internalGate(env: SecretEnv, request: Request): Response | undefined {
   if (isInternal(env, request)) return undefined;
-  return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify({ error: "not found" }), {
+    status: 404,
+    headers: { "content-type": "application/json" },
+  });
 }

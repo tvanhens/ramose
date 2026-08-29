@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { recordingTransport } from "../support/recorder.ts";
 import { attr, json, localUrls, testAdmin, uniqueDb, type LocalUrls } from "./fixtures.ts";
+import { TEST_CAPABILITY } from "./test-hooks-env.ts";
 
 const fetchPastProxyBlip = async (
   rec: ReturnType<typeof recordingTransport>,
@@ -27,10 +28,9 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       const url = `${target.urls().openUrl.replace(/\/+$/, "")}/health`;
       const res = await fetchPastProxyBlip(rec, url);
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { ok?: boolean; service?: string };
-      expect(body.ok).toBe(true);
-      expect(body.service).toBe("ramose");
-      expect(res.headers.get("x-ramose-deployment")).not.toBeNull();
+      const body = await res.json();
+      expect(body).toEqual({ ok: true, service: "ramose" });
+      expect(res.headers.get("x-ramose-deployment")).toBeNull();
       expect(rec.calls.length).toBeGreaterThanOrEqual(1);
       expect(rec.calls.at(-1)?.status).toBe(200);
       expect(rec.calls.at(-1)?.url).toContain("/health");
@@ -59,6 +59,43 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       const status = await testAdmin(urls.openUrl, db, "/checkpoint", { action: "status" });
       expect(status.status).toBe(200);
       expect(status.body.ok).toBe(true);
+    });
+
+    test("the production entry has no test route even with test env bindings", async () => {
+      const urls = localUrls();
+      const db = uniqueDb("prodclosed");
+      const response = await json(
+        urls.emptyUrl,
+        `/__test__/db/${db}/checkpoint`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "status" }),
+        },
+      );
+      expect(response.status).toBe(404);
+      expect(JSON.stringify(response.body)).toBe('{"error":"not found"}');
+    });
+
+    test("the testing entry requires its private capability", async () => {
+      const urls = localUrls();
+      const db = uniqueDb("testcap");
+      const url = `${urls.openUrl.replace(/\/+$/, "")}/__test__/db/${db}/checkpoint`;
+      for (const headers of [
+        { "content-type": "application/json" },
+        {
+          "content-type": "application/json",
+          "x-ramose-test-capability": "caller-controlled",
+        },
+      ]) {
+        const response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ action: "status" }),
+        });
+        expect(response.status).toBe(404);
+        expect(JSON.stringify(await response.json())).toBe('{"error":"not found"}');
+      }
     });
 
     test("writes and reads real local R2 bytes, including corrupt payloads", async () => {
@@ -118,6 +155,7 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
         urls.openUrl,
       );
       socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
+      socketUrl.searchParams.set("__ramose_test_capability", TEST_CAPABILITY);
       const rec = recordingTransport();
       const socket = new rec.webSocket(socketUrl);
       await new Promise<void>((resolve, reject) => {

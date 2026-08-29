@@ -43,8 +43,8 @@ export interface RamoseEnv {
   RAMOSE_JWT_MAX_TTL?: string;
   /** origins CORS is narrowed to, comma-separated */
   RAMOSE_ALLOWED_ORIGINS?: string;
-  /** Worker→DO shared secret; every internal fetch must carry it. Unset = no gate. */
-  RAMOSE_INTERNAL_SECRET?: string;
+  /** Deployment-owned Worker→DO capability; every internal fetch carries it. */
+  RAMOSE_INTERNAL_SECRET: string;
   /** indexer tuning */
   RAMOSE_INDEX_INTERVAL_MS?: string;
   RAMOSE_INDEX_TX_THRESHOLD?: string;
@@ -60,11 +60,6 @@ export interface RamoseEnv {
   RAMOSE_QUERY_MAX_CELLS?: string;
   /** structured log level for all components: debug | info | warn | error (default info) */
   RAMOSE_LOG_LEVEL?: string;
-  /**
-   * Leftover write-mode env. Unrecognized values fail closed and log
-   * `writes.unrecognized`. Raw external writes are not admitted.
-   */
-  RAMOSE_WRITES?: string;
   /** default replica location hint: wnam|enam|…|auto (auto = colo→hint); unset = continent default */
   RAMOSE_REPLICA_HINT?: string;
   /** "1" = isolate basis cache on by default */
@@ -72,9 +67,11 @@ export interface RamoseEnv {
   /** default basis-cache consistency mode: ttl | peer */
   RAMOSE_CACHE_MODE?: string;
   /**
-   * `"1"` enables `/__test__/*` admin (real resource controls and forwarding).
-   * Ignored when `RAMOSE_STAGE` is `prod`. Local integration sets this;
-   * production builds must leave it unset.
+   * `"1"` enables real resource controls only in the explicit source-only
+   * testing assembly and only outside `prod`. The default Worker entry does
+   * not import or dispatch test routes.
    */
   RAMOSE_TEST_HOOKS?: string;
+  /** Private non-production capability required by that testing assembly. */
+  RAMOSE_TEST_CAPABILITY?: string;
 }

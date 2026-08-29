@@ -60,23 +60,22 @@ export function regionOf(request: Request): string {
   return cf?.continent ?? "global";
 }
 
-// ---- read-path knobs (per request by header, default by env, else the shipped default) ----
+// ---- deployment-owned read-path tuning ----
 //
-//   x-ramose-replica-hint: wnam|enam|…|auto|continent
+//   RAMOSE_REPLICA_HINT: wnam|enam|…|auto|continent
 //                                            DO placement (hint is part of the replica id); `auto` = colo→hint
 //                                            (IAD→enam, SJC→wnam, …), `continent` = the old NA→wnam mapping.
 //                                            Default: env RAMOSE_REPLICA_HINT, else `auto` (gate 2026-08-16: same-colo
 //                                            basis misses 12–13 ms vs 68–77 ms; see bench/RESULTS.md).
-//   x-ramose-cache-basis: 0|1                 reuse an isolate-cached basis instead of calling the replica.
+//   RAMOSE_CACHE_BASIS: 0|1                   reuse an isolate-cached basis instead of calling the replica.
 //                                            Default: env RAMOSE_CACHE_BASIS, else 1 (gate: 0 ms server p50 on hits).
-//   x-ramose-cache-mode: ttl|peer             ttl  = entry expires after 5 s (cross-isolate freshness bound = 5 s).
+//   RAMOSE_CACHE_MODE: ttl|peer               ttl  = entry expires after 5 s (cross-isolate freshness bound = 5 s).
 //                                            peer = no freshness timer; only a write through this isolate or an
-//                                                   `x-ramose-min-t` the entry can't satisfy refetches; a long safety
+//                                                   an internal minimum basis the entry can't satisfy refetches; a long safety
 //                                                   TTL only bounds memory. Default: env RAMOSE_CACHE_MODE, else ttl
 //                                                   (gate: peer measured identical to ttl on the hit path, and its
 //                                                   cross-isolate staleness without min-t could not be measured).
-//   x-ramose-min-t: <t>                       client's last seen t; the read refetches if the cached basis is older
-//                                            (honored in both modes — read-your-writes across isolates).
+// Minimum-basis fences are supplied only by trusted Worker orchestration.
 
 export type CacheMode = "ttl" | "peer";
 
@@ -95,11 +94,10 @@ export function coloHint(colo: string | undefined): string | undefined {
   return colo ? COLO_HINT[colo.toUpperCase()] : undefined;
 }
 
-/** Location hint for a request. Header wins, then env RAMOSE_REPLICA_HINT, then the continent default.
- *  `auto` (header or env) resolves colo→hint and falls back to the continent when the colo is unknown. */
+/** Location hint selected from deployment config and trusted Cloudflare colo. */
 export function hintOf(request: Request, env?: Pick<RamoseEnv, "RAMOSE_REPLICA_HINT">): string | undefined {
   const cf = (request as any).cf as { colo?: string } | undefined;
-  const pick = request.headers.get("x-ramose-replica-hint") ?? env?.RAMOSE_REPLICA_HINT ?? "auto";
+  const pick = env?.RAMOSE_REPLICA_HINT ?? "auto";
   if (pick === "auto") return coloHint(cf?.colo) ?? hintFor(regionOf(request));
   if (pick && HINTS.has(pick)) return pick;
   return hintFor(regionOf(request)); // "continent" or anything unknown
@@ -117,9 +115,14 @@ export function coloHeader(request: Request): Record<string, string> {
 }
 
 /** Nearest replica stub for a request (deterministic id + location hint). */
-export function nearestReplica(env: RamoseEnv, db: string, request: Request): DurableObjectStub {
+export function nearestReplica(
+  env: RamoseEnv,
+  db: string,
+  request: Request,
+  trustedHint?: string,
+): DurableObjectStub {
   const region = regionOf(request);
-  const hint = hintOf(request, env);
+  const hint = trustedHint ?? hintOf(request, env);
   return env.REPLICA.get(replicaId(env, db, region, 1, hint), { locationHint: hint } as any);
 }
 
@@ -208,27 +211,20 @@ export const watchBasisChanges = (
   return { changes, currentBasis: () => currentBasis };
 };
 
-export function wantsBasisCache(request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">): boolean {
-  const h = request.headers.get("x-ramose-cache-basis") ?? env?.RAMOSE_CACHE_BASIS ?? "1";
+export function wantsBasisCache(_request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">): boolean {
+  const h = env?.RAMOSE_CACHE_BASIS ?? "1";
   return h !== "0";
 }
 
-export function cacheModeOf(request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_MODE">): CacheMode {
-  const h = request.headers.get("x-ramose-cache-mode") ?? env?.RAMOSE_CACHE_MODE;
+export function cacheModeOf(_request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_MODE">): CacheMode {
+  const h = env?.RAMOSE_CACHE_MODE;
   return h === "peer" ? "peer" : "ttl";
-}
-
-/** `x-ramose-min-t` (client's last seen t), or undefined. */
-export function minTOf(request: Request): number | undefined {
-  const h = request.headers.get("x-ramose-min-t");
-  if (h === null || h === "") return undefined;
-  const n = Number(h);
-  return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
 // ---- isolate basis cache ----
 // Keyed by db|hint. Reused until a write through this Worker (invalidateBasis), the entry
-// ages past the mode's TTL, or a read carries an x-ramose-min-t the entry can't satisfy.
+// ages past the mode's TTL, or trusted orchestration supplies a minimum basis
+// the entry cannot satisfy.
 const basisCache = new Map<string, { basis: Basis; at: number }>();
 export const BASIS_TTL_MS = 5_000; // ttl mode: cross-isolate freshness bound
 export const BASIS_SAFETY_TTL_MS = 10 * 60_000; // peer mode: memory bound only, not a consistency promise
@@ -285,13 +281,23 @@ export interface BasisFetchOptions {
   readonly bypassCache?: boolean;
   /** Fence the replica read at the transactor's current committed t. */
   readonly authoritativeFence?: boolean;
+  /** Trusted internal minimum basis (never parsed from a public request). */
+  readonly minimumBasis?: number | undefined;
+  /** Explicit testing-assembly cache decision. */
+  readonly useCache?: boolean | undefined;
+  /** Explicit testing-assembly cache mode. */
+  readonly cacheMode?: CacheMode | undefined;
+  /** Explicit testing-assembly replica placement. */
+  readonly replicaHint?: string | undefined;
 }
 
 export const basisCacheEnabled = (
   request: Request,
   env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">,
   options: BasisFetchOptions = {},
-): boolean => options.bypassCache !== true && wantsBasisCache(request, env);
+): boolean =>
+  options.bypassCache !== true &&
+  (options.useCache ?? wantsBasisCache(request, env));
 
 /** The strongest read fence supplied by the caller and the authoritative writer. */
 export const effectiveBasisMinT = (
@@ -328,15 +334,16 @@ export async function fetchBasisWithStats(
   options: BasisFetchOptions = {},
 ): Promise<BasisFetch> {
   const useCache = basisCacheEnabled(request, env, options);
-  const mode = cacheModeOf(request, env);
+  const mode = options.cacheMode ?? cacheModeOf(request, env);
   // Cache bypass alone is not a freshness fence: an open replica novelty
   // socket can have missed a broadcast. Live renewals first read the writer's
   // committed t, then require /basis to catch up through the transactor log.
   const transactorT = options.authoritativeFence === true
     ? await fetchTransactorT(env, db)
     : undefined;
-  const minT = effectiveBasisMinT(minTOf(request), transactorT);
-  const key = `${db}|${hintOf(request, env) ?? ""}`;
+  const minT = effectiveBasisMinT(options.minimumBasis, transactorT);
+  const hint = options.replicaHint ?? hintOf(request, env);
+  const key = `${db}|${hint ?? ""}`;
   const hit = basisCache.get(key);
   const reason = basisCacheDecision(
     useCache,
@@ -348,7 +355,7 @@ export async function fetchBasisWithStats(
   if (reason === "hit" && hit !== undefined) {
     return { basis: hit.basis, hit: true, reason, calls: 0, behind: false };
   }
-  const stub = nearestReplica(env, db, request);
+  const stub = nearestReplica(env, db, request, hint);
   let calls = 0;
   let basis: Basis;
   for (;;) {
@@ -397,16 +404,21 @@ export async function fetchBasis(
 }
 
 /** Diagnostic response headers describing how the basis was obtained. */
-export function basisHeaders(request: Request, env: RamoseEnv, f: BasisFetch): Record<string, string> {
+export function basisHeaders(
+  request: Request,
+  env: RamoseEnv,
+  f: BasisFetch,
+  options: BasisFetchOptions = {},
+): Record<string, string> {
   return {
     "x-ramose-basis-t": String(f.basis.t),
     "x-ramose-basis-hit": f.hit ? "1" : "0",
     "x-ramose-basis-reason": f.reason,
     "x-ramose-basis-calls": String(f.calls),
     ...(f.behind ? { "x-ramose-basis-behind": "1" } : {}),
-    "x-ramose-replica-hint": hintOf(request, env) ?? "",
-    "x-ramose-cache-basis": wantsBasisCache(request, env) ? "1" : "0",
-    "x-ramose-cache-mode": cacheModeOf(request, env),
+    "x-ramose-replica-hint": options.replicaHint ?? hintOf(request, env) ?? "",
+    "x-ramose-cache-basis": (options.useCache ?? wantsBasisCache(request, env)) ? "1" : "0",
+    "x-ramose-cache-mode": options.cacheMode ?? cacheModeOf(request, env),
     "x-ramose-colo": String((request as any).cf?.colo ?? ""),
   };
 }

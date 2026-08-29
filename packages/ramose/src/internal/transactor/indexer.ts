@@ -15,7 +15,10 @@
 
 import { type LogEntry, type RootRecord, componentLogger, gzipCodec, txFrame } from "../core/index.ts";
 import { gcSweep, publishRoot, putLogChunk, retainNewest, rootsToRecord } from "../storage/index.ts";
-import { checkpoint } from "../test-hooks.ts";
+import {
+  inertRuntimeBoundaries,
+  type RuntimeBoundaries,
+} from "../runtime-boundaries.ts";
 import type { Transactor } from "./transactor.ts";
 
 export interface IndexerOptions {
@@ -46,7 +49,11 @@ export class Indexer {
   private lastGc: unknown;
   private readonly log = componentLogger("indexer");
 
-  constructor(private readonly t: Transactor, readonly opts: IndexerOptions) {}
+  constructor(
+    private readonly t: Transactor,
+    readonly opts: IndexerOptions,
+    private readonly boundaries: RuntimeBoundaries = inertRuntimeBoundaries,
+  ) {}
   private get db(): string | undefined {
     try {
       return this.t.host.dbName;
@@ -92,7 +99,7 @@ export class Indexer {
     const putsBefore = this.t.nodeStore.stats.r2Puts;
     const noveltyBefore = conn.noveltyCount; // O(1) counter, read before the merge/flush
     try {
-      await checkpoint("indexer.run");
+      await this.boundaries.checkpoint("indexer.run");
       // 1. Bounded slice of the log.
       const toT = Math.min(conn.t, fromT + this.opts.maxTxsPerRun);
       const entries: LogEntry[] = this.t.readLogEntries(fromT, toT);

@@ -1,5 +1,4 @@
 import { isDatabaseName } from "../db/DatabaseName.ts";
-import { type AnyOperations, operationNames } from "../db/Operation.ts";
 import {
   callerFromVerified,
   DatabaseId,
@@ -8,7 +7,6 @@ import {
   OneShotReadError,
   runOneShotRead,
   type DatabaseRouteDerivation,
-  type DeployedCatalogs,
 } from "../internal/authorization/index.ts";
 import {
   Histogram,
@@ -18,8 +16,8 @@ import {
   toJson,
 } from "../internal/core/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
-import { checkpoint, testHooksEnabled } from "../internal/test-hooks.ts";
-import { isUnrecognizedWrites } from "../writes.ts";
+import type { RuntimeBoundaries } from "../internal/runtime-boundaries.ts";
+import { isInternal } from "../internal/transactor/index.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -32,7 +30,6 @@ import {
   queryMaxCells,
 } from "./authorized-read.ts";
 import { authorizedLiveResponse } from "./authorized-live.ts";
-import { asTestAdminError, handleTestAdmin } from "./test-admin.ts";
 import {
   Analytics,
   type Route,
@@ -65,11 +62,14 @@ import {
   deployedOperationCatalogs,
   type OperationCatalogs,
 } from "./operation-catalogs.ts";
+import {
+  PUBLIC_HEALTH,
+  publicCorsHeaders,
+  publicErrorBody,
+  publicResponseHeaders,
+} from "./public-observation.ts";
 
 export interface ServerOptions {
-  readonly operations?: AnyOperations;
-  /** Deployed catalog registry assembled from reachable code. Missing = deny. */
-  readonly catalogs?: DeployedCatalogs;
   /** Concrete route database -> exact private runnable catalog definition. */
   readonly operationCatalogs?: OperationCatalogs;
 }
@@ -85,37 +85,22 @@ const peerMetrics = {
   aeWrites: 0,
 };
 let levelApplied = false;
-const writesWarned = new Set<string>();
-const unrecognizedWritesWarned = new Set<string>();
-
-/** Test hook: forget writes-mode warnings. */
-export const clearWritesWarning = (): void => {
-  writesWarned.clear();
-  unrecognizedWritesWarned.clear();
-};
 
 const json = (
   body: unknown,
   status = 200,
+  request?: Request,
+  env?: RamoseEnv,
   extra: Record<string, string> = {},
 ) =>
   new Response(JSON.stringify(toJson(body)), {
     status,
     headers: {
       "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      ...extra,
+      ...publicResponseHeaders(extra),
+      ...publicCorsHeaders(request, env),
     },
   });
-
-const CORS = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET,POST,OPTIONS",
-  "access-control-allow-headers":
-    "content-type,authorization,upgrade,x-ramose-replica-hint,x-ramose-cache-basis,x-ramose-cache-mode,x-ramose-min-t,x-ramose-catalog,x-ramose-unit-hash",
-  "access-control-expose-headers":
-    "x-ramose-ms,x-ramose-r2-gets,x-ramose-cache-hits,x-ramose-basis-t,x-ramose-basis-hit,x-ramose-basis-reason,x-ramose-basis-calls,x-ramose-basis-behind,x-ramose-replica-hint,x-ramose-cache-basis,x-ramose-cache-mode,x-ramose-colo",
-};
 
 const DEPLOYMENT_HEADER = "x-ramose-deployment";
 
@@ -132,22 +117,25 @@ export interface RequestInfo {
 }
 
 /** Pure HTTP restatement used by the request boundary and unit tests. */
-export const respond = (err: RamoseError): Response => {
+export const respond = (
+  err: RamoseError,
+  request?: Request,
+  env?: RamoseEnv,
+): Response => {
   const h = toHttp(err);
-  if (h.raw !== undefined) {
-    return new Response(h.raw, {
-      status: h.status,
-      headers: { "content-type": "application/json", ...h.headers, ...CORS },
-    });
-  }
-  return json(h.body ?? {}, h.status);
+  return json(publicErrorBody(h.body), h.status, request, env, h.headers);
 };
 
-const recover = (info: RequestInfo, t0: number) => ({
-  NotFound: (e: NotFound) => Effect.sync(() => respond(e)),
-  BadRequest: (e: BadRequest) => Effect.sync(() => respond(e)),
-  Unauthorized: (e: Unauthorized) => Effect.sync(() => respond(e)),
-  UpstreamError: (e: UpstreamError) => Effect.sync(() => respond(e)),
+const recover = (
+  info: RequestInfo,
+  t0: number,
+  request: Request,
+  env: RamoseEnv,
+) => ({
+  NotFound: (e: NotFound) => Effect.sync(() => respond(e, request, env)),
+  BadRequest: (e: BadRequest) => Effect.sync(() => respond(e, request, env)),
+  Unauthorized: (e: Unauthorized) => Effect.sync(() => respond(e, request, env)),
+  UpstreamError: (e: UpstreamError) => Effect.sync(() => respond(e, request, env)),
   QueryBudgetExceeded: (e: QueryBudgetExceeded) =>
     Effect.sync(() => {
       peerMetrics.budgetAborts++;
@@ -159,7 +147,7 @@ const recover = (info: RequestInfo, t0: number) => ({
         spentBy: e.spentBy ?? "caller",
         ms: Date.now() - t0,
       });
-      return respond(e);
+      return respond(e, request, env);
     }),
   Internal: (e: Internal) =>
     Effect.sync(() => {
@@ -169,10 +157,10 @@ const recover = (info: RequestInfo, t0: number) => ({
         path: info.path,
         error: e.message,
       });
-      return respond(e);
+      return respond(e, request, env);
     }),
   OperationRejected: (e: OperationRejected) =>
-    Effect.sync(() => respond(e)),
+    Effect.sync(() => respond(e, request, env)),
 });
 
 const recordHttp = (
@@ -211,6 +199,7 @@ export const handle = (
   t0: number,
   info: RequestInfo,
   peer: ServerOptions,
+  boundaries?: RuntimeBoundaries,
 ): Effect.Effect<Response, RamoseError, JwtVerifier> =>
   Effect.gen(function* () {
     if (!levelApplied) {
@@ -226,49 +215,28 @@ export const handle = (
       }
     }
     const url = new URL(request.url);
+    const cors = publicCorsHeaders(request, env);
     info.path = url.pathname;
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: CORS });
+      return new Response(null, { status: 204, headers: cors });
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
       return yield* new NotFound({});
     }
-    if (url.pathname.startsWith("/__test__/")) {
-      info.route = "admin";
-      if (!testHooksEnabled(env)) return yield* new NotFound({});
-      return yield* Effect.tryPromise({
-        try: () => handleTestAdmin(request, env, url),
-        catch: (e) => asTestAdminError(e),
-      });
-    }
     if (url.pathname === "/health") {
       info.route = "health";
-      if (isUnrecognizedWrites(env.RAMOSE_WRITES)) {
-        const key = String(env.RAMOSE_WRITES);
-        if (!unrecognizedWritesWarned.has(key)) {
-          unrecognizedWritesWarned.add(key);
-          plog.warn("writes.unrecognized", {
-            value: key,
-            using: "operations",
-            message: `RAMOSE_WRITES=${JSON.stringify(key)} is not "all" or "operations"; using "operations"`,
-          });
-        }
-      }
       const version = deploymentVersion(env);
-      return json(
-        {
-          ok: true,
-          service: "ramose",
-          stage: env.RAMOSE_STAGE ?? "dev",
-          time: Date.now(),
-          operations: operationNames(peer.operations),
-        },
-        200,
-        {
+      return new Response(JSON.stringify(PUBLIC_HEALTH), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          ...cors,
           "cache-control": "no-store",
-          ...(version === undefined ? {} : { [DEPLOYMENT_HEADER]: version }),
+          ...(version === undefined || !isInternal(env, request)
+            ? {}
+            : { [DEPLOYMENT_HEADER]: version }),
         },
-      );
+      });
     }
 
     const match = /^\/db\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -290,7 +258,7 @@ export const handle = (
     const databaseBindings = peer.operationCatalogs === undefined
       ? undefined
       : deployedDatabaseCatalogBindings(peer.operationCatalogs);
-    const catalogs = deployedOperations?.catalogs ?? peer.catalogs;
+    const catalogs = deployedOperations?.catalogs;
     if (rest === "/op" && request.method === "POST") {
       if (peer.operationCatalogs === undefined) {
         return yield* new Unauthorized({ status: 403 });
@@ -359,7 +327,7 @@ export const handle = (
       // final Worker checkpoint is after that awaited hop; once released, the
       // exact-expiry check and response construction are synchronous.
       yield* Effect.tryPromise({
-        try: () => checkpoint("operation.response"),
+        try: () => boundaries?.checkpoint("operation.response") ?? Promise.resolve(),
         catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
           stacks: env.RAMOSE_STAGE !== "prod",
         }),
@@ -373,7 +341,7 @@ export const handle = (
       // Do not run codec-owned output through the generic Ramose value encoder.
       return new Response(JSON.stringify({ result: ack.output }), {
         status: 200,
-        headers: { "content-type": "application/json", ...CORS },
+        headers: { "content-type": "application/json", ...cors },
       });
     }
     if (catalogs === undefined) return yield* new Unauthorized({});
@@ -417,7 +385,7 @@ export const handle = (
         }),
         catch: (cause) => new OneShotReadError({ cause }),
       })).pipe(Effect.mapError(mapReadError));
-      return json({ result });
+      return json({ result }, 200, request, env);
     }
     if (parsed.catalogKey === undefined || parsed.unitHash === undefined) {
       return yield* new Unauthorized({ status: 403 });
@@ -446,20 +414,28 @@ export const handle = (
       view: parsed.view,
     };
     if (rest === "/live") {
-      return yield* authorizedLiveResponse(input, parsed.read, { maxCells: queryMaxCells(env) }, CORS).pipe(
+      return yield* authorizedLiveResponse(
+        boundaries === undefined
+          ? input
+          : { ...input, boundaries },
+        parsed.read,
+        { maxCells: queryMaxCells(env) },
+        cors,
+      ).pipe(
         Effect.mapError(mapReadError),
       );
     }
     const result = yield* executeAuthorizedRead(input, parsed.read, {
       maxCells: queryMaxCells(env),
     }).pipe(Effect.mapError(mapReadError));
-    return json({ result });
+    return json({ result }, 200, request, env);
   });
 
 export const runFetch = (
   request: Request,
   env: RamoseEnv,
   peer: ServerOptions,
+  boundaries?: RuntimeBoundaries,
 ): Promise<Response> => {
   const t0 = Date.now();
   const info: RequestInfo = { db: "-", path: "-", route: "other" };
@@ -468,8 +444,8 @@ export const runFetch = (
     fromBinding(bindingOf(env)),
   ).pipe(Context.add(JwtVerifier, fromEnv(env)));
   return Effect.runPromise(
-    handle(request, env, t0, info, peer).pipe(
-      Effect.catchTags(recover(info, t0)),
+    handle(request, env, t0, info, peer, boundaries).pipe(
+      Effect.catchTags(recover(info, t0, request, env)),
       Effect.tap((res) =>
         recordHttp(request, info, res.status, Date.now() - t0),
       ),

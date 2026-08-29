@@ -42,6 +42,7 @@ import {
   checkpointStatus,
   releaseCheckpoint,
   resetTestHooks,
+  testRuntimeBoundaries,
 } from "../../../src/internal/test-hooks.ts";
 import { authorizedLiveResponse } from "../../../src/worker/authorized-live.ts";
 import { fromEnv, resetJwtVerifier } from "../../../src/worker/jwt.ts";
@@ -513,7 +514,11 @@ describe("lease invalidation around recompute and enqueue", () => {
     const emitted: LiveQueryDiff[] = [];
     armCheckpoint(name, "wait");
     const fiber = Effect.runFork(
-      executeAuthorizedLive({ ...input, revoked }, titlesQuery).pipe(
+      executeAuthorizedLive({
+        ...input,
+        revoked,
+        boundaries: testRuntimeBoundaries,
+      }, titlesQuery).pipe(
         Stream.runForEach((diff) => Effect.sync(() => emitted.push(diff))),
       ),
     );
@@ -557,7 +562,11 @@ describe("lease invalidation around recompute and enqueue", () => {
     armCheckpoint("live.emit", "wait");
     const seen = await Effect.runPromise(Queue.unbounded<LiveQueryDiff>());
     const fiber = Effect.runFork(
-      executeAuthorizedLive({ ...input, wakes }, titlesQuery).pipe(
+      executeAuthorizedLive({
+        ...input,
+        wakes,
+        boundaries: testRuntimeBoundaries,
+      }, titlesQuery).pipe(
         Stream.runForEach((diff) => Queue.offer(seen, diff)),
       ),
     );

@@ -1,2 +1,6 @@
-/** Enables `/__test__/*` on the local integration peers. Never set in prod. */
-export const TEST_HOOKS_ENV = { RAMOSE_TEST_HOOKS: "1" } as const;
+/** Enables the explicit testing Worker entry on local integration peers. */
+export const TEST_CAPABILITY = "ramose-local-test-capability-00000001";
+export const TEST_HOOKS_ENV = {
+  RAMOSE_TEST_HOOKS: "1",
+  RAMOSE_TEST_CAPABILITY: TEST_CAPABILITY,
+} as const;

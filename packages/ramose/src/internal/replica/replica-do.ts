@@ -18,36 +18,21 @@
 
 import { DurableObject } from "cloudflare:workers";
 import {
-  DEFAULT_QUERY_MAX_CELLS,
   type LogEntry,
-  type QueryStats,
   type RootRecord,
-  type WireDatom,
   type WireFrame,
   componentLogger,
   decodeLogChunk,
   encodeLogChunk,
   entryFromFrame,
-  fromJson,
   gzipCodec,
-  query as runQuery,
-  pull as runPull,
   toJson,
-  toWireDatom,
 } from "../core/index.ts";
 import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "../storage/index.ts";
-import { type RamoseEnv, envInt, internalGate, internalHeaders } from "../transactor/index.ts";
+import { type RamoseEnv, internalGate, internalHeaders } from "../transactor/index.ts";
 import * as Effect from "effect/Effect";
-import * as Redacted from "effect/Redacted";
-import type { Principal } from "../../worker/auth.ts";
-import { Unauthorized } from "../../db/Errors.ts";
-import { type Session, type SessionState, type SocketLike, openSession, parsePrincipalHeader, PRINCIPAL_HEADER, TEST_SESSION_TOKEN_HEADER, WRITES_HEADER } from "../../worker/session.ts";
-import { fromEnv as jwtVerifierFromEnv } from "../../worker/jwt.ts";
-import { type WritesMode, parseWritesHeader } from "../../writes.ts";
-import { decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../worker/session-sync.ts";
-import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
+import { type Basis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
-import { checkpoint, handleIsolateTestAdmin, resetTestHooks, testHooksEnabled } from "../test-hooks.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
@@ -85,7 +70,7 @@ type BasisWatchAttachment = {
 };
 
 /** Client read fence (`x-ramose-min-t` or `?minT=`). */
-function requestedMinT(raw: string | null | undefined): number | undefined {
+export function requestedMinT(raw: string | null | undefined): number | undefined {
   if (raw === null || raw === undefined || raw === "") return undefined;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : undefined;
@@ -109,14 +94,14 @@ class SqliteTier implements ByteTier {
   }
 }
 
-export class QueryReplicaDO extends DurableObject<RamoseEnv> {
+export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
   private readonly sql: SqlStorage;
   private ready: Promise<void> | undefined;
-  private store!: R2NodeStore;
-  private dbName: string | undefined;
-  private root: RootRecord | undefined;
-  private entries: LogEntry[] = []; // novelty since root, ascending t
-  private ws: WebSocket | undefined;
+  protected store!: R2NodeStore;
+  protected dbName: string | undefined;
+  protected root: RootRecord | undefined;
+  protected entries: LogEntry[] = []; // novelty since root, ascending t
+  protected ws: WebSocket | undefined;
   private connecting: Promise<void> | undefined;
   private syncing: Promise<void> | undefined;
   /** In-order apply of upstream frames; `sync` drains this before serving a basis. */
@@ -125,14 +110,11 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   private reconnectDelayMs = 0;
   private watchTimer: ReturnType<typeof setTimeout> | undefined;
   private lastUpstreamAt = 0;
-  readonly stats = { frames: 0, gaps: 0, reconnects: 0, rootFlips: 0, basisServed: 0, queries: 0, budgetAborts: 0 };
-  private readonly log = componentLogger("replica");
-  /** Live session protocol objects (rebuilt from hibernation attachments). */
-  private readonly live = new Map<WebSocket, Session>();
+  protected readonly stats = { frames: 0, gaps: 0, reconnects: 0, rootFlips: 0, basisServed: 0, queries: 0, budgetAborts: 0 };
+  protected readonly log = componentLogger("replica");
 
   constructor(ctx: DurableObjectState, env: RamoseEnv) {
     super(ctx, env);
-    resetTestHooks();
     this.sql = ctx.storage.sql;
   }
 
@@ -140,7 +122,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   // Boot / persistence
   // ---------------------------------------------------------------------------
 
-  private init(): Promise<void> {
+  protected init(): Promise<void> {
     if (!this.ready) this.ready = this.boot();
     return this.ready;
   }
@@ -172,7 +154,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     this.sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)`, k, JSON.stringify(v));
   }
 
-  get basisT(): number {
+  protected get basisT(): number {
     return this.entries.length ? this.entries[this.entries.length - 1].t : (this.root?.t ?? 0);
   }
 
@@ -186,15 +168,18 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     this.sql.exec(`INSERT OR REPLACE INTO novelty (t, tx_instant, datoms) VALUES (?, ?, ?)`, e.t, e.txInstant, body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength));
   }
 
-  /**
-   * Apply one dense log frame, then walk every attached session. The follow
-   * cursor is `basisT` after this returns — it does not move on a poll.
-   */
+  /** Optional source-only testing boundary before a novelty entry is applied. */
+  protected async beforeApplyDatoms(_entry: LogEntry): Promise<void> {}
+
+  /** Notify the production basis watches after an entry is durable locally. */
+  protected async notifyAppliedEntry(entry: LogEntry): Promise<void> {
+    this.notifyBasisWatches(entry.t);
+  }
+
   private async applyDatoms(e: LogEntry): Promise<void> {
-    await checkpoint("replica.apply");
+    await this.beforeApplyDatoms(e);
     this.appendEntry(e);
-    await checkpoint("session.notify");
-    await this.notifySessions(e);
+    await this.notifyAppliedEntry(e);
   }
 
   private adoptRoot(rec: RootRecord): void {
@@ -366,7 +351,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
    * runs `catchUpTo` so an open-but-silent novelty socket still wakes live
    * subscribers. No pong for a few ticks → drop and reconnect.
    */
-  private armWatch(): void {
+  protected armWatch(): void {
     if (this.watchTimer !== undefined) return;
     this.watchTimer = setTimeout(() => {
       this.watchTimer = undefined;
@@ -470,7 +455,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
    * Enqueued on `applyChain` so a live frame cannot double-apply the same t.
    * Fenced HTTP reads and upstream `pong` (live-session watch) both call this.
    */
-  private async catchUpTo(minT: number | undefined, signal?: AbortSignal): Promise<void> {
+  protected async catchUpTo(minT: number | undefined, signal?: AbortSignal): Promise<void> {
     if (minT === undefined || this.basisT >= minT) return;
     const target = minT;
     await this.enqueue(async () => {
@@ -481,7 +466,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   }
 
   /** Make sure we are connected and caught up (bounded wait). */
-  private async sync(): Promise<void> {
+  protected async sync(): Promise<void> {
     if (this.syncing) return this.syncing;
     this.syncing = (async () => {
       try {
@@ -497,103 +482,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     return this.syncing;
   }
 
-  // ---------------------------------------------------------------------------
-  // Session follow (apply-then-push)
-  // ---------------------------------------------------------------------------
-
-  private sessionLog(): SessionLog {
-    return {
-      t: this.basisT,
-      rootT: this.root?.t ?? 0,
-      entries: this.entries.map((e) => ({ t: e.t, datoms: e.datoms.map(toWireDatom) })),
-    };
-  }
-
-  private async sieve(entry: SessionLogEntry, p?: Principal): Promise<SessionTxDecision> {
-    if (!this.root || !this.dbName) return { kind: "skip" };
-    const basis = makeBasis(this.dbName, this.root, this.entries);
-    const raw = await dbFromBasis(this.store, basis);
-    return decideSessionTx({
-      datoms: [],
-      ...(p !== undefined ? { principal: p } : {}),
-      ruleDbAfter: raw,
-      ruleDbBefore: raw,
-    });
-  }
-
-  private async snapshotView(_p?: Principal): Promise<{ t: number; datoms: WireDatom[] }> {
-    return { t: this.basisT, datoms: [] };
-  }
-
-  private async provisionPrincipal(p: Principal): Promise<Principal> {
-    if (this.dbName === undefined) return p;
-    const dbName = this.dbName;
-    try {
-      const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(dbName));
-      const res = await stub.fetch(`https://transactor/provision?db=${encodeURIComponent(dbName)}`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...internalHeaders(this.env) },
-        body: JSON.stringify({ principal: p }),
-      });
-      if (!res.ok) return p;
-      const body = (await res.json()) as { eid?: unknown };
-      if (typeof body.eid !== "number") return p;
-      return { ...p, eid: body.eid };
-    } catch {
-      return p;
-    }
-  }
-
-  /** Test-session authentication still uses the deployed peer's real JWT verifier. */
-  private async authenticateTestSession(token: string): Promise<Principal> {
-    if (!testHooksEnabled(this.env)) throw new Unauthorized({});
-    try {
-      const verified = await Effect.runPromise(
-        jwtVerifierFromEnv(this.env).verify(Redacted.make(token)),
-      );
-      return verified.principal;
-    } catch {
-      throw new Unauthorized({});
-    }
-  }
-
-  private createSession(ws: WebSocket, seed: SessionState): Session {
-    return openSession(ws as unknown as SocketLike, {
-      listen: false,
-      seed,
-      ...(seed.principal !== undefined && { principal: seed.principal }),
-      dispatch: (rest, init, p) => this.sessionDispatch(rest, init, p, seed.writes),
-      authenticate: (token) => this.authenticateTestSession(token),
-      provision: (p) => this.provisionPrincipal(p),
-      describe: async (p) => ({ eid: p.eid ?? null, class: p.class }),
-      readLog: async () => {
-        await this.sync();
-        return this.sessionLog();
-      },
-      filterEntry: (entry, p) => this.sieve(entry, p),
-      snapshot: (p) => this.snapshotView(p),
-    });
-  }
-
-  private sessionOf(ws: WebSocket): Session {
-    const hit = this.live.get(ws);
-    if (hit) return hit;
-    const raw = typeof ws.deserializeAttachment === "function" ? ws.deserializeAttachment() : undefined;
-    const seed = (raw ?? { lastT: 0, watermark: 0 }) as SessionState;
-    const s = this.createSession(ws, seed);
-    this.live.set(ws, s);
-    return s;
-  }
-
-  private persist(ws: WebSocket, s: Session): void {
-    try {
-      ws.serializeAttachment?.(s.state());
-    } catch {
-      /* attachment is optional outside workerd */
-    }
-  }
-
-  private basisWatchOf(ws: WebSocket): BasisWatchAttachment | undefined {
+  protected basisWatchOf(ws: WebSocket): BasisWatchAttachment | undefined {
     try {
       const raw = ws.deserializeAttachment?.() as Partial<BasisWatchAttachment> | undefined;
       if (
@@ -605,7 +494,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         return raw as BasisWatchAttachment;
       }
     } catch {
-      /* malformed attachments are ordinary sessions and fail closed there */
+      /* malformed attachments are not accepted as production basis watches */
     }
     return undefined;
   }
@@ -650,7 +539,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     }
   }
 
-  private closeBasisWatches(reason: string): void {
+  protected closeBasisWatches(reason: string): void {
     for (const [ws] of this.basisWatches()) {
       try {
         ws.close(1011, reason);
@@ -658,90 +547,6 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         /* already gone */
       }
     }
-  }
-
-  private async notifySessions(e: LogEntry): Promise<void> {
-    const entry: SessionLogEntry = { t: e.t, datoms: e.datoms.map(toWireDatom) };
-    const rootT = this.root?.t ?? 0;
-    this.notifyBasisWatches(e.t);
-    const sockets = this.ctx.getWebSockets() as WebSocket[];
-    for (const ws of sockets) {
-      if (this.basisWatchOf(ws) !== undefined) continue;
-      const s = this.sessionOf(ws);
-      try {
-        await s.applyEntry(entry, rootT);
-        this.persist(ws, s);
-      } catch {
-        this.live.delete(ws);
-        try {
-          ws.close(1011, "session filter failed");
-        } catch {
-          /* already gone */
-        }
-      }
-    }
-  }
-
-  private async sessionDispatch(
-    rest: string,
-    init: { method: string; headers: Record<string, string>; body?: string },
-    principal?: Principal,
-    writes?: WritesMode,
-  ): Promise<Response> {
-    await this.sync();
-    await this.catchUpTo(requestedMinT(init.headers["x-ramose-min-t"]));
-    if (!this.root) return json({ error: "database has no root yet" }, 503);
-    if (rest === "/op" && init.method === "POST") {
-      return json({ error: "operations must be POSTed to /db/:name/op" }, 400);
-    }
-    if (rest === "/transact" && init.method === "POST") {
-      return json({ error: "unauthorized" }, 401);
-    }
-    if (rest === "/info" && init.method === "GET") {
-      return json({ error: "unauthorized" }, 401);
-    }
-    if (rest === "/query" && init.method === "POST") {
-      return json({ error: "unauthorized" }, 401);
-    }
-    if (rest === "/pull" && init.method === "POST") {
-      return json({ error: "unauthorized" }, 401);
-    }
-    if (/^\/entity\/(\d+)$/.exec(rest.split("?")[0] ?? "") && init.method === "GET") {
-      return json({ error: "unauthorized" }, 401);
-    }
-    return json({ error: "not found" }, 404);
-  }
-
-  private async upgradeSession(request: Request): Promise<Response> {
-    if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
-      return json({ error: "expected websocket" }, 426);
-    }
-    await this.sync();
-    let raw = parsePrincipalHeader(request.headers.get(PRINCIPAL_HEADER));
-    const testToken = request.headers.get(TEST_SESSION_TOKEN_HEADER);
-    if (testToken !== null) {
-      try {
-        raw = await this.authenticateTestSession(testToken);
-      } catch {
-        return json({ error: "unauthorized" }, 401);
-      }
-    }
-    const principal = raw !== undefined ? await this.provisionPrincipal(raw) : undefined;
-    const writes = parseWritesHeader(request.headers.get(WRITES_HEADER));
-    const pair = new WebSocketPair();
-    const [client, server] = [pair[0], pair[1]];
-    this.ctx.acceptWebSocket(server);
-    this.armWatch();
-    const seed: SessionState = {
-      ...(principal !== undefined ? { principal } : {}),
-      ...(writes !== undefined ? { writes } : {}),
-      lastT: 0,
-      watermark: 0,
-    };
-    const session = this.createSession(server, seed);
-    this.live.set(server, session);
-    this.persist(server, session);
-    return new Response(null, { status: 101, webSocket: client });
   }
 
   private async upgradeBasisWatch(request: Request): Promise<Response> {
@@ -795,23 +600,14 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     await this.init();
     if (this.basisWatchOf(ws) !== undefined) return;
-    const s = this.sessionOf(ws);
-    await s.onMessage(message);
-    this.persist(ws, s);
+    try {
+      ws.close(1008, "unsupported socket");
+    } catch {
+      /* already gone */
+    }
   }
 
   override async webSocketClose(ws: WebSocket, code: number): Promise<void> {
-    if (this.basisWatchOf(ws) !== undefined) {
-      try {
-        ws.close(code, "bye");
-      } catch {
-        /* already gone */
-      }
-      return;
-    }
-    const s = this.live.get(ws);
-    s?.close();
-    this.live.delete(ws);
     try {
       ws.close(code, "bye");
     } catch {
@@ -855,7 +651,10 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
             health.searchParams.set("live-renew", crypto.randomUUID());
             const response = await fetch(health, {
               method: "GET",
-              headers: { "cache-control": "no-cache" },
+              headers: {
+                "cache-control": "no-cache",
+                ...internalHeaders(this.env),
+              },
               redirect: "error",
               signal,
             });
@@ -896,8 +695,6 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       this.bindStore(dbParam);
     }
     if (!this.dbName) return json({ error: "missing ?db=" }, 400);
-    if (url.pathname === "/session") return this.upgradeSession(request);
-    if (url.pathname === "/watch") return this.upgradeBasisWatch(request);
     // Route dispatch as an Effect program: the routes stay plain async/await,
     // failures are classified into tagged errors (errors.ts) and mapped back to
     // exactly the statuses/bodies this endpoint returned before.
@@ -917,7 +714,8 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     );
   }
 
-  private async route(request: Request, url: URL, dbName: string): Promise<Response> {
+  protected async route(request: Request, url: URL, dbName: string): Promise<Response> {
+    if (url.pathname === "/watch") return this.upgradeBasisWatch(request);
     switch (url.pathname) {
       case "/basis": {
         await this.sync();
@@ -928,74 +726,15 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         const basis: Basis = makeBasis(dbName, this.root, this.entries, this.ctx.id.toString().slice(0, 8));
         return json(basis);
       }
-      case "/query": {
-        // Internal replica read. External one-shot query/pull/entity go through
-        // executeAuthorizedRequest on the Worker (#423). This path is not that
-        // authorization boundary.
-        await this.sync();
-        await this.catchUpTo(requestedMinT(url.searchParams.get("minT") ?? request.headers.get("x-ramose-min-t")));
-        if (!this.root) return json({ error: "database has no root yet" }, 503);
-        const body = fromJson(await request.json()) as {
-          query?: unknown;
-          inputs?: unknown[];
-          asOf?: number;
-          history?: boolean;
-          explain?: boolean;
-          pull?: { eid: number | string | [string, unknown]; pattern: unknown };
-          entity?: number;
-        };
-        if (!body || (!body.query && !body.pull && typeof body.entity !== "number")) return json({ error: "body must be { query, inputs? } | { pull } | { entity }" }, 400);
-        const basis = makeBasis(dbName, this.root, this.entries);
-        const before = { ...this.store.stats };
-        const db = await dbFromBasis(this.store, basis, {
-          ...(typeof body.asOf === "number" && { asOf: body.asOf }),
-          history: !!body.history,
-        });
-        this.stats.queries++;
-        const hdrs = () => ({
-          "x-ramose-basis-t": String(basis.t),
-          "x-ramose-r2-gets": String(this.store.stats.r2Gets - before.r2Gets),
-          "x-ramose-cache-hits": String(this.store.stats.cacheHits + this.store.stats.tierHits + this.store.stats.memHits - before.cacheHits - before.tierHits - before.memHits),
-        });
-        if (typeof body.entity === "number") return json({ t: basis.t, entity: await db.entity(body.entity) }, 200, hdrs());
-        if (body.pull) {
-          const eid = typeof body.pull.eid === "number" ? body.pull.eid : await db.entid(body.pull.eid as any);
-          if (eid === undefined) return json({ t: basis.t, result: null }, 200, hdrs());
-          return json({ t: basis.t, result: await runPull(db, eid, body.pull.pattern as any) }, 200, hdrs());
-        }
-        const stats: QueryStats = { clauses: [] };
-        const result = await runQuery(db, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(this.env.RAMOSE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
-        if (this.stats.queries % 100 === 1) this.log.debug("replica.query", { db: this.dbName, t: basis.t, rows: Array.isArray(result) ? result.length : 1, novelty: this.entries.length, peakCells: stats.budget?.peakCells });
-        return json({ t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) }, 200, hdrs());
-      }
-      case "/info":
-        return json({ db: this.dbName, t: this.basisT, root: this.root, novelty: this.entries.length, connected: this.ws?.readyState === 1, stats: this.stats, store: this.store.stats });
-      case "/admin/test/sessions": {
-        if (!testHooksEnabled(this.env)) return json({ error: "not found" }, 404);
-        const sessions = (this.ctx.getWebSockets() as WebSocket[])
-          .filter((ws) => this.basisWatchOf(ws) === undefined)
-          .map((ws) => this.sessionOf(ws).state());
-        return json({ ok: true, sessions });
-      }
-      case "/admin/test/checkpoint":
-      case "/admin/test/abort": {
-        const testAdmin = await handleIsolateTestAdmin(request, url.pathname, (reason) =>
-          this.ctx.abort(reason),
-        );
-        if (testAdmin !== undefined) return testAdmin;
-        return json({ error: "not found" }, 404);
-      }
-      case "/admin/reconnect": {
-        this.closeBasisWatches("upstream reconnecting");
-        try {
-          this.ws?.close(1000, "reconnect");
-        } catch {}
-        this.ws = undefined;
-        await this.sync();
-        return json({ ok: true, t: this.basisT });
-      }
       default:
         return json({ error: "not found" }, 404);
     }
+  }
+}
+
+/** Production replica class: no admin routes, sessions, or runtime hooks. */
+export class QueryReplicaDO extends QueryReplicaDOBase {
+  constructor(ctx: DurableObjectState, env: RamoseEnv) {
+    super(ctx, env);
   }
 }

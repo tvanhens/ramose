@@ -54,9 +54,6 @@ const auth: Ramose.ServerAuth = {
   aud: process.env.RAMOSE_JWT_AUD,
   maxTtl: process.env.RAMOSE_JWT_MAX_TTL === undefined ? undefined : Number(process.env.RAMOSE_JWT_MAX_TTL),
   allowedOrigins: process.env.RAMOSE_ALLOWED_ORIGINS,
-  // Worker→DO secret. Unset = a fresh one per deploy, which is fine: the Worker
-  // and both DO classes are one script and rotate together.
-  internalSecret: process.env.RAMOSE_INTERNAL_SECRET,
 };
 
 /**

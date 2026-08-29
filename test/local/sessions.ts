@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { recordingTransport, type RecordingTransport } from "../support/recorder.ts";
 import { attr, testAdmin, uniqueDb, type LocalUrls } from "./fixtures.ts";
+import { TEST_CAPABILITY } from "./test-hooks-env.ts";
 
 type SocketHarness = {
   readonly socket: WebSocket;
@@ -30,6 +31,7 @@ const socketUrl = (
 ): URL => {
   const url = new URL(`/__test__/db/${encodeURIComponent(db)}/${rest}`, base);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("__ramose_test_capability", TEST_CAPABILITY);
   if (token !== undefined) url.searchParams.set("token", token);
   return url;
 };

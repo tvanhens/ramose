@@ -14,18 +14,12 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Test from "alchemy/Test/Bun";
 import * as Effect from "effect/Effect";
 import * as net from "node:net";
-import { OperationsCoverageError } from "../src/db/Errors.ts";
 import { Database } from "../src/Database.ts";
 import { PEER_COMPAT } from "../src/peer.ts";
 import { providers } from "../src/Providers.ts";
 import { Server } from "../src/Server.ts";
 import { workerEntry } from "../src/workerEntry.ts";
 import { Movies } from "./db/fixture.ts";
-import {
-  Operation,
-  defineOperations,
-} from "../src/db/internal.ts";
-import * as Schema from "effect/Schema";
 
 interface Transaction {
   readonly name: string;
@@ -35,7 +29,6 @@ interface Transaction {
 
 /** A peer that is up, counting its health probes and recording its writes. */
 let probes = 0;
-let healthOperations: string[] | undefined;
 let transactions: Transaction[] = [];
 let t = 0;
 const peer = Bun.serve({
@@ -47,9 +40,6 @@ const peer = Bun.serve({
       return Response.json({
         ok: true,
         service: "ramose",
-        stage: "test",
-        time: Date.now(),
-        ...(healthOperations !== undefined ? { operations: healthOperations } : {}),
       });
     }
     const write = /^\/db\/([^/]+)\/transact$/.exec(pathname);
@@ -100,7 +90,6 @@ afterAll(() => {
 });
 beforeEach(() => {
   transactions = [];
-  healthOperations = undefined;
 });
 
 /** The planned action per resource, in FQN order. */
@@ -160,61 +149,6 @@ describe("Ramose.Server", () => {
     }),
   );
 
-  test.provider("operations coverage fails the deploy when an id is missing", (stack) =>
-    Effect.gen(function* () {
-      healthOperations = ["user/create"];
-      const createUser = Operation(
-        "user/create",
-        { input: Schema.Struct({}), output: Schema.Struct({}) },
-        () => ({}),
-      );
-      const setName = Operation(
-        "user/set-name",
-        { input: Schema.Struct({ name: Schema.String }), output: Schema.Struct({}) },
-        () => ({}),
-      );
-      const result = yield* Effect.result(
-        stack.deploy(
-          Server("Ramose", {
-            worker: peerUrl,
-            probe: false,
-            operations: defineOperations(Movies, { createUser, setName }),
-          }),
-        ),
-      );
-      expect(result._tag).toBe("Failure");
-      if (result._tag !== "Failure") return;
-      expect(result.failure).toBeInstanceOf(OperationsCoverageError);
-      expect((result.failure as OperationsCoverageError).missing).toEqual(["user/set-name"]);
-      expect(String(result)).toMatch(/missing operations: user\/set-name/);
-    }),
-  );
-
-  test.provider("operations coverage passes when /health lists every id", (stack) =>
-    Effect.gen(function* () {
-      healthOperations = ["user/create", "user/set-name"];
-      const createUser = Operation(
-        "user/create",
-        { input: Schema.Struct({}), output: Schema.Struct({}) },
-        () => ({}),
-      );
-      const setName = Operation(
-        "user/set-name",
-        { input: Schema.Struct({ name: Schema.String }), output: Schema.Struct({}) },
-        () => ({}),
-      );
-      const server = yield* stack.deploy(
-        Server("Ramose", {
-          worker: peerUrl,
-          probe: false,
-          operations: defineOperations(Movies, { createUser, setName }),
-        }),
-      );
-      expect(server.url).toBe(peerUrl);
-      yield* stack.destroy();
-    }),
-  );
-
   test.provider("binding nothing still deploys; a hatch must match Server auth", (stack) =>
     Effect.gen(function* () {
       const open = yield* stack.deploy(Server("Ramose", { worker: peerUrl, probe: false }));
@@ -251,6 +185,7 @@ describe("Ramose.Server", () => {
             TRANSACTOR: { Type: "Cloudflare.DurableObject", Props: { className: "TransactorDO" } },
             REPLICA: { Type: "Cloudflare.DurableObject", Props: { className: "QueryReplicaDO" } },
             CF_VERSION_METADATA: Cloudflare.Workers.VersionMetadata(),
+            RAMOSE_INTERNAL_SECRET: "deployment-owned-capability",
             ...env,
           },
         },

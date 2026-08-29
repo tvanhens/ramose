@@ -1,6 +1,5 @@
 /**
- * App-path DbError → HTTP mapping. The peer Worker's `toHttp` is a separate
- * contract (worker-only tags, stacks); this helper is what a route imports.
+ * App-path DbError → the same allowlisted public vocabulary as the peer.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -39,14 +38,14 @@ describe("errorToHttp", () => {
       ),
     ).toBe(413);
     expect(statusOf(new InternalError({ message: "m" }))).toBe(500);
-    expect(statusOf(new NetworkError({ message: "m" }))).toBe(502);
+    expect(statusOf(new NetworkError({ message: "m" }))).toBe(500);
     expect(statusOf(new OperationRejected({ message: "m", operation: "x" }))).toBe(409);
   });
 
   test("Unavailable carries retry-after", () => {
     const http = errorToHttp(new Unavailable({ message: "restarting", retryAfterMs: 1500 }));
     expect(http.headers?.["retry-after"]).toBe("2");
-    expect(http.body.retryAfterMs).toBe(1500);
+    expect(http.body).toEqual({ error: "unavailable" });
   });
 
   test("errorResponse is JSON with the mapped status", async () => {
@@ -54,9 +53,7 @@ describe("errorToHttp", () => {
     expect(r.status).toBe(409);
     expect(r.headers.get("content-type")).toBe("application/json");
     expect((await r.json()) as Record<string, unknown>).toEqual({
-      error: "bad",
-      tag: "TxRejected",
-      code: "tx/invalid",
+      error: "request rejected",
     });
   });
 
@@ -76,6 +73,7 @@ describe("errorToHttp", () => {
     const unauth = fromResponse(401, { error: "unauthorized" }) as Unauthorized;
     expect(unauth.status).toBe(401);
     expect(errorToHttp(unauth).status).toBe(401);
+    expect(errorToHttp(policy).body).toEqual({ error: "unauthorized" });
   });
 
   test("toDbError keeps a tagged error and wraps anything else", () => {

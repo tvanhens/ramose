@@ -16,22 +16,19 @@ import * as Result from "effect/Result";
 import {
   CatalogId,
   DatabaseId,
-  compositionFromUnit,
   deriveResolvedDatabaseRoute,
   resolveBoundCatalogDefinition,
   type DatabaseCatalogBindings,
   type DatabaseRouteDerivation,
   type DeployedCatalogDefinitions,
-  type InstalledCatalogUnitV2,
 } from "../authorization/index.ts";
 import { toJson } from "../core/index.ts";
-import { restoreEngineTypeAssertions } from "../core/tx-provenance.ts";
 import { dbPrefix, prefixedBucket } from "../storage/index.ts";
 import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
 import { internalGate } from "./internal.ts";
 import { Transactor, type TxAck } from "./transactor.ts";
-import { handleIsolateTestAdmin, resetTestHooks } from "../test-hooks.ts";
+import type { RuntimeBoundaries } from "../runtime-boundaries.ts";
 
 export type { TxAck };
 
@@ -49,6 +46,17 @@ export function configFromEnv(env: RamoseEnv): TransactorConfig {
   };
 }
 
+export interface TransactorTesting {
+  readonly boundaries: RuntimeBoundaries;
+  readonly enabled: (env: RamoseEnv) => boolean;
+  readonly reset: () => void;
+  readonly handleAdmin: (
+    request: Request,
+    path: string,
+    abort: (reason: string) => void,
+  ) => Promise<Response | undefined>;
+}
+
 class TransactorDOBase extends DurableObject<RamoseEnv> {
   private readonly core: Transactor;
   private readonly databaseCatalogBindings: DatabaseCatalogBindings | undefined;
@@ -59,9 +67,10 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
     env: RamoseEnv,
     operationCatalogs?: DeployedCatalogDefinitions,
     databaseCatalogBindings?: DatabaseCatalogBindings,
+    private readonly testing?: TransactorTesting,
   ) {
     super(ctx, env);
-    resetTestHooks();
+    if (testing?.enabled(env) === true) testing.reset();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
     if (row) this.dbName = JSON.parse(row.v as string) as string;
@@ -98,32 +107,16 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
           environment: env,
           now: () => host.now(),
         },
+      testing?.boundaries,
     );
   }
 
-  /** In-process access for other code running in the same isolate (tests, worker). */
-  get transactor(): Transactor {
-    return this.core;
-  }
-
   /** Bind this object to a database name (idempotent; persisted). */
-  assign(db: string): void {
+  private assign(db: string): void {
     if (this.dbName === db) return;
     if (this.dbName !== undefined) throw new Error(`transactor already bound to database ${this.dbName}`);
     this.dbName = db;
     this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('db', ?)`, JSON.stringify(db));
-  }
-
-  transact(
-    db: string,
-    tx: unknown[],
-    unit: InstalledCatalogUnitV2,
-  ): Promise<TxAck> {
-    this.assign(db);
-    const composition = Result.getOrThrow(compositionFromUnit(unit));
-    this.core.bindComposition(unit.unitHash, composition);
-    restoreEngineTypeAssertions(tx);
-    return this.core.init().then(() => this.core.transact(tx));
   }
 
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -156,6 +149,7 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
     }
     if (!this.dbName) return new Response(JSON.stringify({ error: "missing ?db=" }), { status: 400, headers: { "content-type": "application/json" } });
     await this.core.init();
+    const testingEnabled = this.testing?.enabled(this.env) === true;
     if (url.pathname === "/subscribe") {
       if (request.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
       const from = Number(url.searchParams.get("from") ?? "0");
@@ -166,6 +160,12 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       return new Response(null, { status: 101, webSocket: client });
     }
     if (url.pathname === "/health") {
+      if (!testingEnabled) {
+        return new Response(JSON.stringify({ error: "not found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      }
       return new Response(JSON.stringify(toJson({ ok: true, t: this.core.t })), { headers: { "content-type": "application/json" } });
     }
     if (url.pathname === "/provision-catalog" && request.method === "POST") {
@@ -232,8 +232,28 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
         });
       }
     }
-    const testAdmin = await handleIsolateTestAdmin(request, url.pathname, (reason) => this.ctx.abort(reason));
-    if (testAdmin !== undefined) return testAdmin;
+    if (testingEnabled) {
+      const testAdmin = await this.testing.handleAdmin(
+        request,
+        url.pathname,
+        (reason) => this.ctx.abort(reason),
+      );
+      if (testAdmin !== undefined) return testAdmin;
+    }
+    if (
+      !testingEnabled &&
+      (
+        url.pathname === "/transact" ||
+        url.pathname === "/provision" ||
+        url.pathname === "/op-ack" ||
+        url.pathname.startsWith("/admin/")
+      )
+    ) {
+      return new Response(JSON.stringify({ error: "not found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    }
     return this.core.handleRequest(request);
   }
 }
@@ -248,6 +268,20 @@ export const createTransactorDO = (
 ) => DurableObject<RamoseEnv>) => class TransactorDO extends TransactorDOBase {
   constructor(ctx: DurableObjectState, env: RamoseEnv) {
     super(ctx, env, operationCatalogs, databaseCatalogBindings);
+  }
+};
+
+/** @internal Explicit non-production assembly; not re-exported by `ramose/worker`. */
+export const createTestingTransactorDO = (
+  testing: TransactorTesting,
+  operationCatalogs?: DeployedCatalogDefinitions,
+  databaseCatalogBindings?: DatabaseCatalogBindings,
+): (new (
+  ctx: DurableObjectState,
+  env: RamoseEnv,
+) => DurableObject<RamoseEnv>) => class TransactorDO extends TransactorDOBase {
+  constructor(ctx: DurableObjectState, env: RamoseEnv) {
+    super(ctx, env, operationCatalogs, databaseCatalogBindings, testing);
   }
 };
 

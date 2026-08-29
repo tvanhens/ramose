@@ -29,15 +29,11 @@ import * as ProviderLayer from "alchemy/Local/ProviderLayer";
 import * as Provider from "alchemy/Provider";
 import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
-import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import { type AuthConfig, DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
 export { DEFAULT_JWT_MAX_TTL } from "./Auth.ts";
-import { InvalidRequest, NetworkError, OperationsCoverageError } from "./db/Errors.ts";
-import {
-  type AnyOperations,
-  checkOperationsCoverage,
-} from "./db/Operation.ts";
+import { InvalidRequest, NetworkError } from "./db/Errors.ts";
+import type { AnyOperations } from "./db/Operation.ts";
 import {
   declareOwnedPeer,
   ownedPeerDurableObjects,
@@ -141,8 +137,6 @@ export interface ServerAuth {
   readonly jwt?: AuthConfig | undefined;
   /** Origins the server answers CORS for. */
   readonly allowedOrigins?: readonly string[] | AuthEnvValue | undefined;
-  /** Worker→DO shared secret. See {@link internalSecret}. */
-  readonly internalSecret?: Redacted.Redacted<string> | string | undefined;
 }
 
 /** @internal The public spelling is the argument of {@link Server}. */
@@ -168,12 +162,8 @@ export type ServerProps = {
   /** Zone routes on the owned Worker (`/db/*` on a custom hostname). */
   routes?: PeerRoute[];
   /**
-   * The operations registry this deploy ships — the same value the app
-   * imports and the peer entry `createServer({ operations })`s. After
-   * the health probe, Server compares its ids to `GET /health` and
-   * fails the deploy on a missing id. The registry shape (`names` /
-   * `cards`) is what later MCP `learn` reads; this issue does not
-   * implement that endpoint.
+   * Application authoring registry retained by the deployment definition.
+   * It is never published by `/health` or used as a runtime catalog.
    */
   operations?: AnyOperations;
   /** Override the URL resolved from `worker` — a custom domain, say. */
@@ -200,7 +190,6 @@ export const AUTH_ENV_KEYS = {
   aud: "RAMOSE_JWT_AUD",
   maxTtl: "RAMOSE_JWT_MAX_TTL",
   allowedOrigins: "RAMOSE_ALLOWED_ORIGINS",
-  internalSecret: "RAMOSE_INTERNAL_SECRET",
 } as const satisfies Record<
   Exclude<keyof ServerAuth, "jwt">,
   keyof RamoseEnv
@@ -240,26 +229,9 @@ const list = (value: unknown): unknown => {
 };
 
 /**
- * @internal Mint (or pass through) the Worker→DO secret.
- */
-export const internalSecret = (
-  value?: Redacted.Redacted<string> | string | undefined,
-): Redacted.Redacted<string> => {
-  if (value !== undefined && value !== "") {
-    return typeof value === "string" ? Redacted.make(value) : value;
-  }
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return Redacted.make(
-    Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(""),
-  );
-};
-
-/**
  * @internal The server Worker's auth env, as bindings. Unset fields emit no
  * key. Output / Effect values pass through (Reef's JWKS URL and origins).
- * A pinned `internalSecret` is bound; otherwise no Worker→DO secret is
- * emitted.
+ * The Worker-to-DO capability is owned separately by the peer declaration.
  */
 const bindAuthFields = (
   peerAuth: ServerAuth | undefined,
@@ -278,16 +250,12 @@ const bindAuthFields = (
   set(k.aud, auth.aud);
   set(k.maxTtl, auth.maxTtl === undefined ? undefined : String(auth.maxTtl));
   set(k.allowedOrigins, list(auth.allowedOrigins));
-  const secret = auth.internalSecret;
-  if (isBound(secret)) {
-    env[k.internalSecret] = internalSecret(secret as Redacted.Redacted<string> | string | undefined);
-  }
   return env;
 };
 
 /**
  * @internal The server Worker's auth env, as bindings. Unset fields emit no
- * key. A pinned `internalSecret` is bound.
+ * key.
  */
 export const authEnv = (
   peerAuth: ServerAuth | undefined,
@@ -305,11 +273,8 @@ export const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined 
   return undefined;
 };
 
-const unwrapBinding = (value: unknown): unknown =>
-  Redacted.isRedacted(value) ? Redacted.value(value) : value;
-
 const normalizeBinding = (value: unknown): unknown => {
-  const raw = unwrapBinding(value);
+  const raw = value;
   if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
   if (typeof raw === "string") {
     return raw
@@ -331,8 +296,8 @@ const normalizeBinding = (value: unknown): unknown => {
 
 const sameBinding = (expected: unknown, actual: unknown): boolean => {
   if (expected === actual) return true;
-  const a = unwrapBinding(expected);
-  const b = unwrapBinding(actual);
+  const a = expected;
+  const b = actual;
   if (a === b) return true;
   if (typeof a === "object" || typeof b === "object") return false;
   return normalizeBinding(a) === normalizeBinding(b);
@@ -354,9 +319,7 @@ export const compareAuthToWorker = (
 
   const keys = new Set<string>([...AUTH_COMPARE_KEYS, ...Object.keys(expected)]);
   const diverged: string[] = [];
-  const pinnedSecret = isBound(peerAuth?.internalSecret);
   for (const key of keys) {
-    if (key === AUTH_ENV_KEYS.internalSecret && !pinnedSecret) continue;
     const want = expected[key];
     const got = env[key];
     if (isBound(want) !== isBound(got) || (isBound(want) && isBound(got) && !sameBinding(want, got))) {
@@ -366,85 +329,6 @@ export const compareAuthToWorker = (
   if (diverged.length === 0) return undefined;
   return `ramose: Server auth and the Worker env diverge on ${diverged.join(", ")} — Server({ auth }) is the source of truth`;
 };
-
-const healthOperationsOf = (health: unknown): string[] => {
-  if (typeof health !== "object" || health === null) return [];
-  const listed = (health as { operations?: unknown }).operations;
-  if (!Array.isArray(listed)) return [];
-  return listed.filter((n): n is string => typeof n === "string");
-};
-
-/**
- * @internal `Server({ operations })` vs a `/health` body. Missing ids
- * fail the deploy as {@link OperationsCoverageError} so `missing` and
- * `instanceof` survive; extra peer ops are fine. Unset `operations` skips.
- */
-export const compareOperationsToHealth = (
-  operations: AnyOperations | undefined,
-  health: unknown,
-): OperationsCoverageError | undefined => {
-  if (operations === undefined) return undefined;
-  try {
-    checkOperationsCoverage(operations, healthOperationsOf(health));
-    return undefined;
-  } catch (error) {
-    if (error instanceof OperationsCoverageError) return error;
-    throw error;
-  }
-};
-
-/**
- * @internal One attempt's budget for the coverage `GET /health`.
- *
- * Same resolution as {@link probeHealth}: a caller-supplied
- * `probe.timeoutMs` wins; `probe: false` and an unset probe fall back
- * to the provider default. The coverage fetch is a second request, so
- * it has to share that budget — otherwise a slow peer that just passed
- * a 60s probe still dies on the 10s live / 2s local default.
- */
-export const coverageTimeoutMs = (
-  probe: ServerProbe | false | undefined,
-  defaults: Required<ServerProbe>,
-): number =>
-  probe === false
-    ? defaults.timeoutMs
-    : (probe?.timeoutMs ?? defaults.timeoutMs);
-
-const fetchHealthJson = (url: string, timeoutMs: number) =>
-  Effect.tryPromise({
-    try: (signal) =>
-      fetch(`${trimSlashes(url)}/health`, { method: "GET", signal }).then(
-        async (response) => {
-          let body: unknown = {};
-          try {
-            body = await response.json();
-          } catch {
-            body = {};
-          }
-          if (!response.ok) {
-            throw new Error(`health ${response.status}`);
-          }
-          return body;
-        },
-      ),
-    catch: (cause) =>
-      new NetworkError({
-        message: `ramose: server at ${url} is unreachable: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
-        cause,
-      }),
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: `${Math.max(1, timeoutMs)} millis`,
-      orElse: () =>
-        Effect.fail(
-          new NetworkError({
-            message: `ramose: server at ${url} accepted the connection but did not answer GET /health within ${timeoutMs}ms`,
-          }),
-        ),
-    }),
-  );
 
 export type Server = Resource<
   "Ramose.Server",
@@ -624,13 +508,6 @@ const attributes = Effect.fn(function* (
   }
   const url = trimSlashes(chosen);
   yield* probeHealth(url, props.probe, defaults);
-  if (props.operations !== undefined) {
-    const body = yield* fetchHealthJson(url, coverageTimeoutMs(props.probe, defaults));
-    const badOps = compareOperationsToHealth(props.operations, body);
-    if (badOps !== undefined) {
-      return yield* badOps;
-    }
-  }
   return {
     url,
     workerName: worker.workerName,

@@ -3,7 +3,7 @@
  *
  * Everything on `ramose/db` (asserted name-by-name in
  * `db-portable.test.ts`) plus the deploy-time half: two resources, one
- * provider collection, catalog definitions, claims, and peer constants.
+ * provider collection, catalog definitions, claims, and peer compatibility.
  * Nothing else is public.
  */
 
@@ -17,8 +17,6 @@ const ADDS = [
   "Policy",
   // peer
   "PEER_COMPAT",
-  "PEER_BINDINGS",
-  "PEER_DO_CLASSES",
   // the stack
   "providers",
   "Providers",
@@ -58,6 +56,8 @@ const KILLED = [
   "parsePolicy",
   "authEnv",
   "internalSecret",
+  "PEER_BINDINGS",
+  "PEER_DO_CLASSES",
   "AUTH_ENV_KEYS",
   "applyLocalDev",
   "LOCAL_DEV",

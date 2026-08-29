@@ -1,4 +1,4 @@
-import { createServer } from "ramose/worker";
+import { createServer } from "../../packages/ramose/src/worker/testing.ts";
 
 export default createServer();
-export { QueryReplicaDO, TransactorDO } from "ramose/worker";
+export { QueryReplicaDO, TransactorDO } from "../../packages/ramose/src/worker/testing.ts";

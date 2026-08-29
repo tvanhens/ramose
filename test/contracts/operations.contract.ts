@@ -1,5 +1,5 @@
 /**
- * Public `/op` and `/health` operations listing against a real peer.
+ * Public `/op` and minimal `/health` against a real peer.
  *
  * `/db/:name/op` is fail-closed with the rest of the data plane.
  */
@@ -13,19 +13,17 @@ export interface OperationsTarget {
 }
 
 export function registerOperationsContract(target: OperationsTarget): void {
-  describe("GET /health lists registered operation ids", () => {
-    test("the peer reports the registry it was built with", async () => {
+  describe("GET /health exposes no deployment inventory", () => {
+    test("catalog and empty peers return the same allowlisted body", async () => {
       const { openUrl } = target.urls();
-      const { status, body } = await json(openUrl, "/health");
-      expect(status).toBe(200);
-      expect(body.ok).toBe(true);
-      expect(body.operations).toEqual(OPERATION_IDS);
-    });
-
-    test("an empty registry reports an empty list", async () => {
       const { emptyUrl } = target.urls();
-      const { body } = await json(emptyUrl, "/health");
-      expect(body.operations).toEqual([]);
+      const { status, body, res } = await json(openUrl, "/health");
+      const empty = await json(emptyUrl, "/health");
+      expect(status).toBe(200);
+      expect(body).toEqual({ ok: true, service: "ramose" });
+      expect(empty.body).toEqual(body);
+      expect(res.headers.get("x-ramose-deployment")).toBeNull();
+      expect(res.headers.get("x-ramose-ms")).toBeNull();
     });
   });
 

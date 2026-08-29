@@ -1,9 +1,10 @@
 /**
  * Test-only admin routes under `/__test__/*` (issue #390).
  *
- * Absent or 404 unless `RAMOSE_TEST_HOOKS=1` and the stage is not `prod`.
- * Every path forwards to the real R2 bucket, Transactor DO, or Replica DO.
- * Nothing here invents a successful transact, query, or socket frame.
+ * Reachable only from the explicit source-only testing assembly, then absent
+ * or 404 unless its non-production flag and private capability agree. Every
+ * path forwards to the real R2 bucket, Transactor DO, or Replica DO. Nothing
+ * here invents a successful transact, query, or socket frame.
  */
 
 import { dbPrefix, prefixedBucket } from "../internal/storage/index.ts";
@@ -22,6 +23,7 @@ import { TEST_SESSION_TOKEN_HEADER } from "./session.ts";
 import { BadRequest, Internal, NotFound, UpstreamError } from "./errors.ts";
 import {
   basisHeaders,
+  type BasisFetchOptions,
   coloHeader,
   fetchBasisWithStats,
   invalidateBasis,
@@ -164,6 +166,45 @@ const minTHeader = (request: Request): Record<string, string> => {
   return minT === null || minT.length === 0 ? {} : { "x-ramose-min-t": minT };
 };
 
+const testMinimumBasis = (request: Request): number | undefined => {
+  const raw = request.headers.get("x-ramose-min-t");
+  if (raw === null || raw.length === 0) return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+};
+
+const TEST_REPLICA_HINTS = new Set([
+  "wnam",
+  "enam",
+  "sam",
+  "weur",
+  "eeur",
+  "apac",
+  "oc",
+  "afr",
+  "me",
+]);
+
+const testBasisOptions = (request: Request): BasisFetchOptions => {
+  const useCacheHeader = request.headers.get("x-ramose-cache-basis");
+  const modeHeader = request.headers.get("x-ramose-cache-mode");
+  const hintHeader = request.headers.get("x-ramose-replica-hint");
+  return {
+    minimumBasis: testMinimumBasis(request),
+    ...(useCacheHeader === "0"
+      ? { useCache: false }
+      : useCacheHeader === "1"
+        ? { useCache: true }
+        : {}),
+    ...(modeHeader === "peer" || modeHeader === "ttl"
+      ? { cacheMode: modeHeader }
+      : {}),
+    ...(hintHeader !== null && TEST_REPLICA_HINTS.has(hintHeader)
+      ? { replicaHint: hintHeader }
+      : {}),
+  };
+};
+
 const forward = async (
   request: Request,
   env: RamoseEnv,
@@ -277,8 +318,9 @@ export const handleTestAdmin = async (
     if (body.action !== "fetch") {
       throw new BadRequest({ message: "basis action must be fetch|invalidate" });
     }
-    const fetched = await fetchBasisWithStats(env, db, request);
-    return json(fetched, 200, basisHeaders(request, env, fetched));
+    const options = testBasisOptions(request);
+    const fetched = await fetchBasisWithStats(env, db, request, options);
+    return json(fetched, 200, basisHeaders(request, env, fetched, options));
   }
   if (rest === "/checkpoint") {
     const raw = await request.text();

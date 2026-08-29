@@ -1,5 +1,4 @@
 import { createServer } from "ramose/worker";
-import { operations } from "./src/todos.ts";
 
-export default createServer({ operations });
+export default createServer();
 export { QueryReplicaDO, TransactorDO } from "ramose/worker";

@@ -17,6 +17,7 @@ export { Open };
 
 const worker = import.meta.resolve("./worker.ts");
 const empty = import.meta.resolve("./empty-worker.ts");
+const production = import.meta.resolve("./production-worker.ts");
 const operationWorker = import.meta.resolve("./operation-worker.ts");
 const graphPathWorker = import.meta.resolve("./graph-path-worker.ts");
 
@@ -31,7 +32,7 @@ const jwtAuth = () =>
 export const Empty = Ramose.Server("Empty", {
   peer: "EmptyPeer",
   storage: "EmptyStore",
-  main: empty,
+  main: production,
   env: TEST_HOOKS_ENV,
 });
 

@@ -1,38 +1,44 @@
 /**
  * Ramose peer Worker — HTTP API and edge executor.
  *
- *   GET  /health              { ok, service, stage, time, operations: string[] }
- *   POST /__test__/db/:name/* test-only (RAMOSE_TEST_HOOKS=1; 404 otherwise)
+ *   GET  /health              { ok, service }
  *   *    /db/:name/*          verified JWT + deployed catalog → filtered Db;
  *                             one-shot query/pull/entity and leased live output
  *                             run on that value only. writes, info, and sessions
  *                             stay fail-closed.
  *
- * `/health` is the only unauthenticated public route (AUTH-1, AUTH-6).
- * `/__test__/*` is gated local instrumentation, not an external database path.
+ * `/health` is the only unauthenticated public route (AUTH-1, AUTH-6). The
+ * supported package graph contains no test or admin assembly.
  */
 
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import {
   createTransactorDO as createInternalTransactorDO,
-  TransactorDO,
+  TransactorDO as InternalTransactorDO,
 } from "../internal/transactor/transactor-do.ts";
-import { QueryReplicaDO } from "../internal/replica/index.ts";
-import { runFetch, type ServerOptions } from "./handle.ts";
+import { QueryReplicaDO as InternalQueryReplicaDO } from "../internal/replica/index.ts";
+import { runFetch, type ServerOptions as RuntimeServerOptions } from "./handle.ts";
 import {
   deployedDatabaseCatalogBindings,
   deployedOperationCatalogs,
   type OperationCatalogs,
 } from "./operation-catalogs.ts";
-export { resolveWrites } from "../writes.ts";
+type WorkerDurableObjectClass = new (
+  ctx: DurableObjectState,
+  env: unknown,
+) => DurableObject;
 
-export { TransactorDO, QueryReplicaDO };
+/** Cloudflare class exports with the internal binding shape erased. */
+export const TransactorDO = InternalTransactorDO as unknown as WorkerDurableObjectClass;
+export const QueryReplicaDO = InternalQueryReplicaDO as unknown as WorkerDurableObjectClass;
 /** Build the Transactor class from the same opaque registry as `createServer`. */
-export const createTransactorDO = (operationCatalogs: OperationCatalogs) =>
+export const createTransactorDO = (
+  operationCatalogs: OperationCatalogs,
+): WorkerDurableObjectClass =>
   createInternalTransactorDO(
     deployedOperationCatalogs(operationCatalogs),
     deployedDatabaseCatalogBindings(operationCatalogs),
-  );
+  ) as unknown as WorkerDurableObjectClass;
 export {
   deployOperationCatalogs,
   OperationCatalogDeploymentError,
@@ -41,16 +47,16 @@ export {
   type OperationCatalogProof,
   type OperationCatalogs,
 } from "./operation-catalogs.ts";
-export { clearWritesWarning } from "./handle.ts";
-export type { ServerOptions } from "./handle.ts";
-export type { RamoseEnv } from "../RamoseEnv.ts";
-export { type ErrorHttp, errorResponse, errorToHttp, statusOf, toDbError } from "../errorHttp.ts";
-export { toHttp, fromThrown, isRamoseError } from "./errors.ts";
+
+/** Opaque runtime assembly accepted by the supported Worker entry. */
+export interface ServerOptions {
+  readonly operationCatalogs?: OperationCatalogs;
+}
 
 /** Build a peer Worker. One-shot reads consume the filtered request `Db`. */
 export const createServer = (options: ServerOptions = {}) => ({
-  async fetch(request: Request, env: RamoseEnv, _ctx?: ExecutionContext): Promise<Response> {
-    return runFetch(request, env, options);
+  async fetch(request: Request, env: unknown, _ctx?: ExecutionContext): Promise<Response> {
+    return runFetch(request, env as RamoseEnv, options as RuntimeServerOptions);
   },
 });
 

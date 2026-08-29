@@ -19,7 +19,7 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { Unauthorized } from "../../db/Errors.ts";
 import { stringifyJson } from "../core/json.ts";
-import { checkpoint } from "../test-hooks.ts";
+import type { RuntimeBoundaries } from "../runtime-boundaries.ts";
 import { MAX_READ_LEASE_MS } from "./bounds.ts";
 import {
   executeAuthorizedRequest,
@@ -56,6 +56,8 @@ export type AuthorizedLiveInput<R = never, EDb = unknown> = AuthorizedRequestInp
   readonly renew?: Effect.Effect<void, Unauthorized, R>;
   /** Push-only basis notifications from the real replica topology. */
   readonly basisChanges?: Stream.Stream<LiveBasisEvent, Unauthorized, R>;
+  /** Explicit non-production race boundaries; absent in the production graph. */
+  readonly boundaries?: RuntimeBoundaries;
 };
 
 type QueuedSnapshot = {
@@ -64,6 +66,7 @@ type QueuedSnapshot = {
   readonly value: unknown;
   readonly epoch: Ref.Ref<number>;
   readonly lastSent: Ref.Ref<unknown | Absent>;
+  readonly boundaries?: RuntimeBoundaries;
 };
 
 const leaseLimit = (interruptAfter: Duration.Input | undefined): Duration.Duration =>
@@ -84,11 +87,16 @@ const callerLease = (
   return Result.succeed({ duration, expiresAtMs: nowMs + Duration.toMillis(duration) });
 };
 
-const atBoundary = (name: string): Effect.Effect<void, Unauthorized> =>
-  Effect.tryPromise({
-    try: () => checkpoint(name),
-    catch: () => deny(),
-  });
+const atBoundary = (
+  boundaries: RuntimeBoundaries | undefined,
+  name: string,
+): Effect.Effect<void, Unauthorized> =>
+  boundaries === undefined
+    ? Effect.void
+    : Effect.tryPromise({
+        try: () => boundaries.checkpoint(name),
+        catch: () => deny(),
+      });
 
 /** Query / pull / entity / lookup results as a bag of comparable rows. */
 export const liveResultRows = (value: unknown): readonly unknown[] => {
@@ -191,7 +199,7 @@ const deliverSnapshot = (
   item: QueuedSnapshot,
 ): Effect.Effect<Result.Result<LiveQueryDiff, void>, Unauthorized> =>
   Effect.gen(function* () {
-    yield* atBoundary("live.emit");
+    yield* atBoundary(item.boundaries, "live.emit");
     const nowMs = yield* Clock.currentTimeMillis;
     const current = yield* Ref.get(item.epoch);
     if (item.id !== current || nowMs >= item.expiresAtMs) return Result.fail(undefined);
@@ -269,14 +277,23 @@ export const executeAuthorizedLive = <R, EDb = unknown>(
               (filteredDb) =>
                 Effect.gen(function* () {
                   const value = yield* readAuthorized(filteredDb, read, opts);
-                  yield* atBoundary("live.recompute");
+                  yield* atBoundary(input.boundaries, "live.recompute");
                   const current = yield* Ref.get(epoch);
                   if (current !== id) return;
-                  yield* atBoundary("live.enqueue");
+                  yield* atBoundary(input.boundaries, "live.enqueue");
                   const still = yield* Ref.get(epoch);
                   const enqueueNow = yield* Clock.currentTimeMillis;
                   if (still !== id || enqueueNow >= expiresAtMs) return;
-                  yield* Queue.offer(out, { id, expiresAtMs, value, epoch, lastSent });
+                  yield* Queue.offer(out, {
+                    id,
+                    expiresAtMs,
+                    value,
+                    epoch,
+                    lastSent,
+                    ...(input.boundaries === undefined
+                      ? {}
+                      : { boundaries: input.boundaries }),
+                  });
                 }),
             );
           });

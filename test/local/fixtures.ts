@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ramose from "ramose";
 import Stack from "./alchemy.run.ts";
+import { TEST_CAPABILITY } from "./test-hooks-env.ts";
 
 export const { deploy, destroy, beforeAll, afterAll } = Test.make({
   providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
@@ -79,6 +80,9 @@ export const json = async (
   const { token, ...rest } = init;
   const headers = new Headers(rest.headers);
   if (token !== undefined) headers.set("authorization", `Bearer ${token}`);
+  if (path.startsWith("/__test__/")) {
+    headers.set("x-ramose-test-capability", TEST_CAPABILITY);
+  }
   const url = `${base.replace(/\/+$/, "")}${path}`;
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(url, { ...rest, headers });

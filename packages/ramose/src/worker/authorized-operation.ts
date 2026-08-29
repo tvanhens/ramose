@@ -11,7 +11,12 @@ import {
 import { fromJson, toJson } from "../internal/core/json.ts";
 import { internalHeaders } from "../internal/transactor/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
-import { BadRequest, Unauthorized, UpstreamError } from "./errors.ts";
+import {
+  BadRequest,
+  OperationRejected,
+  Unauthorized,
+  UpstreamError,
+} from "./errors.ts";
 import {
   isEntityRef,
   parseCatalogProofForPath,
@@ -76,12 +81,22 @@ const privateFailure = (
   ...(headers === undefined ? {} : { headers }),
 });
 
-const isOperationRejectedBody = (text: string): boolean => {
+const operationRejectedOf = (text: string): OperationRejected | undefined => {
   try {
-    const body = JSON.parse(text) as { readonly tag?: unknown };
-    return body?.tag === "OperationRejected";
+    const body = JSON.parse(text) as Record<string, unknown>;
+    if (
+      body.tag !== "OperationRejected" ||
+      typeof body.message !== "string" ||
+      typeof body.operation !== "string"
+    ) return undefined;
+    return new OperationRejected({
+      message: body.message,
+      operation: body.operation,
+      ...(typeof body.step === "string" ? { step: body.step } : {}),
+      ...(typeof body.reason === "string" ? { reason: body.reason } : {}),
+    });
   } catch {
-    return false;
+    return undefined;
   }
 };
 
@@ -89,9 +104,9 @@ const isOperationRejectedBody = (text: string): boolean => {
 export const operationFailureFromResponse = (
   response: Response,
   text: string,
-): UpstreamError => {
-  if (response.status === 409 && !isOperationRejectedBody(text)) {
-    return privateFailure(409);
+): UpstreamError | OperationRejected => {
+  if (response.status === 409) {
+    return operationRejectedOf(text) ?? privateFailure(409);
   }
   if (response.status === 503) {
     const retryAfter = response.headers.get("retry-after");
@@ -100,12 +115,7 @@ export const operationFailureFromResponse = (
       retryAfter === null ? undefined : { "retry-after": retryAfter },
     );
   }
-  if (response.status >= 500) return privateFailure();
-  return new UpstreamError({
-    status: response.status,
-    body: text,
-    headers: Object.fromEntries(response.headers),
-  });
+  return privateFailure(response.status >= 500 ? 500 : response.status);
 };
 
 const parseOwner = (

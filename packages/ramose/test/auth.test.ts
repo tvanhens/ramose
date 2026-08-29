@@ -6,7 +6,6 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import * as Redacted from "effect/Redacted";
 import { claims, type AuthConfig } from "../src/Auth.ts";
 import { AUTH_ENV_KEYS, authEnv } from "../src/Server.ts";
 
@@ -98,7 +97,6 @@ describe("authEnv accepts the AuthConfig as `jwt`", () => {
     aud: AUTH.audience,
     maxTtl: AUTH.ttl,
     allowedOrigins: "https://app.acme.example",
-    internalSecret: "sh4red",
   };
 
   test("`{ jwt }` produces exactly the loose form's env", () => {
@@ -106,17 +104,15 @@ describe("authEnv accepts the AuthConfig as `jwt`", () => {
       jwksUrl: loose.jwksUrl,
       jwt: AUTH,
       allowedOrigins: loose.allowedOrigins,
-      internalSecret: loose.internalSecret,
     });
     expect(fromConfig).toEqual(authEnv(loose));
   });
 
   test("the env keys and values, pinned", () => {
-    const { [AUTH_ENV_KEYS.internalSecret]: secret, ...env } = authEnv({
+    const env = authEnv({
       jwksUrl: loose.jwksUrl,
       jwt: AUTH,
       allowedOrigins: loose.allowedOrigins,
-      internalSecret: loose.internalSecret,
     });
     expect(env).toEqual({
       RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
@@ -125,7 +121,6 @@ describe("authEnv accepts the AuthConfig as `jwt`", () => {
       RAMOSE_JWT_MAX_TTL: "900",
       RAMOSE_ALLOWED_ORIGINS: "https://app.acme.example",
     });
-    expect(Redacted.value(secret as Redacted.Redacted<string>)).toBe("sh4red");
   });
 
   test("an explicitly set loose key wins over the config — additive, not exclusive", () => {
