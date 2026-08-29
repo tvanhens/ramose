@@ -1,30 +1,18 @@
-/** Runnable deployed catalog shared by the local Worker bundle and tests. */
+/** Public operation definitions shared by the local Worker bundle and tests. */
 
 import * as Effect from "effect/Effect";
-import * as Result from "effect/Result";
 import * as EffectSchema from "effect/Schema";
-import { Catalog } from "../../packages/ramose/src/Catalog.ts";
+import { Catalog, Policy } from "ramose";
 import {
   Entity,
   EntityId as OperationEntityId,
   Field,
+  OperationRejected,
   OwnedOperations,
   Ref,
   Schema,
   string,
-} from "../../packages/ramose/src/db/internal.ts";
-import {
-  CatalogId,
-  DatabaseId,
-  DigestHex,
-  any,
-  assembleCatalogDefinitions,
-  compileReadAuthorization,
-  deployCatalogDefinitions,
-  hasClass,
-  invoke,
-  read,
-} from "../../packages/ramose/src/internal/authorization/index.ts";
+} from "ramose/db";
 
 export const OPERATION_DATABASES = Object.freeze([
   "operations-static",
@@ -87,43 +75,58 @@ export const Item = Entity("nativeItem", {
         throw new Error("postgres://secret@internal/operation");
       },
     }),
+    returnTransportTag: Operation({
+      self: false,
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({ $inst: EffectSchema.String }),
+      run() {
+        return { $inst: "application-value" };
+      },
+    }),
+    reject: Operation({
+      self: false,
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({}),
+      run() {
+        throw new OperationRejected({
+          message: "domain refused",
+          operation: "nativeItem/reject",
+          step: "rule",
+          reason: "intentional",
+        });
+      },
+    }),
   }),
 });
 
 export const OperationSchema = Schema({ nativeItem: Item, nativeOther: Other });
 
-const policy = await Effect.runPromise(compileReadAuthorization({
+const policy = await Effect.runPromise(Policy.compileReadAuthorization({
   schema: OperationSchema,
   classes: ["member", "reader", "operator"],
   rules: [
-    read(Item).when(any(hasClass("member"), hasClass("reader"))),
-    read(Other).when(hasClass("reader")),
-    invoke(Item[OwnedOperations].create).when(hasClass("member")),
-    invoke(Item[OwnedOperations].rename).when(any(hasClass("member"), hasClass("operator"))),
-    invoke(Item[OwnedOperations].deleteHiddenOther).when(hasClass("member")),
-    invoke(Item[OwnedOperations].crash).when(hasClass("member")),
-    invoke(Other[OwnedOperations].create).when(hasClass("member")),
+    Policy.read(Item).when(Policy.any(Policy.hasClass("member"), Policy.hasClass("reader"))),
+    Policy.read(Other).when(Policy.hasClass("reader")),
+    Policy.invoke(Item[OwnedOperations].create).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].rename).when(Policy.any(
+      Policy.hasClass("member"),
+      Policy.hasClass("operator"),
+    )),
+    Policy.invoke(Item[OwnedOperations].deleteHiddenOther).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].crash).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].returnTransportTag).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].reject).when(Policy.hasClass("member")),
+    Policy.invoke(Other[OwnedOperations].create).when(Policy.hasClass("member")),
   ],
 }));
 
-const definitions = await Effect.runPromise(assembleCatalogDefinitions({
-  root: Catalog("local-native-operations", { schema: OperationSchema, policy }),
-  artifactHash: DigestHex.make("7".repeat(64)),
-}));
+export const operationCatalog = Catalog("local-native-operations", {
+  schema: OperationSchema,
+  policy,
+});
 
-export const operationCatalogs = Result.getOrThrow(deployCatalogDefinitions(
-  definitions,
-  OPERATION_DATABASES.map((database) => ({
-    database: DatabaseId.make(database),
-    catalogKey: CatalogId.make("local-native-operations"),
-  })),
-));
-
-const installed = Result.getOrThrow(
-  definitions.require(CatalogId.make("local-native-operations")),
-);
-
-export const operationProof = Object.freeze({
-  catalog: installed.catalogKey,
-  unitHash: installed.unitHash,
+export const operationCatalogDeployment = Object.freeze({
+  root: operationCatalog,
+  artifactHash: "7".repeat(64),
+  deployments: OPERATION_DATABASES.map((database) => ({ database })),
 });

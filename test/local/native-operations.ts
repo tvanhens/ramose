@@ -4,8 +4,8 @@ import { schemaTx } from "../../packages/ramose/src/db/internal.ts";
 import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
 import {
   OperationSchema,
-  operationProof,
 } from "./operation-catalog.ts";
+import { operationProof } from "./operation-proof.ts";
 
 const invoke = async (
   base: string,
@@ -92,6 +92,15 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         ":ramose/type": ":nativeItem",
         ":nativeItem/title": "Created",
         ":nativeItem/state": "new",
+      });
+
+      const transportTag = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "returnTransportTag",
+      }, {});
+      expect(transportTag.status).toBe(200);
+      expect(transportTag.body).toEqual({
+        result: { $inst: "application-value" },
       });
     });
 
@@ -323,6 +332,20 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(crashed.status).toBe(500);
       expect(crashed.body.error).toBe("operation execution failed");
       expect(JSON.stringify(crashed.body)).not.toContain("secret@internal");
+
+      const rejected = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "reject",
+      }, {});
+      expect(rejected.status).toBe(409);
+      expect(rejected.body).toEqual({
+        error: "domain refused",
+        tag: "OperationRejected",
+        message: "domain refused",
+        operation: "nativeItem/reject",
+        step: "rule",
+        reason: "intentional",
+      });
 
       const stale = await json(base, `/db/${database}/op`, {
         method: "POST",

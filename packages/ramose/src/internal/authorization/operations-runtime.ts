@@ -120,10 +120,16 @@ type ReferenceWrite = {
   readonly target: unknown;
 };
 
+type DeferredFieldWrite = {
+  readonly source: unknown;
+  readonly field: FieldDescriptor;
+};
+
 type Collector = {
   readonly op: unknown;
   readonly tx: TxData;
   readonly refs: readonly ReferenceWrite[];
+  readonly deferredFields: readonly DeferredFieldWrite[];
 };
 
 /** Opaque denial shared by every authenticated operation-admission failure. */
@@ -373,6 +379,7 @@ const createCollector = (args: {
   const { definition, descriptor } = args;
   const tx: unknown[] = [];
   const refs: ReferenceWrite[] = [];
+  const deferredFields: DeferredFieldWrite[] = [];
   const deployedDefinitions = new Map<string, RuntimeEntity>(
     args.binding.entityDefinitions.map((entity) => [entity.ns, entity] as const),
   );
@@ -425,6 +432,12 @@ const createCollector = (args: {
     const capturedValue = hasValue
       ? snapshotStoredValue(descriptor, loweredValue)
       : undefined;
+    if (descriptor.id.owner.kind === "trait" && args.target === undefined) {
+      // A targetless trait handle has no concrete composer until its subject
+      // resolves on the staged basis. Retain this helper intent so ordinary
+      // composer field/fixed-binding semantics can be checked before commit.
+      deferredFields.push({ source: capturedEid, field });
+    }
     if (hasValue && field.valueType !== "ref") {
       try {
         definition.validateFieldValue(ident, loweredValue);
@@ -653,7 +666,7 @@ const createCollector = (args: {
       }
     },
   };
-  return { op, tx, refs };
+  return { op, tx, refs, deferredFields };
 };
 
 /**
@@ -810,6 +823,37 @@ const validateReferenceWrites = async (
   }
 };
 
+const validateDeferredFieldWrites = async (
+  definition: InstalledCatalogDefinition,
+  descriptor: OperationDescriptor,
+  writes: readonly DeferredFieldWrite[],
+  report: TxReport,
+): Promise<void> => {
+  for (const write of writes) {
+    const ident = fieldIdent(write.field);
+    const source = await resolveReportEntity(report, write.source);
+    if (source === undefined) {
+      throw new InvalidRequest({ message: `operation field ${ident} has an unresolved entity` });
+    }
+    const concrete = await typeName(report.dbAfter, source) ??
+      await typeName(report.dbBefore, source);
+    if (concrete === undefined) {
+      throw new InvalidRequest({ message: `operation field ${ident} has no canonical entity type` });
+    }
+    let runtime;
+    try {
+      runtime = definition.requireFieldRuntime(concrete, ident);
+    } catch {
+      throw new InvalidRequest({
+        message: `operation field ${ident} is incompatible with entity type ${concrete}`,
+      });
+    }
+    if (runtime.fixed._tag === "fixed") {
+      throw rejected(descriptor, "operation cannot mutate an engine-owned fixed field");
+    }
+  }
+};
+
 /** Execute one invocation while the Transactor's serialized writer owns the basis. */
 export const executeCatalogOperation = async (
   connection: Connection,
@@ -920,6 +964,12 @@ export const executeCatalogOperation = async (
   const staged = await connection.transactValidated(
     collector.tx,
     async (report) => {
+      await validateDeferredFieldWrites(
+        deployed.definition,
+        descriptor,
+        collector.deferredFields,
+        report,
+      );
       await validateReferenceWrites(deployed.definition, collector.refs, report);
       const resolved = await resolveOutputHandles(descriptor.output, draft, report);
       await validateAuthoritativeRefs(

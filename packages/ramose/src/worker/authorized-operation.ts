@@ -7,7 +7,7 @@ import {
   type AuthenticatedCaller,
   type OperationInvocation,
 } from "../internal/authorization/index.ts";
-import { parseJson, stringifyJson } from "../internal/core/json.ts";
+import { stringifyJson } from "../internal/core/json.ts";
 import { internalHeaders } from "../internal/transactor/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import { BadRequest, Unauthorized, UpstreamError } from "./errors.ts";
@@ -25,6 +25,46 @@ export type ParsedOperationRequest = Omit<
 
 const bad = (message: string): BadRequest => new BadRequest({ message });
 const deny = (): Unauthorized => new Unauthorized({ status: 403 });
+const privateFailure = (
+  status = 500,
+  headers?: Record<string, string>,
+): UpstreamError => new UpstreamError({
+  status,
+  body: JSON.stringify({ error: "operation execution failed" }),
+  ...(headers === undefined ? {} : { headers }),
+});
+
+const isOperationRejectedBody = (text: string): boolean => {
+  try {
+    const body = JSON.parse(text) as { readonly tag?: unknown };
+    return body?.tag === "OperationRejected";
+  } catch {
+    return false;
+  }
+};
+
+/** Restate only intentional public refusals; scrub engine and runtime detail. */
+export const operationFailureFromResponse = (
+  response: Response,
+  text: string,
+): UpstreamError => {
+  if (response.status === 409 && !isOperationRejectedBody(text)) {
+    return privateFailure(409);
+  }
+  if (response.status === 503) {
+    const retryAfter = response.headers.get("retry-after");
+    return privateFailure(
+      503,
+      retryAfter === null ? undefined : { "retry-after": retryAfter },
+    );
+  }
+  if (response.status >= 500) return privateFailure();
+  return new UpstreamError({
+    status: response.status,
+    body: text,
+    headers: Object.fromEntries(response.headers),
+  });
+};
 
 const parseOwner = (
   value: unknown,
@@ -90,10 +130,6 @@ export const invokeAuthoritativeOperation = async (
     caller,
   };
   const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
-  const privateFailure = (status = 500): UpstreamError => new UpstreamError({
-    status,
-    body: JSON.stringify({ error: "operation execution failed" }),
-  });
   let response: Response;
   let text: string;
   try {
@@ -115,15 +151,12 @@ export const invokeAuthoritativeOperation = async (
     throw privateFailure();
   }
   if (!response.ok) {
-    if (response.status === 409) throw privateFailure(409);
-    if (response.status >= 500) throw privateFailure();
-    throw new UpstreamError({
-      status: response.status,
-      body: text,
-      headers: Object.fromEntries(response.headers),
-    });
+    throw operationFailureFromResponse(response, text);
   }
-  const ack = parseJson(text) as { readonly t?: unknown; readonly output?: unknown };
+  // The Transactor already materialized output as exact JSON before commit.
+  // Decode only the acknowledgement envelope; interpreting transport-tag
+  // shaped output here would silently change the declared codec result.
+  const ack = JSON.parse(text) as { readonly t?: unknown; readonly output?: unknown };
   if (!Number.isSafeInteger(ack.t) || (ack.t as number) < 0) {
     throw new UpstreamError({
       status: 502,

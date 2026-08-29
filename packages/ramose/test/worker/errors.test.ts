@@ -10,9 +10,11 @@
  */
 import { describe, expect, test } from "bun:test";
 import { QueryBudgetError } from "../../src/internal/core/index.ts";
+import { fromResponse, Unavailable } from "../../src/db/Errors.ts";
 import * as Effect from "effect/Effect";
 import { BadRequest, Internal, NotFound, OperationRejected, QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, isRamoseError, toHttp } from "../../src/worker/errors.ts";
 import { respond } from "../../src/worker/handle.ts";
+import { operationFailureFromResponse } from "../../src/worker/authorized-operation.ts";
 
 describe("tagged failure → status/body", () => {
   test("NotFound → 404 { error }", () => {
@@ -77,6 +79,78 @@ describe("tagged failure → status/body", () => {
     expect(response.headers.get("access-control-allow-methods")).toContain("POST");
     expect(response.headers.get("x-ramose-ms")).toBe("3");
     expect(await response.text()).toBe('{"error":"operation failed"}');
+  });
+});
+
+describe("operation Transactor failure restatement", () => {
+  test("preserves intentional OperationRejected and scrubs engine conflicts", async () => {
+    const intentionalBody = JSON.stringify({
+      error: "domain refused",
+      tag: "OperationRejected",
+      message: "domain refused",
+      operation: "item/reject",
+      reason: "intentional",
+    });
+    const intentional = respond(operationFailureFromResponse(
+      new Response(intentionalBody, { status: 409 }),
+      intentionalBody,
+    ));
+    expect(intentional.status).toBe(409);
+    const intentionalJson = await intentional.json() as Record<string, unknown>;
+    expect(intentionalJson).toEqual(JSON.parse(intentionalBody));
+    expect(fromResponse(
+      intentional.status,
+      intentionalJson,
+      intentional.headers,
+    )).toBeInstanceOf(OperationRejected);
+
+    const engineBody = JSON.stringify({
+      error: "unique conflict on row 42",
+      tag: "TxRejected",
+      code: "tx/unique-conflict",
+    });
+    const engine = respond(operationFailureFromResponse(
+      new Response(engineBody, { status: 409 }),
+      engineBody,
+    ));
+    expect(engine.status).toBe(409);
+    expect(await engine.json() as Record<string, unknown>).toEqual({
+      error: "operation execution failed",
+    });
+  });
+
+  test("keeps retryable status and Retry-After while scrubbing private detail", async () => {
+    const upstream = new Response(JSON.stringify({
+      error: "durable storage recovery for database secret-db",
+      tag: "TransactorDead",
+    }), {
+      status: 503,
+      headers: { "retry-after": "2", "x-private-detail": "secret-db" },
+    });
+    const text = await upstream.text();
+    const response = respond(operationFailureFromResponse(upstream, text));
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("2");
+    expect(response.headers.get("x-private-detail")).toBeNull();
+    const responseJson = await response.json() as Record<string, unknown>;
+    expect(responseJson).toEqual({
+      error: "operation execution failed",
+    });
+    const clientError = fromResponse(response.status, responseJson, response.headers);
+    expect(clientError).toBeInstanceOf(Unavailable);
+    expect((clientError as Unavailable).retryAfterMs).toBe(2_000);
+  });
+
+  test("scrubs unexpected 5xx operation faults", async () => {
+    const body = JSON.stringify({ error: "postgres://secret@internal/operation" });
+    const response = respond(operationFailureFromResponse(
+      new Response(body, { status: 500 }),
+      body,
+    ));
+    expect(response.status).toBe(500);
+    expect(await response.json() as Record<string, unknown>).toEqual({
+      error: "operation execution failed",
+    });
   });
 });
 

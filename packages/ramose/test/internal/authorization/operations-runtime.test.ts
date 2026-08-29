@@ -19,7 +19,11 @@ import {
   schemaTx,
   string,
 } from "../../../src/db/internal.ts";
-import { InvalidRequest, Unauthorized } from "../../../src/db/Errors.ts";
+import {
+  InvalidRequest,
+  OperationRejected,
+  Unauthorized,
+} from "../../../src/db/Errors.ts";
 import {
   CatalogId,
   DatabaseId,
@@ -71,6 +75,20 @@ const Tagged = Trait("tagged", { tag: string() }, {
 
 const FixedTenant = Trait("fixedTenant", { tenant: string() }, {
   bind: () => ({ values: { tenant: "acme" } }),
+  operations: (Operation) => ({
+    rewriteTenant: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        id: OperationEntityId,
+        tenant: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        (op.entity(input.id) as any).set(FixedTenant.tenant, input.tenant);
+        return {};
+      },
+    }),
+  }),
 });
 const FixedLabels = Trait("fixedLabels", { labels: Field.many(string()) }, {
   bind: () => ({ values: { labels: ["z-last", "a-first"] } }),
@@ -271,6 +289,7 @@ const buildWorld = async () => {
       read(Backlink).when(memberOrReader),
       invoke(Tagged[OwnedOperations].retag).when(memberOrOperator),
       invoke(Tagged[OwnedOperations].staticRetag).when(hasClass("member")),
+      invoke(FixedTenant[OwnedOperations].rewriteTenant).when(hasClass("member")),
       invoke(Link[OwnedOperations].create).when(hasClass("member")),
       invoke(Item[OwnedOperations].rename).when(memberOrOperator),
       invoke(Item[OwnedOperations].echoRef).when(hasClass("member")),
@@ -449,6 +468,28 @@ describe("deployed operation runtime", () => {
     })).rejects.toBeDefined();
     expect(world.conn.t).toBe(beforeT);
     expect((await world.conn.db().entity(world.other))?.[":tagged/tag"]).toBeUndefined();
+  });
+
+  test("retains fixed composer semantics for a targetless trait handle", async () => {
+    const world = await buildWorld();
+    const created = await invokeOperation(world, {
+      owner: { kind: "entity", name: "link" },
+      localName: "create",
+      input: { target: world.good },
+      caller: caller("member"),
+    });
+    const link = (created.output as { readonly id: number }).id;
+    const beforeT = world.conn.t;
+
+    await expect(invokeOperation(world, {
+      owner: { kind: "trait", name: "fixedTenant" },
+      localName: "rewriteTenant",
+      input: { id: link, tenant: "other" },
+      caller: caller("member"),
+    })).rejects.toBeInstanceOf(OperationRejected);
+
+    expect(world.conn.t).toBe(beforeT);
+    expect((await world.conn.db().entity(link))?.[":fixedTenant/tenant"]).toBe("acme");
   });
 
   test("keeps definition-directed ref compatibility as storage semantics", async () => {

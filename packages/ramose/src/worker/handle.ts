@@ -5,7 +5,6 @@ import {
   DatabaseId,
   executeAuthorizedRead,
   OneShotReadError,
-  type DeployedCatalogDefinitions,
   type DeployedCatalogs,
 } from "../internal/authorization/index.ts";
 import {
@@ -57,13 +56,17 @@ import {
   invokeAuthoritativeOperation,
   parseOperationRequest,
 } from "./authorized-operation.ts";
+import {
+  deployedOperationCatalogs,
+  type OperationCatalogs,
+} from "./operation-catalogs.ts";
 
 export interface ServerOptions {
   readonly operations?: AnyOperations;
   /** Deployed catalog registry assembled from reachable code. Missing = deny. */
   readonly catalogs?: DeployedCatalogs;
   /** Concrete route database -> exact private runnable catalog definition. */
-  readonly operationCatalogs?: DeployedCatalogDefinitions;
+  readonly operationCatalogs?: OperationCatalogs;
 }
 
 const plog = componentLogger("peer");
@@ -276,7 +279,10 @@ export const handle = (
     if (!isDatabaseName(db)) {
       return yield* new BadRequest({ message: "invalid database name" });
     }
-    const catalogs = peer.operationCatalogs?.catalogs ?? peer.catalogs;
+    const deployedOperations = peer.operationCatalogs === undefined
+      ? undefined
+      : deployedOperationCatalogs(peer.operationCatalogs);
+    const catalogs = deployedOperations?.catalogs ?? peer.catalogs;
     if (rest === "/op" && request.method === "POST") {
       if (peer.operationCatalogs === undefined) {
         return yield* new Unauthorized({ status: 403 });
