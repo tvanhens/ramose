@@ -2,6 +2,9 @@ import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  optimizeDeps: {
+    include: ["effect/Data", "effect/Result", "effect/Schema"],
+  },
   test: {
     include: ["test/browser/**/*.browser.test.ts"],
     browser: {
