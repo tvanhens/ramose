@@ -241,18 +241,19 @@ export class Connection {
   transactValidated<A>(
     txData: TxData,
     validate: (report: TxReport) => Promise<A> | A,
-    txInstant: number = this.now(),
+    txInstant?: number,
     beforeApply: () => void = () => undefined,
   ): Promise<ValidatedTxReport<A>> {
     const run = async (): Promise<ValidatedTxReport<A>> => {
       const dbBefore = this.db();
       const t = this.basisT + 1;
+      const resolvedTxInstant = txInstant === undefined ? this.now() : txInstant;
       const res = await expandTx(
         dbBefore,
         txData,
         t,
         this.nextEid,
-        txInstant,
+        resolvedTxInstant,
         this.composition === undefined ? undefined : { composition: this.composition },
       );
       const schemaAfter = this.schema.clone().apply(res.datoms);

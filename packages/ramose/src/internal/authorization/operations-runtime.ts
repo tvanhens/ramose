@@ -128,8 +128,10 @@ type DeferredFieldWrite = {
   readonly field: FieldDescriptor;
 };
 
-type DeferredOwnerDelete = {
+/** Ordinary typed-helper intent, retained until tempids/lookups resolve. */
+type DeferredSubjectCheck = {
   readonly source: unknown;
+  readonly owner: OwnerRef;
 };
 
 type Collector = {
@@ -137,7 +139,7 @@ type Collector = {
   readonly tx: TxData;
   readonly refs: readonly ReferenceWrite[];
   readonly deferredFields: readonly DeferredFieldWrite[];
-  readonly ownerDeletes: readonly DeferredOwnerDelete[];
+  readonly subjectChecks: readonly DeferredSubjectCheck[];
 };
 
 /** Opaque denial shared by every authenticated operation-admission failure. */
@@ -405,7 +407,7 @@ const createCollector = (args: {
   const tx: unknown[] = [];
   const refs: ReferenceWrite[] = [];
   const deferredFields: DeferredFieldWrite[] = [];
-  const ownerDeletes: DeferredOwnerDelete[] = [];
+  const subjectChecks: DeferredSubjectCheck[] = [];
   const deployedDefinitions = new Map<string, RuntimeEntity>(
     args.binding.entityDefinitions.map((entity) => [entity.ns, entity] as const),
   );
@@ -494,30 +496,41 @@ const createCollector = (args: {
     eid: unknown,
     resolveField: (argument: unknown) => FieldDescriptor,
     deferConcreteField = false,
-    deferOwnerDelete = false,
+    expectedOwner?: OwnerRef,
   ): RuntimeHandle => {
     const capturedEid = snapshotStoredValue(descriptor, lowerEntityArg(eid));
+    const rememberSubject = (): void => {
+      if (expectedOwner !== undefined) {
+        subjectChecks.push({ source: capturedEid, owner: expectedOwner });
+      }
+    };
     return {
       _tag: "TxHandle",
       eid: capturedEid,
-      set: (field, value) => appendWrite(
-        "add",
-        capturedEid,
-        resolveField(field),
-        value,
-        true,
-        deferConcreteField,
-      ),
-      remove: (field, value) => appendWrite(
-        "retract",
-        capturedEid,
-        resolveField(field),
-        value,
-        value !== undefined,
-        deferConcreteField,
-      ),
+      set: (field, value) => {
+        appendWrite(
+          "add",
+          capturedEid,
+          resolveField(field),
+          value,
+          true,
+          deferConcreteField,
+        );
+        rememberSubject();
+      },
+      remove: (field, value) => {
+        appendWrite(
+          "retract",
+          capturedEid,
+          resolveField(field),
+          value,
+          value !== undefined,
+          deferConcreteField,
+        );
+        rememberSubject();
+      },
       delete: () => {
-        if (deferOwnerDelete) ownerDeletes.push({ source: capturedEid });
+        rememberSubject();
         tx.push([":db/retractEntity", capturedEid]);
       },
     };
@@ -530,13 +543,13 @@ const createCollector = (args: {
         throw rejected(descriptor, "operation cannot mutate an engine-owned fixed field");
       }
       return field;
-    });
+    }, false, { kind: "entity", name: entity.ns });
 
   const ownerHandle = (eid: unknown): RuntimeHandle => makeHandle(
     eid,
     requireOwnerField,
     descriptor.id.owner.kind === "trait" && args.target === undefined,
-    true,
+    descriptor.id.owner,
   );
 
   const addPut = (
@@ -551,6 +564,12 @@ const createCollector = (args: {
     const map: Record<string, unknown> = {
       ":db/id": snapshotStoredValue(descriptor, lowerEntityArg(eid)),
     };
+    if (!creation) {
+      subjectChecks.push({
+        source: map[":db/id"],
+        owner: { kind: "entity", name: entity.ns },
+      });
+    }
     map[RAMOSE_TYPE_IDENT] = `:${entity.ns}`;
     markEngineTypeAssertion(map);
     for (const [key, value] of Object.entries(resolved)) {
@@ -600,6 +619,11 @@ const createCollector = (args: {
     if (eid === undefined) {
       throw rejected(descriptor, 'update map form needs a unique: "upsert" field');
     }
+    const capturedEid = snapshotStoredValue(descriptor, lowerEntityArg(eid));
+    subjectChecks.push({
+      source: capturedEid,
+      owner: { kind: "entity", name: entity.ns },
+    });
     let wrote = false;
     for (const [key, value] of Object.entries(attrs)) {
       if (value === undefined) continue;
@@ -608,20 +632,22 @@ const createCollector = (args: {
         throw rejected(descriptor, "operation cannot mutate an engine-owned fixed field");
       }
       if (isMany(entity, key) && Array.isArray(value)) {
-        for (const item of value) appendWrite("update", eid, field, item);
+        for (const item of value) appendWrite("update", capturedEid, field, item);
       } else {
-        appendWrite("update", eid, field, value);
+        appendWrite("update", capturedEid, field, value);
       }
       wrote = true;
     }
-    if (!wrote) tx.push([":db/update", snapshotStoredValue(descriptor, eid)]);
-    return explicitHandle(entity, eid);
+    if (!wrote) tx.push([":db/update", capturedEid]);
+    return explicitHandle(entity, capturedEid);
   };
 
   const principal: OpPrincipal = Object.freeze({
     eid: args.context.principal.me?.eid ?? null,
     class: args.caller.classes[0] ?? "",
-    sub: args.context.principal.subject,
+    ...(typeof args.caller.claims.sub === "string"
+      ? { sub: args.caller.claims.sub }
+      : {}),
     claims: args.caller.claims,
   });
   const effectContext: OperationEffectContext = Object.freeze({
@@ -703,7 +729,7 @@ const createCollector = (args: {
       }
     },
   };
-  return { op, tx, refs, deferredFields, ownerDeletes };
+  return { op, tx, refs, deferredFields, subjectChecks };
 };
 
 /**
@@ -926,24 +952,24 @@ const validateDeferredFieldWrites = async (
   }
 };
 
-const validateOwnerDeletes = async (
+const validateSubjectChecks = async (
   definition: InstalledCatalogDefinition,
   descriptor: OperationDescriptor,
-  deletes: readonly DeferredOwnerDelete[],
+  checks: readonly DeferredSubjectCheck[],
   report: TxReport,
 ): Promise<void> => {
-  for (const deletion of deletes) {
-    const source = await resolveReportEntity(report, deletion.source);
+  for (const check of checks) {
+    const source = await resolveReportEntity(report, check.source);
     const concrete = source === undefined
       ? undefined
       : await typeName(report.dbAfter, source) ??
         await typeName(report.dbBefore, source);
     if (
       concrete === undefined ||
-      !typeCompatible(definition, descriptor.id.owner, concrete)
+      !typeCompatible(definition, check.owner, concrete)
     ) {
       throw new InvalidRequest({
-        message: `operation owner delete is incompatible with ${operationLabel(descriptor)}`,
+        message: `operation subject is incompatible with ${operationLabel(descriptor)}`,
       });
     }
   }
@@ -1068,10 +1094,10 @@ export const executeCatalogOperation = async (
         collector.deferredFields,
         report,
       );
-      await validateOwnerDeletes(
+      await validateSubjectChecks(
         deployed.definition,
         descriptor,
-        collector.ownerDeletes,
+        collector.subjectChecks,
         report,
       );
       await validateReferenceWrites(deployed.definition, collector.refs, report);

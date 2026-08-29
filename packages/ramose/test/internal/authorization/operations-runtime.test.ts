@@ -384,6 +384,122 @@ makeHiddenNamesQuery = () => Query.from(Hidden).select({ name: Hidden.name });
 
 const App = Schema({ good: Good, other: Other, hidden: Hidden, link: Link, item: Item, backlink: Backlink });
 
+const SemanticsShared = Trait("semanticsShared", {
+  note: string({ optional: true }),
+}, {
+  operations: (Operation) => ({
+    helper: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        action: EffectSchema.Literals(["set", "remove", "delete"]),
+        id: OperationEntityId,
+      }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        const handle = op.entity(input.id);
+        if (input.action === "set") handle.set(SemanticsShared.note, "helper");
+        if (input.action === "remove") handle.remove(SemanticsShared.note, "helper");
+        if (input.action === "delete") handle.delete();
+        return {};
+      },
+    }),
+  }),
+});
+
+const SemanticsOther = Entity("semanticsOther", { name: string() }, {
+  traits: [SemanticsShared],
+});
+const SemanticsHidden = Entity("semanticsHidden", { name: string() }, {
+  traits: [SemanticsShared],
+});
+const SemanticsPlain = Entity("semanticsPlain", { name: string() });
+const SemanticsOwner = Entity("semanticsOwner", { name: string() }, {
+  traits: [SemanticsShared],
+  operations: (Operation) => ({
+    ownerHelper: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        action: EffectSchema.Literals(["set", "remove", "delete"]),
+        id: OperationEntityId,
+      }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        const handle = op.entity(input.id);
+        if (input.action === "set") handle.set(SemanticsShared.note, "helper");
+        if (input.action === "remove") handle.remove(SemanticsShared.note, "helper");
+        if (input.action === "delete") handle.delete();
+        return {};
+      },
+    }),
+    explicitHelper: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        action: EffectSchema.Literals([
+          "handleSet",
+          "directSet",
+          "handleRemove",
+          "directRemove",
+          "handleDelete",
+          "directDelete",
+          "put",
+          "update",
+        ]),
+        id: OperationEntityId,
+      }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        const runtime = op as any;
+        if (input.action === "handleSet") {
+          runtime.entity(SemanticsHidden, input.id).set(SemanticsShared.note, "helper");
+        }
+        if (input.action === "directSet") {
+          runtime.set(SemanticsHidden, input.id, SemanticsShared.note, "helper");
+        }
+        if (input.action === "handleRemove") {
+          runtime.entity(SemanticsHidden, input.id).remove(SemanticsShared.note, "helper");
+        }
+        if (input.action === "directRemove") {
+          runtime.remove(SemanticsHidden, input.id, SemanticsShared.note, "helper");
+        }
+        if (input.action === "handleDelete") {
+          runtime.entity(SemanticsHidden, input.id).delete();
+        }
+        if (input.action === "directDelete") runtime.delete(SemanticsHidden, input.id);
+        if (input.action === "put") {
+          runtime.put(SemanticsHidden, input.id, { note: "helper" });
+        }
+        if (input.action === "update") {
+          runtime.update(SemanticsHidden, input.id, { note: "helper" });
+        }
+        return {};
+      },
+    }),
+    principalIdentity: Operation({
+      self: false,
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({
+        sub: EffectSchema.String,
+        policySubject: EffectSchema.String,
+      }),
+      run(op) {
+        return {
+          sub: op.principal.sub ?? "",
+          policySubject: op.principal.claims.email as string,
+        };
+      },
+    }),
+  }),
+});
+
+const SemanticsApp = Schema({
+  semanticsOwner: SemanticsOwner,
+  semanticsOther: SemanticsOther,
+  semanticsHidden: SemanticsHidden,
+  semanticsPlain: SemanticsPlain,
+});
+const semanticsDatabase = DatabaseId.make("operation-semantics");
+const semanticsArtifactHash = DigestHex.make("5".repeat(64));
+
 const memberOrReader = any(hasClass("member"), hasClass("reader"));
 const memberOrOperator = any(hasClass("member"), hasClass("operator"));
 
@@ -467,6 +583,72 @@ const buildWorld = async () => {
   };
 };
 
+const buildSemanticsWorld = async (subjectClaim = "sub") => {
+  const policy = await Effect.runPromise(compileReadAuthorization({
+    schema: SemanticsApp,
+    classes: ["member"],
+    rules: [
+      read(SemanticsOwner).when(hasClass("member")),
+      read(SemanticsOther).when(hasClass("member")),
+      read(SemanticsPlain).when(hasClass("member")),
+      invoke(SemanticsShared[OwnedOperations].helper).when(hasClass("member")),
+      invoke(SemanticsOwner[OwnedOperations].ownerHelper).when(hasClass("member")),
+      invoke(SemanticsOwner[OwnedOperations].explicitHelper).when(hasClass("member")),
+      invoke(SemanticsOwner[OwnedOperations].principalIdentity).when(hasClass("member")),
+    ],
+    principal: { subjectClaim },
+  }));
+  const definitions = await Effect.runPromise(assembleCatalogDefinitions({
+    root: Catalog("semantics-runtime", { schema: SemanticsApp, policy }),
+    artifactHash: semanticsArtifactHash,
+  }));
+  const deployed = Result.getOrThrow(deployCatalogDefinitions(definitions, [{
+    database: semanticsDatabase,
+    catalogKey: CatalogId.make("semantics-runtime"),
+  }]));
+  const installed = Result.getOrThrow(
+    definitions.require(CatalogId.make("semantics-runtime")),
+  );
+  const conn = await Connection.create({ composition: installed.composition });
+  await conn.transact(schemaTx(SemanticsApp));
+  const seed = [
+    {
+      ":db/id": "owner",
+      ":ramose/type": ":semanticsOwner",
+      ":semanticsOwner/name": "Owner",
+      ":semanticsShared/note": "seed",
+    },
+    {
+      ":db/id": "other",
+      ":ramose/type": ":semanticsOther",
+      ":semanticsOther/name": "Other",
+      ":semanticsShared/note": "seed",
+    },
+    {
+      ":db/id": "hidden",
+      ":ramose/type": ":semanticsHidden",
+      ":semanticsHidden/name": "Hidden",
+      ":semanticsShared/note": "seed",
+    },
+    {
+      ":db/id": "plain",
+      ":ramose/type": ":semanticsPlain",
+      ":semanticsPlain/name": "Plain",
+    },
+  ];
+  restoreEngineTypeAssertions(seed);
+  const report = await conn.transact(seed);
+  return {
+    conn,
+    deployed,
+    installed,
+    owner: report.tempids.owner!,
+    other: report.tempids.other!,
+    hidden: report.tempids.hidden!,
+    plain: report.tempids.plain!,
+  };
+};
+
 const caller = (className: "member" | "reader" | "operator"): AuthenticatedCaller => ({
   claims: { sub: `${className}-subject` },
   classes: [className],
@@ -483,6 +665,20 @@ const invokeOperation = (
 }, {
   ...input,
   database,
+  catalogKey: world.installed.catalogKey,
+  unitHash: world.installed.unitHash,
+});
+
+const invokeSemanticsOperation = (
+  world: Awaited<ReturnType<typeof buildSemanticsWorld>>,
+  input: Omit<OperationInvocation, "database" | "catalogKey" | "unitHash">,
+) => executeCatalogOperation(world.conn, {
+  catalogs: world.deployed,
+  environment: { trusted: true },
+  now: () => 1_700_000_000_000,
+}, {
+  ...input,
+  database: semanticsDatabase,
   catalogKey: world.installed.catalogKey,
   unitHash: world.installed.unitHash,
 });
@@ -611,6 +807,108 @@ describe("deployed operation runtime", () => {
       caller: caller("member"),
     });
     expect(await world.conn.db().exists(world.good)).toBe(false);
+  });
+
+  test("keeps contextual entity handles definition-directed across every mutation", async () => {
+    const wrong = await buildSemanticsWorld();
+    const wrongT = wrong.conn.t;
+    for (const action of ["set", "remove", "delete"] as const) {
+      await expect(invokeSemanticsOperation(wrong, {
+        owner: { kind: "entity", name: "semanticsOwner" },
+        localName: "ownerHelper",
+        input: { action, id: wrong.other },
+        caller: caller("member"),
+      })).rejects.toBeInstanceOf(InvalidRequest);
+      expect(wrong.conn.t).toBe(wrongT);
+    }
+    expect((await wrong.conn.db().entity(wrong.other))?.[":semanticsShared/note"]).toBe("seed");
+
+    const valid = await buildSemanticsWorld();
+    for (const action of ["set", "remove", "delete"] as const) {
+      await invokeSemanticsOperation(valid, {
+        owner: { kind: "entity", name: "semanticsOwner" },
+        localName: "ownerHelper",
+        input: { action, id: valid.owner },
+        caller: caller("member"),
+      });
+    }
+    expect(await valid.conn.db().exists(valid.owner)).toBe(false);
+  });
+
+  test("accepts every compatible trait composer and rejects a non-composer", async () => {
+    const wrong = await buildSemanticsWorld();
+    const wrongT = wrong.conn.t;
+    for (const action of ["set", "remove", "delete"] as const) {
+      await expect(invokeSemanticsOperation(wrong, {
+        owner: { kind: "trait", name: "semanticsShared" },
+        localName: "helper",
+        input: { action, id: wrong.plain },
+        caller: caller("member"),
+      })).rejects.toBeDefined();
+      expect(wrong.conn.t).toBe(wrongT);
+    }
+
+    const valid = await buildSemanticsWorld();
+    for (const action of ["set", "remove", "delete"] as const) {
+      await invokeSemanticsOperation(valid, {
+        owner: { kind: "trait", name: "semanticsShared" },
+        localName: "helper",
+        input: { action, id: valid.hidden },
+        caller: caller("member"),
+      });
+    }
+    expect(await valid.conn.db().exists(valid.hidden)).toBe(false);
+  });
+
+  test("keeps explicit helpers typed without treating writes metadata as a capability", async () => {
+    const actions = [
+      "handleSet",
+      "directSet",
+      "handleRemove",
+      "directRemove",
+      "handleDelete",
+      "directDelete",
+      "put",
+      "update",
+    ] as const;
+    const wrong = await buildSemanticsWorld();
+    const descriptor = wrong.installed.unit.catalog.operations.find((operation) =>
+      operation.id.owner.name === "semanticsOwner" && operation.id.localName === "explicitHelper"
+    );
+    expect(descriptor?.writes).toEqual([]);
+    const wrongT = wrong.conn.t;
+    for (const action of actions) {
+      await expect(invokeSemanticsOperation(wrong, {
+        owner: { kind: "entity", name: "semanticsOwner" },
+        localName: "explicitHelper",
+        input: { action, id: wrong.other },
+        caller: caller("member"),
+      })).rejects.toBeDefined();
+      expect(wrong.conn.t).toBe(wrongT);
+    }
+    expect((await wrong.conn.db().entity(wrong.other))?.[":semanticsShared/note"]).toBe("seed");
+
+    const valid = await buildSemanticsWorld();
+    for (const action of actions.filter((candidate) => !candidate.endsWith("Delete"))) {
+      await invokeSemanticsOperation(valid, {
+        owner: { kind: "entity", name: "semanticsOwner" },
+        localName: "explicitHelper",
+        input: { action, id: valid.hidden },
+        caller: caller("member"),
+      });
+    }
+    expect((await valid.conn.db().entity(valid.hidden))?.[":semanticsShared/note"]).toBe("helper");
+
+    for (const action of ["handleDelete", "directDelete"] as const) {
+      const deletion = await buildSemanticsWorld();
+      await invokeSemanticsOperation(deletion, {
+        owner: { kind: "entity", name: "semanticsOwner" },
+        localName: "explicitHelper",
+        input: { action, id: deletion.hidden },
+        caller: caller("member"),
+      });
+      expect(await deletion.conn.db().exists(deletion.hidden)).toBe(false);
+    }
   });
 
   test("retains fixed composer semantics for a targetless trait handle", async () => {
@@ -877,6 +1175,24 @@ describe("deployed operation runtime", () => {
     expect(clockReads).toBe(2);
     expect(world.conn.t).toBe(initialT);
     expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
+  });
+
+  test("keeps the JWT subject distinct from a configurable policy subject", async () => {
+    const world = await buildSemanticsWorld("email");
+    const executed = await invokeSemanticsOperation(world, {
+      owner: { kind: "entity", name: "semanticsOwner" },
+      localName: "principalIdentity",
+      input: {},
+      caller: {
+        claims: { sub: "jwt-subject", email: "policy@example.test" },
+        classes: ["member"],
+        exp: Math.floor(Date.now() / 1_000) + 300,
+      },
+    });
+    expect(executed.output).toEqual({
+      sub: "jwt-subject",
+      policySubject: "policy@example.test",
+    });
   });
 
   test("classifies unexpected native exceptions as private runtime faults", async () => {
