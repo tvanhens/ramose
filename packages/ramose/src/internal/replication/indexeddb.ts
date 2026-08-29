@@ -39,12 +39,14 @@ import {
   type CommittedReplica,
 } from "./state.ts";
 
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 const COMMITTED = "replica-committed-v1";
+const COMMITTED_HEADS = "replica-committed-heads-v1";
 const STAGING = "replica-staging-v1";
 const STAGING_CHUNKS = "replica-staging-chunks-v1";
 const NODES = "replica-nodes-v1";
 const CREDENTIAL_BINDINGS = "replica-credential-bindings-v1";
+const CACHE_CANDIDATES = "replica-cache-candidates-v1";
 const USER_T = 2;
 
 export const DEFAULT_REPLICA_DATABASE_NAME = "ramose-replicas";
@@ -75,6 +77,14 @@ type CommittedRecord = {
   readonly nextLocalId: number;
 };
 
+type CommittedHeadRecord = {
+  readonly partition: string;
+  readonly storageVersion: typeof INITIAL_REPLICA_STORAGE_VERSION;
+  readonly identity: ReplicationIdentity;
+  readonly readCompatibilityHash: ReadCompatibilityHash;
+  readonly revision: string;
+};
+
 type StagingRecord = {
   readonly partition: string;
   readonly identity: ReplicationIdentity;
@@ -101,6 +111,20 @@ type CredentialBindingRecord = {
   readonly identity: ReplicationIdentity;
 };
 
+type CacheCandidateRecord = {
+  readonly selector: string;
+  readonly routeSlot: string;
+  readonly identity: ReplicationIdentity;
+};
+
+const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
+  partition: record.partition,
+  storageVersion: record.storageVersion,
+  identity: record.identity,
+  readCompatibilityHash: record.readCompatibilityHash,
+  revision: record.revision,
+});
+
 export type RestoredReplica = {
   readonly db: Db;
   readonly revision: string;
@@ -108,6 +132,17 @@ export type RestoredReplica = {
 
 export type BoundRestoredReplica = RestoredReplica & {
   readonly identity: ReplicationIdentity;
+};
+
+/** Authenticated manifest metadata that cannot construct or expose a Db. */
+export type ReplicaCacheCandidate = {
+  readonly identity: ReplicationIdentity;
+  readonly revision: string;
+};
+
+export type ReplicaCacheCandidateKey = {
+  readonly selector: string;
+  readonly routeSlot: string;
 };
 
 export type ReplicaInstallOptions = {
@@ -433,6 +468,9 @@ export class IndexedDbReplicaStorage {
       if (!database.objectStoreNames.contains(COMMITTED)) {
         database.createObjectStore(COMMITTED, { keyPath: "partition" });
       }
+      if (!database.objectStoreNames.contains(COMMITTED_HEADS)) {
+        database.createObjectStore(COMMITTED_HEADS, { keyPath: "partition" });
+      }
       if (!database.objectStoreNames.contains(STAGING)) {
         database.createObjectStore(STAGING, { keyPath: "partition" });
       }
@@ -444,6 +482,36 @@ export class IndexedDbReplicaStorage {
       }
       if (!database.objectStoreNames.contains(CREDENTIAL_BINDINGS)) {
         database.createObjectStore(CREDENTIAL_BINDINGS, { keyPath: "fingerprint" });
+      }
+      if (!database.objectStoreNames.contains(CACHE_CANDIDATES)) {
+        database.createObjectStore(CACHE_CANDIDATES, {
+          keyPath: ["selector", "routeSlot"],
+        });
+      }
+      if ((event as IDBVersionChangeEvent).oldVersion < 4 && request.transaction !== null) {
+        const upgrade = request.transaction;
+        const heads = upgrade.objectStore(COMMITTED_HEADS);
+        upgrade.objectStore(COMMITTED).openCursor().addEventListener("success", (event) => {
+          const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
+          if (cursor === null) return;
+          const record = cursor.value as Partial<CommittedRecord>;
+          if (
+            record.storageVersion === INITIAL_REPLICA_STORAGE_VERSION &&
+            typeof record.partition === "string" &&
+            typeof record.revision === "string" &&
+            typeof record.readCompatibilityHash === "string" &&
+            record.identity?.readCompatibilityHash === record.readCompatibilityHash
+          ) {
+            heads.put({
+              partition: record.partition,
+              storageVersion: record.storageVersion,
+              identity: record.identity,
+              readCompatibilityHash: record.readCompatibilityHash,
+              revision: record.revision,
+            } satisfies CommittedHeadRecord);
+          }
+          cursor.continue();
+        });
       }
       if ((event as IDBVersionChangeEvent).oldVersion < 3 && request.transaction !== null) {
         const upgrade = request.transaction;
@@ -503,10 +571,19 @@ export class IndexedDbReplicaStorage {
   ): Promise<void> {
     const partition = replicaPartitionKey(identity);
     const transaction = this.database.transaction(
-      [COMMITTED, STAGING, STAGING_CHUNKS, NODES, CREDENTIAL_BINDINGS],
+      [
+        COMMITTED,
+        COMMITTED_HEADS,
+        STAGING,
+        STAGING_CHUNKS,
+        NODES,
+        CREDENTIAL_BINDINGS,
+        CACHE_CANDIDATES,
+      ],
       "readwrite",
     );
     transaction.objectStore(COMMITTED).delete(partition);
+    transaction.objectStore(COMMITTED_HEADS).delete(partition);
     transaction.objectStore(STAGING).delete(partition);
     transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
     transaction.objectStore(NODES).delete(nodeRange(partition));
@@ -521,6 +598,20 @@ export class IndexedDbReplicaStorage {
         }
       }
     }
+    const candidates = transaction.objectStore(CACHE_CANDIDATES);
+    const candidateRecords = await requestResult<CacheCandidateRecord[]>(candidates.getAll());
+    for (const candidate of candidateRecords) {
+      if (sameReplicationIdentity(candidate.identity, identity)) {
+        candidates.delete([candidate.selector, candidate.routeSlot]);
+      }
+    }
+    await commitTransaction(transaction);
+  }
+
+  /** Remove one stale exact binding without touching its shared partition. */
+  private async unbindCredential(fingerprint: string): Promise<void> {
+    const transaction = this.database.transaction(CREDENTIAL_BINDINGS, "readwrite");
+    transaction.objectStore(CREDENTIAL_BINDINGS).delete(fingerprint);
     await commitTransaction(transaction);
   }
 
@@ -532,6 +623,7 @@ export class IndexedDbReplicaStorage {
     const record = await this.committed(identity);
     if (record === undefined) return undefined;
     if (record.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION) return undefined;
+    if (!sameReplicationIdentity(record.identity, identity)) return undefined;
     if (
       identity.readCompatibilityHash !== readCompatibilityHash ||
       record.readCompatibilityHash !== readCompatibilityHash ||
@@ -549,23 +641,120 @@ export class IndexedDbReplicaStorage {
     };
   }
 
-  /** Bind only a locally digested credential; the raw credential never enters IndexedDB. */
-  async bindCredential(
+  /**
+   * Read only authenticated manifest metadata nominated by a stable local
+   * selector. This path deliberately cannot load content nodes or construct a
+   * Db; the current response must confirm the identity first.
+   */
+  async selectCacheCandidate(
+    key: ReplicaCacheCandidateKey,
+    readCompatibilityHash: ReadCompatibilityHash,
+  ): Promise<ReplicaCacheCandidate | undefined> {
+    const transaction = this.database.transaction(
+      [CACHE_CANDIDATES, COMMITTED_HEADS],
+      "readonly",
+    );
+    const binding = await requestResult<CacheCandidateRecord | undefined>(
+      transaction.objectStore(CACHE_CANDIDATES).get([key.selector, key.routeSlot]),
+    );
+    if (
+      binding === undefined ||
+      binding.identity.readCompatibilityHash !== readCompatibilityHash
+    ) {
+      await transactionDone(transaction);
+      return undefined;
+    }
+    const head = await requestResult<CommittedHeadRecord | undefined>(
+      transaction.objectStore(COMMITTED_HEADS).get(replicaPartitionKey(binding.identity)),
+    );
+    await transactionDone(transaction);
+    if (
+      head === undefined ||
+      head.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION ||
+      head.partition !== replicaPartitionKey(binding.identity) ||
+      head.readCompatibilityHash !== readCompatibilityHash ||
+      head.identity.readCompatibilityHash !== readCompatibilityHash ||
+      !sameReplicationIdentity(head.identity, binding.identity)
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      identity: binding.identity,
+      revision: head.revision,
+    });
+  }
+
+  /**
+   * Construct a candidate only after the current response authenticated its
+   * exact identity and revision. A concurrent manifest change fails closed.
+   */
+  async restoreConfirmedCandidate(
+    candidate: ReplicaCacheCandidate,
+    attributes: readonly AttributeSpec[],
+    readCompatibilityHash: ReadCompatibilityHash,
+  ): Promise<BoundRestoredReplica | undefined> {
+    const record = await this.committed(candidate.identity);
+    if (
+      record === undefined ||
+      record.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION ||
+      record.revision !== candidate.revision ||
+      candidate.identity.readCompatibilityHash !== readCompatibilityHash ||
+      record.readCompatibilityHash !== readCompatibilityHash ||
+      record.identity.readCompatibilityHash !== readCompatibilityHash ||
+      !sameReplicationIdentity(record.identity, candidate.identity)
+    ) {
+      return undefined;
+    }
+    if (!sameJson(record.attributes, normalizeAttributes(attributes))) {
+      throw new Error("replica attribute metadata is incompatible with the committed read view");
+    }
+    return {
+      identity: candidate.identity,
+      db: dbFromRecord(this.database, record, readCompatibilityHash),
+      revision: record.revision,
+    };
+  }
+
+  /**
+   * Rebind the exact credential and optional stable selector together only
+   * after the current response has authenticated `identity`.
+   */
+  async bindAuthenticated(
     fingerprint: string,
     identity: ReplicationIdentity,
+    candidateKey?: ReplicaCacheCandidateKey,
     options: ReplicaInstallOptions = {},
   ): Promise<void> {
-    const transaction = this.database.transaction(CREDENTIAL_BINDINGS, "readwrite");
+    const transaction = this.database.transaction(
+      [CREDENTIAL_BINDINGS, CACHE_CANDIDATES],
+      "readwrite",
+    );
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       transaction.objectStore(CREDENTIAL_BINDINGS).put({
         fingerprint,
         identity,
       } satisfies CredentialBindingRecord);
+      if (candidateKey !== undefined) {
+        transaction.objectStore(CACHE_CANDIDATES).put({
+          selector: candidateKey.selector,
+          routeSlot: candidateKey.routeSlot,
+          identity,
+        } satisfies CacheCandidateRecord);
+      }
       await commitTransaction(transaction);
     } finally {
       removeAbort();
     }
+  }
+
+  /** Bind only a locally digested credential; the raw credential never enters IndexedDB. */
+  async bindCredential(
+    fingerprint: string,
+    identity: ReplicationIdentity,
+    options: ReplicaInstallOptions = {},
+  ): Promise<void> {
+    await this.bindAuthenticated(fingerprint, identity, undefined, options);
   }
 
   /** Restore only the exact partition selected by a prior authenticated binding. */
@@ -592,6 +781,10 @@ export class IndexedDbReplicaStorage {
     if (record === undefined || record.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION) {
       return undefined;
     }
+    if (!sameReplicationIdentity(record.identity, binding.identity)) {
+      await this.unbindCredential(fingerprint);
+      return undefined;
+    }
     if (
       binding.identity.readCompatibilityHash !== readCompatibilityHash ||
       record.readCompatibilityHash !== readCompatibilityHash ||
@@ -602,9 +795,6 @@ export class IndexedDbReplicaStorage {
     }
     if (!sameJson(record.attributes, normalizeAttributes(attributes))) {
       throw new Error("replica attribute metadata is incompatible with the committed read view");
-    }
-    if (!sameReplicationIdentity(record.identity, binding.identity)) {
-      throw new Error("credential binding does not match its committed replica");
     }
     return {
       identity: binding.identity,
@@ -740,7 +930,7 @@ export class IndexedDbReplicaStorage {
     );
     options.signal?.throwIfAborted();
     const transaction = this.database.transaction(
-      [COMMITTED, STAGING, STAGING_CHUNKS],
+      [COMMITTED, COMMITTED_HEADS, STAGING, STAGING_CHUNKS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
@@ -761,6 +951,7 @@ export class IndexedDbReplicaStorage {
         return undefined;
       }
       transaction.objectStore(COMMITTED).put(built.record);
+      transaction.objectStore(COMMITTED_HEADS).put(committedHead(built.record));
       transaction.objectStore(STAGING).delete(built.record.partition);
       transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(built.record.partition));
       await commitTransaction(transaction);
@@ -801,7 +992,10 @@ export class IndexedDbReplicaStorage {
       options.signal,
     );
     options.signal?.throwIfAborted();
-    const write = this.database.transaction(COMMITTED, "readwrite");
+    const write = this.database.transaction(
+      [COMMITTED, COMMITTED_HEADS],
+      "readwrite",
+    );
     const removeAbort = abortWithSignal(write, options.signal);
     try {
       const current = await requestResult<CommittedRecord | undefined>(
@@ -812,6 +1006,7 @@ export class IndexedDbReplicaStorage {
         return undefined;
       }
       write.objectStore(COMMITTED).put(built.record);
+      write.objectStore(COMMITTED_HEADS).put(committedHead(built.record));
       await commitTransaction(write);
     } finally {
       removeAbort();

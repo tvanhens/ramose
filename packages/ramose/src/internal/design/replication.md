@@ -273,16 +273,70 @@ copy and identity copy to agree before following its content-addressed roots.
 Restore and credential-bound restore require the
 currently installed client hash and compare it before `dbFromRecord` or any
 other `Db` construction. A mismatch removes only that committed replica,
-staging/chunks, its partitioned content-addressed nodes, and its exact local
-credential binding. It never deletes the IndexedDB database or future outbox,
-receipt, client-ref, or optimistic store families.
+its committed head and local candidate bindings, staging/chunks, its
+partitioned content-addressed nodes, and its exact local credential binding.
+It never deletes the IndexedDB database or future outbox, receipt, client-ref,
+or optimistic store families.
 
-IndexedDB schema version 3 upgrades the landed replica stores conditionally.
-Compatible version-2 manifests carrying the confirmed hash survive. Legacy
+IndexedDB schema version 4 upgrades the landed replica stores conditionally.
+Compatible version-2/3 manifests carrying the confirmed hash survive. Legacy
 manifests and bindings without it are incompatible and are quarantined; they
 are never interpreted as local schema metadata. Incomplete pre-agreement
 staging is discarded. Online activation must establish a fresh compatible
 snapshot after quarantine.
+
+## Local token-refresh candidate
+
+The internal browser session accepts an optional local `cacheKey` foundation
+for the public refreshable auth provider owned by #477. It has no protocol
+field and grants no authority. The client persists only a domain-separated
+full SHA-256 selector over the canonical server origin, configured root, and
+raw key. A separate domain-separated route-slot digest addresses the current
+root-relative Graph path for lookup only. Neither digest participates in
+`ReplicationIdentity`, `readView`, the committed partition key, or server
+authorization.
+
+An exact previously authenticated bearer fingerprint retains its existing
+behavior: a compatible committed value may be constructed and published stale
+before the network opens. A changed bearer can use the stable selector only to
+read an authenticated identity, revision, and manifest existence from a small
+committed-head sidecar. The sidecar is installed or deleted atomically with its
+committed manifest and is backfilled during the version-4 upgrade. That
+metadata path never reads the heavy committed record, follows content nodes, or
+constructs a `Db`; its revision may be sent as `resumeRevision` while the
+candidate remains unobservable.
+
+The first complete, strictly decoded identity-bearing response frame must
+confirm the installed `readCompatibilityHash`. A candidate becomes usable only
+through one of these valid initial transitions:
+
+- matching `ResumeReady` constructs and publishes the confirmed revision as
+  current;
+- matching `Change` applies the authoritative change first and publishes only
+  the new value;
+- authenticated `Reset` or `SnapshotStart` may locate the confirmed identity's
+  already committed partition and publish it stale while replacement staging
+  proceeds;
+- a matching reserved `KeepAlive` may expose only a stale value; an
+  identity-bearing terminal may update bindings but exposes no rotated-token
+  candidate.
+
+An initial snapshot chunk/commit, change gap, mismatched resume, identity-free
+terminal, schema mismatch, malformed/truncated first frame, or fetch failure
+cannot confirm or publish a candidate. Exact credential and optional stable
+selector records are rebound together only after a valid current authenticated
+frame. A colliding selector is therefore just a nomination: wrong-principal
+confirmation replaces its metadata without ever loading the nominated value.
+Because committed partitions use stable authenticated identity rather than the
+route slot, a renamed Graph path can recover the same partition after current
+authorization and then bind its new opaque slot even when it supplied no resume
+revision.
+
+The `replica-cache-candidates-v1` and `replica-committed-heads-v1` object stores
+are separate from heavy committed manifests, exact credential bindings,
+staging, and content nodes. Candidate selection reads only those two bounded
+stores. Future outbox, receipt, ClientRef, and optimistic-layer stores remain
+independently clearable and are never part of candidate lookup or rebinding.
 
 ## Authorization and noninterference
 

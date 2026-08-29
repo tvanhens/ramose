@@ -6,6 +6,8 @@ import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import {
   IndexedDbReplicaStorage,
   type BoundRestoredReplica,
+  type ReplicaCacheCandidate,
+  type ReplicaCacheCandidateKey,
   type RestoredReplica,
 } from "./indexeddb.ts";
 import { sameReplicationIdentity } from "./state.ts";
@@ -14,6 +16,8 @@ import {
   openReplicationResponse,
   readReplicationFrames,
   replicationActivationAddress,
+  replicationCacheRouteSlot,
+  replicationCacheSelector,
   replicationCredentialFingerprint,
   type ReplicationActivationInput,
 } from "./transport.ts";
@@ -37,6 +41,8 @@ export type ReplicationSessionObserver = (snapshot: ReplicationSessionSnapshot) 
 export type ReplicationSessionOptions = {
   readonly activation: ReplicationActivationInput;
   readonly credential: string;
+  /** Internal foundation for #477's refreshable auth provider; never authority. */
+  readonly cacheKey?: string;
   readonly attributes: readonly AttributeSpec[];
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly storage: IndexedDbReplicaStorage;
@@ -44,6 +50,16 @@ export type ReplicationSessionOptions = {
 
 type ChangeFrame = Extract<ReplicationFrame, { readonly type: "Change" }>;
 type TerminalFrame = Extract<ReplicationFrame, { readonly type: "TerminalError" }>;
+
+export type ReplicationCandidateFrameAction =
+  | "resume"
+  | "change"
+  | "duplicate"
+  | "reset"
+  | "snapshot"
+  | "keep-alive"
+  | "terminal"
+  | "invalid";
 
 /** Pure sequencing decision shared with ordinary-frame regression tests. */
 export const classifyReplicationChange = (
@@ -55,6 +71,45 @@ export const classifyReplicationChange = (
   }
   if (prior.revision === frame.revision) return "duplicate";
   return prior.revision === frame.from ? "apply" : "gap";
+};
+
+/**
+ * Decide whether the first authenticated frame can safely confirm a
+ * metadata-only candidate. Snapshot fragments and revision gaps never do.
+ */
+export const classifyReplicationCandidateFrame = (
+  prior: Pick<ReplicaCacheCandidate, "identity" | "revision"> | undefined,
+  frame: ReplicationFrame,
+): ReplicationCandidateFrameAction => {
+  switch (frame.type) {
+    case "Reset":
+      return "reset";
+    case "SnapshotStart":
+      return "snapshot";
+    case "SnapshotChunk":
+    case "SnapshotCommit":
+      return "invalid";
+    case "Change": {
+      const disposition = classifyReplicationChange(prior, frame);
+      return disposition === "gap"
+        ? "invalid"
+        : disposition === "apply"
+          ? "change"
+          : "duplicate";
+    }
+    case "ResumeReady":
+      return prior !== undefined && prior.revision === frame.revision &&
+          sameReplicationIdentity(prior.identity, frame.identity)
+        ? "resume"
+        : "invalid";
+    case "KeepAlive":
+      return prior !== undefined &&
+          sameReplicationIdentity(prior.identity, frame.identity)
+        ? "keep-alive"
+        : "invalid";
+    case "TerminalError":
+      return frame.identity === undefined ? "invalid" : "terminal";
+  }
 };
 
 /** Preserve the protocol terminal reason for a later reconnect policy. */
@@ -91,6 +146,7 @@ export class ReplicationSession {
   private constructor(
     private readonly storage: IndexedDbReplicaStorage,
     private readonly attributes: readonly AttributeSpec[],
+    private readonly readCompatibilityHash: ReadCompatibilityHash,
     initial: BoundRestoredReplica | undefined,
     run: (session: ReplicationSession, generation: number) => Promise<void>,
   ) {
@@ -105,25 +161,44 @@ export class ReplicationSession {
 
   static async open(options: ReplicationSessionOptions): Promise<ReplicationSession> {
     const activation = replicationActivationAddress(options.activation);
-    const fingerprint = await replicationCredentialFingerprint(options.credential, activation);
+    const [fingerprint, candidateKey] = await Promise.all([
+      replicationCredentialFingerprint(options.credential, activation),
+      options.cacheKey === undefined
+        ? undefined
+        : Promise.all([
+          replicationCacheSelector(options.cacheKey, activation),
+          replicationCacheRouteSlot(activation),
+        ]).then(([selector, routeSlot]): ReplicaCacheCandidateKey => ({
+          selector,
+          routeSlot,
+        })),
+    ]);
     const restored = await options.storage.restoreBound(
       fingerprint,
       options.attributes,
       options.readCompatibilityHash,
     );
+    const candidate = restored === undefined && candidateKey !== undefined
+      ? await options.storage.selectCacheCandidate(
+        candidateKey,
+        options.readCompatibilityHash,
+      )
+      : undefined;
     return new ReplicationSession(
       options.storage,
       options.attributes,
+      options.readCompatibilityHash,
       restored,
       async (session, generation) => {
-        let activeIdentity = restored?.identity;
         let responseIdentity: ReplicationIdentity | undefined;
-        let bindingConfirmed = restored !== undefined;
+        let bindingConfirmed = restored !== undefined && candidateKey === undefined;
         try {
           const response = await openReplicationResponse({
             activation,
             credential: options.credential,
-            ...(restored === undefined ? {} : { resumeRevision: restored.revision }),
+            ...(restored?.revision === undefined && candidate?.revision === undefined
+              ? {}
+              : { resumeRevision: restored?.revision ?? candidate!.revision }),
             signal: session.controller.signal,
             readCompatibilityHash: options.readCompatibilityHash,
           });
@@ -138,25 +213,40 @@ export class ReplicationSession {
               if (responseIdentity === undefined) {
                 responseIdentity = frameIdentity;
                 if (
-                  activeIdentity !== undefined &&
-                  !sameReplicationIdentity(activeIdentity, frameIdentity)
+                  session.state.value !== undefined &&
+                  !sameReplicationIdentity(session.state.value.identity, frameIdentity)
                 ) {
                   session.quarantine(generation);
                   bindingConfirmed = false;
                 }
-                activeIdentity = frameIdentity;
               } else if (!sameReplicationIdentity(responseIdentity, frameIdentity)) {
                 session.quarantine(generation);
                 throw new Error("replication frame identity changed within one response");
               }
               if (!bindingConfirmed) {
-                await options.storage.bindCredential(
+                const prior = session.state.value ?? candidate;
+                const action = classifyReplicationCandidateFrame(prior, frame);
+                if (action === "invalid") {
+                  throw new Error("first authenticated frame cannot confirm a cached replica");
+                }
+                await options.storage.bindAuthenticated(
                   fingerprint,
                   frameIdentity,
+                  candidateKey,
                   { signal: session.controller.signal },
                 );
                 if (!session.current(generation)) return;
                 bindingConfirmed = true;
+                if (session.state.value === undefined) {
+                  const terminal = await session.acceptConfirmedInitial(
+                    frame,
+                    prior,
+                    action,
+                    generation,
+                  );
+                  if (terminal) return;
+                  continue;
+                }
               }
             }
             const terminal = await session.accept(frame, generation);
@@ -237,6 +327,106 @@ export class ReplicationSession {
   ): void {
     if (!this.current(generation)) return;
     this.publish({ status: "open", value: valueFrom(identity, replica, stale) });
+  }
+
+  private publishStale(
+    identity: ReplicationIdentity,
+    replica: RestoredReplica,
+    generation: number,
+  ): void {
+    if (!this.current(generation)) return;
+    this.publish({
+      status: "connecting",
+      value: valueFrom(identity, replica, true),
+    });
+  }
+
+  /**
+   * Consume the first authenticated frame without ever publishing the
+   * metadata-only candidate that nominated its resume revision.
+   */
+  private async acceptConfirmedInitial(
+    frame: ReplicationFrame,
+    prior: Pick<ReplicaCacheCandidate, "identity" | "revision"> | undefined,
+    action: Exclude<ReplicationCandidateFrameAction, "invalid">,
+    generation: number,
+  ): Promise<boolean> {
+    switch (action) {
+      case "resume":
+      case "duplicate": {
+        if (
+          prior === undefined ||
+          (action === "resume" && frame.type !== "ResumeReady") ||
+          (action === "duplicate" && frame.type !== "Change")
+        ) {
+          throw new Error("authenticated resume has no cached replica candidate");
+        }
+        const restored = await this.storage.restoreConfirmedCandidate(
+          prior,
+          this.attributes,
+          this.readCompatibilityHash,
+        );
+        if (restored === undefined) {
+          throw new Error("authenticated cache candidate changed before restore");
+        }
+        this.publishReplica(restored.identity, restored, false, generation);
+        return false;
+      }
+      case "change": {
+        if (frame.type !== "Change") {
+          throw new Error("authenticated candidate action disagrees with its frame");
+        }
+        const installed = await this.storage.applyChange(frame, {
+          signal: this.controller.signal,
+        });
+        if (installed === undefined || installed.revision !== frame.revision) {
+          throw new Error("authenticated change did not continue the cache candidate");
+        }
+        this.publishReplica(frame.identity, installed, false, generation);
+        return false;
+      }
+      case "reset":
+      case "snapshot": {
+        if (
+          (frame.type !== "Reset" && frame.type !== "SnapshotStart") ||
+          (action === "reset" && frame.type !== "Reset") ||
+          (action === "snapshot" && frame.type !== "SnapshotStart")
+        ) {
+          throw new Error("authenticated candidate action disagrees with its frame");
+        }
+        const terminal = await this.accept(frame, generation);
+        if (terminal || !this.current(generation)) return terminal;
+        const restored = await this.storage.restore(
+          frame.identity,
+          this.attributes,
+          this.readCompatibilityHash,
+        );
+        if (restored !== undefined) {
+          this.publishStale(frame.identity, restored, generation);
+        }
+        return false;
+      }
+      case "keep-alive": {
+        if (prior === undefined || frame.type !== "KeepAlive") {
+          throw new Error("authenticated candidate action disagrees with its frame");
+        }
+        const restored = await this.storage.restoreConfirmedCandidate(
+          prior,
+          this.attributes,
+          this.readCompatibilityHash,
+        );
+        if (restored === undefined) {
+          throw new Error("authenticated cache candidate changed before restore");
+        }
+        this.publishStale(frame.identity, restored, generation);
+        return false;
+      }
+      case "terminal":
+        if (frame.type !== "TerminalError" || frame.identity === undefined) {
+          throw new Error("authenticated candidate action disagrees with its frame");
+        }
+        return this.accept(frame, generation);
+    }
   }
 
   /** Returns true after a terminal frame. */

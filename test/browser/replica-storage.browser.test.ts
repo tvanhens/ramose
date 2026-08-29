@@ -433,8 +433,8 @@ browserTest("an open adapter does not block a future IndexedDB schema upgrade", 
   const name = `ramose-replica-upgrade-${browser.uniqueId}`;
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-    const upgraded = await openDatabase(name, 4);
-    expect(upgraded.version).toBe(4);
+    const upgraded = await openDatabase(name, 5);
+    expect(upgraded.version).toBe(5);
     upgraded.close();
   } finally {
     storage.close();

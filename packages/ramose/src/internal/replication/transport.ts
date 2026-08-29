@@ -13,6 +13,8 @@ import {
 } from "./protocol.ts";
 
 const CREDENTIAL_BINDING_DOMAIN = "ramose:replication:credential-binding:v1";
+const CACHE_SELECTOR_DOMAIN = "ramose:replication:cache-selector:v1";
+const CACHE_ROUTE_DOMAIN = "ramose:replication:cache-route:v1";
 const NDJSON_CONTENT_TYPE = "application/x-ndjson";
 const utf8 = new TextEncoder();
 
@@ -76,6 +78,14 @@ const base64Url = (bytes: Uint8Array): string => {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 };
 
+const sha256 = async (material: unknown): Promise<string> => {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    utf8.encode(JSON.stringify(material)),
+  );
+  return base64Url(new Uint8Array(digest));
+};
+
 /**
  * Full SHA-256 binding for an exact credential and activation address. The raw
  * credential is used only as digest input and is never returned or persisted.
@@ -83,8 +93,7 @@ const base64Url = (bytes: Uint8Array): string => {
 export const replicationCredentialFingerprint = async (
   credential: string,
   activation: ReplicationActivationAddress,
-): Promise<string> => {
-  const material = JSON.stringify({
+): Promise<string> => sha256({
     domain: CREDENTIAL_BINDING_DOMAIN,
     credential,
     activation: {
@@ -93,9 +102,29 @@ export const replicationCredentialFingerprint = async (
       graphPath: activation.graphPath,
     },
   });
-  const digest = await crypto.subtle.digest("SHA-256", utf8.encode(material));
-  return base64Url(new Uint8Array(digest));
-};
+
+/**
+ * Stable local candidate selector for one account-shaped cache namespace.
+ * The raw key is digest input only and graph paths remain separate lookup
+ * slots, so neither value can become replica authority.
+ */
+export const replicationCacheSelector = async (
+  cacheKey: string,
+  activation: ReplicationActivationAddress,
+): Promise<string> => sha256({
+  domain: CACHE_SELECTOR_DOMAIN,
+  cacheKey,
+  origin: activation.origin,
+  root: activation.root,
+});
+
+/** Opaque local lookup slot for one current root-relative graph path. */
+export const replicationCacheRouteSlot = async (
+  activation: ReplicationActivationAddress,
+): Promise<string> => sha256({
+  domain: CACHE_ROUTE_DOMAIN,
+  graphPath: activation.graphPath,
+});
 
 export type OpenReplicationInput = {
   readonly activation: ReplicationActivationAddress;

@@ -10,6 +10,8 @@ import {
   decodeReplicationNdjson,
   readReplicationFrames,
   replicationActivationAddress,
+  replicationCacheRouteSlot,
+  replicationCacheSelector,
   replicationCredentialFingerprint,
 } from "../../../src/internal/replication/transport.ts";
 
@@ -84,6 +86,41 @@ test("credential fingerprints are full, exact, and activation-bound", async () =
     root: "root",
     graphPath: ["org", "other"],
   }))).not.toBe(first);
+});
+
+test("cache selectors are opaque root-scoped values with separate route slots", async () => {
+  const key = "user:raw-cache-key";
+  const first = replicationActivationAddress({
+    server: "https://data.example:443/",
+    root: "root",
+    graphPath: ["org", "board"],
+  });
+  const renamed = replicationActivationAddress({
+    server: "https://data.example",
+    root: "root",
+    graphPath: ["org", "renamed"],
+  });
+  const selector = await replicationCacheSelector(key, first);
+  expect(selector).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(selector).not.toContain(key);
+  expect(await replicationCacheSelector(key, renamed)).toBe(selector);
+  expect(await replicationCacheSelector("another-user", first)).not.toBe(selector);
+  expect(await replicationCacheSelector(key, replicationActivationAddress({
+    server: "https://data.example",
+    root: "other-root",
+    graphPath: first.graphPath,
+  }))).not.toBe(selector);
+  expect(await replicationCacheSelector(key, replicationActivationAddress({
+    server: "https://other.example",
+    root: "root",
+    graphPath: first.graphPath,
+  }))).not.toBe(selector);
+
+  const route = await replicationCacheRouteSlot(first);
+  expect(route).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(route).not.toContain("board");
+  expect(await replicationCacheRouteSlot(renamed)).not.toBe(route);
+  expect(await replicationCredentialFingerprint(key, first)).not.toBe(selector);
 });
 
 test("bounded decoder preserves back-to-back frames across arbitrary chunks", async () => {

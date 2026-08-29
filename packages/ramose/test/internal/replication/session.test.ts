@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ReadCompatibilityHash } from "../../../src/internal/authorization/identities.ts";
 import type { ReplicationIdentity } from "../../../src/internal/replication/protocol.ts";
 import {
+  classifyReplicationCandidateFrame,
   classifyReplicationChange,
   replicationTerminalSnapshot,
 } from "../../../src/internal/replication/session.ts";
@@ -48,4 +49,49 @@ test("protocol terminal reasons remain observable to later reconnect policy", ()
   expect(replicationTerminalSnapshot({
     type: "TerminalError", protocol: 1, code: "update-required",
   })).toEqual({ status: "terminal", terminalCode: "update-required" });
+});
+
+describe("metadata-only cache candidate confirmation", () => {
+  const revision = opaque("1");
+  const candidate = { identity, revision };
+
+  test("accepts only frames that establish a valid initial transition", () => {
+    expect(classifyReplicationCandidateFrame(candidate, {
+      type: "ResumeReady", protocol: 1, identity, revision,
+    })).toBe("resume");
+    expect(classifyReplicationCandidateFrame(candidate, change(revision, opaque("2"))))
+      .toBe("change");
+    expect(classifyReplicationCandidateFrame(candidate, change(opaque("0"), revision)))
+      .toBe("duplicate");
+    expect(classifyReplicationCandidateFrame(candidate, change(opaque("0"), opaque("2"))))
+      .toBe("invalid");
+    expect(classifyReplicationCandidateFrame(undefined, {
+      type: "Reset", protocol: 1, identity,
+    })).toBe("reset");
+    expect(classifyReplicationCandidateFrame(undefined, {
+      type: "SnapshotStart", protocol: 1, identity,
+      snapshot: opaque("s"), revision,
+    })).toBe("snapshot");
+  });
+
+  test("snapshot fragments, mismatched resumes, and unseeded liveness fail closed", () => {
+    const other = { ...identity, principal: opaque("o") };
+    expect(classifyReplicationCandidateFrame(candidate, {
+      type: "SnapshotChunk", protocol: 1, identity,
+      snapshot: opaque("s"), index: 0, datoms: [],
+    })).toBe("invalid");
+    expect(classifyReplicationCandidateFrame(candidate, {
+      type: "SnapshotCommit", protocol: 1, identity,
+      snapshot: opaque("s"), revision, chunks: 0,
+    })).toBe("invalid");
+    expect(classifyReplicationCandidateFrame(candidate, {
+      type: "ResumeReady", protocol: 1, identity: other, revision,
+    })).toBe("invalid");
+    expect(classifyReplicationCandidateFrame(undefined, {
+      type: "KeepAlive", protocol: 1, identity,
+    })).toBe("invalid");
+    expect(classifyReplicationCandidateFrame(candidate, {
+      type: "TerminalError", protocol: 1, code: "closed",
+    })).toBe("invalid");
+  });
 });
