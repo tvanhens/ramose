@@ -31,7 +31,12 @@ export type PatternId =
   | "MemCache"
   | "memoryAdapter"
   | "inProcessPeer"
+  | "fake-indexeddb"
+  | "indexeddbshim"
   | "happy-dom"
+  | "jsdom"
+  | "linkedom"
+  | "MemoryStorage"
   | "WebSocketImpl"
   | "bun:sqlite"
   | "TestClock";
@@ -100,9 +105,34 @@ export const PATTERNS: readonly Pattern[] = [
     note: "use the shared Alchemy local stack",
   },
   {
+    id: "fake-indexeddb",
+    re: /fake-indexeddb|mock-indexeddb|\bfakeIndexedDB\b/,
+    note: "run persistence tests against IndexedDB in an actual browser",
+  },
+  {
+    id: "indexeddbshim",
+    re: /indexeddbshim/i,
+    note: "run persistence tests against IndexedDB in an actual browser",
+  },
+  {
     id: "happy-dom",
     re: /happy-dom|GlobalRegistrator/,
     note: "run browser/React lifecycle tests in a real browser",
+  },
+  {
+    id: "jsdom",
+    re: /\bjsdom\b/i,
+    note: "run browser lifecycle tests in an actual browser",
+  },
+  {
+    id: "linkedom",
+    re: /\blinkedom\b/i,
+    note: "run browser lifecycle tests in an actual browser",
+  },
+  {
+    id: "MemoryStorage",
+    re: /\b(?:InMemory|Memory)Storage\b/,
+    note: "use the actual browser storage boundary",
   },
   {
     id: "WebSocketImpl",

@@ -57,4 +57,25 @@ describe("check-test-doubles", () => {
     writeFileSync(file, 'state: Alchemy.inMemoryState()\n');
     expect(scanFile(file)).toEqual([]);
   });
+
+  test("flags browser storage and DOM substitutes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "doubles-"));
+    const file = join(dir, "browser.test.ts");
+    writeFileSync(
+      file,
+      [
+        'import "fake-indexeddb/auto";',
+        'import { JSDOM } from "jsdom";',
+        'import { parseHTML } from "linkedom";',
+        "const storage = new InMemoryStorage();",
+      ].join("\n"),
+    );
+
+    expect(scanFile(file).map((hit) => hit.id)).toEqual([
+      "fake-indexeddb",
+      "jsdom",
+      "linkedom",
+      "MemoryStorage",
+    ]);
+  });
 });

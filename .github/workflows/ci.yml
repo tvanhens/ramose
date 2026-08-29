@@ -40,3 +40,14 @@ jobs:
       # per file. Runs as its own job so it does not erase unit-test
       # wall-clock (issue #331 / #329).
       - run: bun run test:conformance
+
+  browser:
+    name: browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Install Chromium and system dependencies
+        run: bunx playwright install --with-deps chromium
+      - run: bun run test:browser

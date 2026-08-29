@@ -28,7 +28,7 @@ that case cannot be made, omit the finding and approve the change.
 ## Testing policy
 
 Do not introduce mocks, fakes, scripted peers, or in-memory infrastructure
-substitutes. Ramose has three test layers:
+substitutes. Ramose has four test lanes:
 
 1. **Pure unit tests** (`bun run test:unit`) — parsers, query lowering, policy
    compilation, state transitions, error classification, retry decisions,
@@ -45,6 +45,10 @@ substitutes. Ramose has three test layers:
 3. **Cloudflare e2e** (`bun run test:e2e` / `test:e2e:cf`) — edge
    propagation, deployment convergence, and platform failures workerd
    cannot reproduce honestly.
+4. **Real browser** (`bun run test:browser`) — IndexedDB, Web Locks,
+   BroadcastChannel, DOM lifecycle, and other browser boundaries. Use the
+   actual browser APIs; fake IndexedDB, DOM shims, and in-memory storage
+   substitutes are forbidden.
 
 Allowed instrumentation wraps a real implementation and forwards to it:
 `test/support/recorder.ts` (HTTP/WebSocket), checkpoints in

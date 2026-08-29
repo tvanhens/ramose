@@ -107,6 +107,7 @@
     "alchemy.run.ts",
     "e2e-ops.ts",
     "e2e-peer.ts",
+    "vitest.browser.config.ts",
     "website/alchemy.run.ts",
     "packages/ramose/src/**/*.ts",
     "packages/ramose/test/**/*.ts",

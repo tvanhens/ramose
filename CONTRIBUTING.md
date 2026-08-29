@@ -66,6 +66,8 @@ bun install
 bun run typecheck
 bun run test:doubles            # reject new test doubles (#390)
 bun run test:unit               # fast package tests (`--parallel=3`, no workerd)
+bunx playwright install chromium # one-time local browser install
+bun run test:browser            # actual Chromium + actual browser APIs
 bun run test:local              # Alchemy local stack (serial, workerd)
 bun run test                    # unit then local
 bun website/scripts/docs-check.mjs   # cited snippets + docs facts; blocks CI
@@ -82,13 +84,14 @@ harness-specific port and credential caveats.
 
 ## Choosing a test layer
 
-Three layers. Pick the shallowest one that can prove the claim. **Do not
+Four lanes. Pick the shallowest one that can prove the claim. **Do not
 introduce mocks, fakes, scripted peers, or in-memory infrastructure
 substitutes** (issue #390). `AGENTS.md` carries the same policy.
 
 | Layer | Command | When |
 |---|---|---|
 | Pure unit | `bun run test:unit` | Parsers, query lowering, policy compilation, state transitions, error classification, retry decisions, serialization. No Worker, DO, R2, Cache API, WebSocket, or auth service. If a failure reaction is a pure transition, feed it ordinary input values. |
+| Real browser | `bun run test:browser` | Browser APIs such as IndexedDB, Web Locks, BroadcastChannel, and lifecycle behavior. Install Chromium once with `bunx playwright install chromium`; never substitute fake IndexedDB or a DOM shim. Fixtures in `test/browser/fixtures.ts` contain ordinary browser setup only. |
 | Alchemy local | `bun run test:local` | Anything that crosses an infrastructure boundary. One shared stack (`test/local/alchemy.run.ts`) with `Test.make({ dev: true })`. Unique database names; do not reset DO/R2. During the authorization redesign, `/db/*` is 401; local tests still exercise the real Worker/DO/R2 topology (health, deny, `/__test__/*` recorders and checkpoints). Successful install/transact/query/live claims resume when #344 / #339 / #343 reopen the data plane. |
 | Cloudflare e2e | `bun run test:e2e` / `test:e2e:cf` | Edge propagation, deployment convergence, production persistence, and Cloudflare failures workerd cannot reproduce honestly. The same peer contract (`test/contracts/peer.contract.ts`) runs here against `RAMOSE_URL`. |
 
@@ -102,7 +105,7 @@ Allowed instrumentation wraps a real implementation and forwards to it:
 
 These routes are 404 unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`. They must not invent a successful transact, query, or frame.
 
-Not allowed: `scriptedPeer`, `FakeSocket` / `fakeDispatch`, `MemoryBucket` / `MemCache`, Better Auth `memoryAdapter`, `mock.module("cloudflare:workers")`, in-process peers, scripted fetch/WebSocket implementations, fake DO namespaces, or a virtual service whose only purpose is to fail on the Nth call. `Alchemy.inMemoryState()` is Alchemy's deploy-state store for the real local stack, not a Ramose double.
+Not allowed: `scriptedPeer`, `FakeSocket` / `fakeDispatch`, `MemoryBucket` / `MemCache`, in-memory browser storage, fake IndexedDB, DOM shims, Better Auth `memoryAdapter`, `mock.module("cloudflare:workers")`, in-process peers, scripted fetch/WebSocket implementations, fake DO namespaces, or a virtual service whose only purpose is to fail on the Nth call. `Alchemy.inMemoryState()` is Alchemy's deploy-state store for the real local stack, not a Ramose double.
 
 `bun run test:doubles` (`scripts/check-test-doubles.ts`) fails CI on new violations. The completed #390 migration leaves `scripts/test-double-allowlist.json` empty; keep it empty. Faults that cannot be induced locally belong in pure decision tests or cloud e2e — do not fabricate a substitute implementation that claims to prove them.
 
@@ -149,7 +152,7 @@ stage name is unguessable and torn down at the end of the run.
 
 | Workflow | When | What |
 |---|---|---|
-| `.github/workflows/ci.yml` | every PR and push to `master` | `typecheck` + `test:unit` + `test:local` (parallel jobs) + `docs-check` |
+| `.github/workflows/ci.yml` | every PR and push to `master` | `typecheck` + `test:unit` + `test:browser` + `test:local` (parallel jobs) + `docs-check` |
 | `.github/workflows/e2e-cloudflare.yml` | every PR, push to `master`, and `workflow_dispatch` | `bun run test:e2e:cf` |
 | `.github/workflows/docs-preview.yml` | PRs touching `website/` | deploy a `pr-<n>` preview of the docs site, comment the URL, destroy on close |
 | `.github/workflows/docs-publish.yml` | every push to `master` / `main`, and `workflow_dispatch` | deploy the docs site `prod` stage to Cloudflare |
