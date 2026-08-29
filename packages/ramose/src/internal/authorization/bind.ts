@@ -51,7 +51,7 @@ import {
 } from "./ir.ts";
 import { AUTHORIZATION_LANGUAGE_VERSION } from "./version.ts";
 import { freezeBound, remapDecision } from "./plain.ts";
-import { invalid, isBlank, mismatch, requireNonBlank } from "./validation/common.ts";
+import { invalid, isBlank, mismatch, validateCatalogTarget } from "./validation/common.ts";
 import type {
   CanonicalAuthorizationExpr,
   CanonicalRefTerm,
@@ -124,62 +124,12 @@ const catalogOfIdentity = (
   return Result.succeed(undefined);
 };
 
-const validateTarget = (
-  target: CatalogBindingTarget,
-  descriptor: CatalogDescriptor,
-): Result.Result<void, BindFailure> =>
-  Result.gen(function* () {
-    yield* Result.all([
-      requireNonBlank(target.database, "database"),
-      requireNonBlank(target.catalog, "catalog id"),
-      requireNonBlank(target.catalogVersion, "catalog version"),
-      requireNonBlank(target.schemaFingerprint, "schema fingerprint"),
-      requireNonBlank(descriptor.database, "descriptor database"),
-      requireNonBlank(descriptor.id, "descriptor catalog id"),
-      requireNonBlank(descriptor.version, "descriptor catalog version"),
-      requireNonBlank(descriptor.fingerprint, "descriptor schema fingerprint"),
-    ]);
-
-    if (target.database !== descriptor.database) {
-      return yield* mismatch({
-        message: "cross-database catalog",
-        expectedDatabase: target.database,
-        actualDatabase: descriptor.database,
-      });
-    }
-    if (target.catalog !== descriptor.id) {
-      return yield* mismatch({
-        message: "cross-catalog descriptor",
-        expected: target.catalog,
-        actual: descriptor.id,
-      });
-    }
-    if (target.catalogVersion !== descriptor.version) {
-      return yield* mismatch({
-        message: "stale catalog version",
-        expected: target.catalog,
-        actual: descriptor.id,
-        expectedVersion: target.catalogVersion,
-        actualVersion: descriptor.version,
-      });
-    }
-    if (target.schemaFingerprint !== descriptor.fingerprint) {
-      return yield* mismatch({
-        message: "schema fingerprint mismatch",
-        expected: target.catalog,
-        actual: descriptor.id,
-        expectedFingerprint: target.schemaFingerprint,
-        actualFingerprint: descriptor.fingerprint,
-      });
-    }
-  });
-
 const indexCatalog = (
   target: CatalogBindingTarget,
   descriptor: CatalogDescriptor,
 ): Result.Result<CatalogIndex, BindFailure> =>
   Result.gen(function* () {
-    yield* validateTarget(target, descriptor);
+    yield* validateCatalogTarget(target, descriptor);
 
     const entities = new Map<string, EntityId>();
     const traits = new Map<string, TraitId>();
