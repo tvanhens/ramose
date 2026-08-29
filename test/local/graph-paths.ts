@@ -648,6 +648,18 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
       expect(resumedResponse.status).toBe(200);
       const resumed = readReplicationNdjson(resumedResponse)[Symbol.asyncIterator]();
       try {
+        const ready = await withTimeout(
+          resumed.next(),
+          7_000,
+          "nested replication resume ready",
+        );
+        expect(ready.done).toBe(false);
+        expect(ready.value?.frame).toEqual({
+          type: "ResumeReady",
+          protocol: 1,
+          identity: snapshotIdentity,
+          revision: snapshot.state.committed!.revision,
+        });
         const changed = resumed.next();
         const secondNote = await invoke(base, member, {
           owner: { kind: "entity", name: "localNestedNote" },

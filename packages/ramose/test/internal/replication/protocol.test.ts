@@ -144,6 +144,7 @@ describe("replication frame codec", () => {
       revision: nextRevision,
       datoms: [{ ...values[0]!, op: "retract" }],
     },
+    { type: "ResumeReady", protocol: 1, identity, revision },
     { type: "Reset", protocol: 1, identity },
     { type: "KeepAlive", protocol: 1, identity },
     { type: "TerminalError", protocol: 1, code: "closed", identity },
@@ -258,6 +259,9 @@ describe("replication frame codec", () => {
         }],
       },
       { ...base, identity: { ...identity, principal: "not-opaque" } },
+      { type: "ResumeReady", protocol: 1, identity },
+      { type: "ResumeReady", protocol: 1, identity, revision: "raw-t:42" },
+      { type: "ResumeReady", protocol: 1, identity, revision, basisT: 42 },
       oversizedChunk,
       tooManyUtf8Bytes,
     ]) {

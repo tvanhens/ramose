@@ -39,6 +39,7 @@ const NONINTERFERENCE_DATABASE = CONFORMANCE_DATABASES[13]!;
 const RETENTION_ZERO_DATABASE = CONFORMANCE_DATABASES[14]!;
 const RETENTION_PRESSURE_DATABASE = CONFORMANCE_DATABASES[15]!;
 const WATCH_FAILURE_DATABASE = CONFORMANCE_DATABASES[16]!;
+const RESUME_READY_DATABASE = CONFORMANCE_DATABASES[17]!;
 
 const withTimeout = async <A>(
   promise: Promise<A>,
@@ -199,7 +200,7 @@ type BurstObservation = {
 
 type RetentionObservation = {
   readonly titles: readonly string[];
-  readonly resume: "silent";
+  readonly resume: "ready";
 };
 
 const observeFirstSeenRetention = async (
@@ -244,7 +245,7 @@ const observeFirstSeenRetention = async (
   await closeIterator(firstIterator);
   const revision = first.state.committed!.revision;
 
-  await armCheckpoint(base, world.database, "replication.silent");
+  await armCheckpoint(base, world.database, "replication.resume.ready");
   const controller = new AbortController();
   const resumedResponse = await openReplication(
     base,
@@ -257,32 +258,100 @@ const observeFirstSeenRetention = async (
   const resumed = readReplicationNdjson(resumedResponse)[Symbol.asyncIterator]();
   const next = resumed.next();
   try {
-    const outcome = await Promise.race([
-      next.then((value) => ({ type: "frame" as const, value })),
-      waitForCheckpoint(base, world.database, "replication.silent")
-        .then(() => ({ type: "silent" as const })),
-    ]);
-    expect(outcome.type).toBe("silent");
-    if (outcome.type === "frame") {
-      throw new Error(
-        `first-seen resume reset after cross-binding pressure: ${JSON.stringify(outcome.value)}`,
-      );
-    }
-    await releaseCheckpoint(base, world.database, "replication.silent");
+    await waitForCheckpoint(base, world.database, "replication.resume.ready");
+    await releaseCheckpoint(base, world.database, "replication.resume.ready");
+    const ready = await withTimeout(next, 7_000, "first-seen resume ready");
+    expect(ready.done).toBe(false);
+    expect(ready.value?.frame.type).toBe("ResumeReady");
+    const following = resumed.next();
     const publicOutcome = await Promise.race([
-      next.then(() => "frame" as const),
+      following.then(() => "frame" as const),
       Bun.sleep(200).then(() => "pending" as const),
     ]);
     expect(publicOutcome).toBe("pending");
+    void following.catch(() => undefined);
     return {
       titles: Object.freeze(titlesOf(first.state)),
-      resume: "silent",
+      resume: "ready",
     };
   } finally {
     controller.abort();
     await next.catch(() => undefined);
-    await releaseCheckpoint(base, world.database, "replication.silent");
+    await releaseCheckpoint(base, world.database, "replication.resume.ready");
     await closeIterator(resumed);
+  }
+};
+
+type ResumeObservation = {
+  readonly checkpoints: readonly string[];
+  readonly frames: readonly string[];
+};
+
+const observeUnchangedResume = async (
+  base: string,
+  world: World,
+  revision: string,
+): Promise<ResumeObservation> => {
+  const checkpoints: string[] = [];
+  const controller = new AbortController();
+  await armCheckpoint(base, world.database, "replication.resume.reconstruct");
+  const response = await openReplication(
+    base,
+    world.database,
+    world.member,
+    revision,
+    1,
+    controller.signal,
+  );
+  const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+  const first = iterator.next();
+  try {
+    await waitForCheckpoint(
+      base,
+      world.database,
+      "replication.resume.reconstruct",
+    );
+    checkpoints.push("resume.reconstruct");
+    await armCheckpoint(base, world.database, "replication.resume.ready");
+    await releaseCheckpoint(
+      base,
+      world.database,
+      "replication.resume.reconstruct",
+    );
+    await waitForCheckpoint(base, world.database, "replication.resume.ready");
+    checkpoints.push("resume.ready");
+    await releaseCheckpoint(base, world.database, "replication.resume.ready");
+
+    const ready = await withTimeout(first, 7_000, "unchanged resume ready");
+    if (ready.done || ready.value.frame.type !== "ResumeReady") {
+      throw new Error(`unchanged resume did not acknowledge: ${JSON.stringify(ready)}`);
+    }
+    expect(ready.value.frame.revision).toBe(revision);
+    const following = iterator.next();
+    const afterReady = await Promise.race([
+      following.then(() => "frame" as const),
+      Bun.sleep(200).then(() => "pending" as const),
+    ]);
+    expect(afterReady).toBe("pending");
+    void following.catch(() => undefined);
+    return {
+      checkpoints: Object.freeze(checkpoints),
+      frames: Object.freeze([ready.value.wire]),
+    };
+  } finally {
+    controller.abort();
+    await first.catch(() => undefined);
+    for (const name of [
+      "replication.resume.reconstruct",
+      "replication.resume.ready",
+    ]) {
+      await testAdmin(base, world.database, "/checkpoint", {
+        scope: "worker",
+        action: "release",
+        name,
+      });
+    }
+    await closeIterator(iterator);
   }
 };
 
@@ -456,6 +525,40 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(sessionBody).toEqual({ error: "unauthorized" });
     });
 
+    test("unchanged resume is one-shot and zero/hidden physical worlds are byte/checkpoint-identical", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, RESUME_READY_DATABASE, false);
+      const initialResponse = await openReplication(
+        base,
+        world.database,
+        world.member,
+      );
+      const initialIterator = readReplicationNdjson(
+        initialResponse,
+      )[Symbol.asyncIterator]();
+      const initial = await collectCommittedSnapshot(initialIterator);
+      await closeIterator(initialIterator);
+      const revision = initial.state.committed!.revision;
+
+      const zero = await observeUnchangedResume(base, world, revision);
+      await create(base, world.database, world.admin, ConformanceIssue.ns, {
+        key: "resume-ready-hidden",
+        title: "Resume ready hidden",
+        owner: world.ids.bob,
+        org: "other",
+      });
+      await currentBasis(base, world.database);
+      const hidden = await observeUnchangedResume(base, world, revision);
+
+      expect(zero.checkpoints).toEqual(["resume.reconstruct", "resume.ready"]);
+      expect(hidden.checkpoints).toEqual(zero.checkpoints);
+      expect(hidden.frames).toEqual(zero.frames);
+      expect(zero.frames).toHaveLength(1);
+      expect(zero.frames[0]).not.toMatch(
+        /basisT|txEid|attributeEid|hidden|count|timing|queue/,
+      );
+    });
+
     test("refresh resume converges grants/revocations and claim/principal replacements reset", async () => {
       const base = ctx.urls().conformanceUrl;
       const world = await seedWorld(base, RESUME_DATABASE, true);
@@ -499,11 +602,22 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         const replacement = await collectCommittedSnapshot(recovery, state);
         state = replacement.state;
         expect(state.committed?.revision).toBe(initial.state.committed?.revision);
+        expect(replacement.frames.some((item) => item.frame.type === "ResumeReady"))
+          .toBe(false);
       } finally {
         await closeIterator(recovery);
       }
 
-      await armCheckpoint(base, world.database, "replication.silent");
+      const granted = await transfer(
+        base,
+        world.database,
+        world.admin,
+        world.hiddenId!,
+        world.ids.bob,
+        "acme",
+      );
+      expect(granted.status).toBe(200);
+      await currentBasis(base, world.database);
       const resumedResponse = await openReplication(
         base,
         world.database,
@@ -512,19 +626,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       );
       const resumed = readReplicationNdjson(resumedResponse)[Symbol.asyncIterator]();
       try {
-        const grantedFrame = resumed.next();
-        await waitForCheckpoint(base, world.database, "replication.silent");
-        await releaseCheckpoint(base, world.database, "replication.silent");
-        const granted = await transfer(
-          base,
-          world.database,
-          world.admin,
-          world.hiddenId!,
-          world.ids.bob,
-          "acme",
-        );
-        expect(granted.status).toBe(200);
-        const grant = await withTimeout(grantedFrame, 7_000, "grant change");
+        const grant = await withTimeout(resumed.next(), 7_000, "grant change");
         expect(grant.done).toBe(false);
         expect(grant.value!.frame.type).toBe("Change");
         if (grant.value!.frame.type === "Change") {
@@ -584,7 +686,6 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
           "operation.claimed",
           "transactor",
         );
-        await releaseCheckpoint(base, world.database, "replication.silent");
         await closeIterator(resumed);
       }
 
@@ -608,6 +709,8 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(state.committed).toBeUndefined();
         const replacement = await collectCommittedSnapshot(claimIterator, state);
         state = replacement.state;
+        expect(replacement.frames.some((item) => item.frame.type === "ResumeReady"))
+          .toBe(false);
         expect(state.identity?.principal).not.toBe(initialIdentity.principal);
         expect(titlesOf(state)).toEqual([
           "Alpha-hidden-secret",
@@ -742,11 +845,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       }
 
       await currentBasis(base, world.database);
-      await armCheckpoint(
-        base,
-        world.database,
-        "replication.resume.reconstruct",
-      );
+      await armCheckpoint(base, world.database, "replication.resume.ready");
       await armCheckpoint(
         base,
         world.database,
@@ -766,7 +865,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         await waitForCheckpoint(
           base,
           world.database,
-          "replication.resume.reconstruct",
+          "replication.resume.ready",
         );
         const closedWatch = await testAdmin(
           base,
@@ -783,7 +882,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         await releaseCheckpoint(
           base,
           world.database,
-          "replication.resume.reconstruct",
+          "replication.resume.ready",
         );
         await releaseCheckpoint(
           base,
@@ -795,7 +894,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         await releaseCheckpoint(
           base,
           world.database,
-          "replication.resume.reconstruct",
+          "replication.resume.ready",
         );
         await releaseCheckpoint(
           base,
@@ -803,6 +902,56 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
           "replication.watch.failed",
         );
         await closeIterator(resumeIterator);
+      }
+
+      await armCheckpoint(base, world.database, "replication.resume.ready");
+      const cancelled = new AbortController();
+      const cancelledResponse = await openReplication(
+        base,
+        world.database,
+        world.member,
+        baseline.state.committed!.revision,
+        1,
+        cancelled.signal,
+      );
+      const cancelledIterator = readReplicationNdjson(
+        cancelledResponse,
+      )[Symbol.asyncIterator]();
+      try {
+        const pending = cancelledIterator.next();
+        const settled = pending.then(
+          (value) => ({ type: "value" as const, value }),
+          (error: unknown) => ({ type: "error" as const, error }),
+        );
+        await waitForCheckpoint(
+          base,
+          world.database,
+          "replication.resume.ready",
+        );
+        cancelled.abort();
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "replication.resume.ready",
+        );
+        const outcome = await withTimeout(
+          settled,
+          7_000,
+          "cancelled resume close",
+        );
+        if (outcome.type === "value") expect(outcome.value.done).toBe(true);
+      } finally {
+        cancelled.abort();
+        await releaseCheckpoint(
+          base,
+          world.database,
+          "replication.resume.ready",
+        );
+        try {
+          await closeIterator(cancelledIterator);
+        } catch (cause) {
+          if (!(cause instanceof Error) || cause.name !== "AbortError") throw cause;
+        }
       }
     });
 
@@ -880,7 +1029,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(hidden).toEqual(zero);
       expect(hidden).toEqual({
         titles: ["Beta", "Gamma", "Omega"],
-        resume: "silent",
+        resume: "ready",
       });
     });
   });

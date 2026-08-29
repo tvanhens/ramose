@@ -245,6 +245,15 @@ export const Change = Schema.Struct({
 });
 export type Change = typeof Change.Type;
 
+/** One-shot proof that a supplied committed revision is still current. */
+export const ResumeReady = Schema.Struct({
+  type: Schema.Literal("ResumeReady"),
+  protocol: Schema.Literal(REPLICATION_PROTOCOL_VERSION),
+  identity: ReplicationIdentity,
+  revision: OpaqueReplicationId,
+});
+export type ResumeReady = typeof ResumeReady.Type;
+
 /** One opaque reset shape for unavailable bases and partition transitions. */
 export const Reset = Schema.Struct({
   type: Schema.Literal("Reset"),
@@ -274,6 +283,7 @@ export const ReplicationFrame = Schema.Union([
   SnapshotChunk,
   SnapshotCommit,
   Change,
+  ResumeReady,
   Reset,
   KeepAlive,
   TerminalError,

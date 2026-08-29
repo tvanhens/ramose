@@ -378,9 +378,12 @@ const advanceFrames = async function* (
   expectedIdentity: ReplicationIdentity,
   previous: { readonly basisT: number; readonly revision: OpaqueReplicationId },
   signal: AbortSignal,
-  initialVersion?: AuthorizedVersion,
+  options: {
+    readonly initialVersion?: AuthorizedVersion;
+    readonly acknowledgeUnchanged?: boolean;
+  } = {},
 ): AsyncGenerator<ReplicationFrame, ServerReplicaState, undefined> {
-  let firstVersion = initialVersion;
+  let firstVersion = options.initialVersion;
   for (;;) {
     const version = firstVersion ?? await authorize();
     firstVersion = undefined;
@@ -488,7 +491,42 @@ const advanceFrames = async function* (
     });
     await remember(input, finalState);
     if (revision === previous.revision) {
-      await atBoundary(input.boundaries, "replication.silent", signal);
+      await atBoundary(
+        input.boundaries,
+        options.acknowledgeUnchanged
+          ? "replication.resume.ready"
+          : "replication.silent",
+        signal,
+      );
+      if (options.acknowledgeUnchanged) {
+        // The controllable boundary may have been parked while the database
+        // advanced. Reauthorize after it and require the exact logical basis
+        // already validated above, leaving no await between the final fence
+        // and the state-bearing yield.
+        const readyVersion = await authorize();
+        if (!sameVersion(expectedPath, expectedIdentity, readyVersion)) {
+          throw new Error("replication authorization partition changed");
+        }
+        if (
+          !leaseAlive(readyVersion) ||
+          readyVersion.target.context.currentDb.basisT !== finalBasisT
+        ) continue;
+        const readyState = Object.freeze({
+          version: readyVersion,
+          basisT: finalBasisT,
+          revision,
+        });
+        signal.throwIfAborted();
+        yield frame({
+          type: "ResumeReady",
+          protocol: REPLICATION_PROTOCOL_VERSION,
+          identity: expectedIdentity,
+          revision,
+        });
+        return readyState;
+      }
+      if (!leaseAlive(finalVersion)) continue;
+      signal.throwIfAborted();
       return finalState;
     }
     await atBoundary(input.boundaries, "replication.change", signal);
@@ -673,6 +711,7 @@ const replicationFrames = async function* (
           initialIdentity,
           { basisT, revision: resume },
           effectiveSignal,
+          { acknowledgeUnchanged: true },
         );
       }
     }
@@ -724,7 +763,7 @@ const replicationFrames = async function* (
             initialIdentity,
             { basisT: committed.basisT, revision: committed.revision },
             effectiveSignal,
-            renewed,
+            { initialVersion: renewed },
           );
         }
         while (nextCycleAt <= Date.now()) {

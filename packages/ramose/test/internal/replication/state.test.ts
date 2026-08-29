@@ -180,6 +180,30 @@ describe("client replication transition machine", () => {
       .toBe(next);
   });
 
+  test("resume-ready accepts only the matching committed partition and revision", () => {
+    const prior = committed();
+    const ready: ReplicationFrame = {
+      type: "ResumeReady",
+      protocol: 1,
+      identity: active,
+      revision: opaque("K"),
+    };
+    expect(apply(prior, ready)).toBe(prior);
+    expect(apply(prior, ready)).toBe(prior);
+
+    const wrongRevision = applyReplicationFrame(prior, {
+      ...ready,
+      revision: opaque("L"),
+    });
+    expect(Result.isFailure(wrongRevision)).toBe(true);
+    const wrongIdentity = applyReplicationFrame(prior, {
+      ...ready,
+      identity: identity("Z"),
+    });
+    expect(Result.isFailure(wrongIdentity)).toBe(true);
+    expect(prior.committed).toEqual({ revision: opaque("K"), datoms: [first] });
+  });
+
   test("a partition reset clears retained data before staging the new identity", () => {
     const prior = committed();
     const replacement = identity("Z");
@@ -224,6 +248,12 @@ describe("client replication transition machine", () => {
       from: opaque("K"),
       revision: opaque("N"),
       datoms: [second],
+    })).toBe(closed);
+    expect(apply(closed, {
+      type: "ResumeReady",
+      protocol: 1,
+      identity: active,
+      revision: opaque("K"),
     })).toBe(closed);
   });
 });

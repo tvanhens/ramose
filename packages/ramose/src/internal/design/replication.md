@@ -1,6 +1,6 @@
 # Versioned Opaque Database Replication Contract
 
-This is the normative version-1 contract for issue #473. It refines
+This is the normative version-1 contract for issues #473 and #533. It refines
 `LIVE-2`–`LIVE-7`, `NI-1`–`NI-3`, and `REV-1` in
 [`authorization.md`](authorization.md). The codecs in
 `internal/replication/protocol.ts` are the executable source of truth when a
@@ -50,7 +50,8 @@ watch.
 Protocol incompatibility is HTTP 409 with exactly one version-1
 `TerminalError` whose code is `incompatible-version`. Malformed or oversized
 activation is the ordinary opaque invalid-request response. Version 1 emits no
-heartbeat; transport silence is its liveness behavior.
+heartbeat; transport silence after the one-shot activation result is its
+liveness behavior.
 
 ## Opaque identity and revision
 
@@ -142,6 +143,7 @@ Every frame has `protocol: 1` and is one of:
 | `SnapshotChunk` | identity, snapshot, zero-based index, add datoms | One bounded ordered part; never queryable by itself. |
 | `SnapshotCommit` | identity, snapshot, revision, chunk count | Atomically install the staged value. |
 | `Change` | identity, from revision, revision, datoms | Atomically move one complete authorized value to another. Multiple physical bases may be conflated. |
+| `ResumeReady` | identity, revision | One-shot proof that a supplied, resolved committed revision is still the complete current authorized value. |
 | `Reset` | identity | The old resume basis or partition cannot be reused; a snapshot follows. |
 | `KeepAlive` | identity | Reserved fixed-shape liveness frame. Version 1 does not emit it. |
 | `TerminalError` | fixed code, optional identity | Close opaquely or report wire incompatibility. |
@@ -165,6 +167,15 @@ unchanged revision without changing that record's age or eviction order. The
 raw basis never leaves the internal route. Missing, evicted, mismatched, or
 unreconstructable records all produce the same `Reset` followed by a snapshot.
 
+A supplied resume revision that resolves in that authenticated binding always
+takes the complete logical reconstruction, authorization, projection, digest,
+and final current-revision validation path. If the resulting authorized
+revision is unchanged, the server emits exactly one `ResumeReady`, after the
+real watch is ready and immediately before entering the steady-state cycle.
+A visible difference emits only `Change`; an unavailable or incompatible base
+emits only `Reset` followed by a snapshot. Neither path also emits
+`ResumeReady`. It is an activation result, never a periodic heartbeat.
+
 At each fixed cycle, a changed target basis makes the server reconstruct the
 prior authorized value at the private basis, diff it against the newest
 complete authorized value, and recheck the final revision before emission. A
@@ -183,7 +194,8 @@ attached, including initial authorization, snapshot projection and chunk
 checks, resume reconstruction, checkpoints, and fixed-cycle waits. A watch
 failure can therefore emit only the opaque `closed` terminal after any
 uncommitted staging frames; it cannot emit another state-bearing frame or a
-snapshot commit. Client cancellation remains distinct and closes silently.
+snapshot commit. The same fence applies before `ResumeReady`. Client
+cancellation remains distinct and closes silently.
 Notifications never schedule authorization, hashing, diffing, a heartbeat, a
 timer, or a replication-loop iteration. One activity-independent cycle is
 fixed to the settled complete-path lease cadence (no later than five seconds).
@@ -215,6 +227,8 @@ the only queryable value; `staging` is not.
 | `Change.from` equals committed revision | Apply all additions/retractions to a copy, then atomically replace. | New complete value. |
 | Duplicate `Change.revision` | Ignore. | Unchanged. |
 | Stale/unrelated `Change.from` | Ignore and reconnect/resume conservatively. | Unchanged. |
+| `ResumeReady` with matching identity and committed revision | Accept idempotently; install no data and change no revision. | Existing complete value. |
+| `ResumeReady` with missing/wrong committed revision | Fail the transition; never mark the retained value current. | Unchanged. |
 | Mismatched frame identity | Fail the transition. | Unchanged. |
 | `TerminalError` | Discard staging, close, and retain data only when the identity still matches. | Prior complete value or empty. |
 
@@ -238,6 +252,14 @@ or diff code. A hidden-only commit emits no data frame, revision, reset,
 sequence gap, count, queue metadata, heartbeat, or diagnostic close reason.
 Repeated hidden commits conflate without running an advance and cannot
 accumulate memory or proportional visible-frame latency.
+
+For activation resume specifically, equality of the private physical basis is
+not a shortcut. A zero-physical-change world and a hidden-only-physical-change
+world with the same complete authorized logical value execute the same
+implementation-scheduled reconstruction, logical validation, and pre-emission
+checkpoint path, then emit byte-identical `ResumeReady` frames in the same
+position. No basis, hidden count, alternate scheduling signal, or timing
+metadata crosses the boundary.
 
 The legacy `/session` `ClientFrame`/`TxPushFrame`/`ResyncFrame` wire remains
 testing-only and publicly fail-closed. `/replicate` neither accepts nor emits

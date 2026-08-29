@@ -326,6 +326,16 @@ export const applyReplicationFrame = (
         ? Result.fail(identity.failure)
         : applyChange(state, frame);
     }
+    case "ResumeReady": {
+      const identity = requireIdentity(state, frame.identity);
+      if (Result.isFailure(identity)) return Result.fail(identity.failure);
+      if (state.committed?.revision !== frame.revision) {
+        return fail("resume-ready revision does not match the committed value");
+      }
+      // The frame authenticates freshness for the transport consumer. It does
+      // not install data, advance the committed revision, or disturb staging.
+      return Result.succeed(state);
+    }
     case "KeepAlive": {
       const identity = requireIdentity(state, frame.identity);
       return Result.isFailure(identity)
