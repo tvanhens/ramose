@@ -87,9 +87,8 @@ export type DeployedOperationDefinition = {
   readonly doc: string | undefined;
   /** Build-artifact identity of the executable paired during assembly. */
   readonly implementationHash: DigestHex;
-  /** Original owner/write definitions retained only in deployed memory. */
-  readonly ownerDefinition: DeployedEntityRuntimeDefinition | undefined;
-  readonly writeDefinitions: readonly DeployedEntityRuntimeDefinition[];
+  /** All deployed entity definitions retained only in deployed memory. */
+  readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
   /** Original function from the deployed application module. Never serialized. */
   readonly run: DeployedOperationRun;
 };
@@ -100,8 +99,7 @@ export type DeployedOperationBinding = {
   readonly input: DeployedOperationCodec;
   readonly output: DeployedOperationCodec;
   readonly run: DeployedOperationRun;
-  readonly ownerDefinition: DeployedEntityRuntimeDefinition | undefined;
-  readonly writeDefinitions: readonly DeployedEntityRuntimeDefinition[];
+  readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
 };
 
 export type LoweredOwnedOperations = {
@@ -133,8 +131,7 @@ export type OwnedOperationSnapshot = {
   readonly doc: string | undefined;
   readonly run: DeployedOperationRun;
   readonly implementationHashMaterial: JsonValue;
-  readonly ownerDefinition: DeployedEntityRuntimeDefinition | undefined;
-  readonly writeDefinitions: readonly DeployedEntityRuntimeDefinition[];
+  readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
 };
 
 const invalid = (message: string): InvalidIR => new InvalidIR({ message });
@@ -238,8 +235,7 @@ export const pairDeployedOperations = (
         input: definition.input,
         output: definition.output,
         run: definition.run,
-        ownerDefinition: definition.ownerDefinition,
-        writeDefinitions: definition.writeDefinitions,
+        entityDefinitions: definition.entityDefinitions,
       }));
     }
 
@@ -680,6 +676,10 @@ export const snapshotOwnedOperations = (
 ): Result.Result<readonly OwnedOperationSnapshot[], InvalidIR> =>
   Result.gen(function* () {
     const drafts = yield* collectDrafts(schemas);
+    const { entities } = yield* collectOwners(schemas);
+    const entityDefinitions = Object.freeze(
+      entities.map(runtimeEntityDefinition),
+    );
     const snapshots: OwnedOperationSnapshot[] = [];
     for (const draft of drafts) {
       const operation = draft.operation;
@@ -746,10 +746,7 @@ export const snapshotOwnedOperations = (
         outputCodec: deepFreeze(outputSchemaBinding.codec),
         doc: operation.doc,
         run: operation.run as DeployedOperationRun,
-        ownerDefinition: draft.owner._tag === "Entity"
-          ? runtimeEntityDefinition(draft.owner)
-          : undefined,
-        writeDefinitions: Object.freeze(operation.writes.map(runtimeEntityDefinition)),
+        entityDefinitions,
         implementationHashMaterial: deepFreeze({
           artifactHash,
           operation: id,
@@ -817,8 +814,7 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
           doc: snapshot.doc,
           implementationHash,
           run: snapshot.run,
-          ownerDefinition: snapshot.ownerDefinition,
-          writeDefinitions: snapshot.writeDefinitions,
+          entityDefinitions: snapshot.entityDefinitions,
         }) as DeployedOperationDefinition,
       );
     }

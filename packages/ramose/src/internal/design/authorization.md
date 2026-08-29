@@ -31,12 +31,17 @@ behavior except through the resulting authorization decision. Holding the
 principal, catalog / policy IR, and policy-relevant rule inputs fixed,
 denied application datoms MUST NOT affect any application-visible
 behavior. That includes query results, pull results, live-query updates,
-session replication, operation read-after-write, errors, empty vs missing
+session replication, errors, empty vs missing
 distinctions, counts, estimates, cardinality oracles, API-exposed timing
 or explain metadata, transaction identifiers, planner details, storage
 statistics, and silence vs delivery decisions.
 
-**NI-2.** Two databases that differ only in denied application datoms —
+An explicitly granted deployed operation is a trusted server procedure,
+not a caller-directed read shape. Its declared result may intentionally
+depend on authoritative facts the caller cannot otherwise read.
+
+**NI-2.** Outside explicitly granted trusted operation results, two
+databases that differ only in denied application datoms —
 holding the principal, catalog / policy IR, and policy-relevant rule
 inputs fixed — MUST be observationally identical to that principal. This
 is the paired-world statement of **NI-1**. Worlds that differ in
@@ -61,11 +66,14 @@ and generic `Db` passing MUST NOT recover a more privileged capability.
 |---|---|---|
 | Raw snapshot | Storage, transactor, indexer | Privileged facts at a named basis |
 | Rule snapshot | Policy evaluator only | Trusted current rule basis for grant and traversal lookup |
-| Application snapshot | Query, pull, live, session, operation results | Principal-filtered facts only |
+| Application snapshot | External query, pull, live, session | Principal-filtered facts only |
+| Operation snapshot | Admitted deployed operation body | Authoritative application facts |
 
-**TCB-1.** Storage produces a raw snapshot. Application-facing code MUST
-NOT obtain a raw or rule snapshot, pass one to query or pull, or stream
-one to a client.
+**TCB-1.** Storage produces a raw snapshot. External application-facing
+read code MUST NOT obtain a raw or rule snapshot, pass one to query or
+pull, or stream one to a client. An admitted deployed operation is trusted
+server application code and receives an authoritative application snapshot;
+its declared output, not that snapshot, is the public response.
 
 **TCB-2.** The policy evaluator receives a rule snapshot over a trusted
 current rule basis. It MAY follow grant edges and fixed-depth refs that
@@ -100,11 +108,12 @@ current, as-of, or history view (`packages/ramose/src/internal/core/db.ts`,
 datom cursor: after segment and novelty merge and current / as-of /
 history collapse, before any application consumer.
 
-Application consumers include the query planner and executor (caller
+External application consumers include the query planner and executor (caller
 clauses), pull and nested pull, entity reads, reverse refs, aggregation,
 count, estimate, error classification, live initial results and deltas,
-session snapshot / `tx` / `resync`, operation return values, and any
-API-exposed metadata.
+session snapshot / `tx` / `resync`, and any API-exposed read metadata.
+An admitted deployed operation body is inside the trusted server boundary,
+not an external application-snapshot consumer.
 
 **CUR-2.** There is exactly one mandatory visibility evaluator for all
 external read shapes. No query, pull, live, or session entry point may
@@ -145,9 +154,10 @@ type and the current deployed catalog unit. Application databases do
 not store `:ramose/trait`, `:ramose/kind`, `:ramose/composes`, trait
 closure, or equivalent composition metadata.
 
-**ID-2.** The engine and transactor own the type stamp. Clients and
-operation bodies MUST NOT forge, omit, change, or retract it. Attempts
-fail atomically.
+**ID-2.** The engine and definition-directed transaction helpers own the
+type stamp. External clients cannot write it; creation helpers apply it as
+ordinary storage semantics and the shared transaction engine preserves its
+canonical invariant.
 
 **ID-3.** Type and trait authorization consult only the protected type
 plus deployed type-to-trait lookup. Field-prefix, attribute-presence,
@@ -276,25 +286,27 @@ authorization.
 mechanism. Public raw transact and attribute-level write bypasses are
 forbidden.
 
-**WR-2.** `run(Operation)` policy is evaluated inside the committing
-transaction against the authoritative current basis. Prior reads are not
-the correctness boundary.
+**WR-2.** `run(Operation)` policy is evaluated against the authoritative
+current basis before native application code runs. The caller lease is
+rechecked at the final durable commit fence.
 
 **WR-3.** Targeted operations establish readability (**REF-3**, **REF-4**)
 before type or trait validation.
 
-**WR-4.** Targetless operations see claims, principal classes, catalog
-facts, and typed input — not a target resource. Resource-dependent rules
-on targetless operations are statically invalid. A targetless trait
-operation is allowed only when that trait is reachable in the active
-catalog.
+**WR-4.** Targetless operations require an explicit principal-only grant
+and typed input, but no synthetic target. Resource-dependent rules on
+targetless operations are statically invalid.
 
-**WR-5.** Operation bodies MUST NOT forge engine-owned membership or
-control-plane datoms.
+**WR-5.** Once admitted, the original deployed operation body is trusted
+native server code. It may read authoritative application data, choose
+application writes, derive output, and perform ordinary inline effects.
+Definition-directed helpers and the shared transaction engine retain normal
+schema, ref, type, default, fixed-value, and storage correctness semantics.
 
-**WR-6.** Returned and read-after-write representations pass through the
-resulting application snapshot. A write MUST NOT echo a datom the
-principal cannot read.
+**WR-6.** Operation reads are not filtered by caller read policy, and output
+is not taint-tracked or reauthorized against a resulting filtered snapshot.
+The original declared output codec and exact JSON transport are validated
+before the atomic database commit.
 
 **WR-7.** Cross-catalog and stale operation handles fail without executing
 user operation code.

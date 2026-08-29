@@ -254,6 +254,42 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(persisted.body.result).toEqual([[expect.any(Number)]]);
     });
 
+    test("trusted native code reads and mutates application data hidden from its caller", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-trusted";
+      await install(base, database);
+      const member = await signToken(database, "member");
+      const created = await invoke(base, database, member, {
+        owner: { kind: "entity", name: "nativeOther" },
+        localName: "create",
+      }, { name: "Hidden" });
+      expect(created.status).toBe(200);
+      const hiddenId = created.body.result.id as number;
+
+      const ordinaryRead = await json(base, `/db/${database}/entity/${hiddenId}`, {
+        token: member,
+        headers: {
+          "x-ramose-catalog": operationProof.catalog,
+          "x-ramose-unit-hash": operationProof.unitHash,
+        },
+      });
+      expect(ordinaryRead.status).toBe(200);
+      expect(JSON.stringify(ordinaryRead.body)).not.toContain("Hidden");
+
+      const trusted = await invoke(base, database, member, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "deleteHiddenOther",
+      }, { id: hiddenId });
+      expect(trusted.status).toBe(200);
+      expect(trusted.body).toEqual({ result: { name: "HIDDEN" } });
+
+      const absent = await testAdmin(base, database, "/query", {
+        query: `[:find ?e :where [?e :nativeOther/name "Hidden"]]`,
+      });
+      expect(absent.status).toBe(200);
+      expect(absent.body.result).toEqual([]);
+    });
+
     test("raw writes and stale unit proofs remain closed", async () => {
       const base = ctx.urls().nativeOperationsUrl;
       const database = "operations-denials";
@@ -266,6 +302,19 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         body: JSON.stringify({ tx: [{ ":nativeItem/title": "raw" }] }),
       });
       expect(raw.status).toBe(401);
+
+      const firstUnique = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeOther" },
+        localName: "create",
+      }, { name: "Conflict" });
+      expect(firstUnique.status).toBe(200);
+      const conflict = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeOther" },
+        localName: "create",
+      }, { name: "Conflict" });
+      expect(conflict.status).toBe(409);
+      expect(conflict.body).toEqual({ error: "operation execution failed" });
+      expect(JSON.stringify(conflict.body)).not.toContain(String(firstUnique.body.result.id));
 
       const crashed = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },

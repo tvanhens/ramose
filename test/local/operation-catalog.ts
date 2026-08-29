@@ -7,7 +7,9 @@ import { Catalog } from "../../packages/ramose/src/Catalog.ts";
 import {
   Entity,
   EntityId as OperationEntityId,
+  Field,
   OwnedOperations,
+  Ref,
   Schema,
   string,
 } from "../../packages/ramose/src/db/internal.ts";
@@ -30,9 +32,10 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-expiry",
   "operations-response-expiry",
   "operations-denials",
+  "operations-trusted",
 ]);
 
-export const Other = Entity("nativeOther", { name: string() }, {
+export const Other = Entity("nativeOther", { name: Field.unique(string(), "strict") }, {
   operations: (Operation) => ({
     create: Operation({
       self: false,
@@ -66,6 +69,16 @@ export const Item = Entity("nativeItem", {
         return { id: op.self, title: input.title };
       },
     }),
+    deleteHiddenOther: Operation({
+      self: false,
+      input: EffectSchema.Struct({ id: Ref(Other).schema }),
+      output: EffectSchema.Struct({ name: EffectSchema.String }),
+      async run(op, input) {
+        const row = await op.pull(input.id, [":nativeOther/name"]) as Record<string, unknown>;
+        (op as any).delete(Other, input.id);
+        return { name: (row[":nativeOther/name"] as string).toUpperCase() };
+      },
+    }),
     crash: Operation({
       self: false,
       input: EffectSchema.Struct({}),
@@ -84,9 +97,10 @@ const policy = await Effect.runPromise(compileReadAuthorization({
   classes: ["member", "reader", "operator"],
   rules: [
     read(Item).when(any(hasClass("member"), hasClass("reader"))),
-    read(Other).when(hasClass("member")),
+    read(Other).when(hasClass("reader")),
     invoke(Item[OwnedOperations].create).when(hasClass("member")),
     invoke(Item[OwnedOperations].rename).when(any(hasClass("member"), hasClass("operator"))),
+    invoke(Item[OwnedOperations].deleteHiddenOther).when(hasClass("member")),
     invoke(Item[OwnedOperations].crash).when(hasClass("member")),
     invoke(Other[OwnedOperations].create).when(hasClass("member")),
   ],

@@ -90,8 +90,8 @@ export const invokeAuthoritativeOperation = async (
     caller,
   };
   const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
-  const privateFailure = (): UpstreamError => new UpstreamError({
-    status: 500,
+  const privateFailure = (status = 500): UpstreamError => new UpstreamError({
+    status,
     body: JSON.stringify({ error: "operation execution failed" }),
   });
   let response: Response;
@@ -115,6 +115,7 @@ export const invokeAuthoritativeOperation = async (
     throw privateFailure();
   }
   if (!response.ok) {
+    if (response.status === 409) throw privateFailure(409);
     if (response.status >= 500) throw privateFailure();
     throw new UpstreamError({
       status: response.status,

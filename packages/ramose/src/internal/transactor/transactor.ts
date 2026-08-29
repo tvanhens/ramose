@@ -690,7 +690,7 @@ export class Transactor {
     return p.tx;
   }
 
-  /** Internal transaction acks; external operation results use their resulting filtered `Db`. */
+  /** Internal transaction acks; public operation responses expose only declared output. */
   private async ackDatoms(datoms: Datom[], _principal?: Principal): Promise<WireDatom[]> {
     return datoms.map(toWireDatom);
   }

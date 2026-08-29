@@ -112,6 +112,11 @@ export type InstalledCatalogDefinition = {
     entityName: string,
     fieldIdent: string,
   ) => InstalledFieldRuntime;
+  /** Validate one definition-directed stored value with its deployed codec. */
+  readonly validateFieldValue: (
+    fieldIdent: string,
+    value: unknown,
+  ) => void;
 };
 
 export type CatalogDefinitions = {
@@ -571,6 +576,26 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
           }),
       });
     });
+    const fieldValidators = new Map<string, (value: unknown) => unknown>();
+    for (const plan of snapshot.creationPlans) {
+      for (const field of plan.fields) {
+        if (!fieldValidators.has(field.ident)) {
+          fieldValidators.set(field.ident, field.encoder);
+        }
+      }
+    }
+    const validateFieldValue = Object.freeze((
+      fieldIdent: string,
+      value: unknown,
+    ): void => {
+      const validate = fieldValidators.get(fieldIdent);
+      if (validate === undefined) {
+        throw new Error(
+          `ramose/operation: field ${JSON.stringify(fieldIdent)} has no deployed codec`,
+        );
+      }
+      validate(value);
+    });
     return Object.freeze({
       catalogKey: snapshot.catalog,
       unitHash: unit.unitHash,
@@ -580,6 +605,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
       path: snapshot.path,
       resolveCreationValues,
       requireFieldRuntime,
+      validateFieldValue,
     });
   },
 );

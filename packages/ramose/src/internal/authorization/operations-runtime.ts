@@ -28,11 +28,11 @@ import {
 } from "../../db/entityArg.ts";
 import { markEngineTypeAssertion } from "../core/tx-provenance.ts";
 import type { Connection, TxReport } from "../core/conn.ts";
-import { Index, ValueTag, type Datom } from "../core/datom.ts";
+import { Index } from "../core/datom.ts";
 import type { Db, EntityRef } from "../core/db.ts";
 import { query } from "../core/query/engine.ts";
 import { pull } from "../core/query/pull.ts";
-import { RAMOSE_TYPE, RAMOSE_TYPE_IDENT, isTxEid } from "../core/schema.ts";
+import { RAMOSE_TYPE, RAMOSE_TYPE_IDENT } from "../core/schema.ts";
 import type { TxData } from "../core/tx.ts";
 import { toJson } from "../core/json.ts";
 import type {
@@ -114,22 +114,16 @@ type RuntimeHandle = {
   readonly delete: () => void;
 };
 
-type ReadReceipt = {
-  readonly before: unknown;
-  readonly rerun: (db: Db) => Promise<unknown>;
-};
-
-type ReadLeafReplacement = {
-  readonly before: unknown;
-  readonly after: unknown;
-  readonly present: boolean;
+type ReferenceWrite = {
+  readonly source: unknown;
+  readonly field: FieldDescriptor & { readonly valueType: "ref" };
+  readonly target: unknown;
 };
 
 type Collector = {
   readonly op: unknown;
   readonly tx: TxData;
-  readonly creationCandidates: ReadonlySet<string>;
-  readonly receipts: readonly ReadReceipt[];
+  readonly refs: readonly ReferenceWrite[];
 };
 
 /** Opaque denial shared by every authenticated operation-admission failure. */
@@ -155,7 +149,7 @@ const rejected = (
 
 const requireFreshAuthorization = (
   runtime: OperationRuntime,
-  caller: AuthenticatedCaller,
+  expiresAtSeconds: number,
   descriptor: OperationDescriptor,
 ): number => {
   let now: number;
@@ -167,7 +161,7 @@ const requireFreshAuthorization = (
   if (!Number.isFinite(now)) {
     throw rejected(descriptor, "authoritative operation clock is invalid");
   }
-  if (!Number.isSafeInteger(caller.exp) || caller.exp * 1_000 <= now) {
+  if (!Number.isSafeInteger(expiresAtSeconds) || expiresAtSeconds * 1_000 <= now) {
     throw deny();
   }
   return now;
@@ -235,11 +229,6 @@ const resolveVisibleTarget = async (
   return concrete === undefined ? undefined : { eid, type: concrete };
 };
 
-const jsValue = (datom: Datom): unknown => {
-  if (datom.vt === ValueTag.Inst) return new Date(datom.v as number);
-  return datom.v;
-};
-
 const sameValue = (left: unknown, right: unknown): boolean => {
   if (Object.is(left, right)) return true;
   if (left instanceof Date && right instanceof Date) return left.getTime() === right.getTime();
@@ -252,20 +241,12 @@ const sameValue = (left: unknown, right: unknown): boolean => {
   return false;
 };
 
-const sameManyValue = (left: unknown, right: unknown): boolean => {
-  if (!Array.isArray(left) || !Array.isArray(right)) return false;
-  return (
-    left.every((value) => right.some((candidate) => sameValue(value, candidate))) &&
-    right.every((value) => left.some((candidate) => sameValue(value, candidate)))
-  );
-};
-
 const isPlainRecord = (value: object): value is Record<string, unknown> => {
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 };
 
-const sameReadResult = (
+const sameTransportValue = (
   left: unknown,
   right: unknown,
   seen = new WeakMap<object, object>(),
@@ -285,7 +266,7 @@ const sameReadResult = (
   seen.set(left, right);
   if (Array.isArray(left) && Array.isArray(right)) {
     return left.length === right.length &&
-      left.every((value, index) => sameReadResult(value, right[index], seen));
+      left.every((value, index) => sameTransportValue(value, right[index], seen));
   }
   const leftRecord = left as Record<string, unknown>;
   const rightRecord = right as Record<string, unknown>;
@@ -294,77 +275,8 @@ const sameReadResult = (
   return leftKeys.length === rightKeys.length &&
     leftKeys.every((key) =>
       Object.hasOwn(rightRecord, key) &&
-      sameReadResult(leftRecord[key], rightRecord[key], seen)
+      sameTransportValue(leftRecord[key], rightRecord[key], seen)
     );
-};
-
-const cloneAndFreezeJson = (value: unknown): unknown => {
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map(cloneAndFreezeJson));
-  }
-  if (typeof value === "object" && value !== null) {
-    const out: Record<string, unknown> = {};
-    for (const [key, child] of Object.entries(value)) {
-      out[key] = cloneAndFreezeJson(child);
-    }
-    return Object.freeze(out);
-  }
-  return value;
-};
-
-const isolateCaller = (caller: AuthenticatedCaller): AuthenticatedCaller =>
-  Object.freeze({
-    claims: cloneAndFreezeJson(caller.claims) as AuthenticatedCaller["claims"],
-    classes: Object.freeze([...caller.classes]),
-    exp: caller.exp,
-  });
-
-/**
- * Private snapshot for filtered read values and their inert arguments. The
- * snapshot is never exposed to operation code, and containers are frozen so
- * later reruns cannot observe body-owned mutation.
- */
-const snapshotReadValue = (
-  value: unknown,
-  seen = new WeakMap<object, unknown>(),
-): unknown => {
-  if (typeof value !== "object" || value === null) return value;
-  const prior = seen.get(value);
-  if (prior !== undefined) return prior;
-  if (value instanceof Date) return Object.freeze(new Date(value.getTime()));
-  if (value instanceof Uint8Array) return new Uint8Array(value);
-  if (value instanceof URL) return Object.freeze(new URL(value.href));
-  if (Array.isArray(value)) {
-    const out: unknown[] = [];
-    seen.set(value, out);
-    for (const item of value) out.push(snapshotReadValue(item, seen));
-    return Object.freeze(out);
-  }
-  if (value instanceof Map) {
-    const out = new Map<unknown, unknown>();
-    seen.set(value, out);
-    for (const [key, item] of value) {
-      out.set(snapshotReadValue(key, seen), snapshotReadValue(item, seen));
-    }
-    return Object.freeze(out);
-  }
-  if (value instanceof Set) {
-    const out = new Set<unknown>();
-    seen.set(value, out);
-    for (const item of value) out.add(snapshotReadValue(item, seen));
-    return Object.freeze(out);
-  }
-  const prototype = Object.getPrototypeOf(value);
-  const out = Object.create(prototype) as Record<PropertyKey, unknown>;
-  seen.set(value, out);
-  for (const key of Reflect.ownKeys(value)) {
-    const property = Object.getOwnPropertyDescriptor(value, key);
-    if (property === undefined) continue;
-    Object.defineProperty(out, key, "value" in property
-      ? { ...property, value: snapshotReadValue(property.value, seen) }
-      : property);
-  }
-  return Object.freeze(out);
 };
 
 /** Capture exactly the stored-data vocabulary without retaining body values. */
@@ -460,22 +372,18 @@ const createCollector = (args: {
 }): Collector => {
   const { definition, descriptor } = args;
   const tx: unknown[] = [];
-  const creationCandidates = new Set<string>();
-  const receipts: ReadReceipt[] = [];
-  const allowedDefinitions = new Map<string, RuntimeEntity>(
-    args.binding.writeDefinitions.map((entity) => [entity.ns, entity] as const),
+  const refs: ReferenceWrite[] = [];
+  const deployedDefinitions = new Map<string, RuntimeEntity>(
+    args.binding.entityDefinitions.map((entity) => [entity.ns, entity] as const),
   );
-  if (descriptor.id.owner.kind === "entity" && args.binding.ownerDefinition !== undefined) {
-    allowedDefinitions.set(descriptor.id.owner.name, args.binding.ownerDefinition);
-  }
   const generatedPrefix = "__ramose.operation/";
   let nextTempid = 0;
 
   const requireDefinition = (value: unknown): RuntimeEntity => {
     const entity = runtimeEntity(value);
-    const deployed = entity === undefined ? undefined : allowedDefinitions.get(entity.ns);
+    const deployed = entity === undefined ? undefined : deployedDefinitions.get(entity.ns);
     if (deployed === undefined) {
-      throw rejected(descriptor, "operation used an undeclared write definition");
+      throw rejected(descriptor, "operation used an undeployed entity definition");
     }
     return deployed;
   };
@@ -513,9 +421,27 @@ const createCollector = (args: {
   ): void => {
     const ident = fieldIdent(field);
     const capturedEid = snapshotStoredValue(descriptor, lowerEntityArg(eid));
+    const loweredValue = hasValue ? lowerWriteValue(value) : undefined;
+    const capturedValue = hasValue
+      ? snapshotStoredValue(descriptor, loweredValue)
+      : undefined;
+    if (hasValue && field.valueType !== "ref") {
+      try {
+        definition.validateFieldValue(ident, loweredValue);
+      } catch (cause) {
+        throw new InvalidRequest({
+          message: `invalid operation value for ${ident}: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`,
+        });
+      }
+    }
+    if (kind !== "retract" && field.valueType === "ref") {
+      refs.push({ source: capturedEid, field, target: capturedValue });
+    }
     if (kind === "retract") {
       tx.push(hasValue
-        ? [":db/retract", capturedEid, ident, snapshotStoredValue(descriptor, lowerWriteValue(value))]
+        ? [":db/retract", capturedEid, ident, capturedValue]
         : [":db/retract", capturedEid, ident]);
       return;
     }
@@ -523,7 +449,7 @@ const createCollector = (args: {
       kind === "add" ? ":db/add" : ":db/update",
       capturedEid,
       ident,
-      snapshotStoredValue(descriptor, lowerWriteValue(value)),
+      capturedValue,
     ]);
   };
 
@@ -584,7 +510,23 @@ const createCollector = (args: {
       if (isMany(entity, key) && Array.isArray(value)) {
         for (const item of value) appendWrite("add", eid, field, item);
       } else {
-        map[fieldIdent(field)] = snapshotStoredValue(descriptor, lowerWriteValue(value));
+        const ident = fieldIdent(field);
+        const loweredValue = lowerWriteValue(value);
+        const capturedValue = snapshotStoredValue(descriptor, loweredValue);
+        if (field.valueType === "ref") {
+          refs.push({ source: map[":db/id"], field, target: capturedValue });
+        } else {
+          try {
+            definition.validateFieldValue(ident, loweredValue);
+          } catch (cause) {
+            throw new InvalidRequest({
+              message: `invalid operation value for ${ident}: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+            });
+          }
+        }
+        map[ident] = capturedValue;
       }
     }
     tx.push(map);
@@ -598,7 +540,6 @@ const createCollector = (args: {
     const eid = b === undefined
       ? `${generatedPrefix}${++nextTempid}`
       : lowerEntityArg(a);
-    if (typeof eid === "string") creationCandidates.add(eid);
     return addPut(entity, eid, attrs, creation);
   };
 
@@ -643,12 +584,11 @@ const createCollector = (args: {
     self: args.target === undefined ? undefined : ownerHandle(args.target.eid),
     create: descriptor.id.target === "none" && descriptor.id.owner.kind === "entity"
       ? (attrs: unknown) => {
-        const entity = args.binding.ownerDefinition;
+        const entity = deployedDefinitions.get(descriptor.id.owner.name);
         if (entity === undefined) {
           throw rejected(descriptor, "operation owner definition is unavailable");
         }
         const eid = `${generatedPrefix}${++nextTempid}`;
-        creationCandidates.add(eid);
         return addPut(entity, eid, attrsOf(attrs, descriptor), true);
       }
       : undefined,
@@ -684,35 +624,19 @@ const createCollector = (args: {
       if (!isQueryObject(input)) {
         throw rejected(descriptor, "operation query needs a deployed Query value");
       }
-      // Lower synchronously before the first await, then retain only a private
-      // immutable wire AST/finalizer. Mutating the authored query object after
-      // calling op.query cannot alter either execution or the resulting rerun.
       const lowered = tryLowerQueryObject(input);
-      const capturedQuery = snapshotReadValue(lowered.query) as object;
-      const runQuery = async (db: Db): Promise<unknown> =>
-        lowered.finalize(await query(db, capturedQuery));
-      const before = await runQuery(args.context.filteredDb);
-      receipts.push({ before: snapshotReadValue(before), rerun: runQuery });
-      return before;
+      return lowered.finalize(await query(args.context.currentDb, lowered.query));
     },
     pull: async (subject: unknown, pattern: unknown) => {
-      // Capture both arguments before any await so later body mutation cannot
-      // rewrite the authoritative rerun.
-      const ref = snapshotReadValue(lowerEntityArg(subject));
-      const capturedPattern = snapshotReadValue(pattern);
+      const ref = lowerEntityArg(subject);
       const eid = typeof ref === "number"
         ? ref
         : Array.isArray(ref) && asLookupRef(ref) !== undefined
-          ? await args.context.filteredDb.entid(ref as [string, unknown])
+          ? await args.context.currentDb.entid(ref as [string, unknown])
           : undefined;
-      const before = eid === undefined
+      return eid === undefined
         ? null
-        : await pull(args.context.filteredDb, eid, capturedPattern as never);
-      receipts.push({
-        before: snapshotReadValue(before),
-        rerun: async (db) => eid === undefined ? null : pull(db, eid, capturedPattern as never),
-      });
-      return before;
+        : pull(args.context.currentDb, eid, pattern as never);
     },
     effect: async (name: string, run: (context: OperationEffectContext) => unknown) => {
       if (typeof name !== "string" || name.length === 0 || typeof run !== "function") {
@@ -729,112 +653,7 @@ const createCollector = (args: {
       }
     },
   };
-  // The collector exposes only this invocation's definition-directed write
-  // surface; the trusted body still runs with ordinary JavaScript semantics.
-  return { op, tx, creationCandidates, receipts };
-};
-
-const replaceReadResults = async (
-  value: unknown,
-  receipts: readonly ReadReceipt[],
-  resultingDb: Db,
-  outputShape: OperationInputShape,
-): Promise<{
-  readonly value: unknown;
-  readonly requireEmptyWireOutput: boolean;
-}> => {
-  // A declared empty struct can permit reads to decide writes, but Effect
-  // struct codecs preserve excess properties and transformations may have a
-  // value-bearing encoded side. Defer changed-receipt admission until the
-  // exact materialized wire value is proven to be `{}` below.
-  if (outputShape._tag === "struct" && outputShape.fields.length === 0) {
-    let changed = false;
-    for (const receipt of receipts) {
-      const after = await receipt.rerun(resultingDb);
-      if (!sameReadResult(receipt.before, after)) changed = true;
-    }
-    return { value, requireEmptyWireOutput: changed };
-  }
-  const replacements = new Map<object, unknown>();
-  const leafReplacements: ReadLeafReplacement[] = [];
-  const collect = (before: unknown, after: unknown, present: boolean): void => {
-    if (typeof before !== "object" || before === null) {
-      leafReplacements.push({ before, after, present });
-      return;
-    }
-    if (before instanceof Date || before instanceof Uint8Array || !(
-      Array.isArray(before) || isPlainRecord(before)
-    )) {
-      leafReplacements.push({ before, after, present });
-      return;
-    }
-    replacements.set(before, present ? after : undefined);
-    if (Array.isArray(before)) {
-      const afterArray = Array.isArray(after) ? after : undefined;
-      for (let index = 0; index < before.length; index++) {
-        collect(before[index], afterArray?.[index], afterArray !== undefined && index in afterArray);
-      }
-      return;
-    }
-    const afterRecord =
-      typeof after === "object" && after !== null && isPlainRecord(after)
-        ? after
-        : undefined;
-    for (const [key, child] of Object.entries(before)) {
-      collect(
-        child,
-        afterRecord?.[key],
-        afterRecord !== undefined && Object.hasOwn(afterRecord, key),
-      );
-    }
-  };
-  let top = value;
-  for (const receipt of receipts) {
-    const after = await receipt.rerun(resultingDb);
-    // With ordinary JavaScript bodies there is no sound way to propagate
-    // taint through arbitrary scalar transformations. If a representation
-    // observed before the write would change in the resulting authorized
-    // snapshot, reject the invocation atomically instead of risking a stale
-    // derived disclosure.
-    if (!sameReadResult(receipt.before, after)) throw deny();
-    if (Object.is(top, receipt.before)) top = after;
-    collect(receipt.before, after, true);
-  }
-  const visit = (current: unknown, seen = new WeakMap<object, unknown>()): unknown => {
-    if (typeof current !== "object" || current === null) {
-      const candidates = leafReplacements.filter((replacement) =>
-        sameValue(current, replacement.before)
-      );
-      if (candidates.length === 0) return current;
-      if (candidates.some((candidate) => !candidate.present)) throw deny();
-      const [first] = candidates;
-      if (
-        first === undefined ||
-        candidates.some((candidate) => !sameValue(candidate.after, first.after))
-      ) throw deny();
-      return first.after;
-    }
-    if (current instanceof Date || current instanceof Uint8Array || !(
-      Array.isArray(current) || isPlainRecord(current)
-    )) {
-      return current;
-    }
-    const replacement = replacements.get(current);
-    if (replacement !== undefined || replacements.has(current)) return replacement;
-    const cached = seen.get(current);
-    if (cached !== undefined) return cached;
-    if (Array.isArray(current)) {
-      const out: unknown[] = [];
-      seen.set(current, out);
-      for (const item of current) out.push(visit(item, seen));
-      return out;
-    }
-    const out: Record<string, unknown> = Object.create(Object.getPrototypeOf(current));
-    seen.set(current, out);
-    for (const [key, item] of Object.entries(current)) out[key] = visit(item, seen);
-    return out;
-  };
-  return { value: visit(top), requireEmptyWireOutput: false };
+  return { op, tx, refs };
 };
 
 /**
@@ -850,15 +669,11 @@ const materializeOutputTransport = (value: unknown): unknown => {
     throw new TypeError("operation output is not JSON transportable");
   }
   const materialized: unknown = JSON.parse(text);
-  if (!sameReadResult(wire, materialized)) {
+  if (!sameTransportValue(wire, materialized)) {
     throw new TypeError("operation output changes during JSON transport");
   }
   return materialized;
 };
-
-const isExactEmptyWireStruct = (value: unknown): boolean =>
-  typeof value === "object" && value !== null && !Array.isArray(value) &&
-  Object.keys(value).length === 0;
 
 const resolveOutputHandles = async (
   shape: OperationInputShape,
@@ -912,26 +727,28 @@ const resolveOutputHandles = async (
   return visit(shape, value);
 };
 
-const validateVisibleRefs = async (
+const validateAuthoritativeRefs = async (
   definition: InstalledCatalogDefinition,
   shape: OperationInputShape,
   value: unknown,
-  resulting: AuthorizedRequestContext,
+  db: Db,
   selfType: string | undefined,
 ): Promise<void> => {
   switch (shape._tag) {
     case "ref": {
-      if (typeof value !== "number" || !(await resulting.filteredDb.exists(value))) throw deny();
-      const concrete = await typeName(resulting.currentDb, value);
+      if (typeof value !== "number" || !(await db.exists(value))) {
+        throw new InvalidRequest({ message: "operation ref does not resolve" });
+      }
+      const concrete = await typeName(db, value);
       if (concrete === undefined || !refCompatible(definition, shape.refTarget, concrete, selfType)) {
-        throw deny();
+        throw new InvalidRequest({ message: "operation ref has an incompatible entity type" });
       }
       return;
     }
     case "array":
       if (Array.isArray(value)) {
         for (const item of value) {
-          await validateVisibleRefs(definition, shape.items, item, resulting, selfType);
+          await validateAuthoritativeRefs(definition, shape.items, item, db, selfType);
         }
       }
       return;
@@ -939,11 +756,11 @@ const validateVisibleRefs = async (
       if (typeof value === "object" && value !== null && !Array.isArray(value)) {
         for (const field of shape.fields) {
           if (Object.hasOwn(value, field.key)) {
-            await validateVisibleRefs(
+            await validateAuthoritativeRefs(
               definition,
               field.shape,
               (value as Record<string, unknown>)[field.key],
-              resulting,
+              db,
               selfType,
             );
           }
@@ -956,134 +773,39 @@ const validateVisibleRefs = async (
   }
 };
 
-const validateProducedTransaction = async (args: {
-  readonly definition: InstalledCatalogDefinition;
-  readonly descriptor: OperationDescriptor;
-  readonly report: TxReport;
-  readonly target?: { readonly eid: number; readonly type: string };
-  readonly creationCandidates: ReadonlySet<string>;
-}): Promise<void> => {
-  const { definition, descriptor, report } = args;
-  const fields = fieldTables(definition);
-  const allowedTypes = new Set(descriptor.writes.map((write) => write.name));
-  if (descriptor.id.owner.kind === "entity") allowedTypes.add(descriptor.id.owner.name);
-  const principalField = definition.unit.policy.principal.entity;
-  const principalIdent = principalField === undefined
-    ? undefined
-    : `:${principalField.owner.name}/${principalField.localName}`;
-  const candidateEids = new Set<number>();
-  for (const tempidName of args.creationCandidates) {
-    const eid = report.tempids[tempidName];
-    if (eid !== undefined) candidateEids.add(eid);
+const resolveReportEntity = async (
+  report: TxReport,
+  value: unknown,
+): Promise<number | undefined> => {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return report.tempids[value];
+  if (Array.isArray(value) && asLookupRef(value) !== undefined) {
+    return report.dbAfter.entid(value as [string, unknown]);
   }
-  const touched = new Set<number>();
-  for (const datom of report.txData) {
-    if (isTxEid(datom.e)) continue;
-    touched.add(datom.e);
-    const attr = report.dbAfter.attr(datom.a) ?? report.dbBefore.attr(datom.a);
-    const ident = attr?.ident;
-    if (ident === undefined) throw rejected(descriptor, "operation produced an unknown attribute");
-    if (ident === RAMOSE_TYPE_IDENT) continue;
-    if (ident.startsWith(":db/") || ident.startsWith(":ramose/")) {
-      throw rejected(descriptor, "operation cannot mutate control-plane facts");
-    }
-    if (ident === principalIdent) {
-      throw rejected(descriptor, "operation cannot mutate principal identity");
-    }
-    const field = fields.get(ident);
-    if (field === undefined) throw rejected(descriptor, "operation produced an undeployed field");
-  }
+  return undefined;
+};
 
-  for (const eid of touched) {
-    const beforeType = await typeName(report.dbBefore, eid);
-    const afterType = await typeName(report.dbAfter, eid);
-    const concrete = afterType ?? beforeType;
-    if (concrete === undefined) {
-      if (await report.dbAfter.exists(eid)) {
-        throw rejected(descriptor, "operation produced an entity without a canonical type");
-      }
-      continue;
+const validateReferenceWrites = async (
+  definition: InstalledCatalogDefinition,
+  refs: readonly ReferenceWrite[],
+  report: TxReport,
+): Promise<void> => {
+  for (const ref of refs) {
+    const ident = fieldIdent(ref.field);
+    const source = await resolveReportEntity(report, ref.source);
+    const target = await resolveReportEntity(report, ref.target);
+    if (source === undefined || target === undefined || !(await report.dbAfter.exists(target))) {
+      throw new InvalidRequest({ message: `operation ref for ${ident} does not resolve` });
     }
-    const isTarget = args.target?.eid === eid;
-    const hasDirectOperationDatom = report.txOps.some((op) =>
-      op.e === eid && (!op.fromRetractEntity || op.retractEntityRoot)
-    );
-    const ownerCompatible = typeCompatible(definition, descriptor.id.owner, concrete);
+    const sourceType = await typeName(report.dbAfter, source) ??
+      await typeName(report.dbBefore, source);
+    const targetType = await typeName(report.dbAfter, target);
     if (
-      hasDirectOperationDatom && !isTarget &&
-      !ownerCompatible && !allowedTypes.has(concrete)
+      sourceType === undefined ||
+      targetType === undefined ||
+      !refCompatible(definition, ref.field.refTarget, targetType, sourceType)
     ) {
-      throw rejected(descriptor, "operation changed an entity outside its declared write set");
-    }
-    if (beforeType === undefined && afterType !== undefined && !candidateEids.has(eid)) {
-      throw rejected(descriptor, "operation creation must use definition-directed put/create");
-    }
-    if (afterType !== undefined) {
-      const typeDatoms = await report.dbAfter.datomsArray(Index.EAVT, { e: eid, a: RAMOSE_TYPE });
-      if (typeDatoms.length !== 1 || uniqueCanonicalTypeName(typeDatoms) !== afterType) {
-        throw rejected(descriptor, "operation produced an invalid canonical type");
-      }
-    }
-    for (const datom of report.txData) {
-      if (datom.e !== eid || isTxEid(datom.e)) continue;
-      const attr = report.dbAfter.attr(datom.a) ?? report.dbBefore.attr(datom.a);
-      const ident = attr?.ident;
-      if (ident === undefined || ident === RAMOSE_TYPE_IDENT) continue;
-      const field = fields.get(ident);
-      if (field === undefined) continue;
-      const ownerAllowed = field.id.owner.kind === "entity"
-        ? field.id.owner.name === concrete
-        : definition.composition.transitiveTraits(`:${concrete}`).includes(`:${field.id.owner.name}`);
-      if (!ownerAllowed) throw rejected(descriptor, "operation field is incompatible with entity type");
-      const runtime = definition.requireFieldRuntime(concrete, ident);
-      if (datom.op) {
-        try {
-          runtime.validate(jsValue(datom));
-        } catch (cause) {
-          throw new InvalidRequest({
-            message: `invalid operation-produced value for ${ident}: ${
-              cause instanceof Error ? cause.message : String(cause)
-            }`,
-          });
-        }
-        if (field.valueType === "ref") {
-          if (typeof datom.v !== "number" || !(await report.dbAfter.exists(datom.v))) {
-            throw rejected(descriptor, "operation produced a dangling ref");
-          }
-          const targetType = await typeName(report.dbAfter, datom.v);
-          if (
-            targetType === undefined ||
-            !refCompatible(definition, field.refTarget, targetType, concrete)
-          ) {
-            throw rejected(descriptor, "operation produced an incompatible ref target");
-          }
-        }
-      }
-    }
-    if (afterType !== undefined && await report.dbAfter.exists(eid)) {
-      for (const field of definition.unit.catalog.fields) {
-        const ident = fieldIdent(field);
-        let runtime;
-        try {
-          runtime = definition.requireFieldRuntime(afterType, ident);
-        } catch {
-          continue;
-        }
-        if (runtime.fixed._tag !== "fixed") continue;
-        const attr = report.dbAfter.attr(ident);
-        if (attr === undefined) throw rejected(descriptor, "fixed field schema is unavailable");
-        const datoms = await report.dbAfter.datomsArray(Index.EAVT, { e: eid, a: attr.id });
-        const actual = runtime.cardinality === "many"
-          ? datoms.map(jsValue)
-          : datoms.length === 1 ? jsValue(datoms[0]!) : undefined;
-        if (!(
-          runtime.cardinality === "many"
-            ? sameManyValue(actual, runtime.fixed.value)
-            : sameValue(actual, runtime.fixed.value)
-        )) {
-          throw rejected(descriptor, "operation violated an engine-owned fixed value");
-        }
-      }
+      throw new InvalidRequest({ message: `operation ref for ${ident} has an incompatible entity type` });
     }
   }
 };
@@ -1094,11 +816,11 @@ export const executeCatalogOperation = async (
   runtime: OperationRuntime,
   invocation: OperationInvocation,
 ): Promise<OperationExecution> => {
-  // The body receives a deeply immutable copy. Authorization retains a
-  // distinct copy so trusted native code cannot rewrite authenticated claims
-  // before resulting-snapshot filtering runs.
-  const authorizationCaller = isolateCaller(invocation.caller);
-  const bodyCaller = isolateCaller(authorizationCaller);
+  const authorizationCaller = invocation.caller;
+  // Admission finishes before native code runs. Keep the later lease fences
+  // on this primitive snapshot; body-visible claims are intentionally ordinary
+  // trusted application data and are never consulted for post-body policy.
+  const expiresAtSeconds = authorizationCaller.exp;
   const deployed = Result.getOrElse(
     resolveDeployedCatalogDefinition(runtime.catalogs, {
       database: invocation.database,
@@ -1125,7 +847,7 @@ export const executeCatalogOperation = async (
   const descriptor = binding.descriptor;
   const authoritativeNowMs = requireFreshAuthorization(
     runtime,
-    authorizationCaller,
+    expiresAtSeconds,
     descriptor,
   );
   const requestInput = {
@@ -1165,11 +887,11 @@ export const executeCatalogOperation = async (
       message: `invalid operation input: ${cause instanceof Error ? cause.message : String(cause)}`,
     });
   }
-  await validateVisibleRefs(
+  await validateAuthoritativeRefs(
     deployed.definition,
     descriptor.input,
     decoded,
-    context,
+    context.currentDb,
     target?.type ?? (descriptor.id.owner.kind === "entity" ? descriptor.id.owner.name : undefined),
   );
 
@@ -1177,7 +899,7 @@ export const executeCatalogOperation = async (
     definition: deployed.definition,
     descriptor,
     context,
-    caller: bodyCaller,
+    caller: authorizationCaller,
     database: invocation.database,
     environment: runtime.environment,
     authoritativeNow: new Date(authoritativeNowMs),
@@ -1198,31 +920,13 @@ export const executeCatalogOperation = async (
   const staged = await connection.transactValidated(
     collector.tx,
     async (report) => {
-      await validateProducedTransaction({
-        definition: deployed.definition,
-        descriptor,
-        report,
-        creationCandidates: collector.creationCandidates,
-        ...(target === undefined ? {} : { target }),
-      });
-      const resulting = await Effect.runPromise(
-        constructAuthorizedRequestContext(
-          { ...requestInput, currentDb: () => Effect.succeed(report.dbAfter) },
-          authorizationCaller,
-        ),
-      );
-      const rematerialized = await replaceReadResults(
-        draft,
-        collector.receipts,
-        resulting.filteredDb,
-        descriptor.output,
-      );
-      const resolved = await resolveOutputHandles(descriptor.output, rematerialized.value, report);
-      await validateVisibleRefs(
+      await validateReferenceWrites(deployed.definition, collector.refs, report);
+      const resolved = await resolveOutputHandles(descriptor.output, draft, report);
+      await validateAuthoritativeRefs(
         deployed.definition,
         descriptor.output,
         resolved,
-        resulting,
+        report.dbAfter,
         target?.type ?? (descriptor.id.owner.kind === "entity" ? descriptor.id.owner.name : undefined),
       );
       let encoded: unknown;
@@ -1232,20 +936,16 @@ export const executeCatalogOperation = async (
       } catch (cause) {
         throw new OperationRuntimeFault("output", cause);
       }
-      if (
-        rematerialized.requireEmptyWireOutput &&
-        !isExactEmptyWireStruct(encoded)
-      ) throw deny();
       return encoded;
     },
     authoritativeNowMs,
     // Synchronous Connection pre-apply hook: every body/effect/read/output
     // await is complete, and no further await can intervene before commit.
-    () => requireFreshAuthorization(runtime, authorizationCaller, descriptor),
+    () => requireFreshAuthorization(runtime, expiresAtSeconds, descriptor),
   );
   return {
     report: staged.report,
     output: staged.value,
-    assertFresh: () => requireFreshAuthorization(runtime, authorizationCaller, descriptor),
+    assertFresh: () => requireFreshAuthorization(runtime, expiresAtSeconds, descriptor),
   };
 };

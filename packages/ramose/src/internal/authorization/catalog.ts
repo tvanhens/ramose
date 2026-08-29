@@ -211,7 +211,7 @@ export const OperationDescriptor = Schema.Struct({
   bodyHash: DigestHex,
   /** Canonical composer entity types for a targeted trait operation; empty otherwise. */
   composers: Schema.Array(EntityId),
-  /** Additional entity definitions this operation may write. */
+  /** Additional entity definitions retained as authoring/reachability metadata. */
   writes: Schema.Array(EntityId),
   /** Optional operation documentation. */
   doc: Schema.optionalKey(Schema.String),

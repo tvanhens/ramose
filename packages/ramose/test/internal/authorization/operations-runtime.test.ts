@@ -91,7 +91,7 @@ class ClassOutput extends EffectSchema.Class<ClassOutput>("ClassOutput")({
   }
 }
 
-let makeItemTitlesQuery!: () => AnyQueryObject;
+let makeHiddenNamesQuery!: () => AnyQueryObject;
 
 const Good = Entity("good", { name: string() }, { traits: [Tagged] });
 const Other = Entity("other", { name: string() });
@@ -110,14 +110,6 @@ const Link = Entity("link", {
         return { id: (op.create as any)({ target: input.target }) };
       },
     }),
-    forgeFixed: Operation({
-      input: EffectSchema.Struct({}),
-      output: EffectSchema.Struct({}),
-      run(op) {
-        (op.self as any).set(TenantBinding.tenant, "evil");
-        return {};
-      },
-    }),
   }),
 });
 
@@ -129,14 +121,6 @@ const Item = Entity("item", { title: string() }, {
       run(op, input) {
         op.self.set(Item.title, input.title);
         return { id: op.self };
-      },
-    }),
-    forgeType: Operation({
-      input: EffectSchema.Struct({}),
-      output: EffectSchema.Struct({}),
-      run(op) {
-        (op.self as any).set(":ramose/type", ":other");
-        return {};
       },
     }),
     echoRef: Operation({
@@ -155,6 +139,22 @@ const Item = Entity("item", { title: string() }, {
         return input;
       },
     }),
+    authoritativeReads: Operation({
+      self: false,
+      input: EffectSchema.Struct({ id: Ref(Hidden).schema }),
+      output: EffectSchema.Struct({
+        queryName: EffectSchema.String,
+        pullName: EffectSchema.String,
+      }),
+      async run(op, input) {
+        const rows = await op.query(makeHiddenNamesQuery()) as readonly { readonly name: string }[];
+        const row = await op.pull(input.id, [":hidden/name"]) as Record<string, unknown>;
+        return {
+          queryName: rows.find((candidate) => candidate.name === "Hidden")?.name ?? "missing",
+          pullName: row[":hidden/name"] as string,
+        };
+      },
+    }),
     deleteAndEchoTitle: Operation({
       input: EffectSchema.Struct({}),
       output: EffectSchema.Struct({ title: EffectSchema.String }),
@@ -166,11 +166,12 @@ const Item = Entity("item", { title: string() }, {
     }),
     deleteHiddenInput: Operation({
       self: false,
-      writes: [Hidden],
       input: EffectSchema.Struct({ id: Ref(Hidden).schema }),
       output: EffectSchema.Struct({}),
       run(op, input) {
-        op.delete(Hidden, input.id);
+        // `writes` is authoring metadata, not a runtime capability. Trusted
+        // application code can intentionally reach another deployed entity.
+        (op as any).delete(Hidden, input.id);
         return {};
       },
     }),
@@ -182,84 +183,11 @@ const Item = Entity("item", { title: string() }, {
         return {};
       },
     }),
-    deleteAfterQuery: Operation({
-      input: EffectSchema.Struct({}),
-      output: EffectSchema.Struct({}),
-      async run(op) {
-        const rows = await op.query(makeItemTitlesQuery()) as readonly unknown[];
-        if (rows.length === 0) throw new Error("expected the target row");
-        op.self.delete();
-        return {};
-      },
-    }),
-    deleteAfterPull: Operation({
-      input: EffectSchema.Struct({}),
-      output: EffectSchema.Struct({}),
-      async run(op) {
-        const row = await op.pull(op.self.eid, [":item/title"]);
-        if (row === null) throw new Error("expected the target row");
-        op.self.delete();
-        return {};
-      },
-    }),
-    deleteAndLeakThroughEmptyStruct: Operation({
-      input: EffectSchema.Struct({}),
-      output: EffectSchema.Struct({}),
-      async run(op) {
-        const row = await op.pull(op.self.eid, [":item/title"]) as Record<string, unknown>;
-        op.self.delete();
-        // Effect struct codecs preserve excess properties. The authoritative
-        // fence must inspect the exact encoded wire value before treating this
-        // declared empty output as non-disclosing.
-        return { title: row[":item/title"] };
-      },
-    }),
-    deleteAny: Operation({
-      self: false,
-      input: EffectSchema.Struct({ id: OperationEntityId }),
-      output: EffectSchema.Struct({}),
-      run(op, input) {
-        op.entity(input.id).delete();
-        return {};
-      },
-    }),
-    deleteItemAndBacklink: Operation({
-      input: EffectSchema.Struct({ backlink: OperationEntityId }),
-      output: EffectSchema.Struct({}),
-      run(op, input) {
-        op.self.delete();
-        op.entity(input.backlink).delete();
-        return {};
-      },
-    }),
-    mutateQueryReceipt: Operation({
-      input: EffectSchema.Struct({}),
-      output: EffectSchema.Struct({ title: EffectSchema.String }),
-      async run(op) {
-        const authored = makeItemTitlesQuery();
-        const pending = op.query(authored) as Promise<readonly { readonly title: string }[]>;
-        Reflect.set(authored, "limitN", 0);
-        const rows = await pending;
-        const title = rows[0]?.title ?? "missing";
-        Reflect.set(rows, "length", 0);
-        op.self.delete();
-        return { title: title.toUpperCase() };
-      },
-    }),
-    pullAfterPatternMutation: Operation({
-      input: EffectSchema.Struct({}),
-      output: EffectSchema.Struct({ title: EffectSchema.String }),
-      async run(op) {
-        const pattern = [":item/title"];
-        const row = await op.pull(op.self.eid, pattern) as Record<string, unknown>;
-        pattern.length = 0;
-        return { title: row[":item/title"] as string };
-      },
-    }),
     renameAfterEffect: Operation({
       input: EffectSchema.Struct({ title: EffectSchema.String }),
       output: EffectSchema.Struct({}),
       async run(op, input) {
+        Reflect.set(op.principal.claims, "bodyRan", true);
         await op.effect("before-write", async () => undefined);
         op.self.set(Item.title, input.title);
         return {};
@@ -311,16 +239,6 @@ const Item = Entity("item", { title: string() }, {
         }
       },
     }),
-    forgeNestedClaims: Operation({
-      self: false,
-      input: EffectSchema.Struct({ id: OperationEntityId }),
-      output: EffectSchema.Struct({ id: OperationEntityId }),
-      run(op, input) {
-        const teams = op.principal.claims.teams;
-        if (Array.isArray(teams)) Reflect.set(teams, 0, "reader");
-        return input;
-      },
-    }),
   }),
 });
 
@@ -328,7 +246,7 @@ const Backlink = Entity("backlink", {
   item: Ref(Item, { optional: true }),
 });
 
-makeItemTitlesQuery = () => Query.from(Item).select({ title: Item.title });
+makeHiddenNamesQuery = () => Query.from(Hidden).select({ name: Hidden.name });
 
 const App = Schema({ good: Good, other: Other, hidden: Hidden, link: Link, item: Item, backlink: Backlink });
 
@@ -354,27 +272,18 @@ const buildWorld = async () => {
       invoke(Tagged[OwnedOperations].retag).when(memberOrOperator),
       invoke(Tagged[OwnedOperations].staticRetag).when(hasClass("member")),
       invoke(Link[OwnedOperations].create).when(hasClass("member")),
-      invoke(Link[OwnedOperations].forgeFixed).when(hasClass("member")),
       invoke(Item[OwnedOperations].rename).when(memberOrOperator),
-      invoke(Item[OwnedOperations].forgeType).when(hasClass("member")),
       invoke(Item[OwnedOperations].echoRef).when(hasClass("member")),
       invoke(Item[OwnedOperations].echoRenamedRef).when(hasClass("member")),
+      invoke(Item[OwnedOperations].authoritativeReads).when(hasClass("member")),
       invoke(Item[OwnedOperations].deleteAndEchoTitle).when(hasClass("member")),
       invoke(Item[OwnedOperations].deleteHiddenInput).when(hasClass("member")),
       invoke(Item[OwnedOperations].deleteOnly).when(hasClass("member")),
-      invoke(Item[OwnedOperations].deleteAfterQuery).when(hasClass("member")),
-      invoke(Item[OwnedOperations].deleteAfterPull).when(hasClass("member")),
-      invoke(Item[OwnedOperations].deleteAndLeakThroughEmptyStruct).when(hasClass("member")),
-      invoke(Item[OwnedOperations].deleteAny).when(hasClass("member")),
-      invoke(Item[OwnedOperations].deleteItemAndBacklink).when(hasClass("member")),
-      invoke(Item[OwnedOperations].mutateQueryReceipt).when(hasClass("member")),
-      invoke(Item[OwnedOperations].pullAfterPatternMutation).when(hasClass("member")),
       invoke(Item[OwnedOperations].renameAfterEffect).when(hasClass("member")),
       invoke(Item[OwnedOperations].crash).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnUrl).when(hasClass("member")),
       invoke(Item[OwnedOperations].returnClass).when(hasClass("member")),
       invoke(Item[OwnedOperations].invalidTransport).when(hasClass("member")),
-      invoke(Item[OwnedOperations].forgeNestedClaims).when(hasClass("member")),
     ],
     claims: [{
       key: "teams",
@@ -438,7 +347,7 @@ const invokeOperation = (
 });
 
 describe("deployed operation runtime", () => {
-  test("runs a static native create with defaults, fixed values, type stamp, and filtered ref output", async () => {
+  test("runs a static native create with defaults, fixed values, type stamp, and resolved ref output", async () => {
     const world = await buildWorld();
     const executed = await invokeOperation(world, {
       owner: { kind: "entity", name: "link" },
@@ -542,7 +451,7 @@ describe("deployed operation runtime", () => {
     expect((await world.conn.db().entity(world.other))?.[":tagged/tag"]).toBeUndefined();
   });
 
-  test("rejects incompatible trait refs and protected type changes before commit", async () => {
+  test("keeps definition-directed ref compatibility as storage semantics", async () => {
     const world = await buildWorld();
     const initialT = world.conn.t;
     await expect(invokeOperation(world, {
@@ -550,124 +459,54 @@ describe("deployed operation runtime", () => {
       localName: "create",
       input: { target: world.other },
       caller: caller("member"),
-    })).rejects.toMatchObject({ _tag: "OperationRejected" });
-    await expect(invokeOperation(world, {
-      owner: { kind: "entity", name: "item" },
-      localName: "forgeType",
-      target: world.item,
-      input: {},
-      caller: caller("member"),
-    })).rejects.toMatchObject({ _tag: "OperationRejected" });
+    })).rejects.toBeInstanceOf(InvalidRequest);
     expect(world.conn.t).toBe(initialT);
-
-    const created = await invokeOperation(world, {
-      owner: { kind: "entity", name: "link" },
-      localName: "create",
-      input: { target: world.good },
-      caller: caller("member"),
-    });
-    const afterCreateT = world.conn.t;
-    await expect(invokeOperation(world, {
-      owner: { kind: "entity", name: "link" },
-      localName: "forgeFixed",
-      target: (created.output as { id: number }).id,
-      input: {},
-      caller: caller("member"),
-    })).rejects.toMatchObject({ _tag: "OperationRejected" });
-    expect(world.conn.t).toBe(afterCreateT);
   });
 
-  test("rejects output refs hidden from the resulting ordinary authorized Db", async () => {
+  test("allows hidden compatible input and output refs after caller admission", async () => {
     const world = await buildWorld();
     const initialT = world.conn.t;
-    await expect(invokeOperation(world, {
+    const plain = await invokeOperation(world, {
       owner: { kind: "entity", name: "item" },
       localName: "echoRef",
       input: { id: world.hidden },
       caller: caller("member"),
-    })).rejects.toBeInstanceOf(Unauthorized);
-    expect(world.conn.t).toBe(initialT);
-  });
-
-  test("checks decoded refs before transformed output encoding", async () => {
-    const world = await buildWorld();
-    const initialT = world.conn.t;
-    await expect(invokeOperation(world, {
+    });
+    const renamed = await invokeOperation(world, {
       owner: { kind: "entity", name: "item" },
       localName: "echoRenamedRef",
       input: { id: world.hidden },
       caller: caller("member"),
-    })).rejects.toBeInstanceOf(Unauthorized);
-    expect(world.conn.t).toBe(initialT);
+    });
+    expect(plain.output).toEqual({ id: world.hidden });
+    expect(renamed.output).toEqual({ wire_id: world.hidden });
+    expect(world.conn.t).toBe(initialT + 2);
   });
 
-  test("reauthorizes scalar values derived from pre-write reads", async () => {
+  test("gives trusted code authoritative query and pull access hidden from the caller", async () => {
     const world = await buildWorld();
     const initialT = world.conn.t;
-    await expect(invokeOperation(world, {
+    const executed = await invokeOperation(world, {
+      owner: { kind: "entity", name: "item" },
+      localName: "authoritativeReads",
+      input: { id: world.hidden },
+      caller: caller("member"),
+    });
+    expect(executed.output).toEqual({ queryName: "Hidden", pullName: "Hidden" });
+    expect(world.conn.t).toBe(initialT + 1);
+  });
+
+  test("allows a read to drive writes and return a derived value without post-state reauthorization", async () => {
+    const world = await buildWorld();
+    const executed = await invokeOperation(world, {
       owner: { kind: "entity", name: "item" },
       localName: "deleteAndEchoTitle",
       target: world.item,
       input: {},
       caller: caller("member"),
-    })).rejects.toBeInstanceOf(Unauthorized);
-    expect(world.conn.t).toBe(initialT);
-    expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
-  });
-
-  test("allows read-modify-write when an exact empty output cannot disclose the read", async () => {
-    for (const localName of ["deleteAfterQuery", "deleteAfterPull"] as const) {
-      const world = await buildWorld();
-      const executed = await invokeOperation(world, {
-        owner: { kind: "entity", name: "item" },
-        localName,
-        target: world.item,
-        input: {},
-        caller: caller("member"),
-      });
-      expect(executed.output).toEqual({});
-      expect(await world.conn.db().exists(world.item)).toBe(false);
-    }
-  });
-
-  test("requires the encoded wire output to be exactly empty before bypassing changed reads", async () => {
-    const world = await buildWorld();
-    const initialT = world.conn.t;
-    await expect(invokeOperation(world, {
-      owner: { kind: "entity", name: "item" },
-      localName: "deleteAndLeakThroughEmptyStruct",
-      target: world.item,
-      input: {},
-      caller: caller("member"),
-    })).rejects.toBeInstanceOf(Unauthorized);
-    expect(world.conn.t).toBe(initialT);
-    expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
-  });
-
-  test("keeps read results and captured query arguments private from body mutation", async () => {
-    const world = await buildWorld();
-    const initialT = world.conn.t;
-    await expect(invokeOperation(world, {
-      owner: { kind: "entity", name: "item" },
-      localName: "mutateQueryReceipt",
-      target: world.item,
-      input: {},
-      caller: caller("member"),
-    })).rejects.toBeInstanceOf(Unauthorized);
-    expect(world.conn.t).toBe(initialT);
-    expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
-  });
-
-  test("captures pull arguments before returning control to native code", async () => {
-    const world = await buildWorld();
-    const executed = await invokeOperation(world, {
-      owner: { kind: "entity", name: "item" },
-      localName: "pullAfterPatternMutation",
-      target: world.item,
-      input: {},
-      caller: caller("member"),
     });
-    expect(executed.output).toEqual({ title: "Before" });
+    expect(executed.output).toEqual({ title: "BEFORE" });
+    expect(await world.conn.db().exists(world.item)).toBe(false);
   });
 
   test("preserves prototype-bearing values for deployed output codecs", async () => {
@@ -755,34 +594,22 @@ describe("deployed operation runtime", () => {
     });
   });
 
-  test("isolates nested authenticated claims from native operation code", async () => {
-    const world = await buildWorld();
-    const authenticated = {
-      ...caller("member"),
-      claims: { sub: "member-subject", teams: ["member"] },
-    } satisfies AuthenticatedCaller;
-    const initialT = world.conn.t;
-    await expect(invokeOperation(world, {
-      owner: { kind: "entity", name: "item" },
-      localName: "forgeNestedClaims",
-      input: { id: world.hidden },
-      caller: authenticated,
-    })).rejects.toBeInstanceOf(Unauthorized);
-    expect(authenticated.claims.teams).toEqual(["member"]);
-    expect(world.conn.t).toBe(initialT);
-  });
-
-  test("validates decoded input refs before native operation code runs", async () => {
+  test("lets trusted code write a hidden deployed entity without writes metadata", async () => {
     const world = await buildWorld();
     const initialT = world.conn.t;
-    await expect(invokeOperation(world, {
+    const descriptor = world.installed.unit.catalog.operations.find((operation) =>
+      operation.id.owner.name === "item" && operation.id.localName === "deleteHiddenInput"
+    );
+    expect(descriptor?.writes).toEqual([]);
+    const executed = await invokeOperation(world, {
       owner: { kind: "entity", name: "item" },
       localName: "deleteHiddenInput",
       input: { id: world.hidden },
       caller: caller("member"),
-    })).rejects.toBeInstanceOf(Unauthorized);
-    expect(await world.conn.db().exists(world.hidden)).toBe(true);
-    expect(world.conn.t).toBe(initialT);
+    });
+    expect(executed.output).toEqual({});
+    expect(await world.conn.db().exists(world.hidden)).toBe(false);
+    expect(world.conn.t).toBe(initialT + 1);
   });
 
   test("permits engine-generated incoming-ref cleanup during deletion", async () => {
@@ -798,38 +625,16 @@ describe("deployed operation runtime", () => {
     expect((await world.conn.db().entity(world.backlink))?.[":backlink/item"]).toBeUndefined();
   });
 
-  test("treats retractEntity roots as direct writes and cleanup as generated", async () => {
-    const wrongRoot = await buildWorld();
-    const wrongRootT = wrongRoot.conn.t;
-    await expect(invokeOperation(wrongRoot, {
-      owner: { kind: "entity", name: "item" },
-      localName: "deleteAny",
-      input: { id: wrongRoot.other },
-      caller: caller("member"),
-    })).rejects.toMatchObject({ _tag: "OperationRejected" });
-    expect(wrongRoot.conn.t).toBe(wrongRootT);
-    expect(await wrongRoot.conn.db().exists(wrongRoot.other)).toBe(true);
-
-    const mixed = await buildWorld();
-    const mixedT = mixed.conn.t;
-    await expect(invokeOperation(mixed, {
-      owner: { kind: "entity", name: "item" },
-      localName: "deleteItemAndBacklink",
-      target: mixed.item,
-      input: { backlink: mixed.backlink },
-      caller: caller("member"),
-    })).rejects.toMatchObject({ _tag: "OperationRejected" });
-    expect(mixed.conn.t).toBe(mixedT);
-    expect(await mixed.conn.db().exists(mixed.item)).toBe(true);
-    expect(await mixed.conn.db().exists(mixed.backlink)).toBe(true);
-    expect((await mixed.conn.db().entity(mixed.backlink))?.[":backlink/item"]).toBe(mixed.item);
-  });
-
-  test("rechecks JWT expiry after awaited native work and before commit", async () => {
+  test("captures JWT expiry independently of body-visible mutable claims", async () => {
     const world = await buildWorld();
     const initialT = world.conn.t;
     const exp = 1_700_000_001;
     let clockReads = 0;
+    const authenticated = {
+      claims: { sub: "member-subject", bodyRan: false },
+      classes: ["member"],
+      exp,
+    } satisfies AuthenticatedCaller;
     await expect(executeCatalogOperation(world.conn, {
       catalogs: world.deployed,
       environment: { trusted: true },
@@ -842,12 +647,9 @@ describe("deployed operation runtime", () => {
       localName: "renameAfterEffect",
       target: world.item,
       input: { title: "Expired" },
-      caller: {
-        claims: { sub: "member-subject" },
-        classes: ["member"],
-        exp,
-      },
+      caller: authenticated,
     })).rejects.toBeInstanceOf(Unauthorized);
+    expect(authenticated.claims.bodyRan).toBeTruthy();
     expect(clockReads).toBe(2);
     expect(world.conn.t).toBe(initialT);
     expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");

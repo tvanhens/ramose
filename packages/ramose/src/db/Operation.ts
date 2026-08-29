@@ -708,7 +708,7 @@ export interface UnboundOperation<
   readonly output: OCodec;
   /** `true` by default; `false` removes both the invocation target and `op.self`. */
   readonly self: Self;
-  /** Additional entity definitions this operation may write. */
+  /** Additional entity definitions made reachable and typed for authoring. */
   readonly writes: Writes;
   readonly doc: string | undefined;
   readonly run: UnboundOwnedRun<ICodec, OCodec, Self>;
