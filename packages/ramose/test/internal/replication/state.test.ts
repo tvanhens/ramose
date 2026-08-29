@@ -20,6 +20,7 @@ const identity = (principal = "B"): ReplicationIdentity => ({
   catalog: opaque("D"),
   readView: opaque("E"),
   readCompatibilityHash: ReadCompatibilityHash.make(opaque("K")),
+  graphLineage: [],
   authenticator: opaque(principal === "B" ? "F" : "G"),
 });
 const active = identity();

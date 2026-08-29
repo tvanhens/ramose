@@ -14,8 +14,12 @@ import { ReadCompatibilityHash } from "../authorization/identities.ts";
 
 export const REPLICATION_PROTOCOL_VERSION = 1 as const;
 
-/** Local layers own these independently; neither value is sent on the wire. */
-export const INITIAL_REPLICA_STORAGE_VERSION = 1 as const;
+/**
+ * Local layers own these independently; neither value is sent on the wire.
+ * Version 2 is the documentation-free replica schema with stable route slots;
+ * every version-1 record is dropped by one atomic pre-public migration.
+ */
+export const REPLICA_STORAGE_VERSION = 2 as const;
 export const INITIAL_REPLICA_BUILD_ID = "ramose-client-v1" as const;
 
 export const MAX_REPLICATION_REQUEST_BYTES = 65_536;
@@ -85,6 +89,18 @@ export const ActivationRequest = Schema.Struct({
 });
 export type ActivationRequest = typeof ActivationRequest.Type;
 
+/**
+ * Ordered, opaque, server-authenticated identity of every authorized Graph
+ * segment between the configured root and the target, root-child first. The
+ * root activation carries an empty lineage. Values are domain-separated HMACs
+ * over already-authorized server state: they expose no eid and no name, and the
+ * server emits them only after authorizing the complete path they describe.
+ * The client uses them solely to key local storage slots stably across renames.
+ */
+const GraphLineage = Schema.Array(OpaqueReplicationId).check(
+  Schema.isMaxLength(MAX_REPLICATION_PATH_SEGMENTS),
+);
+
 /** Server-selected cache partition. The authenticator covers the other fields. */
 export const ReplicationIdentity = Schema.Struct({
   version: Schema.Literal(1),
@@ -94,6 +110,7 @@ export const ReplicationIdentity = Schema.Struct({
   catalog: OpaqueReplicationId,
   readView: OpaqueReplicationId,
   readCompatibilityHash: ReadCompatibilityHash,
+  graphLineage: GraphLineage,
   authenticator: OpaqueReplicationId,
 });
 export type ReplicationIdentity = typeof ReplicationIdentity.Type;

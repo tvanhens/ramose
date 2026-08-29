@@ -16,11 +16,17 @@ import {
   openReplicationResponse,
   readReplicationFrames,
   replicationActivationAddress,
-  replicationCacheRouteSlot,
   replicationCacheSelector,
   replicationCredentialFingerprint,
   type ReplicationActivationInput,
 } from "./transport.ts";
+import {
+  replicaRoutePathKey,
+  replicaRouteScope,
+  replicaRouteSlotFor,
+  stableReplicaRouteSlot,
+  type ReplicaRouteSlot,
+} from "./route-slot.ts";
 
 export type ReplicationSessionValue = {
   readonly db: Db;
@@ -43,6 +49,13 @@ export type ReplicationSessionOptions = {
   readonly credential: string;
   /** Internal foundation for #477's refreshable auth provider; never authority. */
   readonly cacheKey?: string;
+  /**
+   * Optional pre-flight stable Graph lineage for this path, as already
+   * confirmed by the parent replica. #477 supplies it from an interned graph
+   * handle; without it the client falls back to the durable observation table
+   * and then to a provisional path-derived slot. Never authority either way.
+   */
+  readonly graphLineage?: readonly string[];
   readonly attributes: readonly AttributeSpec[];
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly storage: IndexedDbReplicaStorage;
@@ -161,18 +174,31 @@ export class ReplicationSession {
 
   static async open(options: ReplicationSessionOptions): Promise<ReplicationSession> {
     const activation = replicationActivationAddress(options.activation);
-    const [fingerprint, candidateKey] = await Promise.all([
-      replicationCredentialFingerprint(options.credential, activation),
+    const observation = {
+      scope: await replicaRouteScope(activation),
+      pathKey: await replicaRoutePathKey(activation.graphPath),
+    };
+    // Prefer a caller-resolved lineage, then a durable observation of this path
+    // text, and only then the provisional path slot. The root is always fixed.
+    const observedSlot = options.graphLineage !== undefined
+      ? undefined
+      : await options.storage.observedRouteSlot(observation);
+    const routeSlot: ReplicaRouteSlot = observedSlot ?? await replicaRouteSlotFor({
+      graphPath: activation.graphPath,
+      lineage: options.graphLineage,
+    });
+    // A provisional slot must be re-keyed onto the stable slot the current
+    // response confirms, so it can never stand in as a confirmed binding.
+    const slotConfirmed = activation.graphPath.length === 0 || observedSlot !== undefined;
+    const [fingerprint, selector] = await Promise.all([
+      replicationCredentialFingerprint(options.credential, activation, routeSlot),
       options.cacheKey === undefined
         ? undefined
-        : Promise.all([
-          replicationCacheSelector(options.cacheKey, activation),
-          replicationCacheRouteSlot(activation),
-        ]).then(([selector, routeSlot]): ReplicaCacheCandidateKey => ({
-          selector,
-          routeSlot,
-        })),
+        : replicationCacheSelector(options.cacheKey, activation),
     ]);
+    const candidateKey: ReplicaCacheCandidateKey | undefined = selector === undefined
+      ? undefined
+      : { selector, routeSlot };
     const restored = await options.storage.restoreBound(
       fingerprint,
       options.attributes,
@@ -191,7 +217,8 @@ export class ReplicationSession {
       restored,
       async (session, generation) => {
         let responseIdentity: ReplicationIdentity | undefined;
-        let bindingConfirmed = restored !== undefined && candidateKey === undefined;
+        let bindingConfirmed = restored !== undefined && candidateKey === undefined &&
+          slotConfirmed;
         try {
           const response = await openReplicationResponse({
             activation,
@@ -209,6 +236,10 @@ export class ReplicationSession {
               if (frameIdentity.readCompatibilityHash !== options.readCompatibilityHash) {
                 session.quarantine(generation);
                 throw new Error("replication identity does not confirm the installed read compatibility");
+              }
+              if (frameIdentity.graphLineage.length !== activation.graphPath.length) {
+                session.quarantine(generation);
+                throw new Error("replication identity does not describe every path segment");
               }
               if (responseIdentity === undefined) {
                 responseIdentity = frameIdentity;
@@ -229,12 +260,24 @@ export class ReplicationSession {
                 if (action === "invalid") {
                   throw new Error("first authenticated frame cannot confirm a cached replica");
                 }
-                await options.storage.bindAuthenticated(
-                  fingerprint,
-                  frameIdentity,
-                  candidateKey,
-                  { signal: session.controller.signal },
-                );
+                // Re-key every local slot onto the lineage this response
+                // authenticated. Path text never survives as a lookup key.
+                const confirmedSlot = await stableReplicaRouteSlot(frameIdentity.graphLineage);
+                const confirmedFingerprint = confirmedSlot === routeSlot
+                  ? fingerprint
+                  : await replicationCredentialFingerprint(
+                    options.credential,
+                    activation,
+                    confirmedSlot,
+                  );
+                await options.storage.bindAuthenticated({
+                  fingerprint: confirmedFingerprint,
+                  identity: frameIdentity,
+                  ...(candidateKey === undefined
+                    ? {}
+                    : { candidateKey: { selector: candidateKey.selector, routeSlot: confirmedSlot } }),
+                  route: { ...observation, slot: confirmedSlot },
+                }, { signal: session.controller.signal });
                 if (!session.current(generation)) return;
                 bindingConfirmed = true;
                 if (session.state.value === undefined) {

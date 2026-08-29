@@ -7,20 +7,12 @@ import { buildRoots } from "../core/conn.ts";
 import { Db, type Roots } from "../core/db.ts";
 import { base64ToBytes } from "../core/log.ts";
 import { Novelty } from "../core/novelty.ts";
-import {
-  FIRST_USER_EID,
-  type AttributeSpec,
-  Schema,
-  VALUE_TYPE_IDENTS,
-  VALUE_TYPE_NAMES,
-  attributeDatoms,
-  bootstrapDatoms,
-} from "../core/schema.ts";
+import { FIRST_USER_EID, type AttributeSpec, Schema } from "../core/schema.ts";
 import { deserializeNode, gzipCodec, serializeNode } from "../core/store.ts";
 import type { IndexId } from "../core/datom.ts";
 import type { NodeRef, NodeStore, TreeNode } from "../core/tree.ts";
 import {
-  INITIAL_REPLICA_STORAGE_VERSION,
+  REPLICA_STORAGE_VERSION,
   type Change,
   type LogicalDatom,
   type LogicalValue,
@@ -31,6 +23,14 @@ import {
   type SnapshotStart,
 } from "./protocol.ts";
 import {
+  replicaAttributeDatoms,
+  replicaAttributes,
+  replicaBootstrapDatoms,
+  sameReplicaAttributes,
+  type ReplicaAttributeSpec,
+} from "./replica-schema.ts";
+import type { ReplicaRouteSlot } from "./route-slot.ts";
+import {
   applyReplicationFrame,
   emptyClientReplicationState,
   ReplicationTransitionError,
@@ -39,7 +39,9 @@ import {
   type CommittedReplica,
 } from "./state.ts";
 
-const DATABASE_VERSION = 4;
+/** The IndexedDB version that introduced replica storage version 2. */
+const STORAGE_V2_DATABASE_VERSION = 5;
+const DATABASE_VERSION = STORAGE_V2_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
 const COMMITTED_HEADS = "replica-committed-heads-v1";
 const STAGING = "replica-staging-v1";
@@ -47,14 +49,31 @@ const STAGING_CHUNKS = "replica-staging-chunks-v1";
 const NODES = "replica-nodes-v1";
 const CREDENTIAL_BINDINGS = "replica-credential-bindings-v1";
 const CACHE_CANDIDATES = "replica-cache-candidates-v1";
+const ROUTE_SLOTS = "replica-route-slots-v1";
 const USER_T = 2;
+
+/**
+ * Every store family this storage format owns. The pre-public migration resets
+ * exactly these; future mutation stores (#475/#476) are separate families that
+ * a later migration must decide about on its own.
+ */
+const REPLICA_STORE_FAMILIES = [
+  COMMITTED,
+  COMMITTED_HEADS,
+  STAGING,
+  STAGING_CHUNKS,
+  NODES,
+  CREDENTIAL_BINDINGS,
+  CACHE_CANDIDATES,
+  ROUTE_SLOTS,
+] as const;
 
 export const DEFAULT_REPLICA_DATABASE_NAME = "ramose-replicas";
 
 /** Authenticator and catalog rotation do not create another stored partition. */
 export const replicaPartitionKey = (identity: ReplicationIdentity): string =>
   [
-    `ramose-replica-v${INITIAL_REPLICA_STORAGE_VERSION}`,
+    `ramose-replica-v${REPLICA_STORAGE_VERSION}`,
     identity.server,
     identity.principal,
     identity.database,
@@ -64,12 +83,13 @@ export const replicaPartitionKey = (identity: ReplicationIdentity): string =>
 
 type CommittedRecord = {
   readonly partition: string;
-  readonly storageVersion: typeof INITIAL_REPLICA_STORAGE_VERSION;
+  readonly storageVersion: typeof REPLICA_STORAGE_VERSION;
   readonly identity: ReplicationIdentity;
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly revision: string;
   readonly datoms: readonly LogicalDatom[];
-  readonly attributes: readonly AttributeSpec[];
+  /** Documentation-free by construction; docs live in the client catalog. */
+  readonly attributes: readonly ReplicaAttributeSpec[];
   /** Server identities only; future client refs use a different store and map. */
   readonly entityIds: readonly (readonly [string, number])[];
   readonly attributeIds: readonly (readonly [string, number])[];
@@ -79,7 +99,7 @@ type CommittedRecord = {
 
 type CommittedHeadRecord = {
   readonly partition: string;
-  readonly storageVersion: typeof INITIAL_REPLICA_STORAGE_VERSION;
+  readonly storageVersion: typeof REPLICA_STORAGE_VERSION;
   readonly identity: ReplicationIdentity;
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly revision: string;
@@ -113,8 +133,26 @@ type CredentialBindingRecord = {
 
 type CacheCandidateRecord = {
   readonly selector: string;
-  readonly routeSlot: string;
+  readonly routeSlot: ReplicaRouteSlot;
   readonly identity: ReplicationIdentity;
+};
+
+/**
+ * One durable observation that a path text resolved to a confirmed stable
+ * route slot. It is written only from an authenticated response, so an offline
+ * client cannot discover a rename this table has never observed; it then falls
+ * back to the provisional path slot and reuses nothing. #477 replaces the
+ * lookup with an interned graph handle resolved against the parent replica.
+ */
+type RouteSlotRecord = {
+  readonly scope: string;
+  readonly pathKey: string;
+  readonly slot: ReplicaRouteSlot;
+};
+
+export type ReplicaRouteObservation = {
+  readonly scope: string;
+  readonly pathKey: string;
 };
 
 const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
@@ -142,7 +180,18 @@ export type ReplicaCacheCandidate = {
 
 export type ReplicaCacheCandidateKey = {
   readonly selector: string;
-  readonly routeSlot: string;
+  readonly routeSlot: ReplicaRouteSlot;
+};
+
+/** Everything one authenticated response may rebind, in one transaction. */
+export type ReplicaAuthenticatedBinding = {
+  readonly fingerprint: string;
+  readonly identity: ReplicationIdentity;
+  readonly candidateKey?: ReplicaCacheCandidateKey | undefined;
+  /** Re-key this observed path text onto the confirmed stable route slot. */
+  readonly route?: (ReplicaRouteObservation & {
+    readonly slot: ReplicaRouteSlot;
+  }) | undefined;
 };
 
 export type ReplicaInstallOptions = {
@@ -202,55 +251,6 @@ const nodeRange = (partition: string): IDBKeyRange =>
 
 const sameJson = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
-
-const normalizeAttributes = (
-  attributes: readonly AttributeSpec[],
-): readonly AttributeSpec[] => {
-  const seen = new Set<string>();
-  const bootstrap = Schema.bootstrap();
-  return Object.freeze([...attributes]
-    .sort((left, right) => left.ident < right.ident ? -1 : left.ident > right.ident ? 1 : 0)
-    .map((spec): AttributeSpec => {
-      if (!spec.ident.startsWith(":")) throw new Error(`invalid replica attribute ${spec.ident}`);
-      if (seen.has(spec.ident)) throw new Error(`duplicate replica attribute ${spec.ident}`);
-      seen.add(spec.ident);
-      const valueType = typeof spec.valueType === "number"
-        ? spec.valueType
-        : VALUE_TYPE_IDENTS[spec.valueType];
-      if (valueType === undefined || VALUE_TYPE_NAMES[valueType] === undefined) {
-        throw new Error(`unknown value type for ${spec.ident}`);
-      }
-      if (spec.cardinality !== undefined && spec.cardinality !== "one" && spec.cardinality !== "many") {
-        throw new Error(`unknown cardinality for ${spec.ident}`);
-      }
-      if (spec.unique !== undefined && spec.unique !== "identity" && spec.unique !== "value") {
-        throw new Error(`unknown uniqueness for ${spec.ident}`);
-      }
-      const normalized: AttributeSpec = {
-        ident: spec.ident,
-        valueType,
-        cardinality: spec.cardinality ?? "one",
-        index: spec.index ?? false,
-        isComponent: spec.isComponent ?? false,
-        optional: spec.optional ?? false,
-        ...(spec.unique === undefined ? {} : { unique: spec.unique }),
-        ...(spec.doc === undefined ? {} : { doc: spec.doc }),
-      };
-      const builtIn = bootstrap.attr(spec.ident);
-      if (
-        builtIn !== undefined &&
-        (builtIn.valueType !== valueType ||
-          builtIn.cardinality !== normalized.cardinality ||
-          builtIn.index !== normalized.index ||
-          builtIn.isComponent !== normalized.isComponent ||
-          !!builtIn.optional !== normalized.optional ||
-          builtIn.unique !== normalized.unique)
-      ) {
-        throw new Error(`replica metadata disagrees with built-in ${spec.ident}`);
-      }
-      return Object.freeze(normalized);
-    }));
-};
 
 const transition = (
   state: ClientReplicationState,
@@ -347,8 +347,8 @@ const materialize = async (
 ): Promise<Materialized> => {
   signal?.throwIfAborted();
   const partition = replicaPartitionKey(identity);
-  const specs = normalizeAttributes(attributes);
-  if (prior !== undefined && !sameJson(prior.attributes, specs)) {
+  const specs = replicaAttributes(attributes);
+  if (prior !== undefined && !sameReplicaAttributes(prior.attributes, specs)) {
     throw new Error("replica attribute metadata changed within one committed read view");
   }
   const attributeIds = new Map<string, number>(prior?.attributeIds ?? []);
@@ -363,7 +363,7 @@ const materialize = async (
       id = nextLocalId++;
       attributeIds.set(spec.ident, id);
     }
-    if (builtIn === undefined) schemaDatoms.push(...attributeDatoms(id, spec, USER_T));
+    if (builtIn === undefined) schemaDatoms.push(...replicaAttributeDatoms(id, spec, USER_T));
   }
 
   const logicalEntities = new Set<string>();
@@ -393,12 +393,12 @@ const materialize = async (
   const roots = await buildRoots(
     store,
     schema,
-    bootstrapDatoms().concat(schemaDatoms, facts),
+    replicaBootstrapDatoms().concat(schemaDatoms, facts),
   );
   signal?.throwIfAborted();
   const record: CommittedRecord = {
     partition,
-    storageVersion: INITIAL_REPLICA_STORAGE_VERSION,
+    storageVersion: REPLICA_STORAGE_VERSION,
     identity,
     readCompatibilityHash: identity.readCompatibilityHash,
     revision: committed.revision,
@@ -442,7 +442,7 @@ const dbFromRecord = (
     const builtIn = bootstrap.attr(spec.ident);
     const id = builtIn?.id ?? attributeIds.get(spec.ident);
     if (id === undefined) throw new Error(`missing local attribute id for ${spec.ident}`);
-    if (builtIn === undefined) schemaDatoms.push(...attributeDatoms(id, spec, USER_T));
+    if (builtIn === undefined) schemaDatoms.push(...replicaAttributeDatoms(id, spec, USER_T));
   }
   const schema = bootstrap.clone().apply(schemaDatoms);
   return new Db({
@@ -488,62 +488,20 @@ export class IndexedDbReplicaStorage {
           keyPath: ["selector", "routeSlot"],
         });
       }
-      if ((event as IDBVersionChangeEvent).oldVersion < 4 && request.transaction !== null) {
-        const upgrade = request.transaction;
-        const heads = upgrade.objectStore(COMMITTED_HEADS);
-        upgrade.objectStore(COMMITTED).openCursor().addEventListener("success", (event) => {
-          const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
-          if (cursor === null) return;
-          const record = cursor.value as Partial<CommittedRecord>;
-          if (
-            record.storageVersion === INITIAL_REPLICA_STORAGE_VERSION &&
-            typeof record.partition === "string" &&
-            typeof record.revision === "string" &&
-            typeof record.readCompatibilityHash === "string" &&
-            record.identity?.readCompatibilityHash === record.readCompatibilityHash
-          ) {
-            heads.put({
-              partition: record.partition,
-              storageVersion: record.storageVersion,
-              identity: record.identity,
-              readCompatibilityHash: record.readCompatibilityHash,
-              revision: record.revision,
-            } satisfies CommittedHeadRecord);
-          }
-          cursor.continue();
-        });
+      if (!database.objectStoreNames.contains(ROUTE_SLOTS)) {
+        database.createObjectStore(ROUTE_SLOTS, { keyPath: ["scope", "pathKey"] });
       }
-      if ((event as IDBVersionChangeEvent).oldVersion < 3 && request.transaction !== null) {
+      const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
+      if (oldVersion > 0 && oldVersion < STORAGE_V2_DATABASE_VERSION && request.transaction !== null) {
+        // One atomic pre-public reset. Every stored record older than storage
+        // version 2 carries documentation in its attribute metadata and roots,
+        // or keys an exact binding/candidate by mutable graph-path text. Both
+        // are unreadable under the current format and there is no gradual
+        // adapter, so the upgrade transaction empties this format's store
+        // families together. Future #475/#476 mutation stores are separate
+        // families and are deliberately untouched.
         const upgrade = request.transaction;
-        // Incomplete pre-agreement snapshots have no safe compatibility proof.
-        upgrade.objectStore(STAGING).clear();
-        upgrade.objectStore(STAGING_CHUNKS).clear();
-        const committed = upgrade.objectStore(COMMITTED);
-        committed.openCursor().addEventListener("success", (event) => {
-          const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
-          if (cursor === null) return;
-          const record = cursor.value as Partial<CommittedRecord>;
-          if (
-            typeof record.readCompatibilityHash !== "string" ||
-            record.identity?.readCompatibilityHash !== record.readCompatibilityHash
-          ) {
-            cursor.delete();
-            if (typeof record.partition === "string") {
-              upgrade.objectStore(NODES).delete(nodeRange(record.partition));
-            }
-          }
-          cursor.continue();
-        });
-        upgrade.objectStore(CREDENTIAL_BINDINGS).openCursor().addEventListener(
-          "success",
-          (event) => {
-            const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
-            if (cursor === null) return;
-            const binding = cursor.value as Partial<CredentialBindingRecord>;
-            if (typeof binding.identity?.readCompatibilityHash !== "string") cursor.delete();
-            cursor.continue();
-          },
-        );
+        for (const store of REPLICA_STORE_FAMILIES) upgrade.objectStore(store).clear();
       }
     });
     const database = await requestResult(request);
@@ -622,7 +580,7 @@ export class IndexedDbReplicaStorage {
   ): Promise<RestoredReplica | undefined> {
     const record = await this.committed(identity);
     if (record === undefined) return undefined;
-    if (record.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION) return undefined;
+    if (record.storageVersion !== REPLICA_STORAGE_VERSION) return undefined;
     if (!sameReplicationIdentity(record.identity, identity)) return undefined;
     if (
       identity.readCompatibilityHash !== readCompatibilityHash ||
@@ -632,7 +590,7 @@ export class IndexedDbReplicaStorage {
       await this.quarantineReplica(identity);
       return undefined;
     }
-    if (!sameJson(record.attributes, normalizeAttributes(attributes))) {
+    if (!sameReplicaAttributes(record.attributes, replicaAttributes(attributes))) {
       throw new Error("replica attribute metadata is incompatible with the committed read view");
     }
     return {
@@ -670,7 +628,7 @@ export class IndexedDbReplicaStorage {
     await transactionDone(transaction);
     if (
       head === undefined ||
-      head.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION ||
+      head.storageVersion !== REPLICA_STORAGE_VERSION ||
       head.partition !== replicaPartitionKey(binding.identity) ||
       head.readCompatibilityHash !== readCompatibilityHash ||
       head.identity.readCompatibilityHash !== readCompatibilityHash ||
@@ -696,7 +654,7 @@ export class IndexedDbReplicaStorage {
     const record = await this.committed(candidate.identity);
     if (
       record === undefined ||
-      record.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION ||
+      record.storageVersion !== REPLICA_STORAGE_VERSION ||
       record.revision !== candidate.revision ||
       candidate.identity.readCompatibilityHash !== readCompatibilityHash ||
       record.readCompatibilityHash !== readCompatibilityHash ||
@@ -705,7 +663,7 @@ export class IndexedDbReplicaStorage {
     ) {
       return undefined;
     }
-    if (!sameJson(record.attributes, normalizeAttributes(attributes))) {
+    if (!sameReplicaAttributes(record.attributes, replicaAttributes(attributes))) {
       throw new Error("replica attribute metadata is incompatible with the committed read view");
     }
     return {
@@ -716,31 +674,54 @@ export class IndexedDbReplicaStorage {
   }
 
   /**
-   * Rebind the exact credential and optional stable selector together only
-   * after the current response has authenticated `identity`.
+   * Read the confirmed stable route slot previously observed for one path text.
+   * This is a lookup hint only: it selects where to look, never what is
+   * authorized, and a miss simply falls back to the provisional slot.
+   */
+  async observedRouteSlot(
+    observation: ReplicaRouteObservation,
+  ): Promise<ReplicaRouteSlot | undefined> {
+    const transaction = this.database.transaction(ROUTE_SLOTS, "readonly");
+    const record = await requestResult<RouteSlotRecord | undefined>(
+      transaction.objectStore(ROUTE_SLOTS).get([observation.scope, observation.pathKey]),
+    );
+    await transactionDone(transaction);
+    return record?.slot;
+  }
+
+  /**
+   * Rebind the exact credential, the optional stable selector, and the observed
+   * route slot together only after the current response has authenticated
+   * `identity`. One transaction keeps the exact binding and the slot that
+   * derives its fingerprint from ever disagreeing on restart.
    */
   async bindAuthenticated(
-    fingerprint: string,
-    identity: ReplicationIdentity,
-    candidateKey?: ReplicaCacheCandidateKey,
+    binding: ReplicaAuthenticatedBinding,
     options: ReplicaInstallOptions = {},
   ): Promise<void> {
     const transaction = this.database.transaction(
-      [CREDENTIAL_BINDINGS, CACHE_CANDIDATES],
+      [CREDENTIAL_BINDINGS, CACHE_CANDIDATES, ROUTE_SLOTS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       transaction.objectStore(CREDENTIAL_BINDINGS).put({
-        fingerprint,
-        identity,
+        fingerprint: binding.fingerprint,
+        identity: binding.identity,
       } satisfies CredentialBindingRecord);
-      if (candidateKey !== undefined) {
+      if (binding.candidateKey !== undefined) {
         transaction.objectStore(CACHE_CANDIDATES).put({
-          selector: candidateKey.selector,
-          routeSlot: candidateKey.routeSlot,
-          identity,
+          selector: binding.candidateKey.selector,
+          routeSlot: binding.candidateKey.routeSlot,
+          identity: binding.identity,
         } satisfies CacheCandidateRecord);
+      }
+      if (binding.route !== undefined) {
+        transaction.objectStore(ROUTE_SLOTS).put({
+          scope: binding.route.scope,
+          pathKey: binding.route.pathKey,
+          slot: binding.route.slot,
+        } satisfies RouteSlotRecord);
       }
       await commitTransaction(transaction);
     } finally {
@@ -754,7 +735,7 @@ export class IndexedDbReplicaStorage {
     identity: ReplicationIdentity,
     options: ReplicaInstallOptions = {},
   ): Promise<void> {
-    await this.bindAuthenticated(fingerprint, identity, undefined, options);
+    await this.bindAuthenticated({ fingerprint, identity }, options);
   }
 
   /** Restore only the exact partition selected by a prior authenticated binding. */
@@ -778,7 +759,7 @@ export class IndexedDbReplicaStorage {
       transaction.objectStore(COMMITTED).get(replicaPartitionKey(binding.identity)),
     );
     await transactionDone(transaction);
-    if (record === undefined || record.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION) {
+    if (record === undefined || record.storageVersion !== REPLICA_STORAGE_VERSION) {
       return undefined;
     }
     if (!sameReplicationIdentity(record.identity, binding.identity)) {
@@ -793,7 +774,7 @@ export class IndexedDbReplicaStorage {
       await this.quarantineReplica(binding.identity, fingerprint);
       return undefined;
     }
-    if (!sameJson(record.attributes, normalizeAttributes(attributes))) {
+    if (!sameReplicaAttributes(record.attributes, replicaAttributes(attributes))) {
       throw new Error("replica attribute metadata is incompatible with the committed read view");
     }
     return {

@@ -48,6 +48,18 @@ const path = (
   dependencies: [{ parentDatabase: DatabaseId.make("root-db"), graphEntity: 42 }],
 });
 
+const nested = (
+  first = 42,
+  second = 43,
+): GraphPathLeaseIdentity => ({
+  ...path(),
+  path: ["organizations", "acme", "boards", "roadmap"],
+  dependencies: [
+    { parentDatabase: DatabaseId.make("root-db"), graphEntity: first },
+    { parentDatabase: DatabaseId.make("child-db"), graphEntity: second },
+  ],
+});
+
 const make = (options: {
   caller?: AuthenticatedCaller;
   path?: GraphPathLeaseIdentity;
@@ -110,6 +122,51 @@ describe("opaque replication identities", () => {
     const catalogOnly = await make({ path: path("child-db", "other-catalog", digest("c")) });
     expect(catalogOnly.readView).toBe(baseline.readView);
     expect(catalogOnly.catalog).not.toBe(baseline.catalog);
+  });
+
+  test("graph lineage is one ordered opaque element per authorized segment", async () => {
+    const root = await make({
+      path: { ...path(), path: [], dependencies: [] },
+    });
+    expect(root.graphLineage).toEqual([]);
+
+    const baseline = await make({ path: nested() });
+    expect(baseline.graphLineage).toHaveLength(2);
+    for (const entity of baseline.graphLineage) {
+      expect(entity).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(entity).not.toContain("42");
+      expect(entity).not.toContain("root-db");
+      expect(entity).not.toContain("acme");
+    }
+    expect(new Set(baseline.graphLineage).size).toBe(2);
+
+    // Path text never reaches the lineage; the entities do.
+    expect((await make({
+      path: { ...nested(), path: ["organizations", "renamed", "boards", "renamed"] },
+    })).graphLineage).toEqual(baseline.graphLineage);
+    const recreated = await make({ path: nested(42, 99) });
+    expect(recreated.graphLineage[0]).toBe(baseline.graphLineage[0]);
+    expect(recreated.graphLineage[1]).not.toBe(baseline.graphLineage[1]);
+    // Chaining means the same leaf entity under another parent is another value.
+    expect((await make({ path: nested(98, 43) })).graphLineage[1])
+      .not.toBe(baseline.graphLineage[1]);
+    expect((await make({ path: nested(98, 43) })).graphLineage[0])
+      .not.toBe(baseline.graphLineage[0]);
+    // A different sealing root produces unrelated lineage values.
+    expect((await makeReplicationIdentity({
+      sealing: {
+        keyId: "bbbbbbbbbbbbbbbbbbbbbb",
+        material: "another-replication-sealing-root-material---",
+      },
+      origin: "https://ramose.test",
+      caller: caller(2_000_000_000),
+      path: nested(),
+      readRoutes: [{
+        database: DatabaseId.make("child-db"),
+        readCompatibilityHash: compatibility("r"),
+        readPolicy: digest("f"),
+      }],
+    })).graphLineage).not.toEqual(baseline.graphLineage);
   });
 
   test("entity identities and revisions are stable opaque PRF outputs within one partition", async () => {

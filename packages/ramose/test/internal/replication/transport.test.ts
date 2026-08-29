@@ -10,10 +10,13 @@ import {
   decodeReplicationNdjson,
   readReplicationFrames,
   replicationActivationAddress,
-  replicationCacheRouteSlot,
   replicationCacheSelector,
   replicationCredentialFingerprint,
 } from "../../../src/internal/replication/transport.ts";
+import {
+  provisionalReplicaRouteSlot,
+  rootReplicaRouteSlot,
+} from "../../../src/internal/replication/route-slot.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 const identity: ReplicationIdentity = {
@@ -24,6 +27,7 @@ const identity: ReplicationIdentity = {
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: ReadCompatibilityHash.make(opaque("k")),
+  graphLineage: [],
   authenticator: opaque("a"),
 };
 const ready: ReplicationFrame = {
@@ -71,21 +75,31 @@ test("canonical activation rejects configured non-origin URL components", () => 
   })).toThrow(/must be an origin/);
 });
 
-test("credential fingerprints are full, exact, and activation-bound", async () => {
+test("credential fingerprints are full, exact, and route-slot-bound", async () => {
   const activation = replicationActivationAddress({
     server: "https://data.example/",
     root: "root",
     graphPath: ["org", "board"],
   });
-  const first = await replicationCredentialFingerprint("exact-token", activation);
+  const slot = await provisionalReplicaRouteSlot(activation.graphPath);
+  const first = await replicationCredentialFingerprint("exact-token", activation, slot);
   expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/);
-  expect(await replicationCredentialFingerprint("exact-token", activation)).toBe(first);
-  expect(await replicationCredentialFingerprint("other-token", activation)).not.toBe(first);
+  expect(await replicationCredentialFingerprint("exact-token", activation, slot)).toBe(first);
+  expect(await replicationCredentialFingerprint("other-token", activation, slot))
+    .not.toBe(first);
+  expect(await replicationCredentialFingerprint("exact-token", activation, await rootReplicaRouteSlot()))
+    .not.toBe(first);
+  // Path text is not fingerprint material; only the slot and server scope are.
   expect(await replicationCredentialFingerprint("exact-token", replicationActivationAddress({
     server: "https://data.example",
     root: "root",
-    graphPath: ["org", "other"],
-  }))).not.toBe(first);
+    graphPath: ["org", "renamed"],
+  }), slot)).toBe(first);
+  expect(await replicationCredentialFingerprint("exact-token", replicationActivationAddress({
+    server: "https://data.example",
+    root: "other-root",
+    graphPath: activation.graphPath,
+  }), slot)).not.toBe(first);
 });
 
 test("cache selectors are opaque root-scoped values with separate route slots", async () => {
@@ -116,11 +130,11 @@ test("cache selectors are opaque root-scoped values with separate route slots", 
     graphPath: first.graphPath,
   }))).not.toBe(selector);
 
-  const route = await replicationCacheRouteSlot(first);
+  const route = await provisionalReplicaRouteSlot(first.graphPath);
   expect(route).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(route).not.toContain("board");
-  expect(await replicationCacheRouteSlot(renamed)).not.toBe(route);
-  expect(await replicationCredentialFingerprint(key, first)).not.toBe(selector);
+  expect(await provisionalReplicaRouteSlot(renamed.graphPath)).not.toBe(route);
+  expect(await replicationCredentialFingerprint(key, first, route)).not.toBe(selector);
 });
 
 test("bounded decoder preserves back-to-back frames across arbitrary chunks", async () => {

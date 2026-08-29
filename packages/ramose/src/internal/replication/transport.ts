@@ -2,6 +2,8 @@
 
 import * as Result from "effect/Result";
 import type { ReadCompatibilityHash } from "../authorization/identities.ts";
+import { localDigest } from "./digest.ts";
+import type { ReplicaRouteSlot } from "./route-slot.ts";
 import {
   MAX_REPLICATION_FRAME_BYTES,
   REPLICATION_PROTOCOL_VERSION,
@@ -12,11 +14,9 @@ import {
   type TerminalError,
 } from "./protocol.ts";
 
-const CREDENTIAL_BINDING_DOMAIN = "ramose:replication:credential-binding:v1";
+const CREDENTIAL_BINDING_DOMAIN = "ramose:replication:credential-binding:v2";
 const CACHE_SELECTOR_DOMAIN = "ramose:replication:cache-selector:v1";
-const CACHE_ROUTE_DOMAIN = "ramose:replication:cache-route:v1";
 const NDJSON_CONTENT_TYPE = "application/x-ndjson";
-const utf8 = new TextEncoder();
 
 export type ReplicationActivationAddress = {
   readonly origin: string;
@@ -72,58 +72,39 @@ export const replicationActivationAddress = (
   });
 };
 
-const base64Url = (bytes: Uint8Array): string => {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-};
-
-const sha256 = async (material: unknown): Promise<string> => {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    utf8.encode(JSON.stringify(material)),
-  );
-  return base64Url(new Uint8Array(digest));
-};
-
 /**
- * Full SHA-256 binding for an exact credential and activation address. The raw
+ * Full SHA-256 binding for an exact credential, server scope, and stable local
+ * route slot. Mutable path text is not part of the material, so renaming a
+ * Graph the client has already confirmed keeps the same exact binding. The raw
  * credential is used only as digest input and is never returned or persisted.
  */
 export const replicationCredentialFingerprint = async (
   credential: string,
   activation: ReplicationActivationAddress,
-): Promise<string> => sha256({
+  routeSlot: ReplicaRouteSlot,
+): Promise<string> => localDigest({
     domain: CREDENTIAL_BINDING_DOMAIN,
     credential,
     activation: {
       origin: activation.origin,
       root: activation.root,
-      graphPath: activation.graphPath,
+      routeSlot,
     },
   });
 
 /**
  * Stable local candidate selector for one account-shaped cache namespace.
- * The raw key is digest input only and graph paths remain separate lookup
+ * The raw key is digest input only and route slots remain separate lookup
  * slots, so neither value can become replica authority.
  */
 export const replicationCacheSelector = async (
   cacheKey: string,
   activation: ReplicationActivationAddress,
-): Promise<string> => sha256({
+): Promise<string> => localDigest({
   domain: CACHE_SELECTOR_DOMAIN,
   cacheKey,
   origin: activation.origin,
   root: activation.root,
-});
-
-/** Opaque local lookup slot for one current root-relative graph path. */
-export const replicationCacheRouteSlot = async (
-  activation: ReplicationActivationAddress,
-): Promise<string> => sha256({
-  domain: CACHE_ROUTE_DOMAIN,
-  graphPath: activation.graphPath,
 });
 
 export type OpenReplicationInput = {

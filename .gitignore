@@ -23,3 +23,7 @@ packages/*/NOTICE
 # Incremental typecheck cache (tsconfig.json sets `incremental: true`). Machine
 # -local and ~2MB — rebuilt on demand by `bun run typecheck`.
 *.tsbuildinfo
+
+# Vitest browser-mode failure screenshots.
+test/browser/__screenshots__/
+.vitest-attachments/

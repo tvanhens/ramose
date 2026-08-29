@@ -32,6 +32,7 @@ const identity = (principal = opaque("p")): ReplicationIdentity => ({
   catalog: CATALOG,
   readView: READ_VIEW,
   readCompatibilityHash: READ_COMPATIBILITY,
+  graphLineage: [],
   authenticator: AUTHENTICATOR,
 });
 
@@ -94,6 +95,18 @@ const deleteDatabase = (name: string): Promise<void> =>
     request.addEventListener("blocked", () => reject(new Error("database deletion blocked")), {
       once: true,
     });
+  });
+
+const requestResult = <T>(request: IDBRequest<T>): Promise<T> =>
+  new Promise((resolve, reject) => {
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+
+const transactionDone = (transaction: IDBTransaction): Promise<void> =>
+  new Promise((resolve, reject) => {
+    transaction.addEventListener("complete", () => resolve(), { once: true });
+    transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
   });
 
 const openDatabase = (name: string, version: number): Promise<IDBDatabase> =>
@@ -433,9 +446,142 @@ browserTest("an open adapter does not block a future IndexedDB schema upgrade", 
   const name = `ramose-replica-upgrade-${browser.uniqueId}`;
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-    const upgraded = await openDatabase(name, 5);
-    expect(upgraded.version).toBe(5);
+    const upgraded = await openDatabase(name, 6);
+    expect(upgraded.version).toBe(6);
     upgraded.close();
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a documentation-only catalog change reuses the replica without any write", async ({ browser }) => {
+  const name = `ramose-replica-documentation-${browser.uniqueId}`;
+  const selected = identity();
+  const entity = opaque("e");
+  const revision = opaque("1");
+  const documented: readonly AttributeSpec[] = attributes.map((spec, index) => ({
+    ...spec,
+    doc: `first documentation ${index}`,
+  }));
+  const redocumented: readonly AttributeSpec[] = attributes.map((spec, index) => ({
+    ...spec,
+    doc: `completely rewritten documentation ${index}`,
+  }));
+  let storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await storage.startSnapshot({
+      type: "SnapshotStart", protocol: 1, identity: selected,
+      snapshot: opaque("s"), revision,
+    });
+    await storage.stageSnapshotChunk({
+      type: "SnapshotChunk", protocol: 1, identity: selected,
+      snapshot: opaque("s"), index: 0,
+      datoms: [snapshotDatom(entity, ":item/name", { type: "string", value: "documented" })],
+    });
+    const installed = await storage.commitSnapshot({
+      type: "SnapshotCommit", protocol: 1, identity: selected,
+      snapshot: opaque("s"), revision, chunks: 1,
+    }, documented);
+    expect(installed?.revision).toBe(revision);
+
+    // No documentation reaches the persisted manifest or the local indexes.
+    const inspected = await openDatabase(name, 5);
+    const inspectTx = inspected.transaction(["replica-committed-v1", "replica-nodes-v1"], "readonly");
+    const [manifests, nodes] = await Promise.all([
+      requestResult<Record<string, unknown>[]>(
+        inspectTx.objectStore("replica-committed-v1").getAll(),
+      ),
+      requestResult<{ readonly body: Uint8Array }[]>(
+        inspectTx.objectStore("replica-nodes-v1").getAll(),
+      ),
+    ]);
+    await transactionDone(inspectTx);
+    inspected.close();
+    expect(manifests).toHaveLength(1);
+    expect(JSON.stringify(manifests)).not.toContain("documentation");
+    expect(manifests[0]!.attributes).toEqual([
+      { ident: ":item/friend", valueType: ValueTag.Ref, cardinality: "one", index: false, isComponent: false, optional: false },
+      { ident: ":item/name", valueType: ValueTag.Str, cardinality: "one", index: true, isComponent: false, optional: false },
+      { ident: ":item/tags", valueType: ValueTag.Str, cardinality: "many", index: false, isComponent: false, optional: false },
+    ]);
+    const rootHashes = JSON.stringify(manifests[0]!.roots);
+    expect(installed!.db.attr(":db/doc")).toBeDefined();
+    expect(await facts(installed!.db, ":db/doc")).toEqual([]);
+
+    storage.close();
+    storage = await IndexedDbReplicaStorage.open(name);
+
+    // Restoring under completely rewritten documentation performs no write at
+    // all: no reset, no snapshot, and only readonly IndexedDB transactions.
+    const modes: string[] = [];
+    const databasePrototype = IDBDatabase.prototype;
+    const nativeTransaction = databasePrototype.transaction;
+    databasePrototype.transaction = function (
+      this: IDBDatabase,
+      storeNames: string | Iterable<string>,
+      mode?: IDBTransactionMode,
+      options?: IDBTransactionOptions,
+    ): IDBTransaction {
+      if (this.name === name) modes.push(mode ?? "readonly");
+      return nativeTransaction.call(this, storeNames, mode, options);
+    } as IDBDatabase["transaction"];
+    let restored: Awaited<ReturnType<IndexedDbReplicaStorage["restore"]>>;
+    try {
+      restored = await storage.restore(selected, redocumented, READ_COMPATIBILITY);
+      expect([...(await namedEntities(restored!.db)).keys()]).toEqual(["documented"]);
+    } finally {
+      databasePrototype.transaction = nativeTransaction;
+    }
+    expect(restored?.revision).toBe(revision);
+    expect(modes.length).toBeGreaterThan(0);
+    expect(modes.every((mode) => mode === "readonly")).toBe(true);
+
+    const after = await openDatabase(name, 5);
+    const afterTx = after.transaction(["replica-committed-v1", "replica-nodes-v1"], "readonly");
+    const [afterManifests, afterNodes] = await Promise.all([
+      requestResult<Record<string, unknown>[]>(
+        afterTx.objectStore("replica-committed-v1").getAll(),
+      ),
+      requestResult<{ readonly body: Uint8Array }[]>(
+        afterTx.objectStore("replica-nodes-v1").getAll(),
+      ),
+    ]);
+    await transactionDone(afterTx);
+    after.close();
+    expect(JSON.stringify(afterManifests[0]!.roots)).toBe(rootHashes);
+    expect(afterNodes).toHaveLength(nodes.length);
+
+    // Materializing the same value under different documentation produces
+    // byte-identical content-addressed roots, so docs cannot perturb storage.
+    const twinName = `${name}-twin`;
+    const twin = await IndexedDbReplicaStorage.open(twinName);
+    try {
+      await twin.startSnapshot({
+        type: "SnapshotStart", protocol: 1, identity: selected,
+        snapshot: opaque("s"), revision,
+      });
+      await twin.stageSnapshotChunk({
+        type: "SnapshotChunk", protocol: 1, identity: selected,
+        snapshot: opaque("s"), index: 0,
+        datoms: [snapshotDatom(entity, ":item/name", { type: "string", value: "documented" })],
+      });
+      expect(await twin.commitSnapshot({
+        type: "SnapshotCommit", protocol: 1, identity: selected,
+        snapshot: opaque("s"), revision, chunks: 1,
+      }, redocumented)).toBeDefined();
+      const twinDb = await openDatabase(twinName, 5);
+      const twinTx = twinDb.transaction("replica-committed-v1", "readonly");
+      const twinManifests = await requestResult<Record<string, unknown>[]>(
+        twinTx.objectStore("replica-committed-v1").getAll(),
+      );
+      await transactionDone(twinTx);
+      twinDb.close();
+      expect(JSON.stringify(twinManifests[0]!.roots)).toBe(rootHashes);
+    } finally {
+      twin.close();
+      await deleteDatabase(twinName);
+    }
   } finally {
     storage.close();
     await deleteDatabase(name);

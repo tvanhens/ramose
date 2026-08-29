@@ -16,10 +16,16 @@ import {
 } from "../../packages/ramose/src/internal/replication/session.ts";
 import {
   replicationActivationAddress,
-  replicationCacheRouteSlot,
   replicationCacheSelector,
   replicationCredentialFingerprint,
 } from "../../packages/ramose/src/internal/replication/transport.ts";
+import {
+  provisionalReplicaRouteSlot,
+  replicaRoutePathKey,
+  replicaRouteScope,
+  rootReplicaRouteSlot,
+  stableReplicaRouteSlot,
+} from "../../packages/ramose/src/internal/replication/route-slot.ts";
 import { browserTest } from "./fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
@@ -31,6 +37,7 @@ const selected: ReplicationIdentity = {
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: ReadCompatibilityHash.make(opaque("k")),
+  graphLineage: [],
   authenticator: opaque("a"),
 };
 const attributes: readonly AttributeSpec[] = [
@@ -104,15 +111,21 @@ browserTest("restores only an exact credential binding and isolates observer fai
     await install(storage);
     const address = replicationActivationAddress(activation);
     const rawCacheKey = "local-user-id";
+    const rootSlot = await rootReplicaRouteSlot();
     const fingerprint = await replicationCredentialFingerprint(
       "known-credential",
       address,
+      rootSlot,
     );
     const candidateKey = {
       selector: await replicationCacheSelector(rawCacheKey, address),
-      routeSlot: await replicationCacheRouteSlot(address),
+      routeSlot: rootSlot,
     };
-    await storage.bindAuthenticated(fingerprint, selected, candidateKey);
+    await storage.bindAuthenticated({
+      fingerprint,
+      identity: selected,
+      candidateKey,
+    });
     const inspected = await openNative(name);
     const bindingTx = inspected.transaction([
       "replica-credential-bindings-v1",
@@ -193,26 +206,20 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
   const storage = await IndexedDbReplicaStorage.open(name);
   const rawCacheKey = "principal-local-selector";
   const oldAddress = replicationActivationAddress(activation);
-  const renamedAddress = replicationActivationAddress({
-    ...activation,
-    graphPath: ["renamed"],
-  });
+  const rootSlot = await rootReplicaRouteSlot();
+  const otherSlot = await provisionalReplicaRouteSlot(["renamed"]);
   const selector = await replicationCacheSelector(rawCacheKey, oldAddress);
-  const oldKey = {
-    selector,
-    routeSlot: await replicationCacheRouteSlot(oldAddress),
-  };
-  const renamedKey = {
-    selector,
-    routeSlot: await replicationCacheRouteSlot(renamedAddress),
-  };
+  const oldKey = { selector, routeSlot: rootSlot };
+  const renamedKey = { selector, routeSlot: otherSlot };
   const originalFingerprint = await replicationCredentialFingerprint(
     "token-before-refresh",
     oldAddress,
+    rootSlot,
   );
   const rotatedFingerprint = await replicationCredentialFingerprint(
     "token-after-refresh",
     oldAddress,
+    rootSlot,
   );
   const other: ReplicationIdentity = {
     ...selected,
@@ -222,7 +229,11 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
   try {
     await install(storage);
     await install(storage, opaque("u"), opaque("2"), other, "other-principal");
-    await storage.bindAuthenticated(originalFingerprint, selected, oldKey);
+    await storage.bindAuthenticated({
+      fingerprint: originalFingerprint,
+      identity: selected,
+      candidateKey: oldKey,
+    });
 
     const partition = replicaPartitionKey(selected);
     const inspectedHead = await openNative(name);
@@ -242,7 +253,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     inspectedHead.close();
     expect(head).toEqual({
       partition,
-      storageVersion: 1,
+      storageVersion: 2,
       identity: selected,
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
@@ -292,7 +303,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
 
     const correctHead = {
       partition,
-      storageVersion: 1,
+      storageVersion: 2,
       identity: selected,
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
@@ -327,7 +338,11 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       revision: opaque("r"),
     };
     expect(classifyReplicationCandidateFrame(candidate, ready)).toBe("resume");
-    await storage.bindAuthenticated(rotatedFingerprint, selected, oldKey);
+    await storage.bindAuthenticated({
+      fingerprint: rotatedFingerprint,
+      identity: selected,
+      candidateKey: oldKey,
+    });
     expect((await storage.restoreConfirmedCandidate(
       candidate!,
       attributes,
@@ -370,11 +385,15 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     );
     const reset = { type: "Reset" as const, protocol: 1 as const, identity: other };
     expect(classifyReplicationCandidateFrame(collision, reset)).toBe("reset");
-    await storage.bindAuthenticated(
-      await replicationCredentialFingerprint("other-principal-token", oldAddress),
-      other,
-      oldKey,
-    );
+    await storage.bindAuthenticated({
+      fingerprint: await replicationCredentialFingerprint(
+        "other-principal-token",
+        oldAddress,
+        rootSlot,
+      ),
+      identity: other,
+      candidateKey: oldKey,
+    });
     const rebound = await storage.selectCacheCandidate(
       oldKey,
       selected.readCompatibilityHash,
@@ -386,9 +405,8 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       selected.readCompatibilityHash,
     ))?.revision).toBe(opaque("2"));
 
-    // Mutable path text is not identity: a new opaque route slot has no
-    // candidate, but the authenticated identity still locates the committed
-    // partition and can bind that new slot.
+    // A different route slot has no candidate, but the authenticated identity
+    // still locates the committed partition and can bind that new slot.
     expect(await storage.selectCacheCandidate(
       renamedKey,
       selected.readCompatibilityHash,
@@ -406,11 +424,15 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       attributes,
       selected.readCompatibilityHash,
     ))?.revision).toBe(changedRevision);
-    await storage.bindAuthenticated(
-      await replicationCredentialFingerprint("renamed-path-token", renamedAddress),
-      selected,
-      renamedKey,
-    );
+    await storage.bindAuthenticated({
+      fingerprint: await replicationCredentialFingerprint(
+        "renamed-path-token",
+        oldAddress,
+        otherSlot,
+      ),
+      identity: selected,
+      candidateKey: renamedKey,
+    });
     expect((await storage.selectCacheCandidate(
       renamedKey,
       selected.readCompatibilityHash,
@@ -445,10 +467,11 @@ browserTest("never relabels a shared physical partition after a post-fence crash
   const fingerprint = await replicationCredentialFingerprint(
     "replacement-token",
     address,
+    await rootReplicaRouteSlot(),
   );
   const candidateKey = {
     selector: await replicationCacheSelector("same-local-user", address),
-    routeSlot: await replicationCacheRouteSlot(address),
+    routeSlot: await rootReplicaRouteSlot(),
   };
   try {
     expect(replicaPartitionKey(replacement)).toBe(replicaPartitionKey(selected));
@@ -457,7 +480,11 @@ browserTest("never relabels a shared physical partition after a post-fence crash
     // A valid Reset/Start may bind the newly authenticated identity before its
     // replacement snapshot commits. A crash at that point must not turn the
     // prior record into the new identity's value on restart.
-    await storage.bindAuthenticated(fingerprint, replacement, candidateKey);
+    await storage.bindAuthenticated({
+      fingerprint,
+      identity: replacement,
+      candidateKey,
+    });
     storage.close();
     storage = await IndexedDbReplicaStorage.open(name);
 
@@ -492,64 +519,256 @@ browserTest("never relabels a shared physical partition after a post-fence crash
   }
 });
 
-browserTest("additively upgrades and restores a compatible populated version-2 replica", async ({ browser }) => {
-  const sourceName = `ramose-session-v3-source-${browser.uniqueId}`;
-  const legacyName = `ramose-session-v2-${browser.uniqueId}`;
-  const source = await IndexedDbReplicaStorage.open(sourceName);
+const LEGACY_STORE_KEY_PATHS: readonly (readonly [string, string | string[]])[] = [
+  ["replica-committed-v1", "partition"],
+  ["replica-committed-heads-v1", "partition"],
+  ["replica-staging-v1", "partition"],
+  ["replica-staging-chunks-v1", ["partition", "index"]],
+  ["replica-nodes-v1", ["partition", "hash"]],
+  ["replica-credential-bindings-v1", "fingerprint"],
+  ["replica-cache-candidates-v1", ["selector", "routeSlot"]],
+];
+
+browserTest("one atomic migration resets every documentation-bearing, path-keyed record", async ({ browser }) => {
+  const legacyName = `ramose-session-storage-v1-${browser.uniqueId}`;
+  const mutations = "future-mutation-outbox";
   let upgraded: IndexedDbReplicaStorage | undefined;
   try {
-    await install(source);
-    source.close();
-    const sourceDb = await openNative(sourceName);
-    const sourceTx = sourceDb.transaction(["replica-committed-v1", "replica-nodes-v1"], "readonly");
-    const [committed, nodes] = await Promise.all([
-      requestResult<unknown[]>(sourceTx.objectStore("replica-committed-v1").getAll()),
-      requestResult<unknown[]>(sourceTx.objectStore("replica-nodes-v1").getAll()),
-    ]);
-    await transactionDone(sourceTx);
-    sourceDb.close();
-
-    const legacy = await openNative(legacyName, 2, (database) => {
-      database.createObjectStore("replica-committed-v1", { keyPath: "partition" });
-      database.createObjectStore("replica-staging-v1", { keyPath: "partition" });
-      database.createObjectStore("replica-staging-chunks-v1", { keyPath: ["partition", "index"] });
-      database.createObjectStore("replica-nodes-v1", { keyPath: ["partition", "hash"] });
-      database.createObjectStore("replica-credential-bindings-v1", { keyPath: "fingerprint" });
+    const legacy = await openNative(legacyName, 4, (database) => {
+      for (const [store, keyPath] of LEGACY_STORE_KEY_PATHS) {
+        database.createObjectStore(store, { keyPath: keyPath as string | string[] });
+      }
+      // A store family this format does not own must survive the migration.
+      database.createObjectStore(mutations, { keyPath: "id" });
     });
-    const legacyTx = legacy.transaction(
-      ["replica-committed-v1", "replica-nodes-v1"],
-      "readwrite",
-    );
-    for (const record of committed) legacyTx.objectStore("replica-committed-v1").put(record);
-    for (const record of nodes) legacyTx.objectStore("replica-nodes-v1").put(record);
-    await transactionDone(legacyTx);
+    const legacyPartition = "ramose-replica-v1:legacy";
+    const seed = legacy.transaction([
+      ...LEGACY_STORE_KEY_PATHS.map(([store]) => store),
+      mutations,
+    ], "readwrite");
+    seed.objectStore("replica-committed-v1").put({
+      partition: legacyPartition,
+      storageVersion: 1,
+      identity: selected,
+      readCompatibilityHash: selected.readCompatibilityHash,
+      revision: opaque("r"),
+      datoms: [],
+      // Version 1 persisted annotation documentation inside its schema.
+      attributes: [{
+        ident: ":item/name",
+        valueType: 2,
+        cardinality: "one",
+        index: true,
+        isComponent: false,
+        optional: false,
+        doc: "documentation that version 1 folded into its stored roots",
+      }],
+      entityIds: [],
+      attributeIds: [[":item/name", 1000]],
+      roots: {},
+      nextLocalId: 1001,
+    });
+    seed.objectStore("replica-committed-heads-v1").put({
+      partition: legacyPartition,
+      storageVersion: 1,
+      identity: selected,
+      readCompatibilityHash: selected.readCompatibilityHash,
+      revision: opaque("r"),
+    });
+    seed.objectStore("replica-staging-v1").put({
+      partition: legacyPartition,
+      identity: selected,
+      snapshot: opaque("q"),
+      revision: opaque("r"),
+      baseRevision: null,
+    });
+    seed.objectStore("replica-staging-chunks-v1").put({
+      partition: legacyPartition,
+      index: 0,
+      datoms: [],
+    });
+    seed.objectStore("replica-nodes-v1").put({
+      partition: legacyPartition,
+      hash: "legacy-node",
+      body: new Uint8Array([1, 2, 3]),
+    });
+    // Version 1 keyed both of these by hashed graph-path text.
+    seed.objectStore("replica-credential-bindings-v1").put({
+      fingerprint: "path-keyed-fingerprint",
+      identity: selected,
+    });
+    seed.objectStore("replica-cache-candidates-v1").put({
+      selector: opaque("S"),
+      routeSlot: opaque("R"),
+      identity: selected,
+    });
+    seed.objectStore(mutations).put({ id: "queued-operation" });
+    await transactionDone(seed);
     legacy.close();
 
     upgraded = await IndexedDbReplicaStorage.open(legacyName);
-    expect((await upgraded.restore(selected, attributes, selected.readCompatibilityHash))?.revision).toBe(opaque("r"));
     const reopened = await openNative(legacyName);
-    expect(reopened.version).toBe(4);
-    expect([...reopened.objectStoreNames]).toContain("replica-credential-bindings-v1");
-    expect([...reopened.objectStoreNames]).toContain("replica-cache-candidates-v1");
-    expect([...reopened.objectStoreNames]).toContain("replica-committed-heads-v1");
-    const headTx = reopened.transaction("replica-committed-heads-v1", "readonly");
-    const heads = await requestResult<Record<string, unknown>[]>(
-      headTx.objectStore("replica-committed-heads-v1").getAll(),
+    expect(reopened.version).toBe(5);
+    expect([...reopened.objectStoreNames]).toContain("replica-route-slots-v1");
+    const inspect = reopened.transaction([
+      ...LEGACY_STORE_KEY_PATHS.map(([store]) => store),
+      "replica-route-slots-v1",
+      mutations,
+    ], "readonly");
+    const counts = await Promise.all(
+      [...LEGACY_STORE_KEY_PATHS.map(([store]) => store), "replica-route-slots-v1"]
+        .map((store) => requestResult(inspect.objectStore(store).count())),
     );
-    await transactionDone(headTx);
-    expect(heads).toHaveLength(1);
-    expect(heads[0]).toMatchObject({
-      identity: selected,
-      revision: opaque("r"),
-      readCompatibilityHash: selected.readCompatibilityHash,
-    });
-    expect(heads[0]).not.toHaveProperty("datoms");
+    const preserved = await requestResult(inspect.objectStore(mutations).count());
+    await transactionDone(inspect);
     reopened.close();
+    expect(counts).toEqual(counts.map(() => 0));
+    expect(preserved).toBe(1);
+
+    // The reset partition is unreachable and a fresh replica installs cleanly.
+    expect(await upgraded.restore(
+      selected,
+      attributes,
+      selected.readCompatibilityHash,
+    )).toBeUndefined();
+    await install(upgraded);
+    expect((await upgraded.restore(
+      selected,
+      attributes,
+      selected.readCompatibilityHash,
+    ))?.revision).toBe(opaque("r"));
+    expect(replicaPartitionKey(selected).startsWith("ramose-replica-v2:")).toBe(true);
   } finally {
-    source.close();
     upgraded?.close();
-    await deleteDatabase(sourceName);
     await deleteDatabase(legacyName);
+  }
+});
+
+browserTest("stable route slots survive a rename and refuse a delete/recreate", async ({ browser }) => {
+  const name = `ramose-session-route-slots-${browser.uniqueId}`;
+  const storage = await IndexedDbReplicaStorage.open(name);
+  const address = replicationActivationAddress(activation);
+  const scope = await replicaRouteScope(address);
+  // One Graph entity, seen under two successive names.
+  const boardLineage = [opaque("1")];
+  const recreatedLineage = [opaque("2")];
+  const boardSlot = await stableReplicaRouteSlot(boardLineage);
+  const recreatedSlot = await stableReplicaRouteSlot(recreatedLineage);
+  const child: ReplicationIdentity = {
+    ...selected,
+    database: opaque("D"),
+    graphLineage: boardLineage,
+    authenticator: opaque("A"),
+  };
+  const recreated: ReplicationIdentity = {
+    ...selected,
+    database: opaque("E"),
+    graphLineage: recreatedLineage,
+    authenticator: opaque("B"),
+  };
+  const credential = "one-exact-token";
+  const boundFingerprint = await replicationCredentialFingerprint(
+    credential,
+    address,
+    boardSlot,
+  );
+  try {
+    expect(boardSlot).not.toBe(recreatedSlot);
+    expect(boardSlot).not.toBe(await rootReplicaRouteSlot());
+    await install(storage, opaque("q"), opaque("r"), child, "child-value");
+    await storage.bindAuthenticated({
+      fingerprint: boundFingerprint,
+      identity: child,
+      route: {
+        scope,
+        pathKey: await replicaRoutePathKey(["board"]),
+        slot: boardSlot,
+      },
+    });
+
+    // Renaming the Graph the parent replica has observed keeps one slot, so the
+    // same exact credential restores the same child replica.
+    const renamedPathKey = await replicaRoutePathKey(["board-renamed"]);
+    await storage.bindAuthenticated({
+      fingerprint: boundFingerprint,
+      identity: child,
+      route: { scope, pathKey: renamedPathKey, slot: boardSlot },
+    });
+    expect(await storage.observedRouteSlot({ scope, pathKey: renamedPathKey }))
+      .toBe(boardSlot);
+    expect((await storage.restoreBound(
+      await replicationCredentialFingerprint(
+        credential,
+        replicationActivationAddress({ ...activation, graphPath: ["board-renamed"] }),
+        boardSlot,
+      ),
+      attributes,
+      selected.readCompatibilityHash,
+    ))?.revision).toBe(opaque("r"));
+
+    // Deleting and recreating a same-named Graph produces a different lineage,
+    // so nothing the previous Graph stored can be selected.
+    expect(await storage.restoreBound(
+      await replicationCredentialFingerprint(credential, address, recreatedSlot),
+      attributes,
+      selected.readCompatibilityHash,
+    )).toBeUndefined();
+    expect(await storage.restore(
+      recreated,
+      attributes,
+      selected.readCompatibilityHash,
+    )).toBeUndefined();
+
+    // An offline client whose observation table never saw the rename falls back
+    // to the provisional path slot and reuses nothing.
+    const unobservedPathKey = await replicaRoutePathKey(["board-never-observed"]);
+    expect(await storage.observedRouteSlot({ scope, pathKey: unobservedPathKey }))
+      .toBeUndefined();
+    const provisional = await provisionalReplicaRouteSlot(["board-never-observed"]);
+    expect(provisional).not.toBe(boardSlot);
+    expect(await storage.restoreBound(
+      await replicationCredentialFingerprint(credential, address, provisional),
+      attributes,
+      selected.readCompatibilityHash,
+    )).toBeUndefined();
+
+    // The session resolves the same slot offline, so the renamed path restores
+    // the child replica as stale while the unobserved name restores nothing.
+    const renamed = await ReplicationSession.open({
+      activation: { ...activation, graphPath: ["board-renamed"] },
+      credential,
+      attributes,
+      readCompatibilityHash: selected.readCompatibilityHash,
+      storage,
+    });
+    expect(renamed.snapshot()).toMatchObject({
+      status: "connecting",
+      value: { revision: opaque("r"), stale: true },
+    });
+    await renamed.close();
+    const undiscovered = await ReplicationSession.open({
+      activation: { ...activation, graphPath: ["board-never-observed"] },
+      credential,
+      attributes,
+      readCompatibilityHash: selected.readCompatibilityHash,
+      storage,
+    });
+    expect(undiscovered.snapshot().value).toBeUndefined();
+    await undiscovered.close();
+
+    // Path text never becomes a persisted key.
+    const inspected = await openNative(name);
+    const tx = inspected.transaction("replica-route-slots-v1", "readonly");
+    const records = await requestResult<unknown[]>(
+      tx.objectStore("replica-route-slots-v1").getAll(),
+    );
+    await transactionDone(tx);
+    inspected.close();
+    expect(records).toHaveLength(2);
+    expect(JSON.stringify(records)).not.toContain("board");
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
   }
 });
 

@@ -81,6 +81,35 @@ const callerMaterial = (caller: AuthenticatedCaller): JsonValue => ({
   classes: [...caller.classes].sort(),
 });
 
+/**
+ * Seal the ordered Graph entity lineage of one authorized path. Each element
+ * chains its parent element, so the same entity reached through a different
+ * parent is a different value and no element leaks a raw eid or a path name.
+ * The lineage is emitted only inside an identity the server has already
+ * authorized end to end, so it discloses nothing new to the client.
+ */
+const graphLineage = async (
+  sealing: ServerSealingKey,
+  path: GraphPathLeaseIdentity,
+): Promise<readonly OpaqueReplicationId[]> => {
+  const lineage: OpaqueReplicationId[] = [];
+  let parent: string = path.rootDatabase;
+  for (const dependency of path.dependencies) {
+    const sealed = await opaqueHmac(
+      sealing,
+      "ramose:replication:graph-lineage:v1",
+      {
+        parent,
+        parentDatabase: dependency.parentDatabase,
+        entity: dependency.graphEntity,
+      },
+    );
+    lineage.push(sealed);
+    parent = sealed;
+  }
+  return Object.freeze(lineage);
+};
+
 export type ReplicationIdentityInput = {
   readonly sealing: ServerSealingKey;
   readonly origin: string;
@@ -161,6 +190,7 @@ export const makeReplicationIdentity = async (
     catalog,
     readView,
     readCompatibilityHash,
+    graphLineage: await graphLineage(input.sealing, input.path),
   };
   const authenticator = await opaqueHmac(
     input.sealing,
