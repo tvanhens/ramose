@@ -861,10 +861,7 @@ const createCollector = (args: {
       try {
         return await run(effectContext);
       } catch (cause) {
-        if (
-          cause instanceof Unauthorized || cause instanceof InvalidRequest ||
-          cause instanceof OperationRejected || cause instanceof OperationRuntimeFault
-        ) throw cause;
+        if (isOperationSurfaceError(cause)) throw cause;
         throw new OperationRuntimeFault(`effect:${name}`, cause);
       }
     },
@@ -982,6 +979,15 @@ type InvocationRefSlot = {
   readonly shape: Extract<OperationInputShape, { readonly _tag: "ref" }>;
 };
 
+
+const admissionFault = (message: string): OperationRuntimeFault =>
+  new OperationRuntimeFault("admission", new Error(message));
+
+/** Typed operation-surface errors pass through; anything else is a runtime fault. */
+const isOperationSurfaceError = (cause: unknown): boolean =>
+  cause instanceof Unauthorized || cause instanceof InvalidRequest ||
+  cause instanceof OperationRejected || cause instanceof OperationRuntimeFault;
+
 const refPathKey = (path: readonly (string | number)[]): string =>
   JSON.stringify(path);
 
@@ -1042,10 +1048,7 @@ const replayRefExemptions = (
     const key = refPathKey(exemption.path);
     const slot = slots.get(key);
     if (slot === undefined || slot.eid !== exemption.eid || exemptions.has(key)) {
-      throw new OperationRuntimeFault(
-        "admission",
-        new Error("durable replay fence does not match operation input refs"),
-      );
+      throw admissionFault("durable replay fence does not match operation input refs");
     }
     exemptions.set(key, exemption);
   }
@@ -1288,10 +1291,7 @@ const captureInvocationReplayFence = async (
     if (await dbAfter.exists(slot.eid)) continue;
     const concrete = await originalType(slot.eid);
     if (concrete === undefined) {
-      throw new OperationRuntimeFault(
-        "admission",
-        new Error("admitted operation ref has no pre-commit type"),
-      );
+      throw admissionFault("admitted operation ref has no pre-commit type");
     }
     consumedRefs.push(Object.freeze({
       path: Object.freeze([...slot.path]),
@@ -1303,10 +1303,7 @@ const captureInvocationReplayFence = async (
   if (admission.target !== undefined) {
     const invocationTarget = admission[OPERATION_ADMISSION].invocation.target;
     if (invocationTarget === undefined) {
-      throw new OperationRuntimeFault(
-        "admission",
-        new Error("admitted targeted operation has no invocation target"),
-      );
+      throw admissionFault("admitted targeted operation has no invocation target");
     }
     const referenceEid = typeof invocationTarget === "number"
       ? invocationTarget
@@ -1320,10 +1317,7 @@ const captureInvocationReplayFence = async (
         invocationTarget,
       );
       if (!before.visible) {
-        throw new OperationRuntimeFault(
-          "admission",
-          new Error("admitted target has no pre-commit authorization witness"),
-        );
+        throw admissionFault("admitted target has no pre-commit authorization witness");
       }
       const authorizationReadSet = Object.freeze(before.observations
         // The target's disappearance is fenced separately. Keep consumed-ref
@@ -1545,10 +1539,7 @@ const authorizeCatalogOperationOnDb = async (
     if (replayFence !== undefined) {
       const fenced = replayFence.target;
       if (fenced === undefined) {
-        throw new OperationRuntimeFault(
-          "admission",
-          new Error("durable replay target fence does not match operation"),
-        );
+        throw admissionFault("durable replay target fence does not match operation");
       }
       const currentReferenceEid = typeof invocation.target === "number"
         ? invocation.target
@@ -1622,10 +1613,7 @@ const authorizeCatalogOperationOnDb = async (
   } else if (invocation.target !== undefined) {
     throw deny();
   } else if (replayFence?.target !== undefined) {
-    throw new OperationRuntimeFault(
-      "admission",
-      new Error("durable replay target fence does not match operation"),
-    );
+    throw admissionFault("durable replay target fence does not match operation");
   }
 
   let decoded: unknown;
@@ -1715,10 +1703,7 @@ export const executeCatalogOperation = async (
     owner.connection !== connection || owner.runtime !== runtime ||
     owner.invocation !== invocation
   ) {
-    throw new OperationRuntimeFault(
-      "admission",
-      new Error("operation admission belongs to a different invocation"),
-    );
+    throw admissionFault("operation admission belongs to a different invocation");
   }
   const {
     authoritativeNowMs,
@@ -1748,10 +1733,7 @@ export const executeCatalogOperation = async (
   try {
     draft = await binding.run(collector.op, decoded);
   } catch (cause) {
-    if (
-      cause instanceof Unauthorized || cause instanceof InvalidRequest ||
-      cause instanceof OperationRejected || cause instanceof OperationRuntimeFault
-    ) throw cause;
+    if (isOperationSurfaceError(cause)) throw cause;
     throw new OperationRuntimeFault("body", cause);
   }
 

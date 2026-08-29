@@ -51,6 +51,7 @@ import {
 } from "./ir.ts";
 import { AUTHORIZATION_LANGUAGE_VERSION } from "./version.ts";
 import { freezeBound, remapDecision } from "./plain.ts";
+import { invalid, isBlank, mismatch, requireNonBlank } from "./validation/common.ts";
 import type {
   CanonicalAuthorizationExpr,
   CanonicalRefTerm,
@@ -88,21 +89,6 @@ type CatalogIndex = {
   readonly owners: ReadonlyMap<string, OwnerRef>;
   readonly fieldsByOwnerName: ReadonlyMap<string, ReadonlyArray<FieldId>>;
 };
-
-const invalid = (message: string): Result.Result<never, BindFailure> =>
-  Result.fail(new InvalidIR({ message }));
-
-const mismatch = (
-  fields: ConstructorParameters<typeof CatalogMismatch>[0],
-): Result.Result<never, BindFailure> => Result.fail(new CatalogMismatch(fields));
-
-const isBlank = (value: string): boolean => value.length === 0;
-
-const requireNonBlank = (
-  value: string,
-  label: string,
-): Result.Result<string, BindFailure> =>
-  isBlank(value) ? mismatch({ message: `blank ${label}` }) : Result.succeed(value);
 
 const intern = <K, V>(
   map: Map<K, V>,

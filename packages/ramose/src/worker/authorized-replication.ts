@@ -222,6 +222,16 @@ const sameVersion = (
   sameGraphPathLeaseIdentity(expectedPath, version.pathIdentity) &&
   sameReplicationIdentity(expectedIdentity, version.identity);
 
+const requireSameVersion = (
+  expectedPath: GraphPathLeaseIdentity,
+  expectedIdentity: ReplicationIdentity,
+  version: AuthorizedVersion,
+): void => {
+  if (!sameVersion(expectedPath, expectedIdentity, version)) {
+    throw new Error("replication authorization partition changed");
+  }
+};
+
 const snapshotFrames = async function* (
   input: AuthorizedReplicationInput,
   authorize: () => Promise<AuthorizedVersion>,
@@ -231,9 +241,7 @@ const snapshotFrames = async function* (
 ): AsyncGenerator<ReplicationFrame, ServerReplicaState, undefined> {
   for (;;) {
     let version = await authorize();
-    if (!sameVersion(expectedPath, expectedIdentity, version)) {
-      throw new Error("replication authorization partition changed");
-    }
+    requireSameVersion(expectedPath, expectedIdentity, version);
     const logical = identityEncoder(input, version);
     const candidate = await currentState(input, version, logical, signal);
     // Projection and hashing are bounded in memory, not necessarily in wall
@@ -263,9 +271,7 @@ const snapshotFrames = async function* (
       for (;;) {
         if (!leaseAlive(version)) {
           const renewed = await authorize();
-          if (!sameVersion(expectedPath, expectedIdentity, renewed)) {
-            throw new Error("replication authorization partition changed");
-          }
+          requireSameVersion(expectedPath, expectedIdentity, renewed);
           version = renewed;
           renewedSnapshot = renewed.target.context.filteredDb;
         }
@@ -320,9 +326,7 @@ const snapshotFrames = async function* (
     if (restart) continue;
 
     const finalVersion = await authorize();
-    if (!sameVersion(expectedPath, expectedIdentity, finalVersion)) {
-      throw new Error("replication authorization partition changed");
-    }
+    requireSameVersion(expectedPath, expectedIdentity, finalVersion);
     const finalState = await currentState(input, finalVersion, logical, signal);
     if (!leaseAlive(finalVersion) || finalState.revision !== candidate.revision) {
       continue;
@@ -353,9 +357,7 @@ const resetFrames = async function* (
   signal: AbortSignal,
 ): AsyncGenerator<ReplicationFrame, ServerReplicaState, undefined> {
   const version = await authorize();
-  if (!sameVersion(expectedPath, expectedIdentity, version)) {
-    throw new Error("replication authorization partition changed");
-  }
+  requireSameVersion(expectedPath, expectedIdentity, version);
   signal.throwIfAborted();
   yield frame({
     type: "Reset",
@@ -384,21 +386,14 @@ const advanceFrames = async function* (
     readonly acknowledgeUnchanged?: boolean;
   } = {},
 ): AsyncGenerator<ReplicationFrame, ServerReplicaState, undefined> {
+  const reset = () => resetFrames(input, authorize, expectedPath, expectedIdentity, signal);
   let firstVersion = options.initialVersion;
   for (;;) {
     const version = firstVersion ?? await authorize();
     firstVersion = undefined;
-    if (!sameVersion(expectedPath, expectedIdentity, version)) {
-      throw new Error("replication authorization partition changed");
-    }
+    requireSameVersion(expectedPath, expectedIdentity, version);
     if (previous.basisT > version.target.context.currentDb.basisT) {
-      return yield* resetFrames(
-        input,
-        authorize,
-        expectedPath,
-        expectedIdentity,
-        signal,
-      );
+      return yield* reset();
     }
     const logical = identityEncoder(input, version);
     const reconstruct = async <A>(work: () => Promise<A>): Promise<A> => {
@@ -421,13 +416,7 @@ const advanceFrames = async function* (
       });
     } catch (cause) {
       if (!(cause instanceof ResumeBasisUnavailable)) throw cause;
-      return yield* resetFrames(
-        input,
-        authorize,
-        expectedPath,
-        expectedIdentity,
-        signal,
-      );
+      return yield* reset();
     }
     let delta: Awaited<ReturnType<typeof diffLogicalDbs>>;
     try {
@@ -439,13 +428,7 @@ const advanceFrames = async function* (
       ));
     } catch (cause) {
       if (!(cause instanceof ResumeBasisUnavailable)) throw cause;
-      return yield* resetFrames(
-        input,
-        authorize,
-        expectedPath,
-        expectedIdentity,
-        signal,
-      );
+      return yield* reset();
     }
     const beforeRevision = await makeRevision(
       input.env.RAMOSE_INTERNAL_SECRET,
@@ -453,13 +436,7 @@ const advanceFrames = async function* (
       delta.previousStateDigest,
     );
     if (beforeRevision !== previous.revision) {
-      return yield* resetFrames(
-        input,
-        authorize,
-        expectedPath,
-        expectedIdentity,
-        signal,
-      );
+      return yield* reset();
     }
     const revision = await makeRevision(
       input.env.RAMOSE_INTERNAL_SECRET,
@@ -467,19 +444,11 @@ const advanceFrames = async function* (
       delta.stateDigest,
     );
     if (delta.overflow) {
-      return yield* resetFrames(
-        input,
-        authorize,
-        expectedPath,
-        expectedIdentity,
-        signal,
-      );
+      return yield* reset();
     }
 
     const finalVersion = await authorize();
-    if (!sameVersion(expectedPath, expectedIdentity, finalVersion)) {
-      throw new Error("replication authorization partition changed");
-    }
+    requireSameVersion(expectedPath, expectedIdentity, finalVersion);
     const finalBasisT = finalVersion.target.context.currentDb.basisT;
     if (
       !leaseAlive(finalVersion) ||
@@ -505,9 +474,7 @@ const advanceFrames = async function* (
         // already validated above, leaving no await between the final fence
         // and the state-bearing yield.
         const readyVersion = await authorize();
-        if (!sameVersion(expectedPath, expectedIdentity, readyVersion)) {
-          throw new Error("replication authorization partition changed");
-        }
+        requireSameVersion(expectedPath, expectedIdentity, readyVersion);
         if (
           !leaseAlive(readyVersion) ||
           readyVersion.target.context.currentDb.basisT !== finalBasisT
@@ -664,9 +631,7 @@ const replicationFrames = async function* (
     }
 
     const opening = await authorize();
-    if (!sameVersion(expectedPath, initialIdentity, opening)) {
-      throw new Error("replication authorization partition changed");
-    }
+    requireSameVersion(expectedPath, initialIdentity, opening);
 
     let committed: ServerReplicaState;
     const resume = input.activation.resumeRevision;
@@ -742,9 +707,7 @@ const replicationFrames = async function* (
           effectiveSignal,
         );
         const renewed = await authorize();
-        if (!sameVersion(expectedPath, initialIdentity, renewed)) {
-          throw new Error("replication authorization partition changed");
-        }
+        requireSameVersion(expectedPath, initialIdentity, renewed);
         if (renewed.target.context.currentDb.basisT === committed.basisT) {
           // An idle fence must still reauthorize every ancestor, but an
           // unchanged target basis needs no logical database scan.
@@ -878,13 +841,14 @@ export const authorizedReplicationResponse = (
     );
   });
 
-export const incompatibleReplicationResponse = (
+const terminalErrorResponse = (
+  code: "incompatible-version" | "update-required",
   headers: Record<string, string>,
 ): Response => new Response(
   `${encodeReplicationFrame({
     type: "TerminalError",
     protocol: REPLICATION_PROTOCOL_VERSION,
-    code: "incompatible-version",
+    code,
   })}\n`,
   {
     status: 409,
@@ -896,21 +860,11 @@ export const incompatibleReplicationResponse = (
   },
 );
 
+export const incompatibleReplicationResponse = (
+  headers: Record<string, string>,
+): Response => terminalErrorResponse("incompatible-version", headers);
+
 /** Schema disagreement is terminal before any data-bearing stream exists. */
 export const updateRequiredReplicationResponse = (
   headers: Record<string, string>,
-): Response => new Response(
-  `${encodeReplicationFrame({
-    type: "TerminalError",
-    protocol: REPLICATION_PROTOCOL_VERSION,
-    code: "update-required",
-  })}\n`,
-  {
-    status: 409,
-    headers: {
-      "content-type": "application/x-ndjson",
-      "cache-control": "no-store",
-      ...headers,
-    },
-  },
-);
+): Response => terminalErrorResponse("update-required", headers);
