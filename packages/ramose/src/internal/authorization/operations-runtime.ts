@@ -425,6 +425,7 @@ const createCollector = (args: {
     field: FieldDescriptor,
     value?: unknown,
     hasValue = true,
+    deferConcreteField = false,
   ): void => {
     const ident = fieldIdent(field);
     const capturedEid = snapshotStoredValue(descriptor, lowerEntityArg(eid));
@@ -432,7 +433,7 @@ const createCollector = (args: {
     const capturedValue = hasValue
       ? snapshotStoredValue(descriptor, loweredValue)
       : undefined;
-    if (descriptor.id.owner.kind === "trait" && args.target === undefined) {
+    if (deferConcreteField) {
       // A targetless trait handle has no concrete composer until its subject
       // resolves on the staged basis. Retain this helper intent so ordinary
       // composer field/fixed-binding semantics can be checked before commit.
@@ -469,18 +470,27 @@ const createCollector = (args: {
   const makeHandle = (
     eid: unknown,
     resolveField: (argument: unknown) => FieldDescriptor,
+    deferConcreteField = false,
   ): RuntimeHandle => {
     const capturedEid = snapshotStoredValue(descriptor, lowerEntityArg(eid));
     return {
       _tag: "TxHandle",
       eid: capturedEid,
-      set: (field, value) => appendWrite("add", capturedEid, resolveField(field), value),
+      set: (field, value) => appendWrite(
+        "add",
+        capturedEid,
+        resolveField(field),
+        value,
+        true,
+        deferConcreteField,
+      ),
       remove: (field, value) => appendWrite(
         "retract",
         capturedEid,
         resolveField(field),
         value,
         value !== undefined,
+        deferConcreteField,
       ),
       delete: () => {
         tx.push([":db/retractEntity", capturedEid]);
@@ -497,7 +507,11 @@ const createCollector = (args: {
       return field;
     });
 
-  const ownerHandle = (eid: unknown): RuntimeHandle => makeHandle(eid, requireOwnerField);
+  const ownerHandle = (eid: unknown): RuntimeHandle => makeHandle(
+    eid,
+    requireOwnerField,
+    descriptor.id.owner.kind === "trait" && args.target === undefined,
+  );
 
   const addPut = (
     entity: RuntimeEntity,

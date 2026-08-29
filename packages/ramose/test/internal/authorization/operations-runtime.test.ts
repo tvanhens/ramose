@@ -73,6 +73,7 @@ const Tagged = Trait("tagged", { tag: string() }, {
   }),
 });
 
+let linkDefinitionForOperation: unknown;
 const FixedTenant = Trait("fixedTenant", { tenant: string() }, {
   bind: () => ({ values: { tenant: "acme" } }),
   operations: (Operation) => ({
@@ -86,6 +87,16 @@ const FixedTenant = Trait("fixedTenant", { tenant: string() }, {
       run(op, input) {
         (op.entity(input.id) as any).set(FixedTenant.tenant, input.tenant);
         return {};
+      },
+    }),
+    createFixedLink: Operation({
+      self: false,
+      input: EffectSchema.Struct({ target: OperationEntityId }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        return {
+          id: (op as any).put(linkDefinitionForOperation, { target: input.target }),
+        };
       },
     }),
   }),
@@ -130,6 +141,7 @@ const Link = Entity("link", {
     }),
   }),
 });
+linkDefinitionForOperation = Link;
 
 const Item = Entity("item", { title: string() }, {
   operations: (Operation) => ({
@@ -290,6 +302,7 @@ const buildWorld = async () => {
       invoke(Tagged[OwnedOperations].retag).when(memberOrOperator),
       invoke(Tagged[OwnedOperations].staticRetag).when(hasClass("member")),
       invoke(FixedTenant[OwnedOperations].rewriteTenant).when(hasClass("member")),
+      invoke(FixedTenant[OwnedOperations].createFixedLink).when(hasClass("member")),
       invoke(Link[OwnedOperations].create).when(hasClass("member")),
       invoke(Item[OwnedOperations].rename).when(memberOrOperator),
       invoke(Item[OwnedOperations].echoRef).when(hasClass("member")),
@@ -490,6 +503,24 @@ describe("deployed operation runtime", () => {
 
     expect(world.conn.t).toBe(beforeT);
     expect((await world.conn.db().entity(link))?.[":fixedTenant/tenant"]).toBe("acme");
+  });
+
+  test("does not apply deferred owner-handle checks to explicit creation helpers", async () => {
+    const world = await buildWorld();
+    const created = await invokeOperation(world, {
+      owner: { kind: "trait", name: "fixedTenant" },
+      localName: "createFixedLink",
+      input: { target: world.good },
+      caller: caller("member"),
+    });
+    const link = (created.output as { readonly id: number }).id;
+
+    expect(await world.conn.db().entity(link)).toMatchObject({
+      ":ramose/type": ":link",
+      ":link/target": world.good,
+      ":fixedTenant/tenant": "acme",
+      ":fixedLabels/labels": ["a-first", "z-last"],
+    });
   });
 
   test("keeps definition-directed ref compatibility as storage semantics", async () => {
