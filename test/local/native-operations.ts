@@ -383,7 +383,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(committed.body.result).toEqual([[completed.body.result.id]]);
     });
 
-    test("an isolate lost after claim recovers as indeterminate without execution", async () => {
+    test("the first exact retry lazily recovers an isolate-lost claim without execution", async () => {
       const base = ctx.urls().nativeOperationsUrl;
       const database = "operations-idempotent-indeterminate";
       await install(base, database);

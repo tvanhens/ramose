@@ -266,9 +266,6 @@ export class Transactor {
       receipt TEXT NOT NULL,
       PRIMARY KEY (principal_id, invocation_id)
     )`);
-    sql.exec(`CREATE INDEX IF NOT EXISTS operation_receipts_status
-      ON operation_receipts (status)`);
-    this.recoverAbandonedInvocationReceipts();
     this.store = new R2NodeStore(this.host.bucket, { codec: gzipCodec, maxNodes: 4096 });
 
     let rec = this.getMeta<RootRecord>("root") ?? (await readCurrentRoot(this.host.bucket));
@@ -371,26 +368,6 @@ export class Transactor {
     );
   }
 
-  /** A claimed row from a discarded isolate may have crossed a native effect. */
-  private recoverAbandonedInvocationReceipts(): void {
-    this.host.transactionSync(() => {
-      const rows = this.host.sql.exec(
-        `SELECT status, receipt FROM operation_receipts WHERE status = 'claimed'`,
-      ).toArray();
-      for (const row of rows) {
-        const stored = parseStoredInvocationReceipt(
-          JSON.parse(row.receipt as string),
-        );
-        if (row.status !== stored.status || stored.status !== "claimed") {
-          throw new TypeError("durable invocation receipt status mismatch");
-        }
-        this.replaceInvocationReceipt(
-          transitionInvocationReceipt(stored, { _tag: "Recover" }),
-        );
-      }
-    });
-  }
-
   private claimInvocationReceipt(
     prepared: PreparedInvocationReceipt,
   ) {
@@ -403,6 +380,8 @@ export class Transactor {
       if (decision._tag === "Claim") {
         this.insertInvocationReceipt(decision.receipt);
       } else if (decision._tag === "Recover") {
+        // A claim left by a discarded isolate is recovered only when its key
+        // is retried, so cold-start work is independent of receipt history.
         this.replaceInvocationReceipt(decision.receipt);
       }
       return decision;
