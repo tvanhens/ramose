@@ -50,8 +50,8 @@ Allowed instrumentation wraps a real implementation and forwards to it:
 `test/support/recorder.ts` (HTTP/WebSocket), checkpoints in
 `packages/ramose/src/internal/test-hooks.ts`, and `/__test__/db/:name/*`
 (R2/storage, the real Worker basis cache/fetch/invalidation path, checkpoint
-arm/release, DO abort, real session/watch WebSockets, and forwarded
-transact/query/index controls). These are inert
+arm/release, DO abort, real session/watch/transactor WebSockets, and forwarded
+transact/query/index/info/log controls). These are inert
 unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`.
 
 Not allowed: `scriptedPeer`, `FakeSocket` / `fakeDispatch`, `MemoryBucket`
@@ -62,9 +62,8 @@ call. `Alchemy.inMemoryState()` is Alchemy deploy state for the real local
 stack, not a Ramose double. Domain fixtures and pure-function inputs are
 fine.
 
-`scripts/check-test-doubles.ts` rejects new violations. Existing ones are
-allowlisted in `scripts/test-double-allowlist.json` — shrink that file;
-do not add entries.
+`scripts/check-test-doubles.ts` rejects new violations. The completed #390
+migration leaves `scripts/test-double-allowlist.json` empty; keep it empty.
 
 ## Cursor Cloud specific instructions
 

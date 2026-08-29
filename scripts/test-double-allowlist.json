@@ -1,9 +1,4 @@
 {
-  "comment": "Existing #390 test-double violations. Shrink to empty as migrations merge. Do not add new entries.",
-  "files": {
-    "packages/ramose/test/internal/transactor/harness.ts": ["FakeAnalytics", "FakeSocket", "MemoryBucket", "bun:sqlite"],
-    "packages/ramose/test/internal/transactor/indexer.test.ts": ["MemoryBucket"],
-    "packages/ramose/test/internal/transactor/observability.test.ts": ["FakeAnalytics"],
-    "packages/ramose/test/internal/transactor/transactor.test.ts": ["FakeSocket"]
-  }
+  "comment": "No #390 test-double exceptions remain. Do not add entries.",
+  "files": {}
 }

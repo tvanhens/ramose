@@ -38,6 +38,7 @@ export type LocalUrls = {
   readonly authUrl: string;
   readonly authRestartUrl: string;
   readonly authRotatedUrl: string;
+  readonly transactorUrl: string;
 };
 
 const deployed = beforeAll(deploy(Stack));
@@ -133,7 +134,9 @@ export const testAdmin = async (
     | "/transact"
     | "/query"
     | "/sessions"
-    | "/index",
+    | "/index"
+    | "/info"
+    | "/log",
   body: unknown,
   headers?: Record<string, string>,
 ): Promise<{ status: number; body: any; res: Response }> => {

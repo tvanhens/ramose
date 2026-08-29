@@ -42,6 +42,22 @@ export const Token = Ramose.Server("Token", {
   env: TEST_HOOKS_ENV,
 });
 
+/** Real-stack transactor/indexer fixture with small, deterministic bounds. */
+export const TransactorTest = Ramose.Server("TransactorTest", {
+  peer: "TransactorTestPeer",
+  storage: "TransactorTestStore",
+  main: empty,
+  env: {
+    ...TEST_HOOKS_ENV,
+    RAMOSE_INDEX_TX_THRESHOLD: "20",
+    RAMOSE_INDEX_INTERVAL_MS: "600000",
+    RAMOSE_INDEX_MAX_TXS_PER_RUN: "5",
+    RAMOSE_LOG_KEEP_TXS: "3",
+    RAMOSE_MAX_BATCH: "8",
+    RAMOSE_TIMING_YIELDS: "1",
+  },
+});
+
 /** JWT verifier bindings reserved for #412. Data plane is still 401. */
 export const Policy = Ramose.Server("Policy", {
   peer: "PolicyPeer",

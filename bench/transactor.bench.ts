@@ -9,7 +9,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Harness, attribute } from "../packages/ramose/test/internal/transactor/harness.ts";
+import { BenchHarness, attribute } from "./transactor-harness.ts";
 import { fmt, percentile } from "./lib.ts";
 
 const conc = Number(process.argv[2] ?? 64);
@@ -21,7 +21,7 @@ const dir = mkdtempSync(join(tmpdir(), "ramose-tx-"));
 const file = join(dir, "transactor.sqlite");
 
 async function run(label: string, groupCommit: boolean, conc: number) {
-  const h = new Harness({ file: `${file}-${label}-${conc}`, config: { maxBatch: groupCommit ? 0 : 1, indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 } });
+  const h = new BenchHarness({ file: `${file}-${label}-${conc}`, config: { maxBatch: groupCommit ? 0 : 1, indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 } });
   const tx = h.transactor;
   await tx.init();
   await tx.transact([attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" }), attribute(":k/v", "string")]);

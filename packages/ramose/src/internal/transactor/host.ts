@@ -5,9 +5,9 @@
  * tempid/unique resolution, monotonic `t`, group commit, novelty broadcast,
  * root ownership — and touches the outside world only through this
  * interface. The Durable Object shell (transactor-do.ts) implements it over
- * `ctx.storage.sql` / WebSockets / alarms. The Bun `bun:sqlite` harness is
- * allowlisted under issue #390 and is not for new tests — induce faults
- * through `/__test__` checkpoints on the real local DO.
+ * `ctx.storage.sql` / WebSockets / alarms. Runtime tests induce faults through
+ * `/__test__` checkpoints on the real local DO; only microbenchmarks use an
+ * in-process adapter to isolate engine cost from network/workerd overhead.
  */
 
 import type { R2Like } from "../storage/index.ts";

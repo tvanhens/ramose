@@ -141,6 +141,23 @@ const handleCheckpointLocal = (body: {
 const transactorUrl = (db: string, path: string): string =>
   `https://transactor${path}${path.includes("?") ? "&" : "?"}db=${encodeURIComponent(db)}`;
 
+const forwardTransactorSubscription = (
+  request: Request,
+  env: RamoseEnv,
+  db: string,
+  from: number,
+): Promise<Response> =>
+  env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db)).fetch(
+    transactorUrl(db, `/subscribe?from=${from}`),
+    {
+      headers: {
+        Upgrade: "websocket",
+        ...coloHeader(request),
+        ...internalHeaders(env),
+      },
+    },
+  );
+
 /** Replica catch-up fence. Only forwarded when the caller set it. */
 const minTHeader = (request: Request): Record<string, string> => {
   const minT = request.headers.get("x-ramose-min-t");
@@ -205,6 +222,16 @@ export const handleTestAdmin = async (
   const parsed = parseTestAdminPath(url.pathname);
   if (parsed === undefined) throw new NotFound({ message: "unknown test admin path" });
   const { db, rest } = parsed;
+  if (rest === "/subscribe") {
+    if (request.method !== "GET") {
+      throw new BadRequest({ message: "test transactor subscription is GET" });
+    }
+    const from = Number(url.searchParams.get("from") ?? "0");
+    if (!Number.isSafeInteger(from) || from < 0) {
+      throw new BadRequest({ message: "test transactor subscription needs a non-negative integer from" });
+    }
+    return forwardTransactorSubscription(request, env, db, from);
+  }
   if (rest === "/watch") {
     if (request.method !== "GET") throw new BadRequest({ message: "test watch is GET" });
     const expectedDeployment = env.CF_VERSION_METADATA?.id;
@@ -288,6 +315,31 @@ export const handleTestAdmin = async (
     return forward(request, env, db, "transactor", "/admin/index", "{}", {
       passThrough: true,
     });
+  }
+  if (rest === "/info") {
+    return forward(request, env, db, "transactor", "/info", "{}", {
+      passThrough: true,
+    });
+  }
+  if (rest === "/log") {
+    const body = (await request.json()) as { from?: unknown; to?: unknown };
+    const from = body.from === undefined ? 0 : body.from;
+    const to = body.to === undefined ? Number.MAX_SAFE_INTEGER : body.to;
+    if (
+      typeof from !== "number" || !Number.isSafeInteger(from) || from < 0 ||
+      typeof to !== "number" || !Number.isSafeInteger(to) || to < from
+    ) {
+      throw new BadRequest({ message: "test transactor log needs integer 0 <= from <= to" });
+    }
+    return forward(
+      request,
+      env,
+      db,
+      "transactor",
+      `/log?from=${from}&to=${to}`,
+      "{}",
+      { passThrough: true },
+    );
   }
   if (rest === "/transact") {
     return forward(request, env, db, "transactor", "/transact", await request.text(), {

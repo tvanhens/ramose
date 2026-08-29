@@ -18,7 +18,6 @@ import {
   statusOf,
   toHttpError,
 } from "../../../src/internal/transactor/errors.ts";
-import { Harness, attribute } from "./harness.ts";
 
 const body = async (r: Response) => (await r.json()) as Record<string, unknown>;
 
@@ -80,70 +79,5 @@ describe("transactor errors: tag → status/body", () => {
     const i = errorResponse(new Internal({ message: "boom" }));
     expect(i.status).toBe(500);
     expect((await body(i)).error).toBe("boom");
-  });
-});
-
-describe("transactor errors: handleRequest keeps the HTTP contract", () => {
-  const SCHEMA = [attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" })];
-  async function fresh() {
-    const h = new Harness();
-    await h.transactor.init();
-    await h.transactor.transact(SCHEMA);
-    return h;
-  }
-  const req = (path: string, init?: RequestInit) => new Request(`https://t${path}`, init);
-
-  test("happy path is untouched", async () => {
-    const h = await fresh();
-    const r = await h.transactor.handleRequest(req("/transact", { method: "POST", body: JSON.stringify({ tx: [{ ":k/id": 1 }] }) }));
-    expect(r.status).toBe(200);
-    expect((await body(r)).t).toBe(h.transactor.t);
-  });
-
-  test("malformed body → 400", async () => {
-    const h = await fresh();
-    const r = await h.transactor.handleRequest(req("/transact", { method: "POST", body: JSON.stringify({ nope: 1 }) }));
-    expect(r.status).toBe(400);
-    const b = await body(r);
-    expect(b.error).toBe("body must be { tx: [...] }");
-    expect(b.tag).toBe("BadRequest");
-  });
-
-  test("rejected tx → 409 with the core error code the client reads", async () => {
-    const h = await fresh();
-    const r = await h.transactor.handleRequest(req("/transact", { method: "POST", body: JSON.stringify({ tx: [[":db/add", 1, ":k/nope", 1]] }) }));
-    expect(r.status).toBe(409);
-    const b = await body(r);
-    expect(b.tag).toBe("TxRejected");
-    expect(typeof b.code).toBe("string");
-    expect(String(b.error)).toMatch(/:k\/nope/);
-  });
-
-  test("unknown route → 404", async () => {
-    const h = await fresh();
-    const r = await h.transactor.handleRequest(req("/nope"));
-    expect(r.status).toBe(404);
-    expect((await body(r)).error).toBe("not found");
-  });
-
-  test("dead transactor → 503 + retry-after (storage fault aborts the instance)", async () => {
-    const h = new Harness({ failWriteAt: 3 });
-    await h.transactor.init();
-    await h.transactor.transact(SCHEMA).catch(() => undefined);
-    await h.transactor.transact([{ ":k/id": 1 }]).catch(() => undefined);
-    expect(h.transactor.isDead).toBe(true);
-    const r = await h.transactor.handleRequest(req("/transact", { method: "POST", body: JSON.stringify({ tx: [{ ":k/id": 2 }] }) }));
-    expect(r.status).toBe(503);
-    expect(r.headers.get("retry-after")).toBe("0");
-    const b = await body(r);
-    expect(b.tag).toBe("TransactorDead");
-    expect(String(b.error)).toMatch(/transactor aborted/);
-  });
-
-  test("internal failures → 500 with the message", async () => {
-    const h = await fresh();
-    const r = await h.transactor.handleRequest(req("/transact", { method: "POST", body: "{not json" }));
-    expect(r.status).toBe(500);
-    expect((await body(r)).tag).toBe("Internal");
   });
 });

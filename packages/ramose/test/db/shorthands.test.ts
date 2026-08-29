@@ -23,8 +23,6 @@ import {
   timestamp,
   uuid,
 } from "../../src/db/internal.ts";
-import { query } from "../../src/internal/core/index.ts";
-import { attribute, Harness } from "../internal/transactor/harness.ts";
 
 const User = Entity("user", {
   name: Field.unique(string({ doc: "display name" }), "upsert"),
@@ -311,23 +309,5 @@ describe("Field composition merge", () => {
     expect(enumMembersOf(composed.schema)).toEqual(["low", "med"]);
     expect(composed.doc).toBe("priority");
     expect(composed.valueType).toBe("string");
-  });
-});
-
-describe("uuid through the server", () => {
-  test("a plain string writes and a string comes back from query", async () => {
-    const h = new Harness();
-    await h.transactor.init();
-    await h.transactor.transact([attribute(":item/uid", "uuid")]);
-    const ack = await h.transactor.transact([
-      { ":db/id": "item", ":item/uid": "3F333DF6-90A4-4FDA-8DD3-9485D27CEE36" },
-    ]);
-    const uid = await query(
-      h.transactor.connection.db(),
-      `[:find ?uid . :in $ ?e :where [?e :item/uid ?uid]]`,
-      [ack.tempids.item],
-    );
-    expect(uid).toBe("3f333df6-90a4-4fda-8dd3-9485d27cee36");
-    expect(typeof uid).toBe("string");
   });
 });

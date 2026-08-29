@@ -29,6 +29,7 @@ import {
   PolicySchema,
   Seeded,
   Token,
+  TransactorTest,
 } from "./resources.ts";
 
 const providers = Layer.mergeAll(Cloudflare.providers(), Ramose.providers());
@@ -45,6 +46,7 @@ export const Stack = Alchemy.Stack(
     // when the App resource applies (RuntimeContext is ambient there).
     const empty = yield* Empty;
     const token = yield* Token;
+    const transactorTest = yield* TransactorTest;
     const policy = yield* Policy;
     const policyClosed = yield* PolicyClosed;
     const policySchema = yield* PolicySchema;
@@ -60,6 +62,7 @@ export const Stack = Alchemy.Stack(
       openUrl: open.url,
       emptyUrl: empty.url,
       tokenUrl: token.url,
+      transactorUrl: transactorTest.url,
       policyUrl: policy.url,
       policyClosedUrl: policyClosed.url,
       policySchemaUrl: policySchema.url,

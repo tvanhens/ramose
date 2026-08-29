@@ -12,7 +12,7 @@
 import { Schema, type Datom, ValueTag, FIRST_USER_EID, attributeDatoms, bootstrapDatoms, buildRoots, gzipCodec, reachable, treeDepth } from "../packages/ramose/src/internal/core/index.ts";
 import { R2NodeStore, dbPrefix, prefixedBucket, publishRoot, recordToRoots, rootsToRecord } from "../packages/ramose/src/internal/storage/index.ts";
 import { MemoryBucket } from "../packages/ramose/src/internal/storage/memory.ts";
-import { Harness } from "../packages/ramose/test/internal/transactor/harness.ts";
+import { BenchHarness } from "./transactor-harness.ts";
 import { fmt } from "./lib.ts";
 
 const people = Number(process.argv[2] ?? 300_000);
@@ -48,7 +48,7 @@ const treeObjects = raw.objects.size;
 console.log(`seed: ${datoms.length.toLocaleString()} datoms → ${treeObjects} objects in ${fmt(seedMs, 0)} ms (leaf ${leafSize}, fan-out ${fanout})`);
 
 // ---- transactor over the seeded root; write the delta
-const h = new Harness({ dbName: "bench", config: { indexTxThreshold: 1e9, indexIntervalMs: 1e9, indexMaxTxsPerRun: 1e9, logKeepTxs: 100 } }, raw);
+const h = new BenchHarness({ dbName: "bench", config: { indexTxThreshold: 1e9, indexIntervalMs: 1e9, indexMaxTxsPerRun: 1e9, logKeepTxs: 100 } }, raw);
 const tx = h.transactor;
 await tx.init();
 t0 = performance.now();

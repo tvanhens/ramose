@@ -15,6 +15,7 @@ import { registerCas } from "./cas.ts";
 import { registerInstrumentation } from "./instrumentation.ts";
 import { registerNativeOperations } from "./native-operations.ts";
 import { registerStorage } from "./storage.ts";
+import { registerTransactor } from "./transactor.ts";
 import { registerSessions } from "./sessions.ts";
 
 setDefaultTimeout(90_000);
@@ -31,4 +32,5 @@ registerBasisCache({ urls: localUrls });
 registerSessions({ urls: localUrls });
 registerCas({ urls: localUrls });
 registerStorage({ urls: localUrls });
+registerTransactor({ urls: localUrls });
 registerBetterAuth({ urls: localUrls });

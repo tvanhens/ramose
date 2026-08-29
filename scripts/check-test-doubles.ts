@@ -6,8 +6,8 @@
  * corrupts a real implementation. It must not invent HTTP/WebSocket
  * responses, substitute R2/SQLite/Cache/auth, or mock `cloudflare:workers`.
  *
- * Existing violations live in `scripts/test-double-allowlist.json`. Shrink
- * that file to `{}` as migrations merge. Do not add new entries.
+ * The completed #390 migration leaves `scripts/test-double-allowlist.json`
+ * empty. Do not add new entries.
  *
  *   bun run scripts/check-test-doubles.ts
  *   bun run scripts/check-test-doubles.ts --write-allowlist
@@ -245,8 +245,7 @@ const writeAllowlist = (hits: Hit[]): void => {
     files[file] = [...ids].sort();
   }
   const body: Allowlist = {
-    comment:
-      "Existing #390 test-double violations. Shrink to empty as migrations merge. Do not add new entries.",
+    comment: "No #390 test-double exceptions remain. Do not add entries.",
     files,
   };
   writeFileSync(ALLOWLIST_PATH, `${JSON.stringify(body, null, 2)}\n`);

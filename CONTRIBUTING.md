@@ -94,14 +94,14 @@ Allowed instrumentation wraps a real implementation and forwards to it:
 
 - `test/support/recorder.ts` / `test/support/live.ts` — recording `fetch` and `WebSocket` that always call through
 - Checkpoints in `packages/ramose/src/internal/test-hooks.ts` (`transactor.commit`, `replica.apply`, `session.notify`, `indexer.run`)
-- `POST /__test__/db/:name/r2|storage|basis|checkpoint|abort|transact|query|index|sessions` — write/corrupt real local R2, exercise storage tiers over real local R2/Cache bindings, invoke the real Worker basis cache/fetch/invalidation path, arm/release/throw at a checkpoint, abort a DO isolate, forward `{ tx }` / `{ query | pull | entity }` to the real Transactor / Replica DO, run the real indexer, or inspect real hibernation attachments (status and body pass through; nothing invents success)
-- `GET /__test__/db/:name/session|watch` with a WebSocket upgrade — forward to the real Replica DO session or basis-watch endpoint; a session `token` is verified by the deployed peer's real JWT verifier
+- `POST /__test__/db/:name/r2|storage|basis|checkpoint|abort|transact|query|index|info|log|sessions` — write/corrupt real local R2, exercise storage tiers over real local R2/Cache bindings, invoke the real Worker basis cache/fetch/invalidation path, arm/release/throw at a checkpoint, abort a DO isolate, forward `{ tx }` / `{ query | pull | entity }` to the real Transactor / Replica DO, run or inspect the real transactor/indexer, read its real SQLite log, or inspect real hibernation attachments (status and body pass through; nothing invents success)
+- `GET /__test__/db/:name/session|watch|subscribe` with a WebSocket upgrade — forward to the real Replica DO session/basis-watch endpoint or the real Transactor subscriber; a session `token` is verified by the deployed peer's real JWT verifier
 
 These routes are 404 unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`. They must not invent a successful transact, query, or frame.
 
 Not allowed: `scriptedPeer`, `FakeSocket` / `fakeDispatch`, `MemoryBucket` / `MemCache`, Better Auth `memoryAdapter`, `mock.module("cloudflare:workers")`, in-process peers, scripted fetch/WebSocket implementations, fake DO namespaces, or a virtual service whose only purpose is to fail on the Nth call. `Alchemy.inMemoryState()` is Alchemy's deploy-state store for the real local stack, not a Ramose double.
 
-`bun run test:doubles` (`scripts/check-test-doubles.ts`) fails CI on new violations. Existing ones are listed in `scripts/test-double-allowlist.json`. Shrink that allowlist as migrations merge; do not add entries. Faults that cannot be induced locally belong in pure decision tests or cloud e2e — do not fabricate a substitute implementation that claims to prove them.
+`bun run test:doubles` (`scripts/check-test-doubles.ts`) fails CI on new violations. The completed #390 migration leaves `scripts/test-double-allowlist.json` empty; keep it empty. Faults that cannot be induced locally belong in pure decision tests or cloud e2e — do not fabricate a substitute implementation that claims to prove them.
 
 ## End-to-end tests
 
