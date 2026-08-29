@@ -768,26 +768,18 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
    * A replaced or lost root quarantines them explicitly instead of letting a
    * derived-name collision decide.
    */
-  private replicationIdentityBinding(
-    keyId: string,
-    adopt: boolean,
-  ): Response | undefined {
+  private serverIdentityQuarantine(keyId: string): Response | undefined {
     const decision = decideServerIdentityBinding(
       this.getMeta<string>("server-identity-key"),
       keyId,
     );
-    if (decision.type === "incompatible") {
-      // The key id is a public name, not key material, and this route is
-      // already behind the internal capability.
-      return json(
-        { error: SERVER_IDENTITY_INCOMPATIBLE, persisted: decision.persisted },
-        409,
-      );
-    }
-    if (decision.type === "adopt" && adopt) {
-      this.setMeta("server-identity-key", keyId);
-    }
-    return undefined;
+    if (decision.type !== "incompatible") return undefined;
+    // The key id is a public name, not key material, and this route is
+    // already behind the internal capability.
+    return json(
+      { error: SERVER_IDENTITY_INCOMPATIBLE, persisted: decision.persisted },
+      409,
+    );
   }
 
   protected async route(request: Request, url: URL, dbName: string): Promise<Response> {
@@ -822,10 +814,9 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         ) {
           return json({ error: "invalid replication revision request" }, 400);
         }
-        const quarantined = this.replicationIdentityBinding(
-          body.keyId,
-          body.action === "remember",
-        );
+        // Refused before any row is read or written, so state sealed under a
+        // replaced root is neither reused nor corrupted.
+        const quarantined = this.serverIdentityQuarantine(body.keyId);
         if (quarantined !== undefined) return quarantined;
         if (body.action === "resolve") {
           const row = this.sql.exec(
@@ -854,6 +845,11 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         }
         if (storedBinding === undefined) {
           this.setMeta("replication-binding", body.binding);
+        }
+        // This store now belongs to one identity/sealing root; a later root
+        // finds it quarantined above rather than adopting it.
+        if (this.getMeta<string>("server-identity-key") === undefined) {
+          this.setMeta("server-identity-key", body.keyId);
         }
         const bindingRevisionCount = this.sql.exec(
           `SELECT COUNT(*) AS n FROM replication_revisions WHERE binding = ?`,
