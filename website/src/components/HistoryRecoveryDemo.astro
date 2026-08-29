@@ -1,156 +1,33 @@
 <figure class="rg-recovery-demo">
-  <div class="rg-recovery-window" aria-hidden="true">
-    <div class="rg-recovery-windowbar">
-      <span class="rg-recovery-dots"><i></i><i></i><i></i></span>
-      <span>app.ramose.local / issues</span>
-      <b><i></i> Live</b>
-    </div>
-    <svg viewBox="0 0 680 270" role="img" aria-label="The issue board rewinding to restore three deleted backlog issues">
-      <defs>
-        <filter id="history-orange-glow" x="-80%" y="-80%" width="260%" height="260%">
-          <feGaussianBlur stdDeviation="6" result="blur" />
-          <feFlood flood-color="#ff5b0a" flood-opacity=".5" />
-          <feComposite in2="blur" operator="in" />
-          <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
-      </defs>
-      <rect width="680" height="270" fill="#0d0b0a" />
-      <text class="eyebrow" x="24" y="27">PRODUCT / LAUNCH</text>
-      <text class="title" x="24" y="49">Issue board</text>
-      <g class="rg-recovery-basis">
-        <circle cx="649" cy="31" r="4" />
-        <text x="638" y="34">HISTORY</text>
-      </g>
-
-      <g class="column">
-        <rect x="22" y="69" width="202" height="178" rx="8" />
-        <text class="column-title" x="36" y="91">BACKLOG</text>
-        <g class="rg-recovery-count">
-          <text x="198" y="91">0</text><text x="198" y="91">1</text><text x="198" y="91">2</text><text x="198" y="91">3</text>
-        </g>
-        <g class="card card-one">
-          <rect x="34" y="106" width="178" height="36" rx="6" />
-          <circle cx="48" cy="124" r="3" />
-          <text x="58" y="122">Fix empty state</text><text class="card-id" x="58" y="133">ISS-12</text>
-        </g>
-        <g class="card card-two">
-          <rect x="34" y="150" width="178" height="36" rx="6" />
-          <circle cx="48" cy="168" r="3" />
-          <text x="58" y="166">Remove old flag</text><text class="card-id" x="58" y="177">ISS-18</text>
-        </g>
-        <g class="card card-three">
-          <rect x="34" y="194" width="178" height="36" rx="6" />
-          <circle cx="48" cy="212" r="3" />
-          <text x="58" y="210">Archive launch notes</text><text class="card-id" x="58" y="221">ISS-23</text>
-        </g>
-        <g class="rg-recovery-empty">
-          <circle cx="123" cy="151" r="13" />
-          <path d="M118 151l4 4 7-8" />
-          <text x="123" y="178">Backlog cleared</text>
-        </g>
-      </g>
-
-      <g class="column">
-        <rect x="239" y="69" width="202" height="178" rx="8" />
-        <text class="column-title" x="253" y="91">IN PROGRESS</text><text class="count" x="415" y="91">1</text>
-        <g class="card still"><rect x="251" y="106" width="178" height="36" rx="6" /><circle cx="265" cy="124" r="3" /><text x="275" y="122">Polish onboarding</text><text class="card-id" x="275" y="133">ISS-31</text></g>
-      </g>
-
-      <g class="column">
-        <rect x="456" y="69" width="202" height="178" rx="8" />
-        <text class="column-title" x="470" y="91">DONE</text><text class="count" x="632" y="91">2</text>
-        <g class="card still done"><rect x="468" y="106" width="178" height="36" rx="6" /><circle cx="482" cy="124" r="3" /><text x="492" y="122">Connect auth</text><text class="card-id" x="492" y="133">ISS-04</text></g>
-        <g class="card still done"><rect x="468" y="150" width="178" height="36" rx="6" /><circle cx="482" cy="168" r="3" /><text x="492" y="166">Ship schema</text><text class="card-id" x="492" y="177">ISS-08</text></g>
-      </g>
-      <path class="rg-recovery-pulse" d="M24 253H222" />
-    </svg>
-
-    <div class="rg-recovery-timeline">
-      <div class="rg-recovery-status"><span>Now · after deletion</span><span>Before deletion · 3 issues restored</span></div>
-      <div class="rg-recovery-track">
-        <i class="rg-recovery-event"><b></b><span>Deleted 3 issues</span></i>
-        <i class="rg-recovery-handle"><b></b></i>
-      </div>
-      <div class="rg-recovery-time"><span>12:40:52</span><strong>12:41:08</strong><span>Now</span></div>
-    </div>
-  </div>
-  <figcaption><span>Rewind to before the mistake.</span><code>Every committed version is still queryable.</code></figcaption>
+  <iframe
+    src="/demos/data-is-never-lost.html"
+    title="An issue board rewinding to recover deleted work"
+    loading="lazy"
+    sandbox="allow-scripts"
+  ></iframe>
 </figure>
 
 <style>
-  .rg-recovery-demo { --recovery-cycle: 10s; min-width:0; margin:0; overflow:hidden; border:1px solid rgba(255,101,0,.26); border-radius:.9rem; background:#0a0908; box-shadow:0 2.5rem 6rem -4rem rgba(255,76,0,.65); }
-  .rg-recovery-windowbar { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; min-height:2.45rem; padding:0 .85rem; color:#6f635c; border-bottom:1px solid #27221e; background:#12100e; font-family:var(--sl-font-mono); font-size:.52rem; }
-  .rg-recovery-windowbar > span:nth-child(2) { justify-self:center; }
-  .rg-recovery-windowbar > b { display:flex; align-items:center; gap:.35rem; color:#8f837b; font-weight:400; }
-  .rg-recovery-windowbar > b i { width:.35rem; height:.35rem; margin:0; border-radius:50%; background:#ff5b0a; box-shadow:0 0 .6rem #ff3d00; }
-  .rg-recovery-dots { display:flex; align-items:center; gap:.28rem; }
-  .rg-recovery-dots i { width:.38rem; height:.38rem; margin:0; border-radius:50%; background:#4a403a; }
-  .rg-recovery-dots i:first-child { background:#a5441f; }
-  .rg-recovery-window svg { display:block; width:100%; height:auto; background:#0d0b0a; }
-  .rg-recovery-window svg text { fill:#a99d95; font-family:var(--sl-font-mono); font-size:9px; }
-  .rg-recovery-window svg .eyebrow { fill:#6d615a; font-size:7px; letter-spacing:1px; }
-  .rg-recovery-window svg .title { fill:#eee8e3; font-family:var(--sl-font); font-size:15px; font-weight:600; }
-  .rg-recovery-window svg .column > rect { fill:#100e0d; stroke:#2c2622; }
-  .rg-recovery-window svg .column-title { fill:#796c64; font-size:7px; letter-spacing:.8px; }
-  .rg-recovery-window svg .count, .rg-recovery-count text { fill:#625750; font-size:7px; text-anchor:middle; }
-  .rg-recovery-window svg .card rect { fill:#161310; stroke:#443029; }
-  .rg-recovery-window svg .card circle { fill:#ff5b0a; }
-  .rg-recovery-window svg .card text { fill:#c5bab3; font-family:var(--sl-font); font-size:8px; }
-  .rg-recovery-window svg .card .card-id { fill:#645951; font-family:var(--sl-font-mono); font-size:6px; }
-  .rg-recovery-window svg .card.done circle { fill:#51766b; }
-  .rg-recovery-window svg .card-one { opacity:0; animation:rg-recovery-card-one var(--recovery-cycle) cubic-bezier(.2,.75,.25,1) infinite; }
-  .rg-recovery-window svg .card-two { opacity:0; animation:rg-recovery-card-two var(--recovery-cycle) cubic-bezier(.2,.75,.25,1) infinite; }
-  .rg-recovery-window svg .card-three { opacity:0; animation:rg-recovery-card-three var(--recovery-cycle) cubic-bezier(.2,.75,.25,1) infinite; }
-  .rg-recovery-empty { animation:rg-recovery-empty var(--recovery-cycle) ease infinite; }
-  .rg-recovery-empty circle { fill:#18110d; stroke:#6f391f; }
-  .rg-recovery-empty path { fill:none; stroke:#ff6a24; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
-  .rg-recovery-empty text { fill:#806d62 !important; font-size:7px !important; text-anchor:middle; }
-  .rg-recovery-count text { opacity:0; }
-  .rg-recovery-count text:nth-child(1) { animation:rg-recovery-count-zero var(--recovery-cycle) step-end infinite; }
-  .rg-recovery-count text:nth-child(2) { animation:rg-recovery-count-one var(--recovery-cycle) step-end infinite; }
-  .rg-recovery-count text:nth-child(3) { animation:rg-recovery-count-two var(--recovery-cycle) step-end infinite; }
-  .rg-recovery-count text:nth-child(4) { animation:rg-recovery-count-three var(--recovery-cycle) step-end infinite; }
-  .rg-recovery-basis circle { fill:#ff5b0a; filter:url(#history-orange-glow); animation:rg-recovery-basis var(--recovery-cycle) ease infinite; }
-  .rg-recovery-basis text { fill:#9c6a4e !important; font-size:6px !important; text-anchor:end; }
-  .rg-recovery-pulse { fill:none; stroke:#ff5b0a; stroke-width:2; stroke-linecap:round; filter:url(#history-orange-glow); stroke-dasharray:200; stroke-dashoffset:200; animation:rg-recovery-pulse var(--recovery-cycle) ease infinite; }
+  .rg-recovery-demo {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid rgba(255, 101, 0, 0.26);
+    border-radius: 0.9rem;
+    background: #0a0908;
+    box-shadow: 0 2.5rem 6rem -4rem rgba(255, 76, 0, 0.65);
+  }
 
-  .rg-recovery-timeline { padding:.9rem 1.1rem 1rem; border-top:1px solid #29231f; background:#100e0c; font-family:var(--sl-font-mono); }
-  .rg-recovery-status { display:grid; margin-bottom:.7rem; color:#8a7c74; font-size:.58rem; }
-  .rg-recovery-status span { grid-area:1 / 1; animation:rg-recovery-status-now var(--recovery-cycle) step-end infinite; }
-  .rg-recovery-status span:last-child { color:#d49570; opacity:0; animation-name:rg-recovery-status-past; }
-  .rg-recovery-track { position:relative; height:3px; margin:0 .35rem; border-radius:999px; background:#322923; }
-  .rg-recovery-track::before { content:""; position:absolute; inset:0; border-radius:inherit; background:linear-gradient(90deg,#744126,#ff5b0a); transform:scaleX(0); transform-origin:right; animation:rg-recovery-fill var(--recovery-cycle) ease-in-out infinite; }
-  .rg-recovery-event { position:absolute; left:75%; top:50%; width:1px; height:1rem; margin:0; background:#6f3820; transform:translateY(-50%); }
-  .rg-recovery-event b { position:absolute; left:50%; top:50%; width:.42rem; height:.42rem; margin:0; border-radius:50%; background:#ff5b0a; box-shadow:0 0 .7rem rgba(255,70,0,.7); transform:translate(-50%,-50%); }
-  .rg-recovery-event span { position:absolute; left:50%; bottom:.75rem; color:#735f53; font-size:.48rem; white-space:nowrap; transform:translateX(-50%); }
-  .rg-recovery-handle { position:absolute; z-index:2; left:100%; top:50%; margin:0; animation:rg-recovery-handle var(--recovery-cycle) cubic-bezier(.35,.7,.2,1) infinite; }
-  .rg-recovery-handle b { display:block; width:.8rem; height:.8rem; margin:0; border:2px solid #ff7a38; border-radius:50%; background:#160d09; box-shadow:0 0 1rem rgba(255,71,0,.55); transform:translate(-50%,-50%); }
-  .rg-recovery-time { display:flex; justify-content:space-between; margin-top:.65rem; color:#5e534c; font-size:.48rem; }
-  .rg-recovery-time strong { color:#9c725c; font-weight:500; }
-  .rg-recovery-demo figcaption { display:flex; justify-content:space-between; gap:1rem; margin:0; padding:.75rem 1rem; color:#766a62; border-top:1px solid #29231f; background:#0d0b0a; font-size:.68rem; }
-  .rg-recovery-demo figcaption code { padding:0; color:#a86b49; background:transparent; font-size:.62rem; }
+  .rg-recovery-demo iframe {
+    display: block;
+    width: 100%;
+    aspect-ratio: 40 / 39.5;
+    border: 0;
+  }
 
-  @keyframes rg-recovery-handle { 0%, 10%, 90%, 100% { left:100%; } 38%, 82% { left:18%; } }
-  @keyframes rg-recovery-fill { 0%, 10%, 90%, 100% { transform:scaleX(0); } 38%, 82% { transform:scaleX(.82); } }
-  @keyframes rg-recovery-card-three { 0%, 19%, 90%, 100% { opacity:0; transform:translateY(10px) scale(.98); } 21%, 84% { opacity:1; transform:none; } }
-  @keyframes rg-recovery-card-two { 0%, 21.5%, 90%, 100% { opacity:0; transform:translateY(10px) scale(.98); } 23.5%, 84% { opacity:1; transform:none; } }
-  @keyframes rg-recovery-card-one { 0%, 24%, 90%, 100% { opacity:0; transform:translateY(10px) scale(.98); } 26%, 84% { opacity:1; transform:none; } }
-  @keyframes rg-recovery-empty { 0%, 18.5%, 90%, 100% { opacity:1; } 21%, 84% { opacity:0; } }
-  @keyframes rg-recovery-count-zero { 0%, 19.49%, 90%, 100% { opacity:1; } 19.5%, 89.99% { opacity:0; } }
-  @keyframes rg-recovery-count-one { 0%, 19.49%, 22%, 100% { opacity:0; } 19.5%, 21.99% { opacity:1; } }
-  @keyframes rg-recovery-count-two { 0%, 21.99%, 24.5%, 100% { opacity:0; } 22%, 24.49% { opacity:1; } }
-  @keyframes rg-recovery-count-three { 0%, 24.49%, 90%, 100% { opacity:0; } 24.5%, 89.99% { opacity:1; } }
-  @keyframes rg-recovery-status-now { 0%, 26%, 90%, 100% { opacity:1; } 26.5%, 89% { opacity:0; } }
-  @keyframes rg-recovery-status-past { 0%, 26%, 90%, 100% { opacity:0; } 26.5%, 89% { opacity:1; } }
-  @keyframes rg-recovery-basis { 0%, 12%, 88%, 100% { opacity:.35; } 20%, 80% { opacity:1; } }
-  @keyframes rg-recovery-pulse { 0%, 18%, 40%, 100% { stroke-dashoffset:200; opacity:0; } 22% { opacity:1; } 38% { stroke-dashoffset:0; opacity:1; } }
-
-  @media (max-width:56rem) { .rg-recovery-demo { margin-top:2rem; } }
-  @media (max-width:34rem) { .rg-recovery-event span { display:none; } .rg-recovery-demo figcaption { flex-direction:column; } }
-  @media (prefers-reduced-motion:reduce) {
-    .rg-recovery-handle { left:18%; animation:none; }
-    .rg-recovery-track::before { transform:scaleX(.82); animation:none; }
-    .rg-recovery-window svg .card-one, .rg-recovery-window svg .card-two, .rg-recovery-window svg .card-three, .rg-recovery-count text:nth-child(4), .rg-recovery-status span:last-child { opacity:1; transform:none; animation:none; }
-    .rg-recovery-empty, .rg-recovery-count text:not(:nth-child(4)), .rg-recovery-status span:first-child, .rg-recovery-basis circle, .rg-recovery-pulse { opacity:0; animation:none; }
+  @media (max-width: 56rem) {
+    .rg-recovery-demo {
+      margin-top: 2rem;
+    }
   }
 </style>
