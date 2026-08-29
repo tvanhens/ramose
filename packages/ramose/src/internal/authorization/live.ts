@@ -377,7 +377,12 @@ export const executeAuthorizedLiveLease = <R, EAuthorize = unknown>(
           : Stream.runForEach(input.basisChanges, (event) =>
             event === "ready"
               ? Deferred.succeed(basisReady, undefined).pipe(Effect.asVoid)
-              : signalBasisChange).pipe(
+              : Deferred.succeed(basisReady, undefined).pipe(
+                  // A conflated basis frame proves the ordered ready frame was
+                  // received even if the bounded wake queue replaced it.
+                  Effect.andThen(signalBasisChange),
+                  Effect.asVoid,
+                )).pipe(
             Effect.mapError(() => deny()),
             Effect.andThen(Effect.fail(deny())),
           );

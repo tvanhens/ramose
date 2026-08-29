@@ -21,6 +21,11 @@ import {
 } from "../internal/core/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import type { RuntimeBoundaries } from "../internal/runtime-boundaries.ts";
+import {
+  MAX_REPLICATION_REQUEST_BYTES,
+  ReplicationProtocolError,
+  decodeActivationRequest,
+} from "../internal/replication/index.ts";
 import { isInternal } from "../internal/transactor/index.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -37,6 +42,10 @@ import {
   authorizedLiveResponse,
   liveResponseFromStream,
 } from "./authorized-live.ts";
+import {
+  authorizedReplicationResponse,
+  incompatibleReplicationResponse,
+} from "./authorized-replication.ts";
 import {
   Analytics,
   type Route,
@@ -201,6 +210,37 @@ const decodeDatabaseName = (
     catch: () => new BadRequest({ message: "invalid database name" }),
   });
 
+/** Consume at most the public activation bound, even without Content-Length. */
+const readReplicationActivation = async (request: Request): Promise<string> => {
+  const declared = request.headers.get("content-length");
+  if (
+    declared !== null &&
+    (!/^\d+$/.test(declared) || Number(declared) > MAX_REPLICATION_REQUEST_BYTES)
+  ) {
+    throw new ReplicationProtocolError({ reason: "oversized" });
+  }
+  if (request.body === null) return "";
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let bytes = 0;
+  let text = "";
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      bytes += next.value.byteLength;
+      if (bytes > MAX_REPLICATION_REQUEST_BYTES) {
+        throw new ReplicationProtocolError({ reason: "oversized" });
+      }
+      text += decoder.decode(next.value, { stream: true });
+    }
+    text += decoder.decode();
+    return text;
+  } finally {
+    reader.releaseLock();
+  }
+};
+
 export const handle = (
   request: Request,
   env: RamoseEnv,
@@ -267,6 +307,55 @@ export const handle = (
       ? undefined
       : deployedDatabaseCatalogBindings(peer.operationCatalogs);
     const catalogs = deployedOperations?.catalogs;
+    if (rest === "/replicate" && request.method === "POST") {
+      if (databaseBindings === undefined) {
+        return yield* new Unauthorized({ status: 403 });
+      }
+      const activationText = yield* Effect.tryPromise({
+        try: () => readReplicationActivation(request),
+        catch: () => new BadRequest({ message: "invalid replication activation" }),
+      });
+      const decoded = decodeActivationRequest(activationText);
+      if (Result.isFailure(decoded)) {
+        if (decoded.failure.reason === "incompatible-version") {
+          return incompatibleReplicationResponse(cors);
+        }
+        return yield* new BadRequest({ message: "invalid replication activation" });
+      }
+      const root = yield* Effect.fromResult(
+        databaseBindings.root(DatabaseId.make(db)),
+      ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
+      const caller = callerFromVerified(verified);
+      const initialTarget = yield* executeAuthorizedGraphPathTarget({
+        authenticate: Effect.succeed(caller),
+        bindings: databaseBindings,
+        root,
+        path: decoded.success.graphPath,
+        currentDb: acquireCurrentDb(env, request, {
+          bypassBasisCache: true,
+          authoritativeBasisFence: true,
+        }),
+        provision: (route, derivation) =>
+          provisionResolvedDatabase(env, route, derivation),
+      }, (authorized) => Effect.succeed(authorized)).pipe(
+        Effect.mapError((cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
+          stacks: env.RAMOSE_STAGE !== "prod",
+        })),
+      );
+      return yield* authorizedReplicationResponse({
+        activation: decoded.success,
+        env,
+        request,
+        bindings: databaseBindings,
+        root,
+        initialCaller: caller,
+        initialTarget,
+        headers: cors,
+        ...(boundaries === undefined ? {} : { boundaries }),
+      }).pipe(Effect.mapError((cause) => fromThrown(cause, {
+        stacks: env.RAMOSE_STAGE !== "prod",
+      })));
+    }
     if (rest === "/op" && request.method === "POST") {
       if (peer.operationCatalogs === undefined) {
         return yield* new Unauthorized({ status: 403 });

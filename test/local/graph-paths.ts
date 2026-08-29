@@ -16,6 +16,10 @@ import {
   readLiveNdjson,
   type LiveQueryDiff,
 } from "../support/live-query.ts";
+import {
+  collectCommittedSnapshot,
+  readReplicationNdjson,
+} from "../support/replication.ts";
 import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
 import {
   GateHidden,
@@ -130,6 +134,29 @@ const nestedLive = (
       "content-type": "application/json",
     },
     body: JSON.stringify({ at, query: nestedNotesQuery }),
+  },
+);
+
+const nestedReplication = (
+  base: string,
+  token: string,
+  at: readonly string[],
+  resumeRevision?: string,
+): Promise<Response> => fetch(
+  `${base.replace(/\/+$/, "")}/db/${GRAPH_PATH_ROOT_DATABASE}/replicate`,
+  {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      type: "Activate",
+      protocol: 1,
+      graphPath: at,
+      scope: { type: "database" },
+      ...(resumeRevision === undefined ? {} : { resumeRevision }),
+    }),
   },
 );
 
@@ -558,6 +585,115 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         );
       } finally {
         await iterator.return?.(undefined);
+      }
+    });
+
+    test("replication renews the complete nested path and terminates opaquely on ancestor rename", async () => {
+      const base = ctx.urls().graphPathsUrl;
+      await installRoot(base);
+      const member = await signToken(GRAPH_PATH_ROOT_DATABASE, "member");
+      const suffix = crypto.randomUUID().slice(0, 8);
+      const workspaceName = `replicate-${suffix}`;
+      const projectName = `project-${suffix}`;
+      const noteText = `replicated-${suffix}`;
+
+      const workspace = await invoke(base, member, {
+        owner: { kind: "entity", name: Workspace.ns },
+        localName: "create",
+      }, { name: workspaceName });
+      expect(workspace.status).toBe(200);
+      const workspaceId = workspace.body.result.id as number;
+      const project = await invoke(base, member, {
+        owner: { kind: "entity", name: Project.ns },
+        localName: "create",
+      }, { name: projectName }, { at: [workspaceName] });
+      expect(project.status).toBe(200);
+      const note = await invoke(base, member, {
+        owner: { kind: "entity", name: "localNestedNote" },
+        localName: "create",
+      }, { text: noteText }, { at: [workspaceName, projectName] });
+      expect(note.status).toBe(200);
+
+      const response = await nestedReplication(
+        base,
+        member,
+        [workspaceName, projectName],
+      );
+      expect(response.status).toBe(200);
+      const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+      const snapshot = await collectCommittedSnapshot(iterator);
+      const snapshotIdentity = snapshot.state.identity;
+      if (snapshotIdentity === undefined) {
+        throw new Error("nested snapshot had no authenticated identity");
+      }
+      try {
+        expect(
+          snapshot.state.committed?.datoms.some((datom) =>
+            datom.field === ":localNestedNote/text" &&
+            datom.value.type === "string" &&
+            datom.value.value === noteText
+          ),
+        ).toBe(true);
+      } finally {
+        await iterator.return?.(undefined);
+      }
+
+      const refreshed = await signToken(GRAPH_PATH_ROOT_DATABASE, "member");
+      const resumedResponse = await nestedReplication(
+        base,
+        refreshed,
+        [workspaceName, projectName],
+        snapshot.state.committed!.revision,
+      );
+      expect(resumedResponse.status).toBe(200);
+      const resumed = readReplicationNdjson(resumedResponse)[Symbol.asyncIterator]();
+      try {
+        const changed = resumed.next();
+        const secondNote = await invoke(base, member, {
+          owner: { kind: "entity", name: "localNestedNote" },
+          localName: "create",
+        }, { text: `resumed-${suffix}` }, { at: [workspaceName, projectName] });
+        expect(secondNote.status).toBe(200);
+        const change = await withTimeout(
+          changed,
+          7_000,
+          "nested replication resumed change",
+        );
+        expect(change.done).toBe(false);
+        expect(change.value?.frame.type).toBe("Change");
+        if (change.value?.frame.type === "Change") {
+          expect(change.value.frame.from).toBe(snapshot.state.committed!.revision);
+          expect(change.value.frame.identity).toEqual(snapshotIdentity);
+          expect(change.value.frame.datoms.some((datom) =>
+            datom.field === ":localNestedNote/text" &&
+            datom.value.type === "string" &&
+            datom.value.value === `resumed-${suffix}`
+          )).toBe(true);
+        }
+
+        const terminal = resumed.next();
+        const renamed = await invoke(base, member, {
+          owner: { kind: "entity", name: Workspace.ns },
+          localName: "rename",
+        }, { name: `renamed-${suffix}` }, { target: workspaceId });
+        expect(renamed.status).toBe(200);
+        const closed = await withTimeout(
+          terminal,
+          7_000,
+          "replication ancestor revoke",
+        );
+        expect(closed.done).toBe(false);
+        expect(closed.value?.frame).toEqual({
+          type: "TerminalError",
+          protocol: 1,
+          code: "closed",
+          identity: snapshotIdentity,
+        });
+        expect(closed.value?.wire).not.toMatch(
+          /lease|databaseName|catalogKey|graphEntity|basis|sequence|reason/i,
+        );
+      } finally {
+        await resumed.return?.(undefined);
       }
     });
 

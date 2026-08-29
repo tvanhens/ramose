@@ -24,6 +24,12 @@ export const CONFORMANCE_DATABASES = Object.freeze([
   "conformance-idempotent-self-delete",
   "conformance-idempotent-self-hidden",
   "conformance-idempotent-lookup-rebind",
+  "conformance-replication-snapshot",
+  "conformance-replication-resume",
+  "conformance-replication-interrupt",
+  "conformance-replication-noninterference",
+  "conformance-replication-retention-zero",
+  "conformance-replication-retention-pressure",
 ]);
 
 export const ConformanceUser = Entity("conformanceUser", {

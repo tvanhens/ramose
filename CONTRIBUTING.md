@@ -21,6 +21,8 @@ conformance tests can cite them:
 
 - Authorization and noninterference:
   [`packages/ramose/src/internal/design/authorization.md`](packages/ramose/src/internal/design/authorization.md)
+- Versioned opaque database replication:
+  [`packages/ramose/src/internal/design/replication.md`](packages/ramose/src/internal/design/replication.md)
 
 Pure synchronous fallible transformations in
 `packages/ramose/src/internal/authorization` compose with `Result.gen`

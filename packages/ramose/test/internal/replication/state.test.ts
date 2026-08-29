@@ -1,0 +1,229 @@
+import { describe, expect, test } from "bun:test";
+import * as Result from "effect/Result";
+import {
+  applyReplicationFrame,
+  emptyClientReplicationState,
+  type ClientReplicationState,
+  type LogicalDatom,
+  type ReplicationFrame,
+  type ReplicationIdentity,
+  type SnapshotDatom,
+} from "../../../src/internal/replication/index.ts";
+
+const opaque = (character: string): string => character.repeat(43);
+const identity = (principal = "B"): ReplicationIdentity => ({
+  version: 1,
+  server: opaque("A"),
+  principal: opaque(principal),
+  database: opaque("C"),
+  catalog: opaque("D"),
+  readView: opaque("E"),
+  authenticator: opaque(principal === "B" ? "F" : "G"),
+});
+const active = identity();
+const first: LogicalDatom = {
+  entity: opaque("H"),
+  field: ":issue/title",
+  value: { type: "string", value: "First" },
+  op: "add",
+};
+const second: LogicalDatom = {
+  entity: opaque("I"),
+  field: ":issue/title",
+  value: { type: "string", value: "Second" },
+  op: "add",
+};
+
+const apply = (
+  state: ClientReplicationState,
+  frame: ReplicationFrame,
+): ClientReplicationState => {
+  const result = applyReplicationFrame(state, frame);
+  if (Result.isFailure(result)) throw result.failure;
+  return result.success;
+};
+
+const start = (snapshot: string, revision: string): ReplicationFrame => ({
+  type: "SnapshotStart",
+  protocol: 1,
+  identity: active,
+  snapshot,
+  revision,
+});
+const chunk = (
+  snapshot: string,
+  index: number,
+  datoms: readonly (LogicalDatom | SnapshotDatom)[],
+): ReplicationFrame => ({
+  type: "SnapshotChunk",
+  protocol: 1,
+  identity: active,
+  snapshot,
+  index,
+  datoms: datoms.map((datom) => ({
+    ...datom,
+    op: "add" as const,
+  }) as SnapshotDatom),
+});
+const commit = (
+  snapshot: string,
+  revision: string,
+  chunks: number,
+): ReplicationFrame => ({
+  type: "SnapshotCommit",
+  protocol: 1,
+  identity: active,
+  snapshot,
+  revision,
+  chunks,
+});
+
+const committed = (): ClientReplicationState => {
+  let state = emptyClientReplicationState();
+  state = apply(state, start(opaque("J"), opaque("K")));
+  state = apply(state, chunk(opaque("J"), 0, [first]));
+  return apply(state, commit(opaque("J"), opaque("K"), 1));
+};
+
+describe("client replication transition machine", () => {
+  test("installs a snapshot only after every chunk commits atomically", () => {
+    let state = emptyClientReplicationState();
+    state = apply(state, start(opaque("J"), opaque("K")));
+    state = apply(state, chunk(opaque("J"), 1, [second]));
+    state = apply(state, commit(opaque("J"), opaque("K"), 2));
+    expect(state.committed).toBeUndefined();
+    state = apply(state, chunk(opaque("J"), 0, [first]));
+    expect(state.committed).toBeUndefined();
+    state = apply(state, commit(opaque("J"), opaque("K"), 2));
+    expect(state.committed).toEqual({
+      revision: opaque("K"),
+      datoms: [first, second],
+    });
+  });
+
+  test("interruption and a reordered incomplete commit retain the prior complete value", () => {
+    const prior = committed();
+    let staging = apply(prior, start(opaque("L"), opaque("M")));
+    staging = apply(staging, chunk(opaque("L"), 1, [second]));
+    const reordered = apply(staging, commit(opaque("L"), opaque("M"), 2));
+    expect(reordered.committed).toBe(prior.committed);
+    expect(staging.committed).toBe(prior.committed);
+  });
+
+  test("fragmented values become queryable only after every value part and snapshot chunk commits", () => {
+    const snapshot = opaque("L");
+    const revision = opaque("M");
+    const valueIdentity = opaque("N");
+    const part = (index: number, value: string): SnapshotDatom => ({
+      entity: opaque("H"),
+      field: ":issue/body",
+      value: {
+        type: "string-part",
+        identity: valueIdentity,
+        index,
+        chunks: 2,
+        value,
+      },
+      op: "add",
+    });
+    let state = apply(emptyClientReplicationState(), start(snapshot, revision));
+    state = apply(state, chunk(snapshot, 1, [part(1, "world")]));
+    state = apply(state, commit(snapshot, revision, 2));
+    expect(state.committed).toBeUndefined();
+    state = apply(state, chunk(snapshot, 0, [part(0, "hello ")]));
+    state = apply(state, commit(snapshot, revision, 2));
+    expect(state.committed).toEqual({
+      revision,
+      datoms: [{
+        entity: opaque("H"),
+        field: ":issue/body",
+        value: { type: "string", value: "hello world" },
+        op: "add",
+      }],
+    });
+  });
+
+  test("identical duplicate frames are idempotent and conflicting duplicates fail closed", () => {
+    let state = apply(emptyClientReplicationState(), start(opaque("J"), opaque("K")));
+    const once = apply(state, chunk(opaque("J"), 0, [first]));
+    expect(apply(once, chunk(opaque("J"), 0, [first]))).toBe(once);
+    const conflicting = applyReplicationFrame(
+      once,
+      chunk(opaque("J"), 0, [second]),
+    );
+    expect(Result.isFailure(conflicting)).toBe(true);
+    expect(state.committed).toBeUndefined();
+
+    const complete = committed();
+    expect(apply(complete, commit(opaque("J"), opaque("K"), 1)).committed)
+      .toBe(complete.committed);
+  });
+
+  test("one complete change is atomic; duplicate and stale revisions are ignored", () => {
+    const prior = committed();
+    const change: ReplicationFrame = {
+      type: "Change",
+      protocol: 1,
+      identity: active,
+      from: opaque("K"),
+      revision: opaque("L"),
+      datoms: [
+        { ...first, op: "retract" },
+        second,
+      ],
+    };
+    const next = apply(prior, change);
+    expect(next.committed).toEqual({ revision: opaque("L"), datoms: [second] });
+    expect(prior.committed).toEqual({ revision: opaque("K"), datoms: [first] });
+    expect(apply(next, change)).toBe(next);
+    expect(apply(next, { ...change, from: opaque("M"), revision: opaque("N") }))
+      .toBe(next);
+  });
+
+  test("a partition reset clears retained data before staging the new identity", () => {
+    const prior = committed();
+    const replacement = identity("Z");
+    const reset = apply(prior, {
+      type: "Reset",
+      protocol: 1,
+      identity: replacement,
+    });
+    expect(reset.identity).toEqual(replacement);
+    expect(reset.committed).toBeUndefined();
+
+    const sameReset = apply(prior, {
+      type: "Reset",
+      protocol: 1,
+      identity: active,
+    });
+    expect(sameReset.committed).toBe(prior.committed);
+  });
+
+  test("mismatched frames fail without mutating state and terminal close is opaque", () => {
+    const prior = committed();
+    const mismatch = applyReplicationFrame(prior, {
+      type: "KeepAlive",
+      protocol: 1,
+      identity: identity("Z"),
+    });
+    expect(Result.isFailure(mismatch)).toBe(true);
+    expect(prior.closed).toBe(false);
+    const closed = apply(prior, {
+      type: "TerminalError",
+      protocol: 1,
+      code: "closed",
+      identity: active,
+    });
+    expect(closed.closed).toBe(true);
+    expect(closed.committed).toBe(prior.committed);
+    expect(apply(closed, start(opaque("L"), opaque("M")))).toBe(closed);
+    expect(apply(closed, {
+      type: "Change",
+      protocol: 1,
+      identity: active,
+      from: opaque("K"),
+      revision: opaque("N"),
+      datoms: [second],
+    })).toBe(closed);
+  });
+});

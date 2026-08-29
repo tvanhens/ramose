@@ -485,6 +485,26 @@ describe("executeAuthorizedLive equals one-shot and diffs visibility", () => {
     await Effect.runPromise(Fiber.interrupt(fiber));
   });
 
+  test("a conflated first change is also a reliable basis-ready handshake", async () => {
+    const world = await seedWorld();
+    const catalogs = await ownerPolicy();
+    const input = inputOf(catalogs, await sign(), world.conn);
+    const basisEvents = await Effect.runPromise(Queue.unbounded<"ready" | "change">());
+    const seen = await Effect.runPromise(Queue.unbounded<LiveQueryDiff>());
+    const fiber = Effect.runFork(
+      executeAuthorizedLive(
+        { ...input, basisChanges: Stream.fromQueue(basisEvents) },
+        titlesQuery,
+      ).pipe(Stream.runForEach((diff) => Queue.offer(seen, diff))),
+    );
+    await Effect.runPromise(Queue.offer(basisEvents, "change"));
+    const first = await Effect.runPromise(
+      Queue.take(seen).pipe(Effect.timeout("2 seconds")),
+    );
+    expect(titlesOf(first.added)).toEqual(["Bug", "Child"]);
+    await Effect.runPromise(Fiber.interrupt(fiber));
+  });
+
   test("cancellation interrupts the live scope", async () => {
     const world = await seedWorld();
     const catalogs = await ownerPolicy();

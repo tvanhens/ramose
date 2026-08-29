@@ -33,6 +33,9 @@ import { type RamoseEnv, internalGate, internalHeaders } from "../transactor/ind
 import * as Effect from "effect/Effect";
 import { type Basis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
+import {
+  decideReplicationRevisionRetention,
+} from "./revision-retention.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
@@ -43,6 +46,7 @@ const LIVE_DEPLOYMENT_TIMEOUT_MS = 2_000;
 const LIVE_UPSTREAM_WATCH_INTERVAL_MS = 1_000;
 const LIVE_UPSTREAM_STALE_MS = 3_500;
 const LIVE_UPSTREAM_CATCHUP_TIMEOUT_MS = 2_000;
+const OPAQUE_REPLICATION_ID = /^[A-Za-z0-9_-]{43}$/;
 
 const withAbortTimeout = async <A>(
   timeoutMs: number,
@@ -130,6 +134,15 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
   private async boot(): Promise<void> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS novelty (t INTEGER PRIMARY KEY, tx_instant INTEGER NOT NULL, datoms BLOB NOT NULL)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS replication_revisions (
+      revision TEXT NOT NULL,
+      binding TEXT NOT NULL,
+      basis_t INTEGER NOT NULL,
+      touched INTEGER NOT NULL,
+      PRIMARY KEY (binding, revision)
+    )`);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS replication_revisions_binding_age
+      ON replication_revisions (binding, touched, revision)`);
     this.dbName = this.getMeta<string>("db");
     if (this.dbName) this.bindStore(this.dbName);
     this.root = this.getMeta<RootRecord>("root");
@@ -655,7 +668,10 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
                 "cache-control": "no-cache",
                 ...internalHeaders(this.env),
               },
-              redirect: "error",
+              // Cloudflare fetch does not implement `redirect: "error"`.
+              // Manual mode is equivalently fail-closed here: redirects are
+              // non-ok and cannot carry the required deployment header.
+              redirect: "manual",
               signal,
             });
             const value = response.headers.get(DEPLOYMENT_HEADER);
@@ -725,6 +741,108 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         if (this.stats.basisServed % 100 === 1) this.log.debug("replica.basis", { db: this.dbName, t: this.basisT, rootT: this.root.t, novelty: this.entries.length, served: this.stats.basisServed });
         const basis: Basis = makeBasis(dbName, this.root, this.entries, this.ctx.id.toString().slice(0, 8));
         return json(basis);
+      }
+      case "/replication/revision": {
+        if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+        const body = (await request.json()) as {
+          readonly action?: unknown;
+          readonly revision?: unknown;
+          readonly binding?: unknown;
+          readonly basisT?: unknown;
+        };
+        if (
+          (body.action !== "remember" && body.action !== "resolve") ||
+          typeof body.revision !== "string" ||
+          !OPAQUE_REPLICATION_ID.test(body.revision) ||
+          typeof body.binding !== "string" ||
+          !OPAQUE_REPLICATION_ID.test(body.binding)
+        ) {
+          return json({ error: "invalid replication revision request" }, 400);
+        }
+        if (body.action === "resolve") {
+          const row = this.sql.exec(
+            `SELECT basis_t FROM replication_revisions
+             WHERE revision = ? AND binding = ?`,
+            body.revision,
+            body.binding,
+          ).toArray()[0];
+          if (
+            row === undefined ||
+            !Number.isSafeInteger(row.basis_t) ||
+            (row.basis_t as number) < 0
+          ) return json({ found: false });
+          return json({ found: true, basisT: row.basis_t });
+        }
+        if (!Number.isSafeInteger(body.basisT) || (body.basisT as number) < 0) {
+          return json({ error: "invalid replication basis" }, 400);
+        }
+        const existing = this.sql.exec(
+          `SELECT binding FROM replication_revisions WHERE revision = ?`,
+          body.revision,
+        ).toArray()[0];
+        const storedBinding = this.getMeta<string>("replication-binding");
+        if (storedBinding !== undefined && storedBinding !== body.binding) {
+          return json({ error: "replication binding mismatch" }, 409);
+        }
+        if (storedBinding === undefined) {
+          this.setMeta("replication-binding", body.binding);
+        }
+        const bindingRevisionCount = this.sql.exec(
+          `SELECT COUNT(*) AS n FROM replication_revisions WHERE binding = ?`,
+          body.binding,
+        ).toArray()[0]?.n as number;
+        const decision = decideReplicationRevisionRetention({
+          ...(existing === undefined
+            ? {}
+            : { existingBinding: existing.binding as string }),
+          candidateBinding: body.binding,
+          bindingRevisionCount,
+        });
+        if (decision.type === "reject") {
+          return json({ ok: true, stored: false });
+        }
+        if (decision.type === "advance") {
+          this.sql.exec(
+            `UPDATE replication_revisions
+             SET basis_t = MAX(basis_t, ?)
+             WHERE revision = ? AND binding = ?`,
+            body.basisT,
+            body.revision,
+            body.binding,
+          );
+          return json({ ok: true, stored: true });
+        }
+        const priorTouched = this.sql.exec(
+          `SELECT MAX(touched) AS touched FROM replication_revisions
+           WHERE binding = ?`,
+          body.binding,
+        ).toArray()[0]?.touched;
+        const touched = Math.max(
+          Date.now(),
+          typeof priorTouched === "number" ? priorTouched + 1 : 0,
+        );
+        this.sql.exec(
+          `INSERT INTO replication_revisions
+             (revision, binding, basis_t, touched) VALUES (?, ?, ?, ?)`,
+          body.revision,
+          body.binding,
+          body.basisT,
+          touched,
+        );
+        if (decision.evictCount > 0) {
+          this.sql.exec(
+            `DELETE FROM replication_revisions
+             WHERE binding = ? AND revision IN (
+               SELECT revision FROM replication_revisions
+               WHERE binding = ?
+               ORDER BY touched ASC, revision ASC LIMIT ?
+             )`,
+            body.binding,
+            body.binding,
+            decision.evictCount,
+          );
+        }
+        return json({ ok: true, stored: true });
       }
       default:
         return json({ error: "not found" }, 404);

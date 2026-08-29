@@ -138,8 +138,14 @@ export const watchBasisChanges = (
 ): {
   readonly changes: Stream.Stream<LiveBasisEvent, Unauthorized>;
   readonly currentBasis: () => Basis | undefined;
+  /** Resolves only when an attached production watch fails or closes. */
+  readonly failed: Promise<void>;
 } => {
   let currentBasis: Basis | undefined;
+  let failWatch!: () => void;
+  const failed = new Promise<void>((resolve) => {
+    failWatch = resolve;
+  });
   const changes = Stream.callback<LiveBasisEvent, Unauthorized>((out) =>
     Effect.gen(function* () {
       const expectedDeployment = env.CF_VERSION_METADATA?.id;
@@ -165,6 +171,7 @@ export const watchBasisChanges = (
         return yield* new Unauthorized({});
       }
       const fail = () => {
+        failWatch();
         Queue.failCauseUnsafe(out, Cause.fail(new Unauthorized({})));
         try {
           ws.close(1011, "live watch failed");
@@ -207,8 +214,99 @@ export const watchBasisChanges = (
         }
       }));
     }),
+    { bufferSize: 1, strategy: "sliding" },
   );
-  return { changes, currentBasis: () => currentBasis };
+  return { changes, currentBasis: () => currentBasis, failed };
+};
+
+export type ReplicationRevisionRecord = {
+  readonly revision: string;
+  readonly binding: string;
+  readonly basisT: number;
+};
+
+/**
+ * Resume history is physically isolated by authenticated binding. A fixed
+ * per-object quota therefore cannot make one caller's hidden activity evict
+ * another caller, including before that other caller is first seen.
+ */
+export const replicationRevisionStoreId = (
+  env: Pick<RamoseEnv, "REPLICA">,
+  database: string,
+  binding: string,
+): DurableObjectId => env.REPLICA.idFromName(
+  `ramose-replication-revisions-v1|${database}|${binding}`,
+);
+
+const replicationRevisionStore = (
+  env: RamoseEnv,
+  database: string,
+  binding: string,
+): DurableObjectStub => env.REPLICA.get(
+  replicationRevisionStoreId(env, database, binding),
+);
+
+/** Persist one small opaque-revision → private-basis record in the real Replica DO. */
+export const rememberReplicationRevision = async (
+  env: RamoseEnv,
+  database: string,
+  record: ReplicationRevisionRecord,
+): Promise<void> => {
+  const response = await replicationRevisionStore(
+    env,
+    database,
+    record.binding,
+  ).fetch(
+    `https://replica/replication/revision?db=${encodeURIComponent(database)}`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...internalHeaders(env),
+      },
+      body: JSON.stringify({ action: "remember", ...record }),
+    },
+  );
+  if (!response.ok) throw new UpstreamError({
+    status: response.status,
+    body: await response.text(),
+  });
+};
+
+/** Resolve only a revision authenticated for the current opaque partition. */
+export const resolveReplicationRevision = async (
+  env: RamoseEnv,
+  database: string,
+  revision: string,
+  binding: string,
+): Promise<number | undefined> => {
+  const response = await replicationRevisionStore(
+    env,
+    database,
+    binding,
+  ).fetch(
+    `https://replica/replication/revision?db=${encodeURIComponent(database)}`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...internalHeaders(env),
+      },
+      body: JSON.stringify({ action: "resolve", revision, binding }),
+    },
+  );
+  if (!response.ok) throw new UpstreamError({
+    status: response.status,
+    body: await response.text(),
+  });
+  const body = (await response.json()) as {
+    readonly found?: unknown;
+    readonly basisT?: unknown;
+  };
+  return body.found === true && Number.isSafeInteger(body.basisT) &&
+      (body.basisT as number) >= 0
+    ? body.basisT as number
+    : undefined;
 };
 
 export function wantsBasisCache(_request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">): boolean {

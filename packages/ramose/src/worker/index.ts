@@ -3,9 +3,10 @@
  *
  *   GET  /health              { ok, service }
  *   *    /db/:name/*          verified JWT + deployed catalog → filtered Db;
- *                             one-shot query/pull/entity and leased live output
- *                             run on that value only. writes, info, and sessions
- *                             stay fail-closed.
+ *                             one-shot query/pull/entity, leased live output,
+ *                             and versioned opaque replication run on that
+ *                             value only. writes, info, and raw sessions stay
+ *                             fail-closed.
  *
  * `/health` is the only unauthenticated public route (AUTH-1, AUTH-6). The
  * supported package graph contains no test or admin assembly.

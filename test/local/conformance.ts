@@ -57,7 +57,7 @@ const typedIssues = lowerQueryObject(
   }),
 );
 
-type OperationAddress = {
+export type OperationAddress = {
   readonly owner: {
     readonly kind: "entity" | "trait";
     readonly name: string;
@@ -65,7 +65,7 @@ type OperationAddress = {
   readonly localName: string;
 };
 
-type World = {
+export type World = {
   readonly database: string;
   readonly member: string;
   readonly admin: string;
@@ -80,9 +80,9 @@ type World = {
   readonly hiddenId?: number;
 };
 
-const originHeaders = { origin: "https://app.acme.test" };
+export const originHeaders = { origin: "https://app.acme.test" };
 
-const invoke = (
+export const invoke = (
   base: string,
   database: string,
   token: string,
@@ -171,14 +171,14 @@ const lookup = (
   body: JSON.stringify({ ...conformanceProof, lookup: ref }),
 });
 
-const install = async (base: string, database: string): Promise<void> => {
+export const install = async (base: string, database: string): Promise<void> => {
   const installed = await testAdmin(base, database, "/transact", {
     tx: schemaTx(ConformanceSchema),
   });
   expect(installed.status).toBe(200);
 };
 
-const create = async (
+export const create = async (
   base: string,
   database: string,
   token: string,
@@ -199,7 +199,7 @@ const create = async (
   return response.body.result.id as number;
 };
 
-const currentBasis = async (base: string, database: string): Promise<number> => {
+export const currentBasis = async (base: string, database: string): Promise<number> => {
   const response = await testAdmin(base, database, "/basis", {
     action: "fetch",
   }, { "x-ramose-cache-basis": "0" });
@@ -207,7 +207,7 @@ const currentBasis = async (base: string, database: string): Promise<number> => 
   return response.body.basis.t as number;
 };
 
-const seedWorld = async (
+export const seedWorld = async (
   base: string,
   database: string,
   includeHidden: boolean,
