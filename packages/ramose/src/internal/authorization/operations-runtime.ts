@@ -48,9 +48,17 @@ import {
 } from "./deployed.ts";
 import {
   resolveDeployedCatalogDefinition,
+  type DeployedCatalogDefinition,
   type DeployedCatalogDefinitions,
   type InstalledCatalogDefinition,
 } from "./definitions.ts";
+import {
+  deriveResolvedDatabaseRoute,
+  resolveBoundCatalogDefinition,
+  type DatabaseCatalogBindings,
+  type DatabaseRouteDerivation,
+  type ResolvedDatabaseRoute,
+} from "./database-bindings.ts";
 import type {
   CatalogId,
   CatalogUnitHash,
@@ -60,6 +68,7 @@ import type {
 import { operationGrantAllows } from "./operation-grant.ts";
 import {
   constructAuthorizedRequestContext,
+  constructAuthorizedResolvedRequestContext,
   type AuthenticatedCaller,
   type AuthorizedRequestContext,
 } from "./request.ts";
@@ -74,6 +83,8 @@ export type OperationInvocation = {
   readonly target?: EntityRef;
   readonly input: unknown;
   readonly caller: AuthenticatedCaller;
+  /** Trusted Worker-to-Transactor derivation for a nested dynamic database. */
+  readonly routeDerivation?: DatabaseRouteDerivation;
 };
 
 export type OperationExecution = {
@@ -85,9 +96,60 @@ export type OperationExecution = {
 
 export type OperationRuntime = {
   readonly catalogs: DeployedCatalogDefinitions;
+  /** Dynamic routes are rebuilt independently inside the Transactor isolate. */
+  readonly bindings?: DatabaseCatalogBindings;
   readonly environment: unknown;
   readonly now: () => number;
 };
+
+export type ResolvedOperationCatalog = {
+  readonly deployed: DeployedCatalogDefinition;
+  readonly route?: ResolvedDatabaseRoute;
+};
+
+/**
+ * Resolve the exact runnable definition before operation admission. Dynamic
+ * derivations arrive only over the internal Worker→DO channel and are checked
+ * against the final database/key/hash carried by the invocation.
+ */
+export const resolveOperationCatalog = Effect.fn(
+  "Authorization.resolveOperationCatalog",
+)(function* (
+  runtime: OperationRuntime,
+  invocation: OperationInvocation,
+): Effect.fn.Return<ResolvedOperationCatalog, Unauthorized> {
+  if (invocation.routeDerivation === undefined) {
+    const deployed = resolveDeployedCatalogDefinition(runtime.catalogs, {
+      database: invocation.database,
+      catalogKey: invocation.catalogKey,
+      unitHash: invocation.unitHash,
+    });
+    if (Result.isFailure(deployed)) return yield* deny();
+    return Object.freeze({ deployed: deployed.success });
+  }
+
+  if (
+    runtime.bindings === undefined ||
+    !Array.isArray(invocation.routeDerivation.graphs)
+  ) {
+    return yield* deny();
+  }
+  const route = yield* deriveResolvedDatabaseRoute(
+    runtime.bindings,
+    invocation.routeDerivation,
+  ).pipe(Effect.mapError(() => deny()));
+  if (
+    route.database !== invocation.database ||
+    route.deployed.catalogKey !== invocation.catalogKey ||
+    route.deployed.unitHash !== invocation.unitHash
+  ) {
+    return yield* deny();
+  }
+  const deployed = yield* Effect.fromResult(
+    resolveBoundCatalogDefinition(runtime.bindings, route),
+  ).pipe(Effect.mapError(() => deny()));
+  return Object.freeze({ deployed, route });
+});
 
 /** Private operation defect: the public HTTP boundary sees only `message`. */
 export class OperationRuntimeFault extends Error {
@@ -1026,22 +1088,17 @@ export const executeCatalogOperation = async (
   connection: Connection,
   runtime: OperationRuntime,
   invocation: OperationInvocation,
+  resolvedCatalog?: ResolvedOperationCatalog,
 ): Promise<OperationExecution> => {
   const authorizationCaller = invocation.caller;
   // Admission finishes before native code runs. Keep the later lease fences
   // on this primitive snapshot; body-visible claims are intentionally ordinary
   // trusted application data and are never consulted for post-body policy.
   const expiresAtSeconds = authorizationCaller.exp;
-  const deployed = Result.getOrElse(
-    resolveDeployedCatalogDefinition(runtime.catalogs, {
-      database: invocation.database,
-      catalogKey: invocation.catalogKey,
-      unitHash: invocation.unitHash,
-    }),
-    () => {
-      throw deny();
-    },
+  const resolved = resolvedCatalog ?? await Effect.runPromise(
+    resolveOperationCatalog(runtime, invocation),
   );
+  const deployed = resolved.deployed;
   // Defense in depth: the read adapter and runnable definition must remain
   // the exact same deployment-owned unit.
   if (Result.isFailure(requireCatalogKey(
@@ -1061,16 +1118,22 @@ export const executeCatalogOperation = async (
     expiresAtSeconds,
     descriptor,
   );
-  const requestInput = {
-    authenticate: Effect.succeed(authorizationCaller),
-    catalogs: runtime.catalogs.catalogs,
-    routeDatabase: invocation.database,
-    catalogKey: invocation.catalogKey,
-    unitHash: invocation.unitHash,
-    currentDb: () => Effect.succeed(connection.db()),
-  };
   const context = await Effect.runPromise(
-    constructAuthorizedRequestContext(requestInput, authorizationCaller),
+    resolved.route === undefined || runtime.bindings === undefined
+      ? constructAuthorizedRequestContext({
+        authenticate: Effect.succeed(authorizationCaller),
+        catalogs: runtime.catalogs.catalogs,
+        routeDatabase: invocation.database,
+        catalogKey: invocation.catalogKey,
+        unitHash: invocation.unitHash,
+        currentDb: () => Effect.succeed(connection.db()),
+      }, authorizationCaller)
+      : constructAuthorizedResolvedRequestContext({
+        authenticate: Effect.succeed(authorizationCaller),
+        bindings: runtime.bindings,
+        route: resolved.route,
+        currentDb: () => Effect.succeed(connection.db()),
+      }, authorizationCaller),
   );
   if (!operationGrantAllows(
     deployed.definition.unit,

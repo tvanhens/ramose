@@ -49,6 +49,7 @@ import {
   RateMeter,
   componentLogger,
   toWireDatom,
+  VALUE_TYPE_IDENTS,
 } from "../core/index.ts";
 import type { CompositionIndex } from "../core/composition.ts";
 import type { Principal } from "../../worker/auth.ts";
@@ -60,14 +61,15 @@ import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
 import { checkpoint, checkpointSync } from "../test-hooks.ts";
 import {
+  catalogProvisioningAttributes,
   executeCatalogOperation,
   OperationRuntimeFault,
   opaqueOperationDenial,
-  resolveDeployedCatalogDefinition,
+  resolveOperationCatalog,
+  type InstalledCatalogDefinition,
   type OperationInvocation,
   type OperationRuntime,
 } from "../authorization/index.ts";
-import * as Result from "effect/Result";
 
 export { TransactorDeadError };
 
@@ -438,6 +440,55 @@ export class Transactor {
     });
   }
 
+  /**
+   * Idempotently materialize only physical attribute schema for an already
+   * authorized dynamic route. Runnable catalog authority remains in code.
+   */
+  async provisionCatalog(definition: InstalledCatalogDefinition): Promise<number> {
+    await this.init();
+    this.bindComposition(definition.unitHash, definition.composition);
+    const attributes = catalogProvisioningAttributes(definition);
+    let missing = false;
+    for (const expected of attributes) {
+      const existing = this.conn!.db().attr(expected[":db/ident"]);
+      if (existing === undefined) {
+        missing = true;
+        continue;
+      }
+      const expectedValueType = VALUE_TYPE_IDENTS[expected[":db/valueType"]];
+      const expectedUnique = expected[":db/unique"] === undefined
+        ? undefined
+        : expected[":db/unique"] === ":db.unique/identity"
+          ? "identity"
+          : "value";
+      const expectedCardinality = expected[":db/cardinality"] ===
+          ":db.cardinality/many"
+        ? "many"
+        : "one";
+      if (
+        existing.valueType !== expectedValueType ||
+        existing.cardinality !== expectedCardinality ||
+        existing.unique !== expectedUnique ||
+        existing.index !== (expected[":db/index"] === true) ||
+        existing.isComponent !== (expected[":db/isComponent"] === true) ||
+        (existing.optional === true) !== (expected[":db/optional"] === true)
+      ) {
+        throw new TxError(
+          `cannot provision incompatible deployed field ${expected[":db/ident"]}`,
+          "tx/system",
+        );
+      }
+    }
+    if (!missing) return this.conn!.t;
+    const ack = await this.transact(
+      [...attributes] as TxData,
+      undefined,
+      undefined,
+      { system: true },
+    );
+    return ack.t;
+  }
+
   /** Principal-row provisioning is closed until verified JWT (#412). */
   async provision(principal?: Principal): Promise<{ eid: number | null; class: string }> {
     await this.init();
@@ -531,26 +582,18 @@ export class Transactor {
               if (this.operationRuntime === undefined) {
                 throw opaqueOperationDenial();
               }
-              const resolved = resolveDeployedCatalogDefinition(
-                this.operationRuntime.catalogs,
-                {
-                  database: p.operation.database,
-                  catalogKey: p.operation.catalogKey,
-                  unitHash: p.operation.unitHash,
-                },
+              const resolved = await Effect.runPromise(
+                resolveOperationCatalog(this.operationRuntime, p.operation),
               );
-              if (Result.isFailure(resolved)) {
-                throw opaqueOperationDenial();
-              }
-              const deployed = resolved.success;
               this.bindComposition(
-                deployed.definition.unitHash,
-                deployed.definition.composition,
+                resolved.deployed.definition.unitHash,
+                resolved.deployed.definition.composition,
               );
               const executed = await executeCatalogOperation(
                 this.conn,
                 this.operationRuntime,
                 p.operation,
+                resolved,
               );
               rep = executed.report;
               ack = { t: rep.t, output: executed.output };

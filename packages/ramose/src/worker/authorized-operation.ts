@@ -5,6 +5,7 @@ import * as Result from "effect/Result";
 import {
   DatabaseId,
   type AuthenticatedCaller,
+  type DatabaseRouteDerivation,
   type OperationInvocation,
 } from "../internal/authorization/index.ts";
 import { fromJson, toJson } from "../internal/core/json.ts";
@@ -13,14 +14,24 @@ import type { RamoseEnv } from "../RamoseEnv.ts";
 import { BadRequest, Unauthorized, UpstreamError } from "./errors.ts";
 import {
   isEntityRef,
-  parseCatalogProof,
+  parseCatalogProofForPath,
+  parseGraphPath,
 } from "./authorized-read.ts";
 import { invalidateBasis } from "./peer.ts";
 
 export type ParsedOperationRequest = Omit<
   OperationInvocation,
-  "database" | "caller"
->;
+  "database" | "caller" | "catalogKey" | "unitHash" | "routeDerivation"
+> & {
+  readonly path: readonly string[];
+  readonly catalogKey?: OperationInvocation["catalogKey"];
+  readonly unitHash?: OperationInvocation["unitHash"];
+};
+
+type RoutedOperationRequest = Omit<ParsedOperationRequest, "path"> & {
+  readonly catalogKey: OperationInvocation["catalogKey"];
+  readonly unitHash: OperationInvocation["unitHash"];
+};
 
 /** Serialize only the target through Ramose's entity-ref transport vocabulary. */
 export const serializeOperationInvocation = (
@@ -117,7 +128,12 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
   request: Request,
 ): Effect.fn.Return<ParsedOperationRequest, BadRequest | import("./errors.ts").Unauthorized> {
   const body = yield* readOperationJsonObject(request);
-  const proof = yield* Effect.fromResult(parseCatalogProof(body, request.headers)).pipe(
+  const path = yield* Effect.fromResult(
+    parseGraphPath(body, new URL(request.url).searchParams),
+  );
+  const proof = yield* Effect.fromResult(
+    parseCatalogProofForPath(path, body, request.headers),
+  ).pipe(
     Effect.mapError(() => deny()),
   );
   const operation = body.operation;
@@ -141,6 +157,7 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
   }
   return {
     ...proof,
+    path,
     owner,
     localName: record.localName,
     ...(target === undefined ? {} : {
@@ -153,13 +170,15 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
 export const invokeAuthoritativeOperation = async (
   env: RamoseEnv,
   database: string,
-  parsed: ParsedOperationRequest,
+  parsed: RoutedOperationRequest,
   caller: AuthenticatedCaller,
+  routeDerivation?: DatabaseRouteDerivation,
 ): Promise<{ readonly t: number; readonly output: unknown }> => {
   const invocation: OperationInvocation = {
     ...parsed,
     database: DatabaseId.make(database),
     caller,
+    ...(routeDerivation === undefined ? {} : { routeDerivation }),
   };
   const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
   let response: Response;

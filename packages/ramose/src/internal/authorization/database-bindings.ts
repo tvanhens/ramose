@@ -53,6 +53,16 @@ export type DynamicGraphBinding = {
   readonly catalogKey: CatalogId;
 };
 
+/**
+ * Server-to-server recipe for deterministically recovering one resolved
+ * route. It is produced only after filtered Graph-path authorization and is
+ * never accepted from an external request or exposed to operation code.
+ */
+export type DatabaseRouteDerivation = {
+  readonly rootDatabase: DatabaseId;
+  readonly graphs: readonly DynamicGraphBinding[];
+};
+
 /** Reachable code did not deploy the Graph row's protected permanent key. */
 export class DynamicCatalogDefinitionMissing extends Data.TaggedError(
   "DynamicCatalogDefinitionMissing",
@@ -338,3 +348,23 @@ export const acquireResolvedDatabase = <A, E, R>(
     yield* Effect.fromResult(boundRoute(bindings, route));
     return yield* acquire(route.database);
   });
+
+/**
+ * Rebuild a server-authorized route inside another trusted isolate (notably a
+ * Transactor Durable Object). The recipe carries stable Graph entity ids and
+ * protected catalog keys discovered by the Worker; callers cannot submit it.
+ */
+export const deriveResolvedDatabaseRoute = Effect.fn(
+  "Authorization.deriveResolvedDatabaseRoute",
+)(function* (
+  bindings: DatabaseCatalogBindings,
+  derivation: DatabaseRouteDerivation,
+) {
+  let route = yield* Effect.fromResult(
+    bindings.root(derivation.rootDatabase),
+  );
+  for (const graph of derivation.graphs) {
+    route = yield* bindings.child(route, graph);
+  }
+  return route;
+});

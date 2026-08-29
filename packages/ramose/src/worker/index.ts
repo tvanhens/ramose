@@ -20,6 +20,7 @@ import {
 import { QueryReplicaDO } from "../internal/replica/index.ts";
 import { runFetch, type ServerOptions } from "./handle.ts";
 import {
+  deployedDatabaseCatalogBindings,
   deployedOperationCatalogs,
   type OperationCatalogs,
 } from "./operation-catalogs.ts";
@@ -28,7 +29,10 @@ export { resolveWrites } from "../writes.ts";
 export { TransactorDO, QueryReplicaDO };
 /** Build the Transactor class from the same opaque registry as `createServer`. */
 export const createTransactorDO = (operationCatalogs: OperationCatalogs) =>
-  createInternalTransactorDO(deployedOperationCatalogs(operationCatalogs));
+  createInternalTransactorDO(
+    deployedOperationCatalogs(operationCatalogs),
+    deployedDatabaseCatalogBindings(operationCatalogs),
+  );
 export {
   deployOperationCatalogs,
   OperationCatalogDeploymentError,

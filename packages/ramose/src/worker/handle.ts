@@ -3,8 +3,11 @@ import { type AnyOperations, operationNames } from "../db/Operation.ts";
 import {
   callerFromVerified,
   DatabaseId,
+  executeAuthorizedGraphPathTarget,
   executeAuthorizedRead,
   OneShotReadError,
+  runOneShotRead,
+  type DatabaseRouteDerivation,
   type DeployedCatalogs,
 } from "../internal/authorization/index.ts";
 import {
@@ -25,6 +28,7 @@ import {
   acquireCurrentDb,
   acquireWatchedDb,
   parseOneShotReadRequest,
+  provisionResolvedDatabase,
   queryMaxCells,
 } from "./authorized-read.ts";
 import { authorizedLiveResponse } from "./authorized-live.ts";
@@ -57,6 +61,7 @@ import {
   parseOperationRequest,
 } from "./authorized-operation.ts";
 import {
+  deployedDatabaseCatalogBindings,
   deployedOperationCatalogs,
   type OperationCatalogs,
 } from "./operation-catalogs.ts";
@@ -282,6 +287,9 @@ export const handle = (
     const deployedOperations = peer.operationCatalogs === undefined
       ? undefined
       : deployedOperationCatalogs(peer.operationCatalogs);
+    const databaseBindings = peer.operationCatalogs === undefined
+      ? undefined
+      : deployedDatabaseCatalogBindings(peer.operationCatalogs);
     const catalogs = deployedOperations?.catalogs ?? peer.catalogs;
     if (rest === "/op" && request.method === "POST") {
       if (peer.operationCatalogs === undefined) {
@@ -289,17 +297,64 @@ export const handle = (
       }
       const parsed = yield* parseOperationRequest(request);
       const caller = callerFromVerified(verified);
-      const ack = yield* Effect.tryPromise({
+      const invoke = (
+        database: string,
+        catalogKey: NonNullable<typeof parsed.catalogKey>,
+        unitHash: NonNullable<typeof parsed.unitHash>,
+        routeDerivation?: DatabaseRouteDerivation,
+      ) => Effect.tryPromise({
         try: () => invokeAuthoritativeOperation(
           env,
-          db,
-          parsed,
+          database,
+          {
+            catalogKey,
+            unitHash,
+            owner: parsed.owner,
+            localName: parsed.localName,
+            ...(parsed.target === undefined ? {} : { target: parsed.target }),
+            input: parsed.input,
+          },
           caller,
+          routeDerivation,
         ),
         catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
           stacks: env.RAMOSE_STAGE !== "prod",
         }),
       });
+      const ack = parsed.path.length === 0
+        ? parsed.catalogKey === undefined || parsed.unitHash === undefined
+          ? yield* new Unauthorized({ status: 403 })
+          : yield* invoke(db, parsed.catalogKey, parsed.unitHash)
+        : databaseBindings === undefined
+          ? yield* new Unauthorized({ status: 403 })
+          : yield* Effect.gen(function* () {
+            const root = yield* Effect.fromResult(
+              databaseBindings.root(DatabaseId.make(db)),
+            ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
+            const currentDb = acquireCurrentDb(env, request, {
+              bypassBasisCache: true,
+              authoritativeBasisFence: true,
+            });
+            const target = yield* executeAuthorizedGraphPathTarget({
+              authenticate: Effect.succeed(caller),
+              bindings: databaseBindings,
+              root,
+              path: parsed.path,
+              currentDb,
+              provision: (route, derivation) =>
+                provisionResolvedDatabase(env, route, derivation),
+            }, (authorized) => Effect.succeed(authorized));
+            // Path resolution is a short, one-shot read lease. Once it has
+            // succeeded, the authoritative Transactor owns the operation's
+            // independent JWT-expiry fence; trusted bodies are not capped by
+            // the read lease merely because their database is nested.
+            return yield* invoke(
+              target.route.database,
+              target.route.deployed.catalogKey,
+              target.route.deployed.unitHash,
+              target.derivation,
+            );
+          });
       // The Transactor fences expiry before commit and acknowledgement. This
       // final Worker checkpoint is after that awaited hop; once released, the
       // exact-expiry check and response construction are synchronous.
@@ -331,6 +386,42 @@ export const handle = (
 
     const parsed = yield* parseOneShotReadRequest(request, rest);
     const stacks = env.RAMOSE_STAGE !== "prod";
+    const mapReadError = (error: unknown): RamoseError => {
+      if (error instanceof Unauthorized) return error;
+      if (isRamoseError(error)) return error;
+      if (error instanceof OneShotReadError) return fromThrown(error.cause, { stacks });
+      return fromThrown(error, { stacks });
+    };
+    if (parsed.path.length > 0) {
+      if (rest === "/live" || databaseBindings === undefined) {
+        return yield* new Unauthorized({ status: 403 });
+      }
+      const root = yield* Effect.fromResult(
+        databaseBindings.root(DatabaseId.make(db)),
+      ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
+      const result = yield* executeAuthorizedGraphPathTarget({
+        authenticate: Effect.succeed(callerFromVerified(verified)),
+        bindings: databaseBindings,
+        root,
+        path: parsed.path,
+        currentDb: acquireCurrentDb(env, request, {
+          bypassBasisCache: true,
+          authoritativeBasisFence: true,
+        }),
+        provision: (route, derivation) =>
+          provisionResolvedDatabase(env, route, derivation),
+        view: parsed.view,
+      }, (target) => Effect.tryPromise({
+        try: () => runOneShotRead(target.context.filteredDb, parsed.read, {
+          maxCells: queryMaxCells(env),
+        }),
+        catch: (cause) => new OneShotReadError({ cause }),
+      })).pipe(Effect.mapError(mapReadError));
+      return json({ result });
+    }
+    if (parsed.catalogKey === undefined || parsed.unitHash === undefined) {
+      return yield* new Unauthorized({ status: 403 });
+    }
     const liveWatch = rest === "/live" ? watchBasisChanges(env, db, request) : undefined;
     const admissionCurrentDb = acquireCurrentDb(env, request, {
       bypassBasisCache: rest === "/live",
@@ -353,12 +444,6 @@ export const handle = (
         ? admissionCurrentDb
         : acquireWatchedDb(env, liveWatch.currentBasis),
       view: parsed.view,
-    };
-    const mapReadError = (error: unknown): RamoseError => {
-      if (error instanceof Unauthorized) return error;
-      if (isRamoseError(error)) return error;
-      if (error instanceof OneShotReadError) return fromThrown(error.cause, { stacks });
-      return fromThrown(error, { stacks });
     };
     if (rest === "/live") {
       return yield* authorizedLiveResponse(input, parsed.read, { maxCells: queryMaxCells(env) }, CORS).pipe(

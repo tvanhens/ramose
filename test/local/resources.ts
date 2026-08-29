@@ -18,6 +18,7 @@ export { Open };
 const worker = import.meta.resolve("./worker.ts");
 const empty = import.meta.resolve("./empty-worker.ts");
 const operationWorker = import.meta.resolve("./operation-worker.ts");
+const graphPathWorker = import.meta.resolve("./graph-path-worker.ts");
 
 const jwtAuth = () =>
   ({
@@ -94,6 +95,15 @@ export const NativeOperations = Ramose.Server("NativeOperations", {
   peer: "NativeOperationsPeer",
   storage: "NativeOperationsStore",
   main: operationWorker,
+  auth: jwtAuth(),
+  env: TEST_HOOKS_ENV,
+});
+
+/** Authenticated two-level Graph routing and dynamic provisioning (#325). */
+export const GraphPaths = Ramose.Server("GraphPaths", {
+  peer: "GraphPathsPeer",
+  storage: "GraphPathsStore",
+  main: graphPathWorker,
   auth: jwtAuth(),
   env: TEST_HOOKS_ENV,
 });

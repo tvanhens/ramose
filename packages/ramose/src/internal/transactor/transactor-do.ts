@@ -11,9 +11,16 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
+  CatalogId,
+  DatabaseId,
   compositionFromUnit,
+  deriveResolvedDatabaseRoute,
+  resolveBoundCatalogDefinition,
+  type DatabaseCatalogBindings,
+  type DatabaseRouteDerivation,
   type DeployedCatalogDefinitions,
   type InstalledCatalogUnitV2,
 } from "../authorization/index.ts";
@@ -44,18 +51,21 @@ export function configFromEnv(env: RamoseEnv): TransactorConfig {
 
 class TransactorDOBase extends DurableObject<RamoseEnv> {
   private readonly core: Transactor;
+  private readonly databaseCatalogBindings: DatabaseCatalogBindings | undefined;
   private dbName: string | undefined;
 
   constructor(
     ctx: DurableObjectState,
     env: RamoseEnv,
     operationCatalogs?: DeployedCatalogDefinitions,
+    databaseCatalogBindings?: DatabaseCatalogBindings,
   ) {
     super(ctx, env);
     resetTestHooks();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
     if (row) this.dbName = JSON.parse(row.v as string) as string;
+    this.databaseCatalogBindings = databaseCatalogBindings;
     const self = this;
     const host: TransactorHost = {
       get dbName() {
@@ -80,7 +90,14 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       host,
       operationCatalogs === undefined
         ? undefined
-        : { catalogs: operationCatalogs, environment: env, now: () => host.now() },
+        : {
+          catalogs: operationCatalogs,
+          ...(databaseCatalogBindings === undefined
+            ? {}
+            : { bindings: databaseCatalogBindings }),
+          environment: env,
+          now: () => host.now(),
+        },
     );
   }
 
@@ -151,6 +168,70 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
     if (url.pathname === "/health") {
       return new Response(JSON.stringify(toJson({ ok: true, t: this.core.t })), { headers: { "content-type": "application/json" } });
     }
+    if (url.pathname === "/provision-catalog" && request.method === "POST") {
+      if (this.databaseCatalogBindings === undefined) {
+        return new Response(JSON.stringify({ error: "catalog provisioning unavailable" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      try {
+        const body = await request.json() as { readonly derivation?: unknown };
+        const raw = body?.derivation;
+        if (
+          typeof raw !== "object" || raw === null || Array.isArray(raw) ||
+          typeof (raw as { readonly rootDatabase?: unknown }).rootDatabase !== "string" ||
+          !Array.isArray((raw as { readonly graphs?: unknown }).graphs)
+        ) {
+          throw new Error("invalid database route derivation");
+        }
+        const graphs = (raw as { readonly graphs: readonly unknown[] }).graphs.map(
+          (entry) => {
+            if (
+              typeof entry !== "object" || entry === null || Array.isArray(entry) ||
+              !Number.isSafeInteger((entry as { readonly graphEntity?: unknown }).graphEntity) ||
+              typeof (entry as { readonly catalogKey?: unknown }).catalogKey !== "string"
+            ) {
+              throw new Error("invalid dynamic Graph binding");
+            }
+            return Object.freeze({
+              graphEntity: (entry as { readonly graphEntity: number }).graphEntity,
+              catalogKey: CatalogId.make(
+                (entry as { readonly catalogKey: string }).catalogKey,
+              ),
+            });
+          },
+        );
+        const derivation: DatabaseRouteDerivation = Object.freeze({
+          rootDatabase: DatabaseId.make(
+            (raw as { readonly rootDatabase: string }).rootDatabase,
+          ),
+          graphs: Object.freeze(graphs),
+        });
+        const route = await Effect.runPromise(deriveResolvedDatabaseRoute(
+          this.databaseCatalogBindings,
+          derivation,
+        ));
+        if (route.database !== DatabaseId.make(this.dbName)) {
+          throw new Error("database route derivation does not match this transactor");
+        }
+        const deployed = Result.getOrThrow(resolveBoundCatalogDefinition(
+          this.databaseCatalogBindings,
+          route,
+        ));
+        const t = await this.core.provisionCatalog(deployed.definition);
+        return new Response(JSON.stringify({ t }), {
+          headers: { "content-type": "application/json" },
+        });
+      } catch (cause) {
+        return new Response(JSON.stringify({
+          error: cause instanceof Error ? cause.message : "catalog provisioning failed",
+        }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
     const testAdmin = await handleIsolateTestAdmin(request, url.pathname, (reason) => this.ctx.abort(reason));
     if (testAdmin !== undefined) return testAdmin;
     return this.core.handleRequest(request);
@@ -160,12 +241,13 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
 /** Build the deployed Transactor class from the same immutable registry as the Worker. */
 export const createTransactorDO = (
   operationCatalogs: DeployedCatalogDefinitions,
+  databaseCatalogBindings?: DatabaseCatalogBindings,
 ): (new (
   ctx: DurableObjectState,
   env: RamoseEnv,
 ) => DurableObject<RamoseEnv>) => class TransactorDO extends TransactorDOBase {
   constructor(ctx: DurableObjectState, env: RamoseEnv) {
-    super(ctx, env, operationCatalogs);
+    super(ctx, env, operationCatalogs, databaseCatalogBindings);
   }
 };
 

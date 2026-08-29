@@ -366,12 +366,12 @@ export const constructAuthorizedResolvedRequestContext = <R, EDb>(
     return yield* constructFilteredContext(admitted, caller, current, input.view);
   });
 
-type AuthorizedLeaseInput<R> = {
+export type AuthorizedLeaseInput<R> = {
   readonly authenticate: Effect.Effect<AuthenticatedCaller, Unauthorized, R>;
   readonly interruptAfter?: Duration.Input;
 };
 
-const executeWithinAuthorizedLease = <A, E, R>(
+export const executeWithinAuthorizedLease = <A, E, R>(
   input: AuthorizedLeaseInput<R>,
   execute: (caller: AuthenticatedCaller) => Effect.Effect<A, E, R>,
 ): Effect.Effect<A, Unauthorized | E, R> => {
