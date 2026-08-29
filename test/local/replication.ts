@@ -2,6 +2,7 @@
 
 import { beforeAll, describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
+import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import {
   applyReplicationFrame,
@@ -19,6 +20,7 @@ import {
 import {
   CONFORMANCE_DATABASES,
   ConformanceIssue,
+  conformanceReadCompatibilityHash,
 } from "./conformance-catalog.ts";
 import {
   loadConformanceProof,
@@ -41,6 +43,7 @@ const RETENTION_ZERO_DATABASE = CONFORMANCE_DATABASES[14]!;
 const RETENTION_PRESSURE_DATABASE = CONFORMANCE_DATABASES[15]!;
 const WATCH_FAILURE_DATABASE = CONFORMANCE_DATABASES[16]!;
 const RESUME_READY_DATABASE = CONFORMANCE_DATABASES[17]!;
+const COMPATIBILITY_DATABASE = CONFORMANCE_DATABASES[18]!;
 
 const withTimeout = async <A>(
   promise: Promise<A>,
@@ -68,6 +71,7 @@ const openReplication = (
   resumeRevision?: string,
   protocol = 1,
   signal?: AbortSignal,
+  readCompatibilityHash = conformanceReadCompatibilityHash,
 ): Promise<Response> => fetch(
   `${base.replace(/\/+$/, "")}/db/${encodeURIComponent(database)}/replicate`,
   {
@@ -82,6 +86,7 @@ const openReplication = (
       protocol,
       graphPath: [],
       scope: { type: "database" },
+      readCompatibilityHash,
       ...(resumeRevision === undefined ? {} : { resumeRevision }),
     }),
     ...(signal === undefined ? {} : { signal }),
@@ -440,6 +445,54 @@ const observeBackpressuredBurst = async (
 export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
   describe("versioned opaque database replication", () => {
     beforeAll(() => loadConformanceProof(ctx.urls().conformanceUrl));
+
+    test("authenticates and resolves the path before fixed schema agreement", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, COMPATIBILITY_DATABASE, false);
+      const mismatched = await openReplication(
+        base,
+        world.database,
+        world.member,
+        undefined,
+        1,
+        undefined,
+        ReadCompatibilityHash.make("z".repeat(43)),
+      );
+      expect(mismatched.status).toBe(409);
+      expect(await mismatched.text()).toBe(
+        `${JSON.stringify({ type: "TerminalError", protocol: 1, code: "update-required" })}\n`,
+      );
+
+      const unauthenticated = await openReplication(
+        base,
+        world.database,
+        "not-a-token",
+        undefined,
+        1,
+        undefined,
+        ReadCompatibilityHash.make("z".repeat(43)),
+      );
+      expect(unauthenticated.status).toBe(401);
+
+      const unresolved = await fetch(
+        `${base.replace(/\/+$/, "")}/db/${encodeURIComponent(world.database)}/replicate`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${world.member}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            type: "Activate",
+            protocol: 1,
+            graphPath: ["missing"],
+            scope: { type: "database" },
+            readCompatibilityHash: "z".repeat(43),
+          }),
+        },
+      );
+      expect(unresolved.status).toBe(403);
+    });
 
     test("snapshot bytes are complete, logical, and identical after a hidden-only commit", async () => {
       const base = ctx.urls().conformanceUrl;

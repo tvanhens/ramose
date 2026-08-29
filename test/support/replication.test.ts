@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import {
   MAX_REPLICATION_FRAME_BYTES,
   encodeReplicationFrame,
@@ -15,6 +16,7 @@ const identity: ReplicationIdentity = {
   database: opaque("C"),
   catalog: opaque("D"),
   readView: opaque("E"),
+  readCompatibilityHash: ReadCompatibilityHash.make(opaque("K")),
   authenticator: opaque("F"),
 };
 

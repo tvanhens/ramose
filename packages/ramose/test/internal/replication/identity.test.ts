@@ -3,6 +3,7 @@ import {
   CatalogId,
   CatalogUnitHash,
   DatabaseId,
+  ReadCompatibilityHash,
   type AuthenticatedCaller,
   type GraphPathLeaseIdentity,
 } from "../../../src/internal/authorization/index.ts";
@@ -11,9 +12,11 @@ import {
   makeReplicationIdentity,
   makeRevision,
 } from "../../../src/internal/replication/index.ts";
+import { replicaPartitionKey } from "../../../src/internal/replication/indexeddb.ts";
 
 const secret = "replication-test-secret-that-is-long-enough";
 const digest = (character: string) => character.repeat(64);
+const compatibility = (character: string) => ReadCompatibilityHash.make(character.repeat(43));
 const caller = (exp: number, org = "acme", sub = "user-1"): AuthenticatedCaller => ({
   exp,
   claims: { sub, org },
@@ -44,13 +47,18 @@ const path = (
 const make = (options: {
   caller?: AuthenticatedCaller;
   path?: GraphPathLeaseIdentity;
-  deployment?: string;
+  compatibility?: ReadCompatibilityHash;
+  policy?: string;
 } = {}) => makeReplicationIdentity({
   secret,
   origin: "https://ramose.test",
-  deployment: options.deployment ?? "deployment-1",
   caller: options.caller ?? caller(2_000_000_000),
   path: options.path ?? path(),
+  readRoutes: [{
+    database: DatabaseId.make("child-db"),
+    readCompatibilityHash: options.compatibility ?? compatibility("r"),
+    readPolicy: options.policy ?? digest("f"),
+  }],
 });
 
 describe("opaque replication identities", () => {
@@ -59,7 +67,7 @@ describe("opaque replication identities", () => {
       .toEqual(await make({ caller: caller(2_100_000_000) }));
   });
 
-  test("principal, claim view, class, catalog, database, and deployment partition", async () => {
+  test("principal, claim view, catalog, database, read schema, and policy partition", async () => {
     const baseline = await make();
     const changed = [
       await make({ caller: caller(2_000_000_000, "other") }),
@@ -72,8 +80,8 @@ describe("opaque replication identities", () => {
       }),
       await make({ path: path("other-db") }),
       await make({ path: path("child-db", "other-catalog") }),
-      await make({ path: path("child-db", "issues", digest("c")) }),
-      await make({ deployment: "deployment-2" }),
+      await make({ compatibility: compatibility("x") }),
+      await make({ policy: digest("e") }),
     ];
     for (const replacement of changed) {
       expect(replacement.authenticator).not.toBe(baseline.authenticator);
@@ -82,6 +90,22 @@ describe("opaque replication identities", () => {
         replacement.database === baseline.database &&
         replacement.catalog === baseline.catalog).toBe(false);
     }
+  });
+
+  test("operation-unit and deployment-only changes preserve reusable read identity", async () => {
+    const baseline = await make({ path: path("child-db", "issues", digest("a")) });
+    const operationOnly = await make({ path: path("child-db", "issues", digest("c")) });
+    expect(operationOnly).toEqual(baseline);
+    expect(replicaPartitionKey(operationOnly)).toBe(replicaPartitionKey(baseline));
+    expect(await makeEntityIdentity(secret, operationOnly.authenticator, 42)).toBe(
+      await makeEntityIdentity(secret, baseline.authenticator, 42),
+    );
+    expect(await makeRevision(secret, operationOnly, "S".repeat(43))).toBe(
+      await makeRevision(secret, baseline, "S".repeat(43)),
+    );
+    const catalogOnly = await make({ path: path("child-db", "other-catalog", digest("c")) });
+    expect(catalogOnly.readView).toBe(baseline.readView);
+    expect(catalogOnly.catalog).not.toBe(baseline.catalog);
   });
 
   test("entity identities and revisions are stable opaque PRF outputs within one partition", async () => {

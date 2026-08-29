@@ -6,6 +6,7 @@ import {
   executeAuthorizedGraphPathTarget,
   executeAuthorizedRead,
   graphPathLeaseIdentity,
+  hashReadCompatibility,
   OneShotReadError,
   runOneShotRead,
   type AuthorizedGraphPathTarget,
@@ -45,6 +46,7 @@ import {
 import {
   authorizedReplicationResponse,
   incompatibleReplicationResponse,
+  updateRequiredReplicationResponse,
 } from "./authorized-replication.ts";
 import {
   Analytics,
@@ -342,6 +344,14 @@ export const handle = (
           stacks: env.RAMOSE_STAGE !== "prod",
         })),
       );
+      const targetCompatibility = yield* hashReadCompatibility(
+        initialTarget.route.deployed.unit.catalog,
+      ).pipe(Effect.mapError((cause) => fromThrown(cause, {
+        stacks: env.RAMOSE_STAGE !== "prod",
+      })));
+      if (decoded.success.readCompatibilityHash !== targetCompatibility) {
+        return updateRequiredReplicationResponse(cors);
+      }
       return yield* authorizedReplicationResponse({
         activation: decoded.success,
         env,

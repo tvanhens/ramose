@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
+import { ReadCompatibilityHash } from "../../../src/internal/authorization/identities.ts";
 import {
   MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK,
   MAX_REPLICATION_FRAME_BYTES,
@@ -18,6 +19,7 @@ import {
 } from "../../../src/internal/replication/index.ts";
 
 const opaque = (character: string): string => character.repeat(43);
+const compatible = ReadCompatibilityHash.make(opaque("K"));
 
 const identity: ReplicationIdentity = {
   version: 1,
@@ -26,6 +28,7 @@ const identity: ReplicationIdentity = {
   database: opaque("C"),
   catalog: opaque("D"),
   readView: opaque("E"),
+  readCompatibilityHash: compatible,
   authenticator: opaque("F"),
 };
 
@@ -34,6 +37,7 @@ const request: ActivationRequest = {
   protocol: REPLICATION_PROTOCOL_VERSION,
   graphPath: ["organizations", "acme"],
   scope: { type: "database" },
+  readCompatibilityHash: compatible,
   resumeRevision: opaque("G"),
 };
 
@@ -73,6 +77,7 @@ describe("replication activation codec", () => {
       protocol: 1,
       graphPath: ["organizations", "acme"],
       scope: { type: "database" },
+      readCompatibilityHash: compatible,
     });
   });
 
@@ -149,6 +154,7 @@ describe("replication frame codec", () => {
     { type: "KeepAlive", protocol: 1, identity },
     { type: "TerminalError", protocol: 1, code: "closed", identity },
     { type: "TerminalError", protocol: 1, code: "incompatible-version" },
+    { type: "TerminalError", protocol: 1, code: "update-required" },
   ];
 
   test("round-trips every exact envelope and canonical logical value", () => {
@@ -281,7 +287,13 @@ describe("replication frame codec", () => {
 });
 
 describe("replica version ownership", () => {
-  const current = { protocol: 1, build: "client-v2", storage: 3, readView: "view-b" };
+  const current = {
+    protocol: 1,
+    build: "client-v2",
+    storage: 3,
+    readCompatibilityHash: "schema-b",
+    readView: "view-b",
+  };
 
   test("chooses one conservative owner in protocol/build/storage/read-view order", () => {
     expect(decideReplicaCompatibility(current, current)).toBe("reuse");
@@ -291,6 +303,8 @@ describe("replica version ownership", () => {
       .toBe("build-reset");
     expect(decideReplicaCompatibility({ ...current, storage: 2 }, current))
       .toBe("storage-migration");
+    expect(decideReplicaCompatibility({ ...current, readCompatibilityHash: "schema-a" }, current))
+      .toBe("read-compatibility-reset");
     expect(decideReplicaCompatibility({ ...current, readView: "view-a" }, current))
       .toBe("read-view-reset");
   });

@@ -1,9 +1,20 @@
 /** Opaque, server-authenticated replication identities and revisions. */
 
+import * as Effect from "effect/Effect";
 import type { AuthenticatedCaller } from "../authorization/request.ts";
 import type { GraphPathLeaseIdentity } from "../authorization/graph-path.ts";
+import type { ResolvedDatabaseRoute } from "../authorization/database-bindings.ts";
 import { canonicalizeJson } from "../authorization/canonical-json.ts";
+import {
+  canonicalizeReadPolicy,
+  GRAPH_READ_SEMANTICS_VERSION,
+  hashReadCompatibility,
+} from "../authorization/read-compatibility.ts";
 import type { JsonValue } from "../authorization/json.ts";
+import type {
+  DatabaseId,
+  ReadCompatibilityHash,
+} from "../authorization/identities.ts";
 import type {
   OpaqueReplicationId,
   ReplicationIdentity,
@@ -73,10 +84,25 @@ const callerMaterial = (caller: AuthenticatedCaller): JsonValue => ({
 export type ReplicationIdentityInput = {
   readonly secret: string;
   readonly origin: string;
-  readonly deployment: string;
   readonly caller: AuthenticatedCaller;
   readonly path: GraphPathLeaseIdentity;
+  readonly readRoutes: readonly ReplicationReadRouteIdentity[];
 };
+
+export type ReplicationReadRouteIdentity = {
+  readonly database: DatabaseId;
+  readonly readCompatibilityHash: ReadCompatibilityHash;
+  readonly readPolicy: string;
+};
+
+/** Read-only route material deliberately excludes the deployment/unit hash. */
+export const replicationReadRouteIdentities = async (
+  routes: readonly ResolvedDatabaseRoute[],
+): Promise<readonly ReplicationReadRouteIdentity[]> => Promise.all(routes.map(async (route) => ({
+  database: route.database,
+  readCompatibilityHash: await Effect.runPromise(hashReadCompatibility(route.deployed.unit.catalog)),
+  readPolicy: canonicalizeReadPolicy(route.deployed.unit.policy),
+})));
 
 /**
  * Derive the five partition dimensions solely from authenticated server
@@ -108,18 +134,18 @@ export const makeReplicationIdentity = async (
     "ramose:replication:catalog:v1",
     target.catalogKey,
   );
+  const readCompatibilityHash = input.readRoutes[input.readRoutes.length - 1]
+    ?.readCompatibilityHash;
+  if (readCompatibilityHash === undefined) throw new Error("replication path has no read route");
   const readView = await opaqueHmac(
     input.secret,
-    "ramose:replication:read-view:v1",
+    "ramose:replication:read-view:v2",
     {
-      deployment: input.deployment,
-      principal,
-      root: input.path.rootDatabase,
-      graphPath: [...input.path.path],
-      routes: input.path.routes.map((route) => ({
+      graphReadSemantics: GRAPH_READ_SEMANTICS_VERSION,
+      routes: input.readRoutes.map((route) => ({
         database: route.database,
-        catalog: route.catalogKey,
-        unit: route.unitHash,
+        compatibility: route.readCompatibilityHash,
+        policy: route.readPolicy,
       })),
       dependencies: input.path.dependencies.map((dependency) => ({
         parent: dependency.parentDatabase,
@@ -134,6 +160,7 @@ export const makeReplicationIdentity = async (
     database,
     catalog,
     readView,
+    readCompatibilityHash,
   };
   const authenticator = await opaqueHmac(
     input.secret,

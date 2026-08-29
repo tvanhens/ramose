@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ReadCompatibilityHash } from "../../../src/internal/authorization/identities.ts";
 import type { ReplicationIdentity } from "../../../src/internal/replication/protocol.ts";
 import {
   classifyReplicationChange,
@@ -13,6 +14,7 @@ const identity: ReplicationIdentity = {
   database: opaque("d"),
   catalog: opaque("c"),
   readView: opaque("v"),
+  readCompatibilityHash: ReadCompatibilityHash.make(opaque("k")),
   authenticator: opaque("a"),
 };
 const change = (from: string, revision: string) => ({
@@ -43,4 +45,7 @@ test("protocol terminal reasons remain observable to later reconnect policy", ()
   expect(replicationTerminalSnapshot({
     type: "TerminalError", protocol: 1, code: "incompatible-version",
   })).toEqual({ status: "terminal", terminalCode: "incompatible-version" });
+  expect(replicationTerminalSnapshot({
+    type: "TerminalError", protocol: 1, code: "update-required",
+  })).toEqual({ status: "terminal", terminalCode: "update-required" });
 });

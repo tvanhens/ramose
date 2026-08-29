@@ -25,6 +25,7 @@ import {
   TraitId,
   assembleInstalledCatalogUnit,
   canonicalizeInstalledCatalogUnit,
+  canonicalizeReadPolicy,
   catalogUnitCanonicalBytes,
   decodeInstalledCatalogUnitResult,
   encodeInstalledCatalogUnit,
@@ -32,6 +33,9 @@ import {
   hashDomainSeparatedCanonicalJson,
   hashInstalledAuthorization,
   hashInstalledCatalogUnit,
+  hashReadCompatibility,
+  readCompatibilityDescriptor,
+  canonicalizeReadCompatibility,
   installAuthorization,
   normalizeAndValidateCatalogUnit,
   prepareAuthorizationCatalog,
@@ -1253,5 +1257,80 @@ describe("prepareAuthorizationCatalog still rejects blank target fields", () => 
     if (Result.isFailure(blankEntity)) {
       expect(blankEntity.failure.message).toMatch(/blank entity name/);
     }
+  });
+});
+
+describe("read compatibility identity", () => {
+  test("is canonical, domain-separated, and excludes operations and documentation", async () => {
+    const baseline = catalogDescriptor();
+    const changedOnlyOutsideReads: CatalogDescriptor = {
+      ...baseline,
+      entities: baseline.entities.map((entry) => ({ ...entry, doc: "new docs" })),
+      fields: baseline.fields.map((entry) => ({ ...entry, doc: "field docs" })),
+      operations: baseline.operations.map((operation) => ({
+        ...operation,
+        bodyHash: digestHex(0xee),
+        doc: "operation docs",
+      })),
+    };
+    const left = await Effect.runPromise(hashReadCompatibility(baseline));
+    const right = await Effect.runPromise(hashReadCompatibility(changedOnlyOutsideReads));
+    expect(right).toBe(left);
+    const otherCatalog = JSON.parse(
+      JSON.stringify(baseline),
+      (key, value) => key === "catalog" ? "another-permanent-catalog" : value,
+    ) as CatalogDescriptor;
+    expect(await Effect.runPromise(hashReadCompatibility(otherCatalog))).toBe(left);
+    expect(left).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    const descriptor = Result.getOrThrow(readCompatibilityDescriptor(baseline));
+    const canonical = canonicalizeReadCompatibility(descriptor);
+    const raw = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical)));
+    const rawBase64 = Buffer.from(raw).toString("base64url");
+    expect(left).not.toBe(rawBase64);
+
+    const installed = await install(baseline);
+    const operationRule = {
+      ...installed.rules[0]!,
+      id: RuleId.make(digestHex(0xef)),
+      focus: { _tag: "operation" as const, operation: baseline.operations[0]!.id },
+      expr: { _tag: "hasClass" as const, class: "operator" },
+      usesResource: false,
+      usesMe: false,
+      traversalDepth: 0,
+    };
+    const operationOnlyPolicy: InstalledAuthorizationIR = {
+      ...installed,
+      classes: [...installed.classes, "operator"],
+      rules: [...installed.rules, operationRule],
+      decisions: {
+        ...installed.decisions,
+        operations: [{
+          target: baseline.operations[0]!.id,
+          decision: { allow: [operationRule.id], deny: [] },
+        }],
+      },
+      accessPlans: [...installed.accessPlans, { rule: operationRule.id, lookups: [] }],
+    };
+    expect(canonicalizeReadPolicy(operationOnlyPolicy)).toBe(canonicalizeReadPolicy(installed));
+  });
+
+  test("rotates for field schema, trait composition, and graph-read metadata", async () => {
+    const baseline = catalogDescriptor();
+    const expected = await Effect.runPromise(hashReadCompatibility(baseline));
+    const changedField = {
+      ...baseline,
+      fields: baseline.fields.map((field, index) =>
+        index === 0 ? { ...field, optional: !field.optional } : field
+      ),
+    } as CatalogDescriptor;
+    const changedTraits = {
+      ...baseline,
+      traitComposition: baseline.traitComposition.map((row) => ({ ...row, transitive: [] })),
+    };
+    expect(await Effect.runPromise(hashReadCompatibility(changedField))).not.toBe(expected);
+    expect(await Effect.runPromise(hashReadCompatibility(changedTraits))).not.toBe(expected);
+    const descriptor = Result.getOrThrow(readCompatibilityDescriptor(baseline));
+    expect(canonicalizeReadCompatibility(descriptor)).toContain('"graphReadSemantics":"ramose.graph-read/v1"');
   });
 });

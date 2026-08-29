@@ -1,4 +1,5 @@
 import { expect } from "vitest";
+import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
 import {
   IndexedDbReplicaStorage,
@@ -22,6 +23,7 @@ const selected: ReplicationIdentity = {
   database: opaque("d"),
   catalog: opaque("c"),
   readView: opaque("v"),
+  readCompatibilityHash: ReadCompatibilityHash.make(opaque("k")),
   authenticator: opaque("a"),
 };
 const attributes: readonly AttributeSpec[] = [
@@ -110,6 +112,7 @@ browserTest("restores only an exact credential binding and isolates observer fai
       activation,
       credential: "known-credential",
       attributes,
+      readCompatibilityHash: selected.readCompatibilityHash,
       storage,
     });
     expect(session.snapshot()).toMatchObject({
@@ -135,11 +138,12 @@ browserTest("restores only an exact credential binding and isolates observer fai
       activation,
       credential: "refreshed-unknown-credential",
       attributes,
+      readCompatibilityHash: selected.readCompatibilityHash,
       storage,
     });
     expect(unknown.snapshot().value).toBeUndefined();
     await unknown.close();
-    expect((await storage.restore(selected, attributes))?.revision).toBe(opaque("r"));
+    expect((await storage.restore(selected, attributes, selected.readCompatibilityHash))?.revision).toBe(opaque("r"));
   } finally {
     await session?.close();
     storage.close();
@@ -147,9 +151,9 @@ browserTest("restores only an exact credential binding and isolates observer fai
   }
 });
 
-browserTest("additively upgrades and restores a populated version-1 replica", async ({ browser }) => {
-  const sourceName = `ramose-session-v2-source-${browser.uniqueId}`;
-  const legacyName = `ramose-session-v1-${browser.uniqueId}`;
+browserTest("additively upgrades and restores a compatible populated version-2 replica", async ({ browser }) => {
+  const sourceName = `ramose-session-v3-source-${browser.uniqueId}`;
+  const legacyName = `ramose-session-v2-${browser.uniqueId}`;
   const source = await IndexedDbReplicaStorage.open(sourceName);
   let upgraded: IndexedDbReplicaStorage | undefined;
   try {
@@ -164,11 +168,12 @@ browserTest("additively upgrades and restores a populated version-1 replica", as
     await transactionDone(sourceTx);
     sourceDb.close();
 
-    const legacy = await openNative(legacyName, 1, (database) => {
+    const legacy = await openNative(legacyName, 2, (database) => {
       database.createObjectStore("replica-committed-v1", { keyPath: "partition" });
       database.createObjectStore("replica-staging-v1", { keyPath: "partition" });
       database.createObjectStore("replica-staging-chunks-v1", { keyPath: ["partition", "index"] });
       database.createObjectStore("replica-nodes-v1", { keyPath: ["partition", "hash"] });
+      database.createObjectStore("replica-credential-bindings-v1", { keyPath: "fingerprint" });
     });
     const legacyTx = legacy.transaction(
       ["replica-committed-v1", "replica-nodes-v1"],
@@ -180,15 +185,90 @@ browserTest("additively upgrades and restores a populated version-1 replica", as
     legacy.close();
 
     upgraded = await IndexedDbReplicaStorage.open(legacyName);
-    expect((await upgraded.restore(selected, attributes))?.revision).toBe(opaque("r"));
+    expect((await upgraded.restore(selected, attributes, selected.readCompatibilityHash))?.revision).toBe(opaque("r"));
     const reopened = await openNative(legacyName);
-    expect(reopened.version).toBe(2);
+    expect(reopened.version).toBe(3);
     expect([...reopened.objectStoreNames]).toContain("replica-credential-bindings-v1");
     reopened.close();
   } finally {
     source.close();
     upgraded?.close();
     await deleteDatabase(sourceName);
+    await deleteDatabase(legacyName);
+  }
+});
+
+browserTest("quarantines mismatched and legacy manifests before constructing a Db", async ({ browser }) => {
+  const mismatchName = `ramose-session-mismatch-${browser.uniqueId}`;
+  const legacyName = `ramose-session-legacy-${browser.uniqueId}`;
+  const mismatch = await IndexedDbReplicaStorage.open(mismatchName);
+  let upgraded: IndexedDbReplicaStorage | undefined;
+  try {
+    await install(mismatch);
+    const fingerprint = "fingerprint";
+    await mismatch.bindCredential(fingerprint, selected);
+    expect(await mismatch.restoreBound(
+      fingerprint,
+      attributes,
+      ReadCompatibilityHash.make(opaque("x")),
+    )).toBeUndefined();
+    expect(await mismatch.restore(
+      selected,
+      attributes,
+      selected.readCompatibilityHash,
+    )).toBeUndefined();
+
+    const legacy = await openNative(legacyName, 2, (database) => {
+      database.createObjectStore("replica-committed-v1", { keyPath: "partition" });
+      database.createObjectStore("replica-staging-v1", { keyPath: "partition" });
+      database.createObjectStore("replica-staging-chunks-v1", { keyPath: ["partition", "index"] });
+      database.createObjectStore("replica-nodes-v1", { keyPath: ["partition", "hash"] });
+      database.createObjectStore("replica-credential-bindings-v1", { keyPath: "fingerprint" });
+    });
+    const legacyIdentity = { ...selected } as Record<string, unknown>;
+    delete legacyIdentity.readCompatibilityHash;
+    const tx = legacy.transaction(
+      ["replica-committed-v1", "replica-credential-bindings-v1"],
+      "readwrite",
+    );
+    tx.objectStore("replica-committed-v1").put({
+      partition: "legacy-partition",
+      storageVersion: 1,
+      identity: legacyIdentity,
+      revision: opaque("r"),
+      datoms: [],
+      attributes: [],
+      entityIds: [],
+      attributeIds: [],
+      roots: {},
+      nextLocalId: 1,
+    });
+    tx.objectStore("replica-credential-bindings-v1").put({
+      fingerprint,
+      identity: legacyIdentity,
+    });
+    await transactionDone(tx);
+    legacy.close();
+
+    upgraded = await IndexedDbReplicaStorage.open(legacyName);
+    expect(await upgraded.restoreBound(
+      fingerprint,
+      attributes,
+      selected.readCompatibilityHash,
+    )).toBeUndefined();
+    const inspected = await openNative(legacyName);
+    const inspectTx = inspected.transaction(
+      ["replica-committed-v1", "replica-credential-bindings-v1"],
+      "readonly",
+    );
+    expect(await requestResult(inspectTx.objectStore("replica-committed-v1").count())).toBe(0);
+    expect(await requestResult(inspectTx.objectStore("replica-credential-bindings-v1").count())).toBe(0);
+    await transactionDone(inspectTx);
+    inspected.close();
+  } finally {
+    mismatch.close();
+    upgraded?.close();
+    await deleteDatabase(mismatchName);
     await deleteDatabase(legacyName);
   }
 });

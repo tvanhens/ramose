@@ -30,6 +30,7 @@ import {
   encodeReplicationFrame,
   makeLogicalIdentityEncoder,
   makeReplicationIdentity,
+  replicationReadRouteIdentities,
   makeRevision,
   makeSnapshotIdentity,
   replicationFrameFitsBound,
@@ -559,7 +560,6 @@ const replicationFrames = async function* (
     Effect.runPromise(effect.pipe(Effect.provide(context)), {
       signal: effectiveSignal,
     });
-  const deployment = input.env.CF_VERSION_METADATA!.id;
   const origin = new URL(input.request.url).origin;
   const authorize = async (): Promise<AuthorizedVersion> => {
     effectiveSignal.throwIfAborted();
@@ -590,12 +590,12 @@ const replicationFrames = async function* (
         input.activation.graphPath,
       );
       const identity = yield* Effect.tryPromise({
-        try: () => makeReplicationIdentity({
+        try: async () => makeReplicationIdentity({
           secret: input.env.RAMOSE_INTERNAL_SECRET,
           origin,
-          deployment,
           caller,
           path: pathIdentity,
+          readRoutes: await replicationReadRouteIdentities(target.routes),
         }),
         catch: (cause) => runtimeError("replication identity derivation failed", cause),
       });
@@ -822,11 +822,9 @@ export const authorizedReplicationResponse = (
   input: AuthorizedReplicationInput,
 ): Effect.Effect<Response, unknown, JwtVerifier> =>
   Effect.gen(function* () {
-    const deployment = input.env.CF_VERSION_METADATA?.id;
     if (
       typeof input.env.RAMOSE_INTERNAL_SECRET !== "string" ||
-      input.env.RAMOSE_INTERNAL_SECRET.length < 32 ||
-      typeof deployment !== "string" || deployment.length === 0
+      input.env.RAMOSE_INTERNAL_SECRET.length < 32
     ) {
       return yield* new ReplicationRuntimeError({
         reason: "replication identity bindings unavailable",
@@ -837,12 +835,12 @@ export const authorizedReplicationResponse = (
       input.activation.graphPath,
     );
     const initialIdentity = yield* Effect.tryPromise({
-      try: () => makeReplicationIdentity({
+      try: async () => makeReplicationIdentity({
         secret: input.env.RAMOSE_INTERNAL_SECRET,
         origin: new URL(input.request.url).origin,
-        deployment,
         caller: input.initialCaller,
         path: initialPath,
+        readRoutes: await replicationReadRouteIdentities(input.initialTarget.routes),
       }),
       catch: (cause) => runtimeError("replication identity derivation failed", cause),
     });
@@ -887,6 +885,25 @@ export const incompatibleReplicationResponse = (
     type: "TerminalError",
     protocol: REPLICATION_PROTOCOL_VERSION,
     code: "incompatible-version",
+  })}\n`,
+  {
+    status: 409,
+    headers: {
+      "content-type": "application/x-ndjson",
+      "cache-control": "no-store",
+      ...headers,
+    },
+  },
+);
+
+/** Schema disagreement is terminal before any data-bearing stream exists. */
+export const updateRequiredReplicationResponse = (
+  headers: Record<string, string>,
+): Response => new Response(
+  `${encodeReplicationFrame({
+    type: "TerminalError",
+    protocol: REPLICATION_PROTOCOL_VERSION,
+    code: "update-required",
   })}\n`,
   {
     status: 409,

@@ -1,6 +1,7 @@
 /** Browser transport primitives for the versioned replication stream. */
 
 import * as Result from "effect/Result";
+import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import {
   MAX_REPLICATION_FRAME_BYTES,
   REPLICATION_PROTOCOL_VERSION,
@@ -98,6 +99,7 @@ export const replicationCredentialFingerprint = async (
 export type OpenReplicationInput = {
   readonly activation: ReplicationActivationAddress;
   readonly credential: string;
+  readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly resumeRevision?: OpaqueReplicationId;
   readonly signal: AbortSignal;
 };
@@ -118,6 +120,7 @@ export const openReplicationResponse = (
     protocol: REPLICATION_PROTOCOL_VERSION,
     graphPath: input.activation.graphPath,
     scope: { type: "database" },
+    readCompatibilityHash: input.readCompatibilityHash,
     ...(input.resumeRevision === undefined
       ? {}
       : { resumeRevision: input.resumeRevision }),

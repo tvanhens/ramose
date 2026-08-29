@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
+import { ReadCompatibilityHash } from "../../../src/internal/authorization/identities.ts";
 import {
   applyReplicationFrame,
   emptyClientReplicationState,
@@ -18,6 +19,7 @@ const identity = (principal = "B"): ReplicationIdentity => ({
   database: opaque("C"),
   catalog: opaque("D"),
   readView: opaque("E"),
+  readCompatibilityHash: ReadCompatibilityHash.make(opaque("K")),
   authenticator: opaque(principal === "B" ? "F" : "G"),
 });
 const active = identity();

@@ -2,6 +2,7 @@
 
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
+import * as Result from "effect/Result";
 import { Catalog, Policy } from "ramose";
 import {
   Entity,
@@ -14,6 +15,12 @@ import {
   Trait,
   string,
 } from "ramose/db";
+import {
+  CatalogId,
+  DigestHex,
+  assembleCatalogDefinitions,
+  hashReadCompatibility,
+} from "../../packages/ramose/src/internal/authorization/index.ts";
 
 export const GRAPH_PATH_ROOT_DATABASE = "graph-path-root";
 
@@ -304,3 +311,14 @@ export const graphPathCatalogDeployment = Object.freeze({
   root: graphPathCatalog,
   deployments: [{ database: GRAPH_PATH_ROOT_DATABASE }],
 });
+
+const compatibilityDefinitions = await Effect.runPromise(assembleCatalogDefinitions({
+  root: graphPathCatalog,
+  artifactHash: DigestHex.make("0".repeat(64)),
+}));
+const leafCompatibilityUnit = Result.getOrThrow(
+  compatibilityDefinitions.require(CatalogId.make("local-graph-leaf")),
+);
+export const graphPathLeafReadCompatibilityHash = await Effect.runPromise(
+  hashReadCompatibility(leafCompatibilityUnit.unit.catalog),
+);

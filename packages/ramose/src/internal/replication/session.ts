@@ -2,6 +2,7 @@
 
 import type { Db } from "../core/db.ts";
 import type { AttributeSpec } from "../core/schema.ts";
+import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import {
   IndexedDbReplicaStorage,
   type BoundRestoredReplica,
@@ -28,7 +29,7 @@ export type ReplicationSessionSnapshot = {
   readonly status: "connecting" | "open" | "terminal" | "failed" | "closed";
   readonly value?: ReplicationSessionValue;
   /** Present for a protocol terminal; absent for clean unexpected EOF. */
-  readonly terminalCode?: "closed" | "incompatible-version";
+  readonly terminalCode?: "closed" | "incompatible-version" | "update-required";
 };
 
 export type ReplicationSessionObserver = (snapshot: ReplicationSessionSnapshot) => void;
@@ -37,6 +38,7 @@ export type ReplicationSessionOptions = {
   readonly activation: ReplicationActivationInput;
   readonly credential: string;
   readonly attributes: readonly AttributeSpec[];
+  readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly storage: IndexedDbReplicaStorage;
 };
 
@@ -104,7 +106,11 @@ export class ReplicationSession {
   static async open(options: ReplicationSessionOptions): Promise<ReplicationSession> {
     const activation = replicationActivationAddress(options.activation);
     const fingerprint = await replicationCredentialFingerprint(options.credential, activation);
-    const restored = await options.storage.restoreBound(fingerprint, options.attributes);
+    const restored = await options.storage.restoreBound(
+      fingerprint,
+      options.attributes,
+      options.readCompatibilityHash,
+    );
     return new ReplicationSession(
       options.storage,
       options.attributes,
@@ -119,11 +125,16 @@ export class ReplicationSession {
             credential: options.credential,
             ...(restored === undefined ? {} : { resumeRevision: restored.revision }),
             signal: session.controller.signal,
+            readCompatibilityHash: options.readCompatibilityHash,
           });
           for await (const frame of readReplicationFrames(response, session.controller.signal)) {
             if (!session.current(generation)) return;
             const frameIdentity = identityOf(frame);
             if (frameIdentity !== undefined) {
+              if (frameIdentity.readCompatibilityHash !== options.readCompatibilityHash) {
+                session.quarantine(generation);
+                throw new Error("replication identity does not confirm the installed read compatibility");
+              }
               if (responseIdentity === undefined) {
                 responseIdentity = frameIdentity;
                 if (

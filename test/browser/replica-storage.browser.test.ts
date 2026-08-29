@@ -1,5 +1,6 @@
 import { expect } from "vitest";
 import { Index, ValueTag } from "../../packages/ramose/src/internal/core/datom.ts";
+import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import type { Db } from "../../packages/ramose/src/internal/core/db.ts";
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
 import {
@@ -20,6 +21,7 @@ const SERVER = opaque("s");
 const DATABASE = opaque("d");
 const CATALOG = opaque("c");
 const READ_VIEW = opaque("v");
+const READ_COMPATIBILITY = ReadCompatibilityHash.make(opaque("k"));
 const AUTHENTICATOR = opaque("h");
 
 const identity = (principal = opaque("p")): ReplicationIdentity => ({
@@ -29,6 +31,7 @@ const identity = (principal = opaque("p")): ReplicationIdentity => ({
   database: DATABASE,
   catalog: CATALOG,
   readView: READ_VIEW,
+  readCompatibilityHash: READ_COMPATIBILITY,
   authenticator: AUTHENTICATOR,
 });
 
@@ -154,7 +157,7 @@ browserTest("keeps stable partition-local ids across snapshot, change, and reope
 
     storage.close();
     storage = await IndexedDbReplicaStorage.open(name);
-    const reopened = await storage.restore(selected, attributes);
+    const reopened = await storage.restore(selected, attributes, READ_COMPATIBILITY);
     expect(reopened?.revision).toBe(revision2);
     expect((await namedEntities(reopened!.db)).get("original")).toBe(originalEid);
     expect(reopened!.db.attr(":item/name")!.id).toBe(nameAid);
@@ -182,13 +185,13 @@ browserTest("keeps stable partition-local ids across snapshot, change, and reope
 
     storage.close();
     storage = await IndexedDbReplicaStorage.open(name);
-    const final = await storage.restore(selected, attributes);
+    const final = await storage.restore(selected, attributes, READ_COMPATIBILITY);
     expect(final?.revision).toBe(revision3);
     expect((await namedEntities(final!.db)).get("updated")).toBe(originalEid);
     await expect(storage.restore(selected, [
       { ...attributes[0]!, cardinality: "many" },
       ...attributes.slice(1),
-    ])).rejects.toThrow(/metadata is incompatible/);
+    ], READ_COMPATIBILITY)).rejects.toThrow(/metadata is incompatible/);
   } finally {
     storage.close();
     await deleteDatabase(name);
@@ -208,9 +211,9 @@ browserTest("isolates committed replicas by the canonical authenticated partitio
     await installSnapshot(storage, right, opaque("b"), opaque("2"), [
       snapshotDatom(opaque("x"), ":item/name", { type: "string", value: "right" }),
     ]);
-    expect([...(await namedEntities((await storage.restore(left, attributes))!.db)).keys()])
+    expect([...(await namedEntities((await storage.restore(left, attributes, READ_COMPATIBILITY))!.db)).keys()])
       .toEqual(["left"]);
-    expect([...(await namedEntities((await storage.restore(right, attributes))!.db)).keys()])
+    expect([...(await namedEntities((await storage.restore(right, attributes, READ_COMPATIBILITY))!.db)).keys()])
       .toEqual(["right"]);
   } finally {
     storage.close();
@@ -257,7 +260,7 @@ browserTest("restores only old-or-new values across durable staging and aborted 
 
     storage.close();
     storage = await IndexedDbReplicaStorage.open(name);
-    expect((await storage.restore(selected, attributes))?.revision).toBe(oldRevision);
+    expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision).toBe(oldRevision);
     expect(await storage.commitSnapshot({
       type: "SnapshotCommit",
       protocol: 1,
@@ -266,7 +269,7 @@ browserTest("restores only old-or-new values across durable staging and aborted 
       revision: snapshotRevision,
       chunks: 2,
     }, attributes)).toBeUndefined();
-    expect((await storage.restore(selected, attributes))?.revision).toBe(oldRevision);
+    expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision).toBe(oldRevision);
 
     const snapshotAbort = new AbortController();
     const abortedSnapshot = storage.commitSnapshot({
@@ -279,7 +282,7 @@ browserTest("restores only old-or-new values across durable staging and aborted 
     }, attributes, { signal: snapshotAbort.signal });
     snapshotAbort.abort();
     await expect(abortedSnapshot).rejects.toHaveProperty("name", "AbortError");
-    expect((await storage.restore(selected, attributes))?.revision).toBe(oldRevision);
+    expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision).toBe(oldRevision);
 
     const installedController = new AbortController();
     const installed = await storage.commitSnapshot({
@@ -313,10 +316,10 @@ browserTest("restores only old-or-new values across durable staging and aborted 
     const abortedChange = storage.applyChange(change, { signal: changeAbort.signal });
     changeAbort.abort();
     await expect(abortedChange).rejects.toHaveProperty("name", "AbortError");
-    expect((await storage.restore(selected, attributes))?.revision).toBe(snapshotRevision);
+    expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision).toBe(snapshotRevision);
 
     const applying = storage.applyChange(change);
-    const during = await storage.restore(selected, attributes);
+    const during = await storage.restore(selected, attributes, READ_COMPATIBILITY);
     const after = await applying;
     expect([snapshotRevision, changeRevision]).toContain(during!.revision);
     expect([...(await namedEntities(during!.db)).keys()]).toEqual([
@@ -362,7 +365,7 @@ browserTest("rejects unknown fields and logical type mismatches without replacin
       revision: opaque("2"),
       chunks: 1,
     }, attributes)).rejects.toThrow(/unknown field/);
-    expect((await storage.restore(selected, attributes))?.revision).toBe(oldRevision);
+    expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision).toBe(oldRevision);
 
     await storage.startSnapshot({
       type: "SnapshotStart", protocol: 1, identity: selected,
@@ -377,7 +380,7 @@ browserTest("rejects unknown fields and logical type mismatches without replacin
       type: "SnapshotCommit", protocol: 1, identity: selected,
       snapshot: opaque("c"), revision: opaque("3"), chunks: 1,
     }, attributes)).rejects.toThrow(/value type disagrees/);
-    expect((await storage.restore(selected, attributes))?.revision).toBe(oldRevision);
+    expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision).toBe(oldRevision);
   } finally {
     storage.close();
     await deleteDatabase(name);
@@ -417,7 +420,7 @@ browserTest("a snapshot cannot overwrite a change committed after staging began"
       type: "SnapshotCommit", protocol: 1, identity: selected,
       snapshot, revision: r2, chunks: 1,
     }, attributes)).toBeUndefined();
-    const restored = await storage.restore(selected, attributes);
+    const restored = await storage.restore(selected, attributes, READ_COMPATIBILITY);
     expect(restored?.revision).toBe(r3);
     expect([...(await namedEntities(restored!.db)).keys()]).toEqual(["r3"]);
   } finally {
@@ -430,8 +433,8 @@ browserTest("an open adapter does not block a future IndexedDB schema upgrade", 
   const name = `ramose-replica-upgrade-${browser.uniqueId}`;
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-    const upgraded = await openDatabase(name, 3);
-    expect(upgraded.version).toBe(3);
+    const upgraded = await openDatabase(name, 4);
+    expect(upgraded.version).toBe(4);
     upgraded.close();
   } finally {
     storage.close();

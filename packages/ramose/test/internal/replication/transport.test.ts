@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { ReadCompatibilityHash } from "../../../src/internal/authorization/identities.ts";
 import {
   MAX_REPLICATION_FRAME_BYTES,
   encodeReplicationFrame,
@@ -19,6 +20,7 @@ const identity: ReplicationIdentity = {
   database: opaque("d"),
   catalog: opaque("c"),
   readView: opaque("v"),
+  readCompatibilityHash: ReadCompatibilityHash.make(opaque("k")),
   authenticator: opaque("a"),
 };
 const ready: ReplicationFrame = {

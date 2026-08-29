@@ -2,6 +2,7 @@
 
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
+import * as Result from "effect/Result";
 import { Catalog, Policy } from "ramose";
 import {
   Entity,
@@ -12,6 +13,11 @@ import {
   Schema,
   string,
 } from "ramose/db";
+import {
+  assembleCatalogDefinitions,
+  DigestHex,
+  hashReadCompatibility,
+} from "../../packages/ramose/src/internal/authorization/index.ts";
 
 export const CONFORMANCE_DATABASES = Object.freeze([
   "conformance-world-a",
@@ -32,6 +38,7 @@ export const CONFORMANCE_DATABASES = Object.freeze([
   "conformance-replication-retention-pressure",
   "conformance-replication-watch-failure",
   "conformance-replication-resume-ready",
+  "conformance-replication-compatibility",
 ]);
 
 export const ConformanceUser = Entity("conformanceUser", {
@@ -222,3 +229,16 @@ export const conformanceCatalogDeployment = Object.freeze({
   root: conformanceCatalog,
   deployments: CONFORMANCE_DATABASES.map((database) => ({ database })),
 });
+
+// The local client and Worker independently derive the same deployment-free
+// compatibility proof from the shared canonical installed metadata.
+const compatibilityDefinitions = await Effect.runPromise(assembleCatalogDefinitions({
+  root: conformanceCatalog,
+  artifactHash: DigestHex.make("0".repeat(64)),
+}));
+const compatibilityUnit = Result.getOrThrow(
+  compatibilityDefinitions.require(compatibilityDefinitions.root),
+);
+export const conformanceReadCompatibilityHash = await Effect.runPromise(
+  hashReadCompatibility(compatibilityUnit.unit.catalog),
+);

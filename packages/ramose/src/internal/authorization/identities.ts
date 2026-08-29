@@ -28,6 +28,12 @@ export type CatalogVersion = typeof CatalogVersion.Type;
 export const SchemaFingerprint = Schema.String.pipe(Schema.brand("SchemaFingerprint"));
 export type SchemaFingerprint = typeof SchemaFingerprint.Type;
 
+/** Full canonical base64url SHA-256 of the local read/query metadata contract. */
+export const ReadCompatibilityHash = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9_-]{43}$/),
+).pipe(Schema.brand("ReadCompatibilityHash"));
+export type ReadCompatibilityHash = typeof ReadCompatibilityHash.Type;
+
 /**
  * SHA-256 digest as exactly 64 lowercase hexadecimal characters.
  * `RuleId` and `PolicyHash` are collision-resistant identities; this

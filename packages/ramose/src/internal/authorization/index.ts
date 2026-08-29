@@ -45,6 +45,7 @@ export * from "./operation-grant.ts";
 export * from "./operations-runtime.ts";
 export * from "./principal.ts";
 export * from "./read-filter.ts";
+export * from "./read-compatibility.ts";
 export * from "./reads.ts";
 export * from "./request.ts";
 export * from "./truth.ts";

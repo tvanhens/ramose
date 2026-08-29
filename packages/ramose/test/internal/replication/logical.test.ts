@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
 import { ValueTag, type Datom } from "../../../src/internal/core/datom.ts";
 import { bytesToBase64 } from "../../../src/internal/core/log.ts";
+import { ReadCompatibilityHash } from "../../../src/internal/authorization/identities.ts";
 import {
   MAX_REPLICATION_FRAME_BYTES,
   MAX_REPLICATION_STRING_BYTES,
@@ -25,6 +26,7 @@ const identity: ReplicationIdentity = {
   database: opaque("C"),
   catalog: opaque("D"),
   readView: opaque("E"),
+  readCompatibilityHash: ReadCompatibilityHash.make(opaque("K")),
   authenticator: opaque("F"),
 };
 

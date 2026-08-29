@@ -1,6 +1,7 @@
 /** Native IndexedDB persistence for one complete logical client replica. */
 
 import * as Result from "effect/Result";
+import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import { type Datom, type DatomValue, ValueTag } from "../core/datom.ts";
 import { buildRoots } from "../core/conn.ts";
 import { Db, type Roots } from "../core/db.ts";
@@ -38,7 +39,7 @@ import {
   type CommittedReplica,
 } from "./state.ts";
 
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const COMMITTED = "replica-committed-v1";
 const STAGING = "replica-staging-v1";
 const STAGING_CHUNKS = "replica-staging-chunks-v1";
@@ -56,12 +57,14 @@ export const replicaPartitionKey = (identity: ReplicationIdentity): string =>
     identity.principal,
     identity.database,
     identity.readView,
+    identity.readCompatibilityHash,
   ].join(":");
 
 type CommittedRecord = {
   readonly partition: string;
   readonly storageVersion: typeof INITIAL_REPLICA_STORAGE_VERSION;
   readonly identity: ReplicationIdentity;
+  readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly revision: string;
   readonly datoms: readonly LogicalDatom[];
   readonly attributes: readonly AttributeSpec[];
@@ -158,6 +161,9 @@ const abortWithSignal = (
 
 const chunkRange = (partition: string): IDBKeyRange =>
   IDBKeyRange.bound([partition, 0], [partition, Number.MAX_SAFE_INTEGER]);
+
+const nodeRange = (partition: string): IDBKeyRange =>
+  IDBKeyRange.bound([partition, ""], [partition, "\uffff"]);
 
 const sameJson = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
@@ -359,6 +365,7 @@ const materialize = async (
     partition,
     storageVersion: INITIAL_REPLICA_STORAGE_VERSION,
     identity,
+    readCompatibilityHash: identity.readCompatibilityHash,
     revision: committed.revision,
     datoms: Object.freeze([...committed.datoms]),
     attributes: Object.freeze(specs),
@@ -382,7 +389,17 @@ const materialize = async (
   };
 };
 
-const dbFromRecord = (database: IDBDatabase, record: CommittedRecord): Db => {
+const dbFromRecord = (
+  database: IDBDatabase,
+  record: CommittedRecord,
+  expected: ReadCompatibilityHash,
+): Db => {
+  if (
+    record.readCompatibilityHash !== expected ||
+    record.identity.readCompatibilityHash !== expected
+  ) {
+    throw new Error("replica read compatibility is not confirmed for this client");
+  }
   const schemaDatoms: Datom[] = [];
   const bootstrap = Schema.bootstrap();
   const attributeIds = new Map(record.attributeIds);
@@ -411,7 +428,7 @@ export class IndexedDbReplicaStorage {
 
   static async open(name = DEFAULT_REPLICA_DATABASE_NAME): Promise<IndexedDbReplicaStorage> {
     const request = indexedDB.open(name, DATABASE_VERSION);
-    request.addEventListener("upgradeneeded", () => {
+    request.addEventListener("upgradeneeded", (event) => {
       const database = request.result;
       if (!database.objectStoreNames.contains(COMMITTED)) {
         database.createObjectStore(COMMITTED, { keyPath: "partition" });
@@ -427,6 +444,38 @@ export class IndexedDbReplicaStorage {
       }
       if (!database.objectStoreNames.contains(CREDENTIAL_BINDINGS)) {
         database.createObjectStore(CREDENTIAL_BINDINGS, { keyPath: "fingerprint" });
+      }
+      if ((event as IDBVersionChangeEvent).oldVersion < 3 && request.transaction !== null) {
+        const upgrade = request.transaction;
+        // Incomplete pre-agreement snapshots have no safe compatibility proof.
+        upgrade.objectStore(STAGING).clear();
+        upgrade.objectStore(STAGING_CHUNKS).clear();
+        const committed = upgrade.objectStore(COMMITTED);
+        committed.openCursor().addEventListener("success", (event) => {
+          const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
+          if (cursor === null) return;
+          const record = cursor.value as Partial<CommittedRecord>;
+          if (
+            typeof record.readCompatibilityHash !== "string" ||
+            record.identity?.readCompatibilityHash !== record.readCompatibilityHash
+          ) {
+            cursor.delete();
+            if (typeof record.partition === "string") {
+              upgrade.objectStore(NODES).delete(nodeRange(record.partition));
+            }
+          }
+          cursor.continue();
+        });
+        upgrade.objectStore(CREDENTIAL_BINDINGS).openCursor().addEventListener(
+          "success",
+          (event) => {
+            const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
+            if (cursor === null) return;
+            const binding = cursor.value as Partial<CredentialBindingRecord>;
+            if (typeof binding.identity?.readCompatibilityHash !== "string") cursor.delete();
+            cursor.continue();
+          },
+        );
       }
     });
     const database = await requestResult(request);
@@ -447,17 +496,57 @@ export class IndexedDbReplicaStorage {
     return record;
   }
 
+  /** Remove only one incompatible replica representation, never unrelated store families. */
+  private async quarantineReplica(
+    identity: ReplicationIdentity,
+    fingerprint?: string,
+  ): Promise<void> {
+    const partition = replicaPartitionKey(identity);
+    const transaction = this.database.transaction(
+      [COMMITTED, STAGING, STAGING_CHUNKS, NODES, CREDENTIAL_BINDINGS],
+      "readwrite",
+    );
+    transaction.objectStore(COMMITTED).delete(partition);
+    transaction.objectStore(STAGING).delete(partition);
+    transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
+    transaction.objectStore(NODES).delete(nodeRange(partition));
+    const bindings = transaction.objectStore(CREDENTIAL_BINDINGS);
+    if (fingerprint !== undefined) {
+      bindings.delete(fingerprint);
+    } else {
+      const records = await requestResult<CredentialBindingRecord[]>(bindings.getAll());
+      for (const binding of records) {
+        if (sameReplicationIdentity(binding.identity, identity)) {
+          bindings.delete(binding.fingerprint);
+        }
+      }
+    }
+    await commitTransaction(transaction);
+  }
+
   async restore(
     identity: ReplicationIdentity,
     attributes: readonly AttributeSpec[],
+    readCompatibilityHash: ReadCompatibilityHash,
   ): Promise<RestoredReplica | undefined> {
     const record = await this.committed(identity);
     if (record === undefined) return undefined;
     if (record.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION) return undefined;
+    if (
+      identity.readCompatibilityHash !== readCompatibilityHash ||
+      record.readCompatibilityHash !== readCompatibilityHash ||
+      record.identity.readCompatibilityHash !== readCompatibilityHash
+    ) {
+      await this.quarantineReplica(identity);
+      return undefined;
+    }
     if (!sameJson(record.attributes, normalizeAttributes(attributes))) {
       throw new Error("replica attribute metadata is incompatible with the committed read view");
     }
-    return { db: dbFromRecord(this.database, record), revision: record.revision };
+    return {
+      db: dbFromRecord(this.database, record, readCompatibilityHash),
+      revision: record.revision,
+    };
   }
 
   /** Bind only a locally digested credential; the raw credential never enters IndexedDB. */
@@ -483,6 +572,7 @@ export class IndexedDbReplicaStorage {
   async restoreBound(
     fingerprint: string,
     attributes: readonly AttributeSpec[],
+    readCompatibilityHash: ReadCompatibilityHash,
   ): Promise<BoundRestoredReplica | undefined> {
     const transaction = this.database.transaction(
       [CREDENTIAL_BINDINGS, COMMITTED],
@@ -502,6 +592,14 @@ export class IndexedDbReplicaStorage {
     if (record === undefined || record.storageVersion !== INITIAL_REPLICA_STORAGE_VERSION) {
       return undefined;
     }
+    if (
+      binding.identity.readCompatibilityHash !== readCompatibilityHash ||
+      record.readCompatibilityHash !== readCompatibilityHash ||
+      record.identity.readCompatibilityHash !== readCompatibilityHash
+    ) {
+      await this.quarantineReplica(binding.identity, fingerprint);
+      return undefined;
+    }
     if (!sameJson(record.attributes, normalizeAttributes(attributes))) {
       throw new Error("replica attribute metadata is incompatible with the committed read view");
     }
@@ -510,7 +608,7 @@ export class IndexedDbReplicaStorage {
     }
     return {
       identity: binding.identity,
-      db: dbFromRecord(this.database, record),
+      db: dbFromRecord(this.database, record, readCompatibilityHash),
       revision: record.revision,
     };
   }
@@ -689,7 +787,10 @@ export class IndexedDbReplicaStorage {
       closed: false,
     }, frame);
     if (state.committed === undefined || state.committed.revision === prior.revision) {
-      return { db: dbFromRecord(this.database, prior), revision: prior.revision };
+      return {
+        db: dbFromRecord(this.database, prior, frame.identity.readCompatibilityHash),
+        revision: prior.revision,
+      };
     }
     const built = await materialize(
       this.database,

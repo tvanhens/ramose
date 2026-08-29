@@ -10,6 +10,7 @@
 import * as Data from "effect/Data";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { ReadCompatibilityHash } from "../authorization/identities.ts";
 
 export const REPLICATION_PROTOCOL_VERSION = 1 as const;
 
@@ -79,6 +80,7 @@ export const ActivationRequest = Schema.Struct({
   protocol: Schema.Natural,
   graphPath: GraphPath,
   scope: ReplicationScope,
+  readCompatibilityHash: ReadCompatibilityHash,
   resumeRevision: Schema.optionalKey(OpaqueReplicationId),
 });
 export type ActivationRequest = typeof ActivationRequest.Type;
@@ -91,6 +93,7 @@ export const ReplicationIdentity = Schema.Struct({
   database: OpaqueReplicationId,
   catalog: OpaqueReplicationId,
   readView: OpaqueReplicationId,
+  readCompatibilityHash: ReadCompatibilityHash,
   authenticator: OpaqueReplicationId,
 });
 export type ReplicationIdentity = typeof ReplicationIdentity.Type;
@@ -273,7 +276,7 @@ export type KeepAlive = typeof KeepAlive.Type;
 export const TerminalError = Schema.Struct({
   type: Schema.Literal("TerminalError"),
   protocol: Schema.Literal(REPLICATION_PROTOCOL_VERSION),
-  code: Schema.Literals(["incompatible-version", "closed"]),
+  code: Schema.Literals(["incompatible-version", "update-required", "closed"]),
   identity: Schema.optionalKey(ReplicationIdentity),
 });
 export type TerminalError = typeof TerminalError.Type;
@@ -385,6 +388,7 @@ export type ReplicaVersionMetadata = {
   readonly protocol: number;
   readonly build: string;
   readonly storage: number;
+  readonly readCompatibilityHash: string;
   readonly readView: string;
 };
 
@@ -393,6 +397,7 @@ export type ReplicaCompatibilityDecision =
   | "protocol-reset"
   | "build-reset"
   | "storage-migration"
+  | "read-compatibility-reset"
   | "read-view-reset";
 
 /** The layer that owns an incompatibility is selected before any wire resume. */
@@ -403,6 +408,9 @@ export const decideReplicaCompatibility = (
   if (stored.protocol !== current.protocol) return "protocol-reset";
   if (stored.build !== current.build) return "build-reset";
   if (stored.storage !== current.storage) return "storage-migration";
+  if (stored.readCompatibilityHash !== current.readCompatibilityHash) {
+    return "read-compatibility-reset";
+  }
   if (stored.readView !== current.readView) return "read-view-reset";
   return "reuse";
 };

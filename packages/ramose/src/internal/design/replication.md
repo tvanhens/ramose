@@ -29,6 +29,7 @@ The strict request is:
   protocol: 1
   graphPath: readonly string[]
   scope: { type: "database" }
+  readCompatibilityHash: ReadCompatibilityHash
   resumeRevision?: OpaqueId
 }
 ```
@@ -39,6 +40,20 @@ principal cache key, or response identity. Unknown properties are rejected.
 The server authenticates first, resolves and authorizes the complete path
 against its deployed database registry, and provisions an already-authorized
 dynamic child through the normal Graph path machinery.
+
+`readCompatibilityHash` is a full untruncated SHA-256 encoded as 43 canonical
+unpadded base64url characters. Its domain-separated canonical descriptor
+contains only normalized fields, entities, traits, trait composition, and the
+versioned Graph-read interpretation needed to construct/query the local `Db`.
+Catalog scoping is stripped from those local names because permanent catalog
+identity is authenticated separately.
+Operations, executable codecs, projections, deployment identity,
+documentation, defaults/callbacks, and client build identity are absent. The
+server authenticates and resolves the complete authorized path before
+comparing this value with the target catalog. A mismatch is HTTP 409 with
+exactly one `TerminalError` whose code is `update-required`, and no
+data-bearing frames. It is not a `Reset`; `ResumeReady` is possible only after
+agreement.
 
 A compatible successful response is newline-delimited JSON with content type
 `application/x-ndjson` and `cache-control: no-store`. One encoded frame plus
@@ -65,6 +80,7 @@ Every data-bearing frame carries one server-derived identity:
   database: OpaqueId
   catalog: OpaqueId
   readView: OpaqueId
+  readCompatibilityHash: ReadCompatibilityHash
   authenticator: OpaqueId
 }
 ```
@@ -79,8 +95,20 @@ server's internal secret. `authenticator` covers the other fields.
   claim, or class replacement is not.
 - `database` covers the server-resolved stable target database.
 - `catalog` covers its permanent deployed catalog key.
-- `readView` covers deployment identity, principal, configured root, complete
-  path, every route database/catalog/unit, and every ancestor dependency.
+- `readCompatibilityHash` is the server-confirmed target descriptor above.
+- `readView` covers only authorized-read semantics: each ordered stable route
+  database, its read compatibility, the installed read-only policy subset,
+  versioned Graph-read semantics, and every ordered stable ancestor
+  database/entity dependency. Configured-root spelling, mutable Graph path
+  text, deployment/version identity, operation bodies/hashes and
+  operation-only codecs/rules, documentation/default metadata, projections,
+  and client build identity are excluded.
+
+Consequently an operation-only or deployment-only change preserves
+`readView`, entity identities, revisions, and replica eligibility. Stored
+schema, entity/trait composition, read-policy, or Graph-read semantic changes
+rotate compatibility. Principal, stable database, and permanent catalog
+remain separate authenticated identity dimensions.
 
 Client-visible entity and reference identities are HMACs of their internal
 entity ids inside this authenticated partition. They are stable for the same
@@ -146,7 +174,7 @@ Every frame has `protocol: 1` and is one of:
 | `ResumeReady` | identity, revision | One-shot proof that a supplied, resolved committed revision is still the complete current authorized value. |
 | `Reset` | identity | The old resume basis or partition cannot be reused; a snapshot follows. |
 | `KeepAlive` | identity | Reserved fixed-shape liveness frame. Version 1 does not emit it. |
-| `TerminalError` | fixed code, optional identity | Close opaquely or report wire incompatibility. |
+| `TerminalError` | fixed code, optional identity | Close opaquely, report wire incompatibility, or require a compatible client. |
 
 First sync is `SnapshotStart`, zero or more `SnapshotChunk`, then
 `SnapshotCommit`. The server hashes a complete authorized prepass, streams
@@ -236,12 +264,32 @@ Ordered transport is expected, but duplicate, interruption, reordering, and
 stale input can therefore expose only the preceding complete value or one
 newly committed complete value.
 
+## Durable compatibility agreement
+
+The confirmed compatibility hash is part of the authenticated identity, the
+physical replica partition key, and every committed manifest. It is therefore
+covered by the identity authenticator; restore also requires the manifest's
+copy and identity copy to agree before following its content-addressed roots.
+Restore and credential-bound restore require the
+currently installed client hash and compare it before `dbFromRecord` or any
+other `Db` construction. A mismatch removes only that committed replica,
+staging/chunks, its partitioned content-addressed nodes, and its exact local
+credential binding. It never deletes the IndexedDB database or future outbox,
+receipt, client-ref, or optimistic store families.
+
+IndexedDB schema version 3 upgrades the landed replica stores conditionally.
+Compatible version-2 manifests carrying the confirmed hash survive. Legacy
+manifests and bindings without it are incompatible and are quarantined; they
+are never interpreted as local schema metadata. Incomplete pre-agreement
+staging is discarded. Online activation must establish a fresh compatible
+snapshot after quarantine.
+
 ## Authorization and noninterference
 
 Initial admission and every fixed lease renewal rerun the complete ordered Graph
 path through the one deployed authorization evaluator. A stream is fixed to
 the admitted path identity and may not migrate when a mutable Graph name,
-ancestor entity, child database, catalog unit, principal, or deployment
+ancestor entity, child database, read compatibility, or principal
 changes. The next authorization fence occurs no later than five seconds after
 the preceding admitted lease, including while idle.
 Failure emits only the fixed `closed` terminal envelope; reconnect under a new
