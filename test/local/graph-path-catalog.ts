@@ -6,9 +6,12 @@ import { Catalog, Policy } from "ramose";
 import {
   Entity,
   EntityId,
+  Field,
   Graph,
   OwnedOperations,
+  Ref,
   Schema,
+  Trait,
   string,
 } from "ramose/db";
 
@@ -16,6 +19,135 @@ export const GRAPH_PATH_ROOT_DATABASE = "graph-path-root";
 
 let childCatalog!: ReturnType<typeof Catalog>;
 let leafCatalog!: ReturnType<typeof Catalog>;
+
+/**
+ * A transitive diamond used by the real-stack gate. The only data fields
+ * belong to the base trait, so a successful deployment and read prove that
+ * flattening preserves the defining namespace and reaches the base once.
+ */
+export const GateTagged = Trait("localGateTagged", {
+  label: string({ optional: true }),
+  tags: Field.many(string()),
+}, {
+  operations: (Operation) => ({
+    retag: Operation({
+      input: EffectSchema.Struct({ label: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: EntityId, label: EffectSchema.String }),
+      run(op, input) {
+        op.self.set(GateTagged.label, input.label);
+        return { id: op.self, label: input.label };
+      },
+    }),
+  }),
+});
+
+const GateLeft = Trait("localGateLeft", {}, { traits: [GateTagged] });
+const GateRight = Trait("localGateRight", {}, { traits: [GateTagged] });
+const GateDiamond = Trait("localGateDiamond", {}, {
+  traits: [GateLeft, GateRight],
+});
+
+export const GateVisible = Entity("localGateVisible", {
+  title: string(),
+}, {
+  traits: [GateDiamond],
+  operations: (Operation) => ({
+    create: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        title: EffectSchema.String,
+        label: EffectSchema.optionalKey(EffectSchema.String),
+        tags: EffectSchema.optionalKey(EffectSchema.Array(EffectSchema.String)),
+      }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        return {
+          id: op.create({
+            title: input.title,
+            ...(input.label === undefined ? {} : { label: input.label }),
+            ...(input.tags === undefined ? {} : { tags: input.tags }),
+          }),
+        };
+      },
+    }),
+  }),
+});
+
+export const GateHidden = Entity("localGateHidden", {
+  title: string(),
+}, {
+  traits: [GateDiamond],
+  operations: (Operation) => ({
+    create: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        title: EffectSchema.String,
+        label: EffectSchema.optionalKey(EffectSchema.String),
+      }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        return {
+          id: op.create({
+            title: input.title,
+            ...(input.label === undefined ? {} : { label: input.label }),
+          }),
+        };
+      },
+    }),
+  }),
+});
+
+export const GatePlain = Entity("localGatePlain", {
+  title: string(),
+}, {
+  operations: (Operation) => ({
+    create: Operation({
+      self: false,
+      input: EffectSchema.Struct({ title: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        return { id: op.create({ title: input.title }) };
+      },
+    }),
+  }),
+});
+
+export const GateLink = Entity("localGateLink", {
+  name: Field.unique(string(), "strict"),
+  target: Ref(GateTagged, { optional: true }),
+}, {
+  operations: (Operation) => ({
+    create: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        name: EffectSchema.String,
+        target: EffectSchema.optionalKey(EntityId),
+      }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        return {
+          id: op.create({
+            name: input.name,
+            ...(input.target === undefined ? {} : { target: input.target as never }),
+          }),
+        };
+      },
+    }),
+    deleteThenLink: Operation({
+      self: false,
+      writes: [GateVisible],
+      input: EffectSchema.Struct({
+        name: EffectSchema.String,
+        target: EntityId,
+      }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        op.entity(GateVisible, input.target).delete();
+        return { id: op.create({ name: input.name, target: input.target as never }) };
+      },
+    }),
+  }),
+});
 
 export const Workspace = Entity("localWorkspace", {}, {
   traits: [Graph(() => childCatalog)],
@@ -34,6 +166,34 @@ export const Workspace = Entity("localWorkspace", {}, {
       run(op, input) {
         op.self.set(Graph.name, input.name);
         return { id: op.self };
+      },
+    }),
+    recatalog: Operation({
+      input: EffectSchema.Struct({
+        action: EffectSchema.Literals(["set", "remove"]),
+      }),
+      output: EffectSchema.Struct({}),
+      run(op, input) {
+        if (input.action === "set") {
+          (op.self as any).set(Graph.catalog, "caller-selected-catalog");
+        } else {
+          (op.self as any).remove(Graph.catalog);
+        }
+        return {};
+      },
+    }),
+  }),
+});
+
+export const PrivateWorkspace = Entity("localPrivateWorkspace", {}, {
+  traits: [Graph(() => childCatalog)],
+  operations: (Operation) => ({
+    create: Operation({
+      self: false,
+      input: EffectSchema.Struct({ name: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        return { id: op.create({ name: input.name }) };
       },
     }),
   }),
@@ -66,12 +226,22 @@ export const NestedNote = Entity("localNestedNote", { text: string() }, {
   }),
 });
 
-export const GraphPathRootSchema = Schema({ localWorkspace: Workspace });
+export const GraphPathRootSchema = Schema({
+  localWorkspace: Workspace,
+  localPrivateWorkspace: PrivateWorkspace,
+  localGateVisible: GateVisible,
+  localGateHidden: GateHidden,
+  localGatePlain: GatePlain,
+  localGateLink: GateLink,
+});
 export const GraphPathChildSchema = Schema({ localProject: Project });
 export const GraphPathLeafSchema = Schema({ localNestedNote: NestedNote });
 
 const member = Policy.hasClass("member");
 const rootReader = Policy.hasClass("root-reader");
+const admin = Policy.hasClass("admin");
+const rowOnly = Policy.hasClass("row-only");
+const fieldOnly = Policy.hasClass("field-only");
 
 leafCatalog = Catalog("local-graph-leaf", {
   schema: GraphPathLeafSchema,
@@ -103,13 +273,29 @@ export const graphPathCatalog = Catalog("local-graph-root", {
   schema: GraphPathRootSchema,
   policy: await Effect.runPromise(Policy.compileReadAuthorization({
     schema: GraphPathRootSchema,
-    classes: ["member", "root-reader"],
+    classes: ["member", "root-reader", "admin", "row-only", "field-only"],
     rules: [
       Policy.read(Workspace).when(Policy.any(member, rootReader)),
-      Policy.read(Graph).when(Policy.any(member, rootReader)),
-      Policy.read(Graph.catalog).deny(Policy.any(member, rootReader)),
+      Policy.read(PrivateWorkspace).when(admin),
+      Policy.read(Graph).when(Policy.any(member, rootReader, admin)),
+      Policy.read(Graph.catalog).deny(Policy.any(member, rootReader, admin)),
       Policy.invoke(Workspace[OwnedOperations].create).when(member),
       Policy.invoke(Workspace[OwnedOperations].rename).when(member),
+      Policy.invoke(Workspace[OwnedOperations].recatalog).when(member),
+      Policy.invoke(PrivateWorkspace[OwnedOperations].create).when(admin),
+      Policy.read(GateVisible).when(Policy.any(member, rowOnly, fieldOnly)),
+      Policy.read(GateHidden).when(admin),
+      Policy.read(GatePlain).when(member),
+      Policy.read(GateLink).when(Policy.any(member, rowOnly, fieldOnly)),
+      Policy.read(GateTagged).when(Policy.any(member, admin, fieldOnly)),
+      Policy.read(GateTagged.label).when(Policy.any(member, admin)),
+      Policy.read(GateTagged.label).deny(fieldOnly),
+      Policy.invoke(GateVisible[OwnedOperations].create).when(member),
+      Policy.invoke(GateHidden[OwnedOperations].create).when(admin),
+      Policy.invoke(GatePlain[OwnedOperations].create).when(member),
+      Policy.invoke(GateLink[OwnedOperations].create).when(member),
+      Policy.invoke(GateLink[OwnedOperations].deleteThenLink).when(member),
+      Policy.invoke(GateTagged[OwnedOperations].retag).when(member),
     ],
   })),
 });
