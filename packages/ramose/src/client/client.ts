@@ -93,6 +93,10 @@ export interface Client {
    * The clearing client is terminal afterwards: it cannot repopulate storage,
    * and the application constructs a new one.
    *
+   * When no response has confirmed a scope *yet*, this waits for the root's
+   * first activation to settle — offline that resolves through an exact prior
+   * bearer binding, and otherwise through the server's own answer.
+   *
    * @throws ClientLocalDataError with `no-confirmed-scope` when no authenticated
    * response has ever confirmed a scope this client could name.
    */
