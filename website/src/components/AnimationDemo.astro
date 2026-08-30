@@ -98,7 +98,7 @@ const { variant, src, title, initialTitle, initialMeta } = Astro.props;
       if (typeof message.height === "number" && Number.isFinite(message.height)) {
         const height = Math.max(
           1,
-          Math.min(2000, Math.round(message.height * 100) / 100),
+          Math.min(2000, Math.ceil(message.height)),
         );
         frame.style.height = `${height}px`;
       }
