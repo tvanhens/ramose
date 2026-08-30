@@ -693,6 +693,24 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
 
   /**
+   * Whether the current session has withdrawn this database's readable value.
+   *
+   * True exactly when the server's own answer says this credential or this
+   * build can no longer read the partition it opened — never for an unreachable
+   * server, whose last confirmed value stays readable, and never for this
+   * database's own layer quarantine, which withholds layers while the committed
+   * replica goes on answering.
+   *
+   * Descendant paths need that distinction: `update-required` names both, and
+   * only one of them invalidates the authority a child path resolved under.
+   */
+  viewWithdrawn(): boolean {
+    if (this.closed) return true;
+    return this.lastSession !== undefined &&
+      !readSessionSnapshot(this.lastSession).publishes;
+  }
+
+  /**
    * The local view currently published: the committed replica plus this
    * database's ordered layers. With no layers the committed value *is* the
    * view, so the ordinary read path costs nothing extra.

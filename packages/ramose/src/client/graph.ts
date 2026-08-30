@@ -50,8 +50,8 @@ import {
 import type { OrderDir, OrderEmpty } from "../db/shapes.ts";
 import type { ReplicationIdentity } from "../internal/replication/protocol.ts";
 import {
-  replicaDatabaseKey,
   replicaDatabaseScopeOf,
+  replicaPartitionKey,
   type ReplicaDatabaseScope,
 } from "../internal/replication/replica-lifecycle.ts";
 import {
@@ -209,6 +209,37 @@ export const graphResolutionQuery = (
   };
   return (q(body as never) as AnyQueryObject).oneOrFail();
 };
+
+/**
+ * The identity a resolved child database is interned, cached, and remembered
+ * by: the parent *partition* plus the Graph entity resolved inside it.
+ *
+ * The partition, not the database scope, and the difference is load-bearing. A
+ * local entity id is assigned per partition — the installer numbers each
+ * partition's visible entities independently — while a scope
+ * (`server`/`principal`/`database`) spans every read view of that database. Key
+ * on the scope and two read views of one database share a key space they do not
+ * share ids in: delete a Graph, recreate a same-named one, and the rotation
+ * that follows can land the successor on the predecessor's id, producing a
+ * byte-identical key. The registry would then hand the successor the
+ * predecessor's live activation, and the lineage memo would hand its confirmed
+ * lineage to the successor's activation — whose fingerprint then restores and
+ * publishes the *predecessor's* child replica. `replicaPartitionKey` includes
+ * the read view and the read-compatibility hash, so a rotation yields a new key
+ * and therefore a new activation with nothing inherited.
+ *
+ * The accepted trade-off: a *benign* read-view rotation also yields a new key,
+ * so the resume memo is lost and the child re-snapshots once. Preserving resume
+ * across benign rotations needs a Graph identity that is stable across read
+ * views — a logical entity identity rather than a partition-local id — which is
+ * the same carriage the opaque `EntityId` surface needs. That belongs with
+ * slice 3's EntityId work, not here: inventing a second cross-view identity now
+ * would have to be unpicked when the real one lands.
+ */
+export const graphStableKey = (
+  identity: ReplicationIdentity,
+  entity: number,
+): string => `${replicaPartitionKey(identity)} ${entity}`;
 
 /** One resolved segment: which entity, and what it is currently called. */
 type ResolvedSegment = { readonly id: number; readonly name: string };
@@ -387,6 +418,11 @@ export class GraphRegistry {
     existing.holders.delete(holder);
     if (existing.holders.size > 0) return;
     this.databases.delete(stable);
+    // The lineage goes with the database. A memo that outlives what it
+    // describes is unbounded growth at best, and at worst it is a pre-flight
+    // selection handed to some later activation that reached this key by a
+    // route this one knows nothing about.
+    this.lineages.delete(stable);
     void existing.handle.close();
     this.membershipChanged();
   }
@@ -398,6 +434,7 @@ export class GraphRegistry {
   async close(): Promise<void> {
     const handles = [...this.databases.values()].map(({ handle }) => handle);
     this.databases.clear();
+    this.lineages.clear();
     await Promise.all(handles.map((handle) => handle.close()));
   }
 }
@@ -455,6 +492,32 @@ export const terminalPathError = (
       });
     default:
       return undefined;
+  }
+};
+
+/**
+ * What a failed path's own synchronization state is.
+ *
+ * Never the state it was in before: whatever the resolved database was
+ * reporting described a database this path no longer names, and leaving `live`
+ * or `offline` standing after a terminal failure would tell an application it
+ * is synchronized with something it cannot read.
+ *
+ * A path that resolves to nothing reports `idle` — the state of a handle with
+ * no database to synchronize, and the one status the client aggregate ignores,
+ * because asking for a board that does not exist is not a client-wide outage.
+ */
+const failureStatus = (error: Error): SyncStatus => {
+  if (!(error instanceof GraphPathError)) return "idle";
+  switch (error.reason) {
+    case "unauthorized":
+      return "authentication-required";
+    case "update-required":
+      return "update-required";
+    case "closed":
+      return "closed";
+    default:
+      return "idle";
   }
 };
 
@@ -625,6 +688,31 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.settle(parent);
   }
 
+  /**
+   * Whether the parent has withdrawn the authority this path resolves under.
+   *
+   * Consulted before the resolution snapshot is read, and that order is the
+   * whole point. A parent publishes its terminal status *before* the
+   * recomputation that resets its observers, so a listener woken by that status
+   * change sees a snapshot still holding the rows the withdrawn view produced.
+   * Binding from it hands a descendant — and, through the pre-queue gate, a
+   * durable invocation — a database the ancestor's authority no longer reaches.
+   *
+   * `update-required` has two causes and only one of them is the ancestor's: a
+   * rotated authorized view withdraws the value, while a build that cannot
+   * replay its own optimistic layers still reads a perfectly good committed
+   * replica and is no reason to invalidate a path at all.
+   */
+  private ancestorFence(
+    parent: ClientDatabaseHandle,
+  ): GraphPathError | undefined {
+    const status = parent.syncStatus();
+    if (status === "authentication-required" || status === "closed") {
+      return terminalPathError(status);
+    }
+    return parent.viewWithdrawn() ? terminalPathError(status) : undefined;
+  }
+
   private settle(parent: ClientDatabaseHandle): void {
     if (this.closed) return;
     // A settle that raced a rebinding belongs to a parent this handle no longer
@@ -632,6 +720,11 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
     if (this.parent.boundDatabase() !== parent) return;
     const resolution = this.resolution;
     if (resolution === undefined) return;
+    const fenced = this.ancestorFence(parent);
+    if (fenced !== undefined) {
+      this.fail(fenced);
+      return;
+    }
     const snapshot = resolution.getSnapshot();
     if (snapshot.status === "error") {
       const error = snapshot.error;
@@ -659,11 +752,10 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
       return;
     }
     if (snapshot.status === "pending") {
-      // A parent with no readable value at all: pending while it is merely
-      // filling, and the parent's own typed terminal error once it has one.
-      const terminal = terminalPathError(parent.syncStatus());
-      if (terminal !== undefined) this.fail(terminal);
-      else this.publish(PENDING_BINDING, syncState(parent.syncStatus()));
+      // Not fenced — {@link GraphDatabaseHandle.ancestorFence} already ruled
+      // that out — so the parent is merely still filling in, and waiting is the
+      // honest answer rather than a verdict.
+      this.publish(PENDING_BINDING, syncState(parent.syncStatus()));
       return;
     }
     const segment = resolvedSegment(snapshot.data);
@@ -678,7 +770,7 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.publish(PENDING_BINDING, syncState(parent.syncStatus()));
       return;
     }
-    const stable = `${replicaDatabaseKey(replicaDatabaseScopeOf(identity))} ${segment.id}`;
+    const stable = graphStableKey(identity, segment.id);
     const handle = this.registry.acquire(
       stable,
       [...parent.graphPath(), segment.name],
@@ -711,7 +803,7 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
   private fail(error: Error): void {
     const current = this.bindingStore.getSnapshot();
     if (current.status === "failed" && sameFailure(current.error, error)) return;
-    this.publish({ status: "failed", error }, this.syncStore.getSnapshot());
+    this.publish({ status: "failed", error }, syncState(failureStatus(error)));
   }
 
   /**

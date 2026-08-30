@@ -26,9 +26,14 @@ import {
   fencedReceiver,
   graphResolutionQuery,
   GraphRegistry,
+  graphStableKey,
   resolveGraphReceiver,
   terminalPathError,
 } from "../../src/client/graph.ts";
+import {
+  replicaDatabaseKey,
+  replicaDatabaseScopeOf,
+} from "../../src/internal/replication/replica-lifecycle.ts";
 import {
   ClientDatabaseHandle,
   queryObservationKey,
@@ -350,6 +355,74 @@ describe("the resolved-database registry", () => {
     local.retire("stable", two);
     expect(changes).toHaveLength(2);
     await local.close();
+  });
+
+  test("forgets a retired database's lineage rather than lending it on", () => {
+    const seen: (readonly string[] | undefined)[] = [];
+    const confirm = new Map<
+      ClientDatabaseHandle,
+      (identity: ReplicationIdentity) => void
+    >();
+    const local = new GraphRegistry(
+      ({ graphPath, graphLineage, onConfirmed }) => {
+        const handle = new ClientDatabaseHandle(context(graphPath, graphLineage));
+        confirm.set(handle, onConfirmed);
+        seen.push(graphLineage());
+        return handle;
+      },
+      () => undefined,
+    );
+    const holder = path();
+    const first = local.acquire("stable", ["acme"], holder);
+    confirm.get(first)!(confirmed([opaque("1")]));
+
+    // A rename keeps the database and its memo: the next activation of the same
+    // stable identity resumes onto the replica this one confirmed.
+    local.acquire("stable", ["acme-renamed"], holder);
+    expect(seen[1]).toEqual([opaque("1")]);
+
+    // Retiring it takes the lineage with it. A memo that outlives what it
+    // describes would be a pre-flight selection lent to whatever later reaches
+    // this key — including, before the partition-scoped key, a recreated Graph
+    // that collided with its predecessor's id.
+    local.retire("stable", holder);
+    local.acquire("stable", ["acme-renamed"], path());
+    expect(seen[2]).toBeUndefined();
+  });
+});
+
+describe("the stable graph identity", () => {
+  const opaque = (character: string): string => character.repeat(43);
+
+  const view = (readView: string): ReplicationIdentity => ({
+    version: 1,
+    server: opaque("s"),
+    principal: opaque("p"),
+    database: opaque("d"),
+    catalog: opaque("c"),
+    readView: opaque(readView),
+    readCompatibilityHash: opaque("h") as ReplicationIdentity["readCompatibilityHash"],
+    graphLineage: [],
+    authenticator: opaque("a"),
+  });
+
+  test("separates two read views of one database", () => {
+    const before = view("1");
+    const after = view("2");
+    // The premise: these are the same database, so everything scope-shaped
+    // about them is identical…
+    expect(replicaDatabaseKey(replicaDatabaseScopeOf(before)))
+      .toBe(replicaDatabaseKey(replicaDatabaseScopeOf(after)));
+    // …but a local entity id is assigned per *partition*, and a read view is
+    // part of a partition. Delete a Graph, recreate a same-named one, and the
+    // successor can land on the predecessor's id in the rotated view. Keyed on
+    // the scope those two produce one byte-identical key, which would hand the
+    // successor the predecessor's live activation and its confirmed lineage —
+    // and that lineage restores the predecessor's child replica offline.
+    expect(graphStableKey(before, 1000)).not.toBe(graphStableKey(after, 1000));
+    // Within one partition an id is still an identity, and two of them differ.
+    expect(graphStableKey(before, 1000)).toBe(graphStableKey(view("1"), 1000));
+    expect(graphStableKey(before, 1000)).not.toBe(graphStableKey(before, 1001));
   });
 });
 

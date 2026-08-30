@@ -129,13 +129,14 @@ const identityFor = (
   database: string,
   lineage: readonly string[],
   readCompatibilityHash: string,
+  readView = opaque("v"),
 ): ReplicationIdentity => ({
   version: 1,
   server: opaque("s"),
   principal: opaque("p"),
   database,
   catalog: opaque("c"),
-  readView: opaque("v"),
+  readView,
   readCompatibilityHash: readCompatibilityHash as ReplicationIdentity["readCompatibilityHash"],
   graphLineage: lineage,
   authenticator: opaque("a"),
@@ -525,6 +526,85 @@ browserTest("reuses child storage only for a path an authenticated response conf
     held();
   } finally {
     await recreated.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("does not read a predecessor Graph's replica through a rotated read view", async ({ browser }) => {
+  const name = `ramose-graph-recreate-${browser.uniqueId}`;
+  const installed = await installClientCatalog(AppCatalog);
+  const hash = installed.readCompatibilityHash;
+  // One database, two read views — what a delete/recreate of a Graph inside it
+  // leaves behind. The predecessor's Graph row and the successor's are
+  // different entities with different opaque identities, and each view numbers
+  // its own visible entities from scratch, so the successor lands on the
+  // predecessor's *local* id. That collision is the whole hazard: a stable
+  // graph key that spanned read views would be byte-identical for the two.
+  await seed(name, [
+    {
+      graphPath: [],
+      identity: identityFor(opaque("D"), [], hash, opaque("1")),
+      datoms: graphRow(opaque("e"), ":organization", ":organization/slug", "acme", "acme-org"),
+      token: "bearer-before",
+    },
+    {
+      // The predecessor's child database, complete and bound, with the route
+      // its own authenticated session confirmed.
+      graphPath: ["acme-org"],
+      identity: identityFor(opaque("C"), ORG_LINEAGE, hash, opaque("1")),
+      datoms: graphRow(opaque("f"), ":board", ":board/slug", "roadmap", "roadmap-board"),
+      token: "bearer-before",
+    },
+    {
+      graphPath: [],
+      identity: identityFor(opaque("D"), [], hash, opaque("2")),
+      datoms: graphRow(opaque("z"), ":organization", ":organization/slug", "acme", "acme-org"),
+      token: "bearer-after",
+    },
+  ]);
+
+  const ids = async (token: string): Promise<{
+    readonly id: number;
+    readonly boards: readonly unknown[] | undefined;
+  }> => {
+    const client = offlineClient(name, { token, cacheKey: CACHE_KEY });
+    try {
+      const db = client.open();
+      const org = db.observe(
+        db.query.from(Organization).select({ id: Organization.id }).oneOrFail(),
+      );
+      const holdOrg = org.subscribe(() => undefined);
+      const row = await waitFor(org, (snapshot) => snapshot.status === "ready");
+      const handle = orgHandle(db);
+      const boards = handle.observe(
+        handle.query.from(Board).select({ slug: Board.slug }),
+      );
+      const holdBoards = boards.subscribe(() => undefined);
+      await settled(client);
+      holdOrg();
+      holdBoards();
+      return {
+        id: (row.data as { readonly id: number }).id,
+        boards: boards.getSnapshot().data as readonly unknown[] | undefined,
+      };
+    } finally {
+      await client.close();
+    }
+  };
+
+  const before = await ids("bearer-before");
+  const after = await ids("bearer-after");
+  try {
+    // The predecessor reads its own child database — the positive control, so
+    // the successor's silence below is a decision and not an empty fixture.
+    expect(before.boards).toEqual([{ slug: "roadmap" }]);
+    // The collision is real: two different Graph entities, one local id.
+    expect(after.id).toBe(before.id);
+    // And the successor reads nothing of the predecessor's. It is a different
+    // Graph in a different read view, so it is a different stable identity,
+    // with no activation and no confirmed lineage to inherit.
+    expect(after.boards).toBeUndefined();
+  } finally {
     await deleteDatabase(name);
   }
 });
