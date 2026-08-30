@@ -1,9 +1,12 @@
 /**
  * `ramose/react` is a browser package (#479 slice 1).
  *
- * The adapter pulls the client's whole graph — the catalog install, the
- * replication session, the storage, the query engine. None of that may drag
- * the deploy engine or the peer Worker into an application's bundle.
+ * An application that renders with Ramose bundles both entries: `ramose/client`
+ * to construct the client, `ramose/react` to read it. That pair is what has to
+ * stay free of the deploy engine and the peer Worker, so it is what is built
+ * here — bundling the adapter alone would understate the graph, because the
+ * hooks reach the client's runtime through the handle the application passes
+ * them rather than by importing it.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -14,27 +17,28 @@ import { fileURLToPath } from "node:url";
 // from a module that never did reports resolution errors that have nothing to
 // do with what is being asserted.
 import "../../src/react/hooks.ts";
+import "../../src/client/index.ts";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 describe("the ramose/react bundle", () => {
   test("bundles for browsers without the deploy engine", async () => {
-    // `hooks.ts`, not the barrel: the barrel is re-exports, and bundling it
-    // emits a stub that would pass with the deploy engine one import away.
-    // This is the module that pulls the adapter's whole graph — the client,
-    // the replication session, the storage, the query engine.
     const built = await Bun.build({
       entrypoints: [
-        resolve(dirname(fileURLToPath(import.meta.url)), "../../src/react/hooks.ts"),
+        resolve(here, "../../src/react/index.ts"),
+        resolve(here, "../../src/client/client.ts"),
       ],
       target: "browser",
       external: ["effect", "effect/*", "react"],
     });
     expect(built.success).toBe(true);
-    const bundle = await built.outputs[0]!.text();
+    const bundle = (await Promise.all(built.outputs.map((output) => output.text())))
+      .join("\n");
     // Proof that the graph is really in here, so the assertion below is about
     // what the bundle contains rather than about how little of it was built.
     expect(bundle.length).toBeGreaterThan(200_000);
-    // The adapter is a browser package: Alchemy, the peer Worker, and the
-    // Cloudflare bindings must not be reachable from it.
+    // Alchemy, the peer Worker, and the Cloudflare bindings must not be
+    // reachable from anything an application renders with.
     expect(bundle).not.toContain("alchemy");
   });
 });
