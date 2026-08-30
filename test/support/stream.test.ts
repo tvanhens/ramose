@@ -97,6 +97,22 @@ test("closing a stalled live-query stream settles its own pending read", async (
   await parked;
 });
 
+test("a transport cancel that stalls is abandoned at the same deadline", async () => {
+  // The bound has to cover the cancel too: a wedged transport can stall it,
+  // and a bound that only covers `return()` is no bound.
+  const started = Date.now();
+  await closeObservedStream(
+    {
+      cancelTransport: () => new Promise<never>(() => {}),
+      return: () => Promise.resolve({ done: true, value: undefined }),
+    },
+    250,
+  );
+  const elapsed = Date.now() - started;
+  expect(elapsed).toBeGreaterThanOrEqual(200);
+  expect(elapsed).toBeLessThan(5_000);
+});
+
 test("a close that cannot settle is abandoned at its deadline, not awaited", async () => {
   // No `cancelTransport`, and a `return()` that never resolves: the shape a
   // reader outside these helpers can still present. Cleanup must give up

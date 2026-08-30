@@ -5,7 +5,7 @@
  * cost of a stalled request is not that one test fails. It is that reaching
  * Bun's 90s default budget makes Bun kill the processes spawned under the
  * timed-out test — the dev stack itself — after which every remaining test in
- * the file fails `ConnectionRefused`. Seven conformance runs in the #564
+ * the file fails `ConnectionRefused`. Eight conformance runs in the #564
  * window read exactly that way: one hang, then ~40 unrelated failures. Both
  * helpers here exist to keep a stall inside its own test.
  *
@@ -24,7 +24,7 @@ export const REQUEST_DEADLINE_MS = 45_000;
 /**
  * Bound one exchange with a timer this module owns.
  *
- * Arming `AbortSignal.timeout` on the `fetch` was not enough. Seven
+ * Arming `AbortSignal.timeout` on the `fetch` was not enough. Eight
  * conformance runs in the #564 window show a `POST /db/graph-path-root/op`
  * parked behind a mid-read replication stream (#551) burning the caller's
  * entire 90s budget with that signal armed and never firing. Racing the
@@ -64,26 +64,6 @@ export const withRequestDeadline = async <A>(
   }
 };
 
-/**
- * Bounded cleanup for the NDJSON streams these suites hold open.
- *
- * Closing one is not the trivial step it looks like. Every reader here is an
- * async generator parked in `await reader.read()`, so an `iterator.return()`
- * queues *behind* that pending read and only resolves when a frame arrives —
- * which, for the stalled stream a test is abandoning, is never. An awaited
- * close in a `finally` therefore consumes the caller's whole 90s default test
- * budget, and reaching that budget is what turns one stall into a suite-wide
- * failure: Bun kills the processes spawned under a timed-out test — here the
- * shared Alchemy dev stack — so every remaining test in the file fails
- * `ConnectionRefused`.
- *
- * So: cancel the transport first, which settles the pending read and lets the
- * generator's own `finally` run, then wait only briefly for the queued
- * `return()`. A close that still has not settled is abandoned rather than
- * awaited — cleanup must never cost more than the assertions it follows, and
- * a test that already failed must not lose its own diagnosis to a hung close.
- */
-
 /** A stream that can settle its own pending read. */
 export type CancellableStream = {
   readonly cancelTransport?: () => Promise<void>;
@@ -92,29 +72,42 @@ export type CancellableStream = {
 /** Ceiling on abandoning one stream. A healthy close settles immediately. */
 const CLOSE_DEADLINE_MS = 5_000;
 
+/**
+ * Bounded cleanup for the NDJSON streams these suites hold open.
+ *
+ * Closing one is not the trivial step it looks like. Every reader here is an
+ * async generator parked in `await reader.read()`, so an `iterator.return()`
+ * queues *behind* that pending read and only resolves when a frame arrives —
+ * which, for the stalled stream a test is abandoning, is never. An awaited
+ * close in a `finally` therefore consumes the caller's whole 90s budget, and
+ * reaching that budget is what takes the shared dev stack down with it.
+ *
+ * So: cancel the transport first, which settles the pending read and lets the
+ * generator's own `finally` run, then wait only briefly for the queued
+ * `return()`. A close that still has not settled is abandoned rather than
+ * awaited — cleanup must never cost more than the assertions it follows, and
+ * a test that already failed must not lose its own diagnosis to a hung close.
+ */
 export const closeObservedStream = async (
   iterator:
     & Partial<Pick<AsyncIterator<unknown>, "return">>
     & CancellableStream,
   deadlineMs: number = CLOSE_DEADLINE_MS,
 ): Promise<void> => {
-  // Settling the pending read is what lets the queued `return()` resolve at
-  // all; without it the wait below always runs out the clock.
-  await iterator.cancelTransport?.().catch(() => undefined);
-  const closed = iterator.return?.(undefined);
-  if (closed === undefined) return;
-  // Nobody awaits the late outcome, but an unhandled rejection would fail an
-  // unrelated later test.
-  void Promise.resolve(closed).catch(() => undefined);
+  // Both steps are inside the bound. Cancelling first is what lets the queued
+  // `return()` resolve at all, but a cancel on a wedged transport can stall
+  // too, and a bound that only covers the second step is no bound.
+  const closed = (async () => {
+    await iterator.cancelTransport?.();
+    await iterator.return?.(undefined);
+    // Nobody is waiting on the outcome; the caller only needs to move on.
+  })().then(() => undefined, () => undefined);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const abandoned = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, deadlineMs);
   });
   try {
-    await Promise.race([
-      Promise.resolve(closed).then(() => undefined, () => undefined),
-      abandoned,
-    ]);
+    await Promise.race([closed, abandoned]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
