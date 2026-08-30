@@ -9,7 +9,7 @@ import Next from "../../../components/Next.astro";
 *New here? Start with [React and offline UX](/guides/react/).*
 
 :::note[Available today]
-`RamoseProvider`, `useDb`, `useQuery`, `useReceipt`, and `useSyncState` ship now. A Suspense-compatible option is not part of the adapter yet; `receipt.committed` is a real promise, so React's `use()` already suspends on one invocation without help from Ramose.
+`RamoseProvider`, `useDb`, `useQuery`, `useReceipt`, and `useSyncState` ship now. A Suspense-compatible option is not part of the adapter yet. On React 19, `receipt.committed` is a real promise, so `use()` suspends on one invocation without help from Ramose; React 18 has no `use()`, so branch on `useReceipt`'s status there.
 :::
 
 ```tsx
