@@ -63,7 +63,10 @@ import type {
   OperationVersion,
   OwnerRef,
 } from "../authorization/identities.ts";
-import { canonicalizeJson } from "../authorization/canonical-json.ts";
+import {
+  canonicalizeJson,
+  hasLoneSurrogate,
+} from "../authorization/canonical-json.ts";
 import type { JsonValue } from "../authorization/json.ts";
 import { decideServerIdentityBinding } from "./server-identity.ts";
 import type { ReplicaDatabaseScope, ReplicaScope } from "./replica-lifecycle.ts";
@@ -276,6 +279,11 @@ const jsonSnapshot = (value: unknown, at: string, seen: Set<object>): JsonValue 
   if (value === null) return null;
   switch (typeof value) {
     case "string":
+      // RFC 8785 rejects a lone surrogate, so a string carrying one could
+      // never enter the canonical invocation digest — and would make even an
+      // identical retry throw instead of matching. It never becomes durable.
+      if (hasLoneSurrogate(value)) reject(`input at ${at} has a lone surrogate`);
+      return value;
     case "boolean":
       return value;
     case "number":
@@ -305,11 +313,16 @@ const jsonSnapshot = (value: unknown, at: string, seen: Set<object>): JsonValue 
     if (prototype !== Object.prototype && prototype !== null) {
       reject(`input at ${at} is not a plain object`);
     }
-    const fields: Record<string, JsonValue> = {};
+    // `Object.fromEntries` creates own data properties, so an input carrying
+    // an own `__proto__` field keeps it instead of silently invoking the
+    // inherited setter and losing the field the declared paths were checked
+    // against.
+    const fields: (readonly [string, JsonValue])[] = [];
     for (const [key, item] of Object.entries(object)) {
-      fields[key] = jsonSnapshot(item, `${at}.${key}`, seen);
+      if (hasLoneSurrogate(key)) reject(`input at ${at} has a lone surrogate in a key`);
+      fields.push([key, jsonSnapshot(item, `${at}.${key}`, seen)]);
     }
-    snapshot = Object.freeze(fields);
+    snapshot = Object.freeze(Object.fromEntries(fields));
   }
   seen.delete(object);
   return snapshot;

@@ -283,6 +283,42 @@ describe("building one durable queue record", () => {
     expect(decodeOutboxRecord(JSON.parse(JSON.stringify(record)))).toEqual(record);
   });
 
+  test("keeps an own __proto__ field instead of losing it to the setter", () => {
+    // `JSON.parse('{"__proto__": ...}')` produces exactly this shape.
+    const ref = clientRef();
+    const input = JSON.parse(`{"__proto__":{"author":${JSON.stringify(ref)}}}`) as never;
+    const record = buildOutboxRecord(
+      draft({ input, inputRefs: [{ path: ["__proto__", "author"], ref }] }),
+      scopeKey,
+      1,
+    );
+    expect(Object.hasOwn(record.input as object, "__proto__")).toBe(true);
+    expect(readAllocationPath(record.input, ["__proto__", "author"])).toBe(ref);
+    expect(decodeOutboxRecord(JSON.parse(JSON.stringify(record)))).toEqual(record);
+  });
+
+  test("rejects a string the canonical digest cannot encode", () => {
+    // RFC 8785 terminates on a lone surrogate, so such a value could never
+    // enter the invocation digest — and would make an identical retry throw.
+    for (
+      const input of [
+        { title: "\ud800" },
+        { title: "\udc00 trailing" },
+        { nested: ["ok", "a\ud83d"] },
+      ]
+    ) {
+      expect(rejection(() => buildOutboxRecord(draft({ input }), scopeKey, 1)))
+        .toMatch(/lone surrogate/);
+    }
+    expect(rejection(() =>
+      buildOutboxRecord(draft({ input: { "\ud800": "ok" } }), scopeKey, 1)
+    )).toMatch(/lone surrogate in a key/);
+    // A well-formed astral pair is ordinary text.
+    expect(
+      buildOutboxRecord(draft({ input: { title: "ok \ud83d\ude00" } }), scopeKey, 1).input,
+    ).toEqual({ title: "ok \ud83d\ude00" });
+  });
+
   test("rejects an input value JSON cannot carry", () => {
     for (
       const input of [
