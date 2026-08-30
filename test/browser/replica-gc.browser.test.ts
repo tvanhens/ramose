@@ -130,6 +130,53 @@ const nodeHashes = async (name: string, partition: string): Promise<string[]> =>
   return keys.map((key) => (key as [string, string])[1]).sort();
 };
 
+type StoredManifest = {
+  readonly partition: string;
+  readonly roots: Record<"eavt" | "aevt" | "avet" | "vaet", { readonly hash: string }>;
+};
+
+const committedOf = async (name: string, partition: string): Promise<StoredManifest> => {
+  const database = await openNative(name);
+  const transaction = database.transaction(COMMITTED, "readonly");
+  const record = await requestResult<StoredManifest>(
+    transaction.objectStore(COMMITTED).get(partition),
+  );
+  await transactionDone(transaction);
+  database.close();
+  return record;
+};
+
+const writeCommitted = async (name: string, record: unknown): Promise<void> => {
+  const database = await openNative(name);
+  const transaction = database.transaction(COMMITTED, "readwrite");
+  transaction.objectStore(COMMITTED).put(record);
+  await transactionDone(transaction);
+  database.close();
+};
+
+/**
+ * A stored node that is a real EAVT root of a superseded value: it decodes, it
+ * hashes to its own address, and it is the same index and shape as the root it
+ * will stand in for. Only the manifest's own claim separates the two.
+ */
+const supersededRoot = async (
+  name: string,
+  partition: string,
+  current: StoredManifest,
+): Promise<string> => {
+  const database = await openNative(name);
+  const transaction = database.transaction(NODES, "readonly");
+  const records = await requestResult<{ hash: string; body: Uint8Array }[]>(
+    transaction.objectStore(NODES).getAll(nodeRange(partition)),
+  );
+  await transactionDone(transaction);
+  database.close();
+  const live = new Set(Object.values(current.roots).map((root) => root.hash));
+  const orphan = records.find((record) => !live.has(record.hash));
+  if (orphan === undefined) throw new Error("no superseded node to swap in");
+  return orphan.hash;
+};
+
 const sweepGeneration = async (name: string, partition: string): Promise<number> => {
   const database = await openNative(name);
   const transaction = database.transaction(GENERATIONS, "readonly");
@@ -471,6 +518,58 @@ browserTest(
         expect(await sweepGeneration(name, partition)).toBe(0);
         // Classification is still the restore walk's job, and it happens on the
         // ordinary path with every node the sweep declined to delete in place.
+        const restored = await reopened.restoreOutcome(
+          selected,
+          attributes,
+          READ_COMPATIBILITY,
+        );
+        expect(restored._tag).toBe("replacement-required");
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a manifest root swapped for another real node stops the sweep instead of deleting the live one",
+  async ({ browser }) => {
+    const name = `ramose-gc-swapped-root-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(4000, "seed"));
+      // A change leaves the superseded roots in the store, so the swap below
+      // can point the manifest at a real, correctly stored node of the same
+      // index — every content address still checks out.
+      const applied = await storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), "entity-000008".padEnd(43, "z"), "changed"),
+      );
+      expect(applied?.revision).toBe(opaque("2"));
+      const before = await nodeHashes(name, partition);
+      const current = await committedOf(name, partition);
+      storage.close();
+
+      // Damage the manifest, not a node: point one root at the superseded root
+      // of the same index. Nothing is missing, nothing is misfiled, and the
+      // swept set computed from it would be the *current* subtree.
+      const superseded = await supersededRoot(name, partition, current);
+      await writeCommitted(name, {
+        ...current,
+        roots: { ...current.roots, eavt: { ...current.roots.eavt, hash: superseded } },
+      });
+
+      const reopened = await IndexedDbReplicaStorage.open(name);
+      try {
+        const outcome = await reopened.collectGarbage();
+        expect(outcome.skipped).toBe(1);
+        expect(outcome.nodes).toBe(0);
+        expect(await nodeHashes(name, partition)).toEqual(before);
+        expect(await sweepGeneration(name, partition)).toBe(0);
+        // The restore path is what classifies it, with every node still there.
         const restored = await reopened.restoreOutcome(
           selected,
           attributes,

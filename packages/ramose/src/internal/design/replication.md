@@ -533,18 +533,27 @@ and zero heads for any GC pass.
 
 ### Sweep invariants
 
-- **Fail closed on damage.** The live set is computed by walking each live root
-  set, and the sweep refuses to *believe* a node it cannot authenticate: a body
-  believed wrongly under-reports its children, and intact descendants would then
-  be classified as garbage. The content address is what makes belief safe and is
-  sufficient on its own — a body that hashes to the address it is filed under is
-  the node that address names, so the children it lists are the real ones, while
-  a body that does not (a valid leaf stored under a directory's address, a
-  half-written record, anything at all) is refused. A missing, misfiled, or
-  undecodable node therefore leaves the partition's live set unknown, and GC
-  sweeps nothing in that partition. Damage is never converted into deletion; the
-  restore walk is what classifies and quarantines it, on nodes the sweep left in
-  place.
+- **Fail closed on damage.** A body believed wrongly under-reports its children,
+  and the intact descendants would then be classified as garbage, so the sweep
+  refuses to believe anything it cannot authenticate. Content addresses do that
+  for the *structure*: a body that hashes to the address its parent filed it
+  under is the node that address names, so the children it lists are the real
+  ones, while a valid leaf stored under a directory's address, a half-written
+  record, or a missing node is refused.
+
+  A manifest authenticates nothing. It is an ordinary stored record and its four
+  roots are just hashes, so damage that swapped one for another correctly stored
+  node — a superseded root of the same index and count — passes every address
+  check and would hand the sweep a live set describing some other value, which
+  it would then delete the current one to honour. Roots therefore get the full
+  restore-strength validation, ending in the digest fold that proves the walked
+  trees are the ones this manifest's own journal describes. Retained roots skip
+  it: they are values this process restored through that same walk or
+  materialized itself, and retaining too much is safe anyway.
+
+  Any of those refusals leaves the partition's live set unknown, and GC sweeps
+  nothing in it. Damage is never converted into deletion; the restore walk is
+  what classifies and quarantines it, on nodes the sweep left in place.
 - **Materialization exclusion.** An install marks its partition in flight
   synchronously before materialization creates its first node transaction, and
   clears the mark only after the install transaction settles — closing the
@@ -608,11 +617,14 @@ to publish.
 
 That outcome says nothing about the partition — only about this attempt — and
 commonly the partition is untouched, because a sweep reclaims superseded roots
-while the current manifest stands. Reporting an absence there would strand an
-offline restore that has no other way to obtain the value, so the restore reads
-the stored record again and walks it again, up to a small bounded number of
-attempts, and reports nothing selected only if sweeps keep landing in the same
-window. A clear or an eviction keeps surfacing the ordinary typed fence error,
+while the current manifest stands. The same is true of a refusal whose
+withdrawal loses its manifest CAS: an install moved the record on, and a sweep
+of the roots it superseded is exactly how a healthy partition reaches that
+branch. Reporting an absence for either would strand an offline restore that has
+no other way to obtain the value, so both make the restore read the stored
+record again and walk it again, up to a small bounded number of attempts, and
+report nothing selected only if the partition keeps moving under every attempt.
+A clear or an eviction keeps surfacing the ordinary typed fence error,
 unchanged.
 
 The install paths deliberately do not observe the sweep generation. They are

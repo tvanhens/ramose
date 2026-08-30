@@ -517,8 +517,15 @@ browserTest(
       await installOne(writer, selected, opaque("2"), "replacement");
       releaseCheckpoint("replica.refused");
 
-      // Nothing was removed, and the refusal describes nothing that is stored.
-      expect(await refusing).toEqual({ _tag: "absent" });
+      // Nothing was removed, and the refusal described nothing that is stored,
+      // so the restore reads the record again and returns the replacement
+      // rather than reporting an absence over an intact partition.
+      const outcome = await refusing;
+      expect(outcome._tag).toBe("restored");
+      expect(outcome._tag === "restored" ? outcome.replica.revision : undefined)
+        .toBe(opaque("2"));
+      expect(await names((outcome as { replica: { db: Db } }).replica.db))
+        .toEqual(["replacement"]);
       expect(await names((await writer.restore(selected, attributes, READ_COMPATIBILITY))!.db))
         .toEqual(["replacement"]);
       expect(partitioned((await dump(name))[COMMITTED], partition)).toHaveLength(1);
@@ -556,8 +563,12 @@ browserTest(
       expect(repaired.roots.eavt.hash).toBe(roots.eavt.hash);
       releaseCheckpoint("replica.refused");
 
-      // The healthy manifest survives, and the repaired replica reads.
-      expect(await refusing).toEqual({ _tag: "absent" });
+      // The healthy manifest survives, and the restore reads the repaired
+      // record again rather than reporting an absence over it.
+      const outcome = await refusing;
+      expect(outcome._tag).toBe("restored");
+      expect(await names((outcome as { replica: { db: Db } }).replica.db))
+        .toEqual(["repaired"]);
       expect(partitioned((await dump(name))[COMMITTED], partition)).toHaveLength(1);
       expect(await names((await writer.restore(selected, attributes, READ_COMPATIBILITY))!.db))
         .toEqual(["repaired"]);

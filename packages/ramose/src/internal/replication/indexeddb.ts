@@ -854,13 +854,15 @@ const verifyNodeRecord = async (
 const validateReachableNodes = async (
   database: IDBDatabase,
   manifest: ReplicaManifest,
+  /** Filled with every address the walk reached, for a caller that needs the set. */
+  reached?: Set<string>,
 ): Promise<ReplicaIntegrityFailure | undefined> => {
   // A bulk build slices one strictly sorted datom list into disjoint leaves and
   // groups those into disjoint directories, and the index tag is part of every
   // body, so no two reachable nodes of one committed value can share an
   // address. A repeat is therefore not sharing to deduplicate — it is a link
   // into a subtree that already has a parent, which also bounds the walk.
-  const seen = new Set<string>();
+  const seen = reached ?? new Set<string>();
   const expected = expectedReplicaContents(manifest);
   if (Result.isFailure(expected)) return expected.failure;
   const digests: ReplicaIndexDigests = {
@@ -964,27 +966,23 @@ const reachableFromRoots = async (
 };
 
 /**
- * The four root addresses of a stored manifest, read defensively.
+ * The compatibility hash a stored manifest claims, read defensively.
  *
- * The record is whatever structured clone returned, and a sweep must not
- * believe it the way a validated manifest is believed. Anything that is not
- * four well-formed references yields `undefined`, which the caller treats as an
- * unknown live set and therefore sweeps nothing in that partition.
+ * A sweep has no client catalog to compare against and does not need one: it
+ * decides what is reachable, not what this client may read. Passing the
+ * record's own claim makes that one comparison inside
+ * {@link validateReplicaManifest} tautological and leaves every other check —
+ * the ones that decide whether these roots describe a real value — in force.
  */
-const storedRootHashes = (record: unknown): readonly string[] | undefined => {
-  if (typeof record !== "object" || record === null) return undefined;
-  const roots = (record as { readonly roots?: unknown }).roots;
-  if (typeof roots !== "object" || roots === null) return undefined;
-  const hashes: string[] = [];
-  for (const name of ["eavt", "aevt", "avet", "vaet"] as const) {
-    const ref = (roots as Record<string, unknown>)[name];
-    if (typeof ref !== "object" || ref === null) return undefined;
-    const hash = (ref as { readonly hash?: unknown }).hash;
-    if (typeof hash !== "string") return undefined;
-    hashes.push(hash);
-  }
-  return Object.freeze(hashes);
-};
+const storedReadCompatibilityHash = (
+  record: unknown,
+): ReadCompatibilityHash | undefined =>
+  typeof record === "object" && record !== null &&
+    typeof (record as { readonly readCompatibilityHash?: unknown })
+        .readCompatibilityHash === "string"
+    ? (record as { readonly readCompatibilityHash: ReadCompatibilityHash })
+      .readCompatibilityHash
+    : undefined;
 
 const storedRevision = (record: unknown): string | null =>
   typeof record === "object" && record !== null &&
@@ -998,27 +996,26 @@ type SurveyedPartition = {
   readonly hashes: readonly string[];
   /** The committed manifest as of the survey; absent manifests fingerprint too. */
   readonly fingerprint: string;
-  /** Roots of the committed manifest, or `undefined` when none is stored. */
-  readonly roots: readonly string[] | undefined;
-  /** A manifest is stored but its roots are unreadable, so nothing is sweepable. */
-  readonly opaque: boolean;
+  /** The stored manifest record, or `undefined` when none is stored. */
+  readonly record: unknown;
 };
 
 /** Distinguishes one retention from another without leaking the roots it holds. */
 let retentionToken = 0;
 
 /**
- * A walk that finished but may not publish, because a sweep moved this
- * partition's nodes underneath it. It is not a restore outcome: it describes
- * this attempt, not the partition, so it never reaches a caller.
+ * This attempt read a record that is no longer the stored one, or walked nodes
+ * a sweep has since reclaimed. Either way it describes the attempt, not the
+ * partition — so it is not a restore outcome and never reaches a caller; the
+ * record is read again and walked again instead.
  */
-const SWEPT_DURING_WALK = Symbol("replica.swept-during-walk");
+const RECORD_MOVED = Symbol("replica.record-moved");
 
 /**
- * How many times a restore re-reads and re-walks a partition a sweep moved
- * under it. A sweep is a bounded event and each attempt is a whole walk, so a
- * small constant both keeps an ordinary concurrent reclaim invisible and stops
- * a pathologically busy pass from making a restore unbounded.
+ * How many times a restore re-reads and re-walks a partition that moved under
+ * it. Installs and sweeps are bounded events and each attempt is a whole walk,
+ * so a small constant both keeps ordinary concurrency invisible and stops a
+ * pathologically busy neighbour from making a restore unbounded.
  */
 const REPLICA_SWEEP_RESTORE_ATTEMPTS = 3;
 
@@ -1659,13 +1656,7 @@ export class IndexedDbReplicaStorage {
       transaction.objectStore(COMMITTED).get(partition),
     );
     await transactionDone(transaction);
-    const roots = record === undefined ? undefined : storedRootHashes(record);
-    return {
-      hashes,
-      fingerprint: replicaManifestFingerprint(record),
-      roots,
-      opaque: record !== undefined && roots === undefined,
-    };
+    return { hashes, fingerprint: replicaManifestFingerprint(record), record };
   }
 
   /**
@@ -1677,11 +1668,39 @@ export class IndexedDbReplicaStorage {
     partition: string,
     stored: SurveyedPartition,
   ): Promise<ReadonlySet<string> | undefined> {
-    if (stored.opaque) return undefined;
-    const roots = [...(stored.roots ?? []), ...this.retainedRoots(partition)];
-    if (roots.length === 0) return new Set<string>();
-    const walk = await reachableFromRoots(this.database, partition, roots);
-    return walk.complete ? walk.reachable : undefined;
+    const live = new Set<string>();
+    if (stored.record !== undefined) {
+      // A content address authenticates a node: a body that hashes to the
+      // address its parent filed it under is that node, so the children it
+      // lists are the real ones. A manifest authenticates nothing — it is an
+      // ordinary stored record, and its four roots are just hashes. Damage that
+      // swapped one for another correctly stored node of the same index and
+      // count would still pass every address check and hand the sweep a live
+      // set describing some other value, which would then delete the current
+      // one. The manifest therefore gets the full restore-strength validation,
+      // ending in the digest fold that proves the walked trees are the ones
+      // this manifest's own journal describes; nothing less separates a real
+      // root from a plausible one.
+      const expected = storedReadCompatibilityHash(stored.record);
+      if (expected === undefined) return undefined;
+      const manifest = validateReplicaManifest(stored.record, {
+        partition,
+        readCompatibilityHash: expected,
+      });
+      if (Result.isFailure(manifest)) return undefined;
+      if (await validateReachableNodes(this.database, manifest.success, live) !== undefined) {
+        return undefined;
+      }
+    }
+    // Retained roots are values this process restored through that same walk or
+    // materialized itself, so following them needs only the address check.
+    const retained = this.retainedRoots(partition);
+    if (retained.length > 0) {
+      const walk = await reachableFromRoots(this.database, partition, retained);
+      if (!walk.complete) return undefined;
+      for (const hash of walk.reachable) live.add(hash);
+    }
+    return live;
   }
 
   /** Every root address an in-process holder currently retains for a partition. */
@@ -1915,14 +1934,14 @@ export class IndexedDbReplicaStorage {
    * half-way yields no `Db` at all rather than one over the datoms it did
    * manage to read.
    *
-   * A sweep landing in the walk's window is the one outcome that says nothing
-   * about the partition: it means only that the walk's own reading is no longer
-   * safe to publish, and the partition may still hold exactly the value the
-   * caller asked for — commonly it does, because a sweep reclaims *superseded*
-   * roots while the current manifest stands untouched. Reporting an absence
-   * there would strand an offline restore that has no other way to obtain the
-   * value, so the record is read again and walked again, a bounded number of
-   * times, before anything is concluded.
+   * Two endings say nothing about the partition and only about the attempt: a
+   * sweep landing in the walk's window, and a refusal whose withdrawal lost its
+   * CAS because the stored manifest had already moved on. Both are the ordinary
+   * shape of a concurrent install followed by a reclaim of the roots it
+   * superseded — the partition commonly holds exactly the value the caller
+   * asked for — and reporting an absence would strand an offline restore that
+   * has no other way to obtain it. The record is therefore read again and
+   * walked again, a bounded number of times, before anything is concluded.
    */
   private async validated(
     record: unknown,
@@ -1940,7 +1959,7 @@ export class IndexedDbReplicaStorage {
         readCompatibilityHash,
         fingerprint,
       );
-      if (outcome !== SWEPT_DURING_WALK) return outcome;
+      if (outcome !== RECORD_MOVED) return outcome;
       current = await this.committed(identity);
       if (current === undefined) return replicaAbsent();
       const stored = replicaManifestIdentity(current);
@@ -1948,9 +1967,9 @@ export class IndexedDbReplicaStorage {
         return replicaAbsent();
       }
     }
-    // Sweeps kept landing in this walk's window. Nothing is damaged and nothing
-    // was withdrawn; the caller simply gets no value this time and may open
-    // again.
+    // The partition kept moving under every attempt. Nothing is damaged and
+    // nothing was withdrawn; the caller simply gets no value this time and may
+    // open again.
     return replicaAbsent();
   }
 
@@ -1960,7 +1979,7 @@ export class IndexedDbReplicaStorage {
     attributes: readonly AttributeSpec[],
     readCompatibilityHash: ReadCompatibilityHash,
     fingerprint?: string,
-  ): Promise<ReplicaRestoreOutcome<CommittedRecord> | typeof SWEPT_DURING_WALK> {
+  ): Promise<ReplicaRestoreOutcome<CommittedRecord> | typeof RECORD_MOVED> {
     const partition = replicaPartitionKey(identity);
     const expect = replicaManifestFingerprint(record);
     // The generations guarding this partition as they stood when the record was
@@ -1977,7 +1996,7 @@ export class IndexedDbReplicaStorage {
     const quarantine = async (
       reason: Parameters<typeof replicaUnusable>[1],
       detail: string,
-    ): Promise<ReplicaRestoreOutcome<CommittedRecord>> => {
+    ): Promise<ReplicaRestoreOutcome<CommittedRecord> | typeof RECORD_MOVED> => {
       // The boundary between deciding to refuse and removing anything. Inert in
       // production; the source-only testing assembly parks here to let another
       // session install a replacement and prove the removal is conditional.
@@ -1988,12 +2007,14 @@ export class IndexedDbReplicaStorage {
         ...(fingerprint === undefined ? {} : { fingerprint }),
       });
       // A concurrent install replaced the manifest this restore refused, so
-      // nothing was removed and nothing here describes what is stored now. The
-      // caller selects again from scratch rather than acting on a stale
-      // refusal.
+      // nothing was removed and this refusal describes nothing that is stored.
+      // It is the same situation as a sweep landing under the walk — the
+      // attempt is stale, not the partition — and a sweep that reclaimed the
+      // refused manifest's now-superseded nodes is exactly how a healthy
+      // partition reaches this branch. Read the record again and walk that.
       return removed
         ? replicaUnusable<CommittedRecord>(partition, reason, detail)
-        : replicaAbsent<CommittedRecord>();
+        : RECORD_MOVED;
     };
     if (identity.readCompatibilityHash !== readCompatibilityHash) {
       return quarantine(
@@ -2034,7 +2055,7 @@ export class IndexedDbReplicaStorage {
       // superseded by an install this walk did not see — but the manifest this
       // walk read is no longer safe to construct a `Db` over. The caller reads
       // the stored record again and walks it again.
-      return SWEPT_DURING_WALK;
+      return RECORD_MOVED;
     }
     return replicaRestored(manifest.success);
   }
