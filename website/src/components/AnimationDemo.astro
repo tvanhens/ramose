@@ -1,0 +1,265 @@
+---
+interface Props {
+  variant: "instant" | "agents" | "history";
+  src: string;
+  title: string;
+  initialTitle: string;
+  initialMeta: string;
+}
+
+const { variant, src, title, initialTitle, initialMeta } = Astro.props;
+---
+
+<figure
+  class:list={["rg-animation-demo", `rg-animation-demo--${variant}`]}
+  data-animation-demo
+>
+  <iframe
+    data-animation-demo-frame
+    src={src}
+    title={title}
+    loading="lazy"
+    sandbox="allow-scripts"
+  ></iframe>
+  <figcaption class="rg-animation-narrative">
+    <span class="rg-animation-narrative__bar"></span>
+    <span class="rg-animation-narrative__step" data-animation-narrative-step>01</span>
+    <span class="rg-animation-narrative__copy">
+      <strong data-animation-narrative-title>{initialTitle}</strong>
+      <small data-animation-narrative-meta>{initialMeta}</small>
+    </span>
+  </figcaption>
+</figure>
+
+<script>
+  const NARRATIVE_MESSAGE = "ramose:demo-narrative";
+  const NARRATIVE_REQUEST = "ramose:demo-narrative-request";
+  const NARRATIVE_READY = "ramose:demo-narrative-ready";
+  const COMPACT_WIDTH = 560;
+
+  document.querySelectorAll<HTMLElement>("[data-animation-demo]").forEach((demo) => {
+    if (demo.dataset.animationDemoBound === "true") return;
+
+    const frame = demo.querySelector<HTMLIFrameElement>("[data-animation-demo-frame]");
+    const step = demo.querySelector<HTMLElement>("[data-animation-narrative-step]");
+    const title = demo.querySelector<HTMLElement>("[data-animation-narrative-title]");
+    const meta = demo.querySelector<HTMLElement>("[data-animation-narrative-meta]");
+    if (!frame || !step || !title || !meta) return;
+
+    demo.dataset.animationDemoBound = "true";
+    let lastFrameWidth = -1;
+    let syncFrame = 0;
+
+    const syncCompactMode = (force = false) => {
+      const frameWidth = Math.round(frame.getBoundingClientRect().width * 100) / 100;
+      if (!force && frameWidth === lastFrameWidth) return;
+      lastFrameWidth = frameWidth;
+
+      const compact = frameWidth <= COMPACT_WIDTH;
+      demo.dataset.animationDemoCompact = String(compact);
+      if (!compact) {
+        frame.style.removeProperty("height");
+        delete demo.dataset.animationDemoReady;
+      }
+      frame.contentWindow?.postMessage(
+        { type: NARRATIVE_REQUEST, compact, width: frameWidth },
+        "*",
+      );
+    };
+
+    const scheduleCompactSync = () => {
+      if (syncFrame) return;
+      syncFrame = window.requestAnimationFrame(() => {
+        syncFrame = 0;
+        syncCompactMode();
+      });
+    };
+
+    window.addEventListener("message", (event) => {
+      if (event.source !== frame.contentWindow) return;
+
+      const message = event.data;
+      if (!message) return;
+      if (message.type === NARRATIVE_READY) {
+        syncCompactMode(true);
+        return;
+      }
+      if (message.type !== NARRATIVE_MESSAGE) return;
+
+      if (
+        message.compact !== true ||
+        demo.dataset.animationDemoCompact !== "true"
+      ) {
+        frame.style.removeProperty("height");
+        delete demo.dataset.animationDemoReady;
+        return;
+      }
+
+      if (typeof message.height === "number" && Number.isFinite(message.height)) {
+        const height = Math.max(
+          1,
+          Math.min(2000, Math.round(message.height * 100) / 100),
+        );
+        frame.style.height = `${height}px`;
+      }
+      if (typeof message.step === "string") step.textContent = message.step;
+      if (typeof message.title === "string") title.textContent = message.title;
+      if (typeof message.meta === "string") meta.textContent = message.meta;
+      demo.dataset.animationDemoReady = "true";
+    });
+
+    frame.addEventListener("load", () => syncCompactMode(true));
+    window.addEventListener("resize", scheduleCompactSync);
+    new ResizeObserver(scheduleCompactSync).observe(frame);
+    syncCompactMode(true);
+  });
+</script>
+
+<style>
+  .rg-animation-demo {
+    container-type: inline-size;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid rgba(255, 101, 0, 0.26);
+    border-radius: 0.9rem;
+    background: #0a0908;
+    box-shadow: 0 2.5rem 6rem -4rem rgba(255, 76, 0, 0.65);
+  }
+
+  .rg-animation-demo--instant {
+    margin-top: 2.5rem;
+  }
+
+  .rg-animation-demo iframe {
+    display: block;
+    width: 100%;
+    flex: 0 0 auto;
+    border: 0;
+  }
+
+  .rg-animation-demo--instant iframe {
+    aspect-ratio: 71 / 33.21;
+  }
+
+  .rg-animation-demo--agents iframe {
+    aspect-ratio: 40 / 52.65;
+  }
+
+  .rg-animation-demo--history iframe {
+    aspect-ratio: 40 / 39.51;
+  }
+
+  .rg-animation-narrative {
+    position: relative;
+    display: none;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: 0.65rem;
+    box-sizing: border-box;
+    width: 100%;
+    height: 2.75rem;
+    flex: 0 0 2.75rem;
+    margin: 0;
+    padding: 0.4rem 0.7rem;
+    border-top: 1px solid #2a211d;
+    background: #0b0a09;
+    box-shadow: 0 -0.8rem 1.6rem -1.1rem #000;
+  }
+
+  .rg-animation-narrative__bar {
+    position: absolute;
+    top: -1px;
+    right: 0;
+    left: 0;
+    height: 2px;
+    background: #ff6500;
+  }
+
+  .rg-animation-narrative__step {
+    grid-row: 1;
+    color: #ffb080;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+  }
+
+  .rg-animation-narrative__copy {
+    display: grid;
+    min-width: 0;
+    gap: 0.1rem;
+  }
+
+  .rg-animation-narrative__copy strong,
+  .rg-animation-narrative__copy small {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .rg-animation-narrative__copy strong {
+    color: #f8f6f3;
+    font-size: 0.8rem;
+    font-weight: 500;
+    line-height: 1.1;
+  }
+
+  .rg-animation-narrative__copy small {
+    color: #ffb080;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.58rem;
+    line-height: 1.2;
+  }
+
+  @media (max-width: 56rem) {
+    .rg-animation-demo {
+      box-sizing: border-box;
+      padding: 0.45rem;
+    }
+
+    .rg-animation-demo--agents iframe {
+      height: calc(177.6cqw - 17.05rem);
+      aspect-ratio: auto;
+    }
+
+    .rg-animation-demo--history {
+      margin-top: 2rem;
+    }
+
+    .rg-animation-demo--history iframe {
+      aspect-ratio: 40 / 38.55;
+    }
+  }
+
+  .rg-animation-demo[data-animation-demo-compact="true"] .rg-animation-narrative {
+    display: grid;
+  }
+
+  .rg-animation-demo--instant[data-animation-demo-compact="true"] iframe {
+    height: calc(36.9cqw - 0.375rem);
+    aspect-ratio: auto;
+  }
+
+  .rg-animation-demo--agents[data-animation-demo-compact="true"] iframe {
+    height: calc(107.3cqw - 0.3125rem);
+    aspect-ratio: auto;
+  }
+
+  .rg-animation-demo--history[data-animation-demo-compact="true"] iframe {
+    height: calc(72.1cqw - 0.375rem);
+    aspect-ratio: auto;
+  }
+
+  @container (min-width: 25rem) {
+    .rg-animation-demo--agents[data-animation-demo-compact="true"] iframe {
+      height: calc(116cqw - 2.6rem);
+    }
+
+    .rg-animation-demo--history[data-animation-demo-compact="true"] iframe {
+      height: calc(75.4cqw - 1.25rem);
+    }
+  }
+</style>

@@ -340,9 +340,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         'x-dc,x-dc>div,x-dc>div>div,x-dc section{display:block!important;width:100%!important;max-width:none!important;margin:0!important;padding:0!important;background:#090807!important}',
         '.ramose-demo-section{position:static!important}',
         '.ramose-history-demo{position:absolute;top:0;left:0;width:40rem;min-width:40rem;margin:0;transform-origin:top left}',
-        '.ramose-history-demo>div{border:0!important;border-radius:0!important;box-shadow:none!important}',
-        '#ramose-mobile-narrative{display:none}',
-        '@media(max-width:560px){#ramose-mobile-narrative{position:fixed;z-index:20;top:0;left:0;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:.65rem;height:2.75rem;padding:.4rem .7rem;border-top:1px solid #2a211d;background:#0b0a09;box-shadow:0 -.8rem 1.6rem -1.1rem #000;box-sizing:border-box}.ramose-mobile-narrative-bar{position:absolute;top:0;right:0;left:0;height:2px;background:#ff6500}.ramose-mobile-narrative-step{grid-row:1;color:#ffb080;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.65rem;letter-spacing:.1em}.ramose-mobile-narrative-copy{display:grid;min-width:0;gap:.1rem}.ramose-mobile-narrative-title{overflow:hidden;color:#f8f6f3;font-size:.8rem;font-weight:500;line-height:1.1;white-space:nowrap;text-overflow:ellipsis}.ramose-mobile-narrative-meta{overflow:hidden;color:#ffb080;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.58rem;line-height:1.2;white-space:nowrap;text-overflow:ellipsis}}'
+        '.ramose-history-demo>div{border:0!important;border-radius:0!important;box-shadow:none!important}'
       ].join('');
       doc.head.appendChild(style);
       doc.title = 'Data is never lost';
@@ -408,38 +406,14 @@ document.addEventListener('DOMContentLoaded', async function() {
       fitDemo();
       window.addEventListener('resize', fitDemo);
     }
-    const installMobileNarrative = function(firstTitle) {
+    const installMobileNarrative = function(firstTitle, mobileMeta) {
       let strip;
       let cards = [];
-      let desktopColumns = '';
-      let desktopDisplay = '';
       let lastActive = 0;
       let frame = 0;
-      let caption;
-      let captionStep;
-      let captionTitle;
-      let captionMeta;
-
-      const ensureCaption = function() {
-        if (caption && caption.isConnected) return;
-        caption = document.createElement('div');
-        caption.id = 'ramose-mobile-narrative';
-        caption.setAttribute('aria-hidden', 'true');
-
-        const bar = document.createElement('span');
-        bar.className = 'ramose-mobile-narrative-bar';
-        captionStep = document.createElement('span');
-        captionStep.className = 'ramose-mobile-narrative-step';
-        const copy = document.createElement('span');
-        copy.className = 'ramose-mobile-narrative-copy';
-        captionTitle = document.createElement('strong');
-        captionTitle.className = 'ramose-mobile-narrative-title';
-        captionMeta = document.createElement('small');
-        captionMeta.className = 'ramose-mobile-narrative-meta';
-        copy.append(captionTitle, captionMeta);
-        caption.append(bar, captionStep, copy);
-        document.body.appendChild(caption);
-      };
+      let lastMessage = '';
+      let parentCompact = false;
+      let parentWidth = 0;
 
       const locate = function() {
         if (strip && strip.isConnected) return true;
@@ -449,13 +423,30 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (!title || !title.parentElement || !title.parentElement.parentElement) return false;
         strip = title.parentElement.parentElement;
         cards = Array.from(strip.children);
-        desktopColumns = strip.style.gridTemplateColumns;
-        desktopDisplay = strip.style.display;
         return cards.length > 0;
+      };
+
+      const publish = function(message) {
+        if (window.parent === window) return;
+        const serialized = JSON.stringify(message);
+        if (serialized === lastMessage) return;
+        lastMessage = serialized;
+        window.parent.postMessage(message, '*');
       };
 
       const update = function() {
         frame = 0;
+        const currentDemo = document.querySelector('.ramose-history-demo');
+        if (currentDemo) {
+          const scale = Math.round(
+            (parentWidth || document.documentElement.clientWidth) / (40 * 16) * 1000000
+          ) / 1000000;
+          const transform = 'scale(' + scale + ')';
+          if (currentDemo.style.left !== '0px') currentDemo.style.left = '0';
+          if (currentDemo.style.transform !== transform) {
+            currentDemo.style.transform = transform;
+          }
+        }
         if (!locate()) return;
         cards = Array.from(strip.children);
         let highlighted = -1;
@@ -466,17 +457,9 @@ document.addEventListener('DOMContentLoaded', async function() {
           }
         });
         if (highlighted >= 0) lastActive = highlighted;
-        const mobile = document.documentElement.clientWidth <= 560;
+        const mobile = parentCompact;
         const visible = highlighted >= 0 ? highlighted : lastActive;
         if (mobile) {
-          ensureCaption();
-          if (strip.style.display !== desktopDisplay) strip.style.display = desktopDisplay;
-          if (strip.style.gridTemplateColumns !== desktopColumns) {
-            strip.style.gridTemplateColumns = desktopColumns;
-          }
-          cards.forEach(function(card) {
-            if (card.style.display !== 'grid') card.style.display = 'grid';
-          });
           const bounds = strip.getBoundingClientRect();
           const previous = strip.previousElementSibling;
           const contentBottom = previous && previous.children.length
@@ -484,33 +467,23 @@ document.addEventListener('DOMContentLoaded', async function() {
                 return child.getBoundingClientRect().bottom;
               }))
             : bounds.top;
-          const captionBounds = caption.getBoundingClientRect();
-          const bar = caption.querySelector('.ramose-mobile-narrative-bar');
-          const barInset = bar ? bar.getBoundingClientRect().top - captionBounds.top : 0;
-          const desiredTop = contentBottom + 8 - barInset;
-          const maxTop = Math.max(0, document.documentElement.clientHeight - caption.offsetHeight);
-          const top = Math.round(Math.min(desiredTop, maxTop) * 100) / 100 + 'px';
-          const left = Math.round(bounds.left * 100) / 100 + 'px';
-          const width = Math.round(bounds.width * 100) / 100 + 'px';
-          if (caption.style.top !== top) caption.style.top = top;
-          if (caption.style.left !== left) caption.style.left = left;
-          if (caption.style.width !== width) caption.style.width = width;
           if (strip.style.visibility !== 'hidden') strip.style.visibility = 'hidden';
           const activeCard = cards[visible];
           const title = activeCard && activeCard.querySelector('strong');
           const meta = activeCard && activeCard.querySelector('small');
-          captionStep.textContent = (visible + 1 < 10 ? '0' : '') + (visible + 1);
-          captionTitle.textContent = title ? title.textContent.trim() : '';
-          captionMeta.textContent = meta ? meta.textContent.trim() : '';
+          publish({
+            type: 'ramose:demo-narrative',
+            compact: true,
+            height: Math.round(Math.max(0, contentBottom) * 100) / 100,
+            step: (visible + 1 < 10 ? '0' : '') + (visible + 1),
+            title: title ? title.textContent.trim() : '',
+            meta: mobileMeta && mobileMeta[visible]
+              ? mobileMeta[visible]
+              : meta ? meta.textContent.trim() : ''
+          });
         } else {
           if (strip.style.visibility !== '') strip.style.visibility = '';
-          if (strip.style.display !== desktopDisplay) strip.style.display = desktopDisplay;
-          if (strip.style.gridTemplateColumns !== desktopColumns) {
-            strip.style.gridTemplateColumns = desktopColumns;
-          }
-          cards.forEach(function(card) {
-            if (card.style.display !== 'grid') card.style.display = 'grid';
-          });
+          publish({ type: 'ramose:demo-narrative', compact: false });
         }
       };
 
@@ -524,6 +497,19 @@ document.addEventListener('DOMContentLoaded', async function() {
         subtree: true
       });
       window.addEventListener('resize', schedule);
+      window.addEventListener('message', function(event) {
+        if (event.source !== window.parent || !event.data ||
+            event.data.type !== 'ramose:demo-narrative-request') return;
+        parentCompact = event.data.compact === true;
+        if (typeof event.data.width === 'number' && isFinite(event.data.width)) {
+          parentWidth = Math.max(0, event.data.width);
+        }
+        lastMessage = '';
+        update();
+      });
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: 'ramose:demo-narrative-ready' }, '*');
+      }
       [0, 100, 500, 1500].forEach(function(delay) {
         setTimeout(schedule, delay);
       });

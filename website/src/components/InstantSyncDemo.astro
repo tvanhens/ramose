@@ -1,41 +1,11 @@
-<figure class="rg-sync-demo">
-  <iframe
-    src="/demos/instant-by-default.html"
-    title="Instant local writes syncing across devices"
-    loading="lazy"
-    sandbox="allow-scripts"
-  ></iframe>
-</figure>
+---
+import AnimationDemo from "./AnimationDemo.astro";
+---
 
-<style>
-  .rg-sync-demo {
-    container-type: inline-size;
-    margin: 2.5rem 0 0;
-    overflow: hidden;
-    border: 1px solid rgba(255, 101, 0, 0.26);
-    border-radius: 0.9rem;
-    background: #0a0908;
-    box-shadow: 0 2.5rem 6rem -4rem rgba(255, 76, 0, 0.65);
-  }
-
-  .rg-sync-demo iframe {
-    display: block;
-    width: 100%;
-    aspect-ratio: 71 / 33.21;
-    border: 0;
-  }
-
-  @media (max-width: 56rem) {
-    .rg-sync-demo {
-      box-sizing: border-box;
-      padding: 0.45rem;
-    }
-  }
-
-  @container (max-width: 35rem) {
-    .rg-sync-demo iframe {
-      height: calc(36.9cqw + 2.875rem);
-      aspect-ratio: auto;
-    }
-  }
-</style>
+<AnimationDemo
+  variant="instant"
+  src="/demos/instant-by-default.html?v=shared-narrative-10"
+  title="Instant local writes syncing across devices"
+  initialTitle="You drop the card"
+  initialMeta="input"
+/>

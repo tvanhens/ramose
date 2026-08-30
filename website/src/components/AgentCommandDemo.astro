@@ -1,53 +1,11 @@
-<figure class="rg-agent-demo">
-  <iframe
-    src="/demos/agents-everything-a-user-can-do.html"
-    title="An agent discovering, querying, and mutating through Ramose"
-    loading="lazy"
-    sandbox="allow-scripts"
-  ></iframe>
-</figure>
+---
+import AnimationDemo from "./AnimationDemo.astro";
+---
 
-<style>
-  .rg-agent-demo {
-    container-type: inline-size;
-    min-width: 0;
-    margin: 0;
-    overflow: hidden;
-    border: 1px solid rgba(255, 101, 0, 0.26);
-    border-radius: 0.9rem;
-    background: #0a0908;
-    box-shadow: 0 2.5rem 6rem -4rem rgba(255, 76, 0, 0.65);
-  }
-
-  .rg-agent-demo iframe {
-    display: block;
-    width: 100%;
-    aspect-ratio: 40 / 52.65;
-    border: 0;
-  }
-
-  @media (max-width: 56rem) {
-    .rg-agent-demo {
-      box-sizing: border-box;
-      padding: 0.45rem;
-    }
-
-    .rg-agent-demo iframe {
-      height: calc(177.6cqw - 17.05rem);
-      aspect-ratio: auto;
-    }
-  }
-
-  @container (max-width: 35rem) {
-    .rg-agent-demo iframe {
-      height: calc(107.3cqw + 2.9375rem);
-      aspect-ratio: auto;
-    }
-  }
-
-  @container (min-width: 25rem) and (max-width: 35rem) {
-    .rg-agent-demo iframe {
-      height: calc(116cqw + 0.65rem);
-    }
-  }
-</style>
+<AnimationDemo
+  variant="agents"
+  src="/demos/agents-everything-a-user-can-do.html?v=shared-narrative-10"
+  title="An agent discovering, querying, and mutating through Ramose"
+  initialTitle="describe"
+  initialMeta="graph, catalog, allowed calls"
+/>

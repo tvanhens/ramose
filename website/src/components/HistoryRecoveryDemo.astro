@@ -1,53 +1,11 @@
-<figure class="rg-recovery-demo">
-  <iframe
-    src="/demos/data-is-never-lost.html"
-    title="An issue board rewinding to recover deleted work"
-    loading="lazy"
-    sandbox="allow-scripts"
-  ></iframe>
-</figure>
+---
+import AnimationDemo from "./AnimationDemo.astro";
+---
 
-<style>
-  .rg-recovery-demo {
-    container-type: inline-size;
-    min-width: 0;
-    margin: 0;
-    overflow: hidden;
-    border: 1px solid rgba(255, 101, 0, 0.26);
-    border-radius: 0.9rem;
-    background: #0a0908;
-    box-shadow: 0 2.5rem 6rem -4rem rgba(255, 76, 0, 0.65);
-  }
-
-  .rg-recovery-demo iframe {
-    display: block;
-    width: 100%;
-    aspect-ratio: 40 / 39.51;
-    border: 0;
-  }
-
-  @media (max-width: 56rem) {
-    .rg-recovery-demo {
-      box-sizing: border-box;
-      margin-top: 2rem;
-      padding: 0.45rem;
-    }
-
-    .rg-recovery-demo iframe {
-      aspect-ratio: 40 / 38.55;
-    }
-  }
-
-  @container (max-width: 35rem) {
-    .rg-recovery-demo iframe {
-      height: calc(72.1cqw + 2.875rem);
-      aspect-ratio: auto;
-    }
-  }
-
-  @container (min-width: 25rem) and (max-width: 35rem) {
-    .rg-recovery-demo iframe {
-      height: calc(75.4cqw + 2rem);
-    }
-  }
-</style>
+<AnimationDemo
+  variant="history"
+  src="/demos/data-is-never-lost.html?v=shared-narrative-10"
+  title="An issue board rewinding to recover deleted work"
+  initialTitle="An agent clears the backlog"
+  initialMeta="12:41:04 · committed"
+/>
