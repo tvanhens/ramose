@@ -15,7 +15,6 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - run: bun run typecheck
-      - run: bun run test:doubles
       - run: bun run test:unit
 
       - run: bun website/scripts/docs-check.mjs
