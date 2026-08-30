@@ -575,21 +575,23 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
    * Open the session again for a database whose durable identity is still
    * unconfirmed, so a route another tab has since confirmed is read rather
    * than waited for.
+   *
+   * An activation that has not produced a session yet is one already in
+   * flight, and reading the route again is what it is on its way to doing:
+   * clearing the guard for it would leave two opens racing to own one handle.
    */
   reactivateUnconfirmed(): void {
     if (!this.live() || this.identity !== undefined) return;
     if (this.activation === undefined || this.context.graphPath.length === 0) return;
     const session = this.session;
-    const status = session?.snapshot().status;
-    if (
-      session !== undefined && status !== "failed" && status !== "terminal" &&
-      status !== "closed"
-    ) return;
+    if (session === undefined) return;
+    const status = session.snapshot().status;
+    if (status !== "failed" && status !== "terminal" && status !== "closed") return;
     this.releaseSession?.();
     this.releaseSession = undefined;
     this.session = undefined;
     this.activation = undefined;
-    if (session !== undefined) this.spawn(session.close());
+    this.spawn(session.close());
     void this.activate();
   }
 

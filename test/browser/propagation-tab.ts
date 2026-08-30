@@ -256,6 +256,11 @@ type CommitInput = {
   readonly note: SeededNote;
   readonly from: string;
   readonly revision: string;
+  /** A second change installed straight after, with no round trip between. */
+  readonly then?: {
+    readonly note: SeededNote;
+    readonly revision: string;
+  };
 };
 
 type EnqueueInput = {
@@ -404,17 +409,27 @@ export const serve = (id: string): void =>
 
     /** Install a durable change the way a leader's own stream installs one. */
     commit: async (
-      { storageName, database: id, note, from, revision }: CommitInput,
+      { storageName, database: id, note, from, revision, then }: CommitInput,
     ): Promise<string> => {
       const opened = await held(storageName);
       const identity = await identityFor(id);
-      const installed = await opened.applyChange(changeFrame({
-        type: "Change", protocol: 1, identity, from, revision,
-        datoms: noteDatoms([note]),
-      }));
-      const at = installed?.revision ?? "";
-      installed?.release();
-      return at;
+      const install = async (
+        base: string,
+        at: string,
+        seeded: SeededNote,
+      ): Promise<string> => {
+        const installed = await opened.applyChange(changeFrame({
+          type: "Change", protocol: 1, identity, from: base, revision: at,
+          datoms: noteDatoms([seeded]),
+        }));
+        const landed = installed?.revision ?? "";
+        installed?.release();
+        return landed;
+      };
+      const first = await install(from, revision, note);
+      return then === undefined
+        ? first
+        : await install(revision, then.revision, then.note);
     },
 
     /** Queue work for a receiver database without submitting it. */

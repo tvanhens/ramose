@@ -183,6 +183,7 @@ export class ReplicationSession {
   private releaseRetention: (() => void) | undefined;
   private retainedDb: Db | undefined;
   private confirmedIdentity: ReplicationIdentity | undefined;
+  private refreshing: Promise<void> = Promise.resolve();
   private fenced = false;
 
   private constructor(
@@ -225,8 +226,25 @@ export class ReplicationSession {
    * whose own response is still delivering ignores this — its stream is the
    * fresher path and the one that keeps the change chain continuous — so this
    * is what a tab reads when its own stream has ended.
+   *
+   * Refreshes run one at a time. Two notices about consecutive writes would
+   * otherwise read two revisions concurrently, and the reader that finished
+   * second could publish the older of them: the durable head advances, but a
+   * read of it is only as fresh as the moment it ran.
    */
-  async refreshFromDurable(): Promise<boolean> {
+  refreshFromDurable(): Promise<boolean> {
+    const next = this.refreshing.then(
+      () => this.readDurableHead(),
+      () => this.readDurableHead(),
+    );
+    this.refreshing = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  private async readDurableHead(): Promise<boolean> {
     const status = this.state.status;
     if (status !== "failed" && status !== "terminal") return false;
     const identity = this.state.value?.identity ?? this.confirmedIdentity;

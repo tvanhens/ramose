@@ -37,6 +37,7 @@ const NOTES = [
 ] as const;
 
 const NEXT_REVISION = "revision-two".padEnd(43, "0");
+const THIRD_REVISION = "revision-three".padEnd(43, "0");
 
 const deleteDatabase = (name: string): Promise<void> =>
   new Promise((resolve) => {
@@ -137,6 +138,57 @@ browserTest(
       );
       expect(converged).toEqual(["first", "second", "third"]);
       expect(performance.now() - started_at).toBeLessThan(2_000);
+    } finally {
+      await follower.close();
+      await leader.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "consecutive committed changes never leave a tab on the earlier one",
+  async ({ browser }) => {
+    const name = `ramose-propagation-consecutive-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    await seed(name, await identityFor(database), NOTES);
+    const leader = await openTab(tabModule);
+    const follower = await openTab(tabModule);
+    try {
+      expect((await started(follower, name, database)).titles).toEqual([
+        "first",
+        "second",
+      ]);
+
+      // Two installs with no round trip between them, so both notices land
+      // while the first durable read is still running.
+      expect(
+        await leader.call<string>("commit", {
+          storageName: name,
+          database,
+          note: { entity: opaque("g"), title: "third", rank: "c" },
+          from: REVISION,
+          revision: NEXT_REVISION,
+          then: {
+            note: { entity: opaque("i"), title: "fourth", rank: "d" },
+            revision: THIRD_REVISION,
+          },
+        }),
+      ).toBe(THIRD_REVISION);
+
+      const converged = await until(
+        () => titles(follower),
+        (rows) => rows.includes("fourth"),
+        "the follower to render the later change",
+      );
+      expect(converged).toEqual(["first", "second", "third", "fourth"]);
+
+      // A read that finished late must not put the earlier revision back.
+      await steady(
+        () => titles(follower),
+        (rows) => rows.includes("fourth"),
+        "the follower's converged value",
+      );
     } finally {
       await follower.close();
       await leader.close();
