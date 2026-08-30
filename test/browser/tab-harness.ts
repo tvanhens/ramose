@@ -1,14 +1,9 @@
 /**
- * Real tabs for the browser lane.
- *
- * Each tab is an iframe running a module in its own realm: its own Web Locks
- * client, its own IndexedDB connections, and its own module instances, which
- * is what a second tab of one origin is. Removing the frame destroys that
- * browsing context the way closing or crashing a tab does, without giving the
- * code inside a chance to release anything.
- *
- * The two sides talk over a BroadcastChannel named for the tab. That channel
- * is test plumbing only; nothing under test reads it.
+ * Real tabs for the browser lane. Each tab is an iframe running a module in
+ * its own realm, with its own Web Locks client and IndexedDB connections, and
+ * removing the frame destroys that browsing context the way closing or
+ * crashing a tab does. The two sides talk over a BroadcastChannel named for
+ * the tab, which is harness plumbing that nothing under test reads.
  */
 
 type TabRequest = {

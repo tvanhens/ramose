@@ -36,13 +36,15 @@ export const serve = (id: string): void =>
     stand: async ({ storageName, scope }: Standing): Promise<TabReport> => {
       const opened = await IndexedDbReplicaStorage.open(storageName);
       storage = opened;
-      key = replicaLeaderKey(scope);
-      leadership = SyncLeadership.begin({
+      key = replicaLeaderKey(scope, storageName);
+      const standing = SyncLeadership.begin({
         name: key,
         locks: platformLocks(),
         claim: () => opened.claimLeadership(key, scope),
         onLeading: () => undefined,
       });
+      leadership = standing;
+      opened.onInvalidated(() => void standing.release());
       return report();
     },
     report: (): TabReport => report(),

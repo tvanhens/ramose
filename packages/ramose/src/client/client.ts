@@ -1,5 +1,8 @@
 import { isCatalogDefinition, type CatalogDefinition } from "../Catalog.ts";
-import { IndexedDbReplicaStorage } from "../internal/replication/indexeddb.ts";
+import {
+  DEFAULT_REPLICA_DATABASE_NAME,
+  IndexedDbReplicaStorage,
+} from "../internal/replication/indexeddb.ts";
 import type { ReplicationIdentity } from "../internal/replication/protocol.ts";
 import {
   replicaDatabaseKey,
@@ -178,8 +181,11 @@ class RamoseClient implements Client {
   private elect(identity: ReplicationIdentity): void {
     if (this.leadership !== undefined || this.terminal !== undefined) return;
     const scope = replicaScopeOf(identity);
-    const name = replicaLeaderKey(replicaDatabaseScopeOf(identity));
-    this.leadership = SyncLeadership.begin({
+    const name = replicaLeaderKey(
+      replicaDatabaseScopeOf(identity),
+      this.storageName(),
+    );
+    const leadership = SyncLeadership.begin({
       name,
       locks: platformLocks(),
       claim: async () => (await this.storage()).claimLeadership(name, scope),
@@ -187,6 +193,11 @@ class RamoseClient implements Client {
         if (this.terminal === undefined) this.submissions().request(scope);
       },
     });
+    this.leadership = leadership;
+    void this.storage().then(
+      (storage) => storage.onInvalidated(() => void leadership.release()),
+      () => undefined,
+    );
   }
 
   private submissions(): SubmissionLoop {
@@ -265,10 +276,12 @@ class RamoseClient implements Client {
     return this.catalogBuild;
   }
 
+  private storageName(): string {
+    return this.options.storageName ?? DEFAULT_REPLICA_DATABASE_NAME;
+  }
+
   private storage(): Promise<IndexedDbReplicaStorage> {
-    this.storageHandle ??= this.options.storageName === undefined
-      ? IndexedDbReplicaStorage.open()
-      : IndexedDbReplicaStorage.open(this.options.storageName);
+    this.storageHandle ??= IndexedDbReplicaStorage.open(this.storageName());
     return this.storageHandle;
   }
 

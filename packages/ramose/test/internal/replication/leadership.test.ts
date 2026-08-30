@@ -24,20 +24,29 @@ const settled = (): Promise<void> => new Promise((resolve) => queueMicrotask(res
 
 describe("leadership naming", () => {
   test("one name covers one server, root database, and principal", () => {
-    const name = replicaLeaderKey(scope());
+    const name = replicaLeaderKey(scope(), "ramose-replicas");
     expect(name).toContain(replicaDatabaseKey(scope()));
-    expect(replicaLeaderKey(scope())).toBe(name);
+    expect(replicaLeaderKey(scope(), "ramose-replicas")).toBe(name);
     for (const other of [
       scope({ server: opaque("t") }),
       scope({ principal: opaque("q") }),
       scope({ database: opaque("e") }),
     ]) {
-      expect(replicaLeaderKey(other)).not.toBe(name);
+      expect(replicaLeaderKey(other, "ramose-replicas")).not.toBe(name);
     }
   });
 
+  test("clients that do not share a storage namespace do not share a leader", () => {
+    expect(replicaLeaderKey(scope(), "ramose-replicas")).not.toBe(
+      replicaLeaderKey(scope(), "another-namespace"),
+    );
+    expect(replicaLeaderKey(scope(), "a:b")).not.toBe(
+      replicaLeaderKey(scope(), "a"),
+    );
+  });
+
   test("a leadership fence is told apart from every other generation", () => {
-    expect(isLeadershipKey(replicaLeaderKey(scope()))).toBe(true);
+    expect(isLeadershipKey(replicaLeaderKey(scope(), "ramose-replicas"))).toBe(true);
     expect(isLeadershipKey(replicaDatabaseKey(scope()))).toBe(false);
   });
 });
@@ -47,7 +56,7 @@ describe("leadership without web locks", () => {
     let claims = 0;
     let leading = 0;
     const leadership = SyncLeadership.begin({
-      name: replicaLeaderKey(scope()),
+      name: replicaLeaderKey(scope(), "ramose-replicas"),
       locks: undefined,
       claim: () => {
         claims++;
@@ -72,7 +81,7 @@ describe("leadership without web locks", () => {
   test("a tab released before it leads never announces leadership", async () => {
     let leading = 0;
     const leadership = SyncLeadership.begin({
-      name: replicaLeaderKey(scope()),
+      name: replicaLeaderKey(scope(), "ramose-replicas"),
       locks: undefined,
       claim: () => Promise.resolve(1),
       onLeading: () => {

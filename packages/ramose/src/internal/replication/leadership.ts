@@ -4,9 +4,18 @@ export const REPLICA_LEADERSHIP_KEY_VERSION = 1 as const;
 
 const LEADERSHIP_KEY_PREFIX = `ramose-replica-leader-v${REPLICA_LEADERSHIP_KEY_VERSION}:`;
 
-/** The lock name and durable epoch key of one server, root, and principal. */
-export const replicaLeaderKey = (scope: ReplicaDatabaseScope): string =>
-  `${LEADERSHIP_KEY_PREFIX}${replicaDatabaseKey(scope)}`;
+/**
+ * The lock name and durable epoch key of one storage namespace, server, root
+ * database, and principal. Clients that do not share an outbox do not share a
+ * leader, so a storage namespace of its own keeps a client submitting.
+ */
+export const replicaLeaderKey = (
+  scope: ReplicaDatabaseScope,
+  storage: string,
+): string =>
+  `${LEADERSHIP_KEY_PREFIX}${encodeURIComponent(storage)}:${
+    replicaDatabaseKey(scope)
+  }`;
 
 export const isLeadershipKey = (key: string): boolean =>
   key.startsWith(LEADERSHIP_KEY_PREFIX);

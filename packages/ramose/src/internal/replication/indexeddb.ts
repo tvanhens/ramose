@@ -825,6 +825,7 @@ export class IndexedDbReplicaStorage {
   private readonly clearedScopes = new Set<string>();
   private readonly registry: LifecycleRegistry;
   private readonly registrations = new Set<() => void>();
+  private readonly invalidations = new Set<() => void>();
   private readonly meter = new WriteMeter();
 
   private constructor(
@@ -898,8 +899,27 @@ export class IndexedDbReplicaStorage {
       }
     });
     const database = await requestResult(request);
-    database.addEventListener("versionchange", () => database.close());
-    return new IndexedDbReplicaStorage(name, database, boundaries);
+    const storage = new IndexedDbReplicaStorage(name, database, boundaries);
+    database.addEventListener("versionchange", () => {
+      database.close();
+      storage.invalidated();
+    });
+    return storage;
+  }
+
+  /**
+   * Run `listener` when another connection's upgrade closes this one, which
+   * leaves this holder unable to read or write until it reopens.
+   */
+  onInvalidated(listener: () => void): () => void {
+    this.invalidations.add(listener);
+    return this.register(() => {
+      this.invalidations.delete(listener);
+    });
+  }
+
+  private invalidated(): void {
+    for (const listener of [...this.invalidations]) listener();
   }
 
   close(): void {

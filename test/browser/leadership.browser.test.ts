@@ -4,7 +4,10 @@ import type { OperationVersion } from "../../packages/ramose/src/internal/author
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
 import { invocationId } from "../../packages/ramose/src/db/refs.ts";
 import { SubmissionLoop } from "../../packages/ramose/src/client/submission.ts";
-import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
+import {
+  IndexedDbReplicaStorage,
+  REPLICA_DATABASE_VERSION,
+} from "../../packages/ramose/src/internal/replication/indexeddb.ts";
 import {
   platformLocks,
   replicaLeaderKey,
@@ -90,6 +93,24 @@ const openNative = (name: string): Promise<IDBDatabase> =>
     request.addEventListener("success", () => resolve(request.result), { once: true });
     request.addEventListener("error", () => reject(request.error), { once: true });
   });
+
+const openVersioned = (name: string, version: number): Promise<IDBDatabase> =>
+  new Promise((resolve, reject) => {
+    const request = indexedDB.open(name, version);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("blocked", () => reject(new Error("upgrade blocked")), {
+      once: true,
+    });
+  });
+
+const lockHeld = async (key: string): Promise<boolean> => {
+  let granted = false;
+  await navigator.locks.request(key, { ifAvailable: true }, (lock) => {
+    granted = lock !== null;
+  });
+  return !granted;
+};
 
 const deleteDatabase = (name: string): Promise<void> =>
   new Promise((resolve) => {
@@ -214,8 +235,9 @@ browserTest("two tabs of one scope elect exactly one leader", async ({ browser }
     const queued = await stand(second, name, scope);
 
     // Neither tab was told the name: both derived it from the scope.
-    expect(led.key).toBe(replicaLeaderKey(scope));
+    expect(led.key).toBe(replicaLeaderKey(scope, name));
     expect(queued.key).toBe(led.key);
+    expect(queued.status).toBe("waiting");
 
     const elected = await leading(first);
     expect(elected.epoch).toBe(1);
@@ -231,7 +253,6 @@ browserTest("two tabs of one scope elect exactly one leader", async ({ browser }
         undefined,
       ]);
     }
-    expect(queued.status).toBe("waiting");
   } finally {
     await first.close();
     await second.close();
@@ -248,7 +269,7 @@ browserTest("a closing leader hands leadership to a waiting tab", async ({ brows
     await stand(first, name, scope);
     await leading(first);
     await stand(second, name, scope);
-    const key = replicaLeaderKey(scope);
+    const key = replicaLeaderKey(scope, name);
 
     const started = performance.now();
     const closed = await first.call<TabReport>("release");
@@ -287,12 +308,46 @@ browserTest("a crashed leader releases leadership to a waiting tab", async ({ br
     const took = await leading(second);
     expect(took.epoch).toBe(2);
     expect(took.submits).toBe(true);
-    expect(await durableEpoch(name, replicaLeaderKey(scope))).toBe(2);
+    expect(await durableEpoch(name, replicaLeaderKey(scope, name))).toBe(2);
   } finally {
     await second.close();
     await deleteDatabase(name);
   }
 });
+
+browserTest(
+  "a leader whose storage another version closes gives the lock up",
+  async ({ browser }) => {
+    const name = `ramose-leadership-invalidated-${browser.uniqueId}`;
+    const scope = replicaDatabaseScopeOf(identity({
+      database: databaseOf(browser.uniqueId),
+    }));
+    const tab = await openTab(tabModule);
+    let upgraded: IDBDatabase | undefined;
+    try {
+      await stand(tab, name, scope);
+      await leading(tab);
+
+      upgraded = await openVersioned(name, REPLICA_DATABASE_VERSION + 1);
+
+      const released = await until(
+        () => tab.call<TabReport>("report"),
+        (report) => report.status === "released",
+        "the invalidated leader to stand down",
+      );
+      expect(released.submits).toBe(false);
+      await until(
+        () => lockHeld(replicaLeaderKey(scope, name)),
+        (isHeld) => !isHeld,
+        "the leadership lock to be free",
+      );
+    } finally {
+      upgraded?.close();
+      await tab.close();
+      await deleteDatabase(name);
+    }
+  },
+);
 
 browserTest(
   "a deposed leader's acknowledgement fails its epoch fence and its successor completes the work",
@@ -301,7 +356,7 @@ browserTest(
     const left = identity({ database: databaseOf(browser.uniqueId) });
     const receiver = replicaDatabaseScopeOf(left);
     const scope = replicaScopeOf(left);
-    const key = replicaLeaderKey(receiver);
+    const key = replicaLeaderKey(receiver, name);
     const deposed = await IndexedDbReplicaStorage.open(name);
     const successor = await IndexedDbReplicaStorage.open(name);
     try {
@@ -355,7 +410,7 @@ browserTest(
     const left = identity({ database: databaseOf(browser.uniqueId) });
     const receiver = replicaDatabaseScopeOf(left);
     const scope = replicaScopeOf(left);
-    const key = replicaLeaderKey(receiver);
+    const key = replicaLeaderKey(receiver, name);
     const storage = await IndexedDbReplicaStorage.open(name);
     const leader = SyncLeadership.begin({
       name: key,
@@ -431,9 +486,9 @@ browserTest(
     // Without Web Locks there is no election: every client submits for itself.
     const unelected = [first, second].map((storage) =>
       SyncLeadership.begin({
-        name: replicaLeaderKey(receiver),
+        name: replicaLeaderKey(receiver, name),
         locks: undefined,
-        claim: () => storage.claimLeadership(replicaLeaderKey(receiver), scope),
+        claim: () => storage.claimLeadership(replicaLeaderKey(receiver, name), scope),
         onLeading: () => undefined,
       })
     );
