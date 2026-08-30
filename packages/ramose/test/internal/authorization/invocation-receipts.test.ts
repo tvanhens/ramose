@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
+import { clientRef } from "../../../src/db/refs.ts";
 import {
   CatalogId,
   CatalogUnitHash,
@@ -19,6 +20,9 @@ import {
 } from "../../../src/internal/authorization/index.ts";
 
 const unitHash = CatalogUnitHash.make("ab".repeat(32));
+const allocatedRef = clientRef();
+const otherAllocatedRef = clientRef();
+const sealedEntityId = "A".repeat(54) + "A";
 const operationVersion = OperationVersion.make("1f".repeat(32));
 const otherOperationVersion = OperationVersion.make("2e".repeat(32));
 
@@ -169,6 +173,38 @@ describe("authoritative invocation receipt identity", () => {
     expect(material).not.toContain(unitHash);
     expect(material).not.toContain("catalogKey");
   });
+
+  test("the allocation binding is covered, and an empty one leaves the digest untouched", async () => {
+    const base = await prepare(invocation());
+    // The extension has to be absence-preserving: every receipt already stored
+    // was digested without it, and adding a field unconditionally would turn a
+    // lost acknowledgement into a conflict instead of an exact replay.
+    expect((await prepare(invocation({ allocations: [] }))).invocationDigest)
+      .toBe(base.invocationDigest);
+    expect(
+      invocationDigestMaterial(invocation({ allocations: [] }), operationVersion),
+    ).not.toHaveProperty("allocations");
+
+    const bound = invocation({
+      allocations: [{ slot: "item", clientRef: allocatedRef }],
+    });
+    const withBinding = await prepare(bound);
+    expect(withBinding.invocationDigest).not.toBe(base.invocationDigest);
+    expect(invocationDigestMaterial(bound, operationVersion)).toMatchObject({
+      allocations: [{ slot: "item", clientRef: allocatedRef }],
+    });
+
+    // The same invocation id promised to a *different* durable client identity
+    // is a different intent, so #487's ordinary conflict applies.
+    const rebound = await prepare(invocation({
+      allocations: [{ slot: "item", clientRef: otherAllocatedRef }],
+    }));
+    expect(rebound.invocationDigest).not.toBe(withBinding.invocationDigest);
+    expect(decideInvocationReceipt(
+      { ...withBinding, status: "failed" },
+      rebound,
+    )._tag).toBe("Conflict");
+  });
 });
 
 describe("authoritative invocation receipt state machine", () => {
@@ -312,6 +348,90 @@ describe("authoritative invocation receipt serialization", () => {
     expect(publicText).not.toContain("committedT");
     expect(publicText).not.toContain("replayFence");
     expect(publicText).not.toContain("receipts");
+  });
+
+  test("the mapping extension round-trips, projects sealed handles, and never admits an eid", () => {
+    const claim = decideInvocationReceipt(undefined, preparedFixture());
+    if (claim._tag !== "Claim") throw new Error("expected claim");
+    const allocations = {
+      version: 1 as const,
+      entries: [{
+        slot: "item",
+        clientRef: allocatedRef,
+        entityId: sealedEntityId,
+      }],
+    };
+    const completed = transitionInvocationReceipt(claim.receipt, {
+      _tag: "Complete",
+      committedT: 42,
+      output: { id: 1001 },
+      replayFence,
+      allocations,
+    });
+    if (completed.status !== "completed") throw new Error("expected completion");
+    // Same row, same key, same state machine: only the extension is added.
+    expect(completed.allocations).toEqual(allocations);
+    expect(parseStoredInvocationReceipt(JSON.parse(JSON.stringify(completed))))
+      .toEqual(completed);
+
+    const outcome = invocationReceiptOutcome(completed);
+    if (outcome._tag !== "Completed") throw new Error("expected completion");
+    // The slot name stays private to the durable row.
+    expect(outcome.mappings).toEqual([
+      { clientRef: allocatedRef, entityId: sealedEntityId },
+    ]);
+    expect(JSON.stringify(outcome.mappings)).not.toContain("item");
+    expect(parseAuthoritativeInvocationResult(
+      JSON.parse(JSON.stringify(outcome)),
+      "invocation-01",
+    )).toEqual(outcome);
+
+    // A numeric eid can never enter or leave a receipt, even from above.
+    expect(() => parseStoredInvocationReceipt({
+      ...completed,
+      allocations: {
+        version: 1,
+        entries: [{ slot: "item", clientRef: allocatedRef, entityId: 1001 }],
+      },
+    })).toThrow("invalid durable invocation receipt");
+    expect(() => parseAuthoritativeInvocationResult({
+      ...JSON.parse(JSON.stringify(outcome)),
+      mappings: [{ clientRef: allocatedRef, entityId: 1001 }],
+    }, "invocation-01")).toThrow("invalid authoritative invocation result");
+    // Two slots naming one client ref would make the mapping ambiguous.
+    expect(() => parseStoredInvocationReceipt({
+      ...completed,
+      allocations: {
+        version: 1,
+        entries: [
+          { slot: "one", clientRef: allocatedRef, entityId: sealedEntityId },
+          { slot: "two", clientRef: allocatedRef, entityId: sealedEntityId },
+        ],
+      },
+    })).toThrow("invalid durable invocation receipt");
+  });
+
+  test("a completed receipt written before the mapping extension stays replayable", () => {
+    const claim = decideInvocationReceipt(undefined, preparedFixture());
+    if (claim._tag !== "Claim") throw new Error("expected claim");
+    const completed = transitionInvocationReceipt(claim.receipt, {
+      _tag: "Complete",
+      committedT: 42,
+      output: { id: 1001 },
+      replayFence,
+    });
+    expect(Object.hasOwn(completed, "allocations")).toBe(false);
+    const decoded = parseStoredInvocationReceipt(
+      JSON.parse(JSON.stringify(completed)),
+    );
+    expect(decoded).toEqual(completed);
+    const replay = decideInvocationReceipt(decoded, preparedFixture());
+    expect(replay._tag).toBe("Replay");
+    if (replay._tag !== "Replay") throw new Error("expected replay");
+    expect(replay.receipt).toEqual(decoded as never);
+    const outcome = invocationReceiptOutcome(completed);
+    if (outcome._tag !== "Completed") throw new Error("expected completion");
+    expect(Object.hasOwn(outcome, "mappings")).toBe(false);
   });
 
   test("durable decode preserves exact terminal output and rejects corruption", () => {

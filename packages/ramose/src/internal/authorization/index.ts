@@ -31,6 +31,7 @@ export * from "./decode.ts";
 export * from "./database-bindings.ts";
 export * from "./deployed.ts";
 export * from "./definitions.ts";
+export * from "./entity-targets.ts";
 export * from "./expr.ts";
 export * from "./failures.ts";
 export * from "./graph-path.ts";

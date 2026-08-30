@@ -7,15 +7,20 @@ import {
   MAX_INVOCATION_ID_LENGTH,
   OperationVersion,
   parseAuthoritativeInvocationResult,
+  parseInvocationAllocations,
   type AuthoritativeInvocationResult,
   type AuthoritativeOperationInvocation,
   type AuthenticatedCaller,
   type DatabaseRouteDerivation,
   type OperationInvocation,
 } from "../internal/authorization/index.ts";
+import { isEntityId } from "../db/refs.ts";
 import { fromJson, toJson } from "../internal/core/json.ts";
+import type { EntityIdScope } from "../internal/replication/entity-id.ts";
+import { makeEntityIdScope } from "../internal/replication/identity.ts";
 import { internalHeaders } from "../internal/transactor/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
+import { serverSealingKey } from "./server-identity.ts";
 import {
   BadRequest,
   OperationRejected,
@@ -31,7 +36,12 @@ import { invalidateBasis } from "./peer.ts";
 
 export type ParsedOperationRequest = Omit<
   OperationInvocation,
-  "database" | "caller" | "catalogKey" | "unitHash" | "routeDerivation"
+  | "database"
+  | "caller"
+  | "catalogKey"
+  | "unitHash"
+  | "routeDerivation"
+  | "entityIdScope"
 > & {
   readonly path: readonly string[];
   readonly invocationId: string;
@@ -178,7 +188,14 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
       "operationVersion must be a canonical operation version digest",
     );
   }
-  const target = body.target === undefined ? undefined : fromJson(body.target);
+  // An opaque sealed handle is the offline queue's durable target (#475). It
+  // is recognized before `fromJson` so a 55-character base64url string is
+  // never mistaken for an ordinary opaque scalar, and it is mutually exclusive
+  // with the numeric/lookup form: two targets are two different invocations.
+  const sealedTarget = isEntityId(body.target) ? body.target : undefined;
+  const target = body.target === undefined || sealedTarget !== undefined
+    ? undefined
+    : fromJson(body.target);
   if (
     target !== undefined &&
     !(
@@ -186,7 +203,15 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
     ) &&
     !(Array.isArray(target) && isEntityRef(target))
   ) {
-    return yield* bad("operation target must be an eid or lookup ref");
+    return yield* bad(
+      "operation target must be an entity id, an eid, or a lookup ref",
+    );
+  }
+  const allocations = parseInvocationAllocations(body.allocations);
+  if (allocations === undefined) {
+    return yield* bad(
+      "allocations must be unique { slot, clientRef } pairs",
+    );
   }
   return {
     ...proof,
@@ -200,21 +225,59 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
     ...(target === undefined ? {} : {
       target: target as Exclude<OperationInvocation["target"], undefined>,
     }),
+    ...(sealedTarget === undefined ? {} : { sealedTarget }),
+    ...(allocations.length === 0 ? {} : { allocations }),
     input: body.input,
   };
 });
 
+/**
+ * The stable `{ server, principal, database }` scope an opaque handle is bound
+ * to, derived from the *authenticated* request and never from its body.
+ *
+ * It is exactly the scope logical replication derives, so a handle minted by
+ * one and resolved by the other names the same entity. Derived only when this
+ * invocation actually uses opaque handles: every other operation keeps its
+ * previous cost, including the durable-root lookup it never performed.
+ */
+const invocationEntityIdScope = async (
+  env: RamoseEnv,
+  database: string,
+  origin: string,
+  parsed: RoutedOperationRequest,
+  caller: AuthenticatedCaller,
+): Promise<EntityIdScope | undefined> => {
+  if (
+    parsed.sealedTarget === undefined &&
+    (parsed.allocations === undefined || parsed.allocations.length === 0)
+  ) return undefined;
+  return makeEntityIdScope(await serverSealingKey(env), {
+    origin,
+    caller,
+    database: DatabaseId.make(database),
+  });
+};
+
 export const invokeAuthoritativeOperation = async (
   env: RamoseEnv,
   database: string,
+  origin: string,
   parsed: RoutedOperationRequest,
   caller: AuthenticatedCaller,
   routeDerivation?: DatabaseRouteDerivation,
 ): Promise<AuthoritativeInvocationResult> => {
+  const entityIdScope = await invocationEntityIdScope(
+    env,
+    database,
+    origin,
+    parsed,
+    caller,
+  );
   const invocation: AuthoritativeOperationInvocation = {
     ...parsed,
     database: DatabaseId.make(database),
     caller,
+    ...(entityIdScope === undefined ? {} : { entityIdScope }),
     ...(routeDerivation === undefined ? {} : { routeDerivation }),
   };
   const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
@@ -292,7 +355,14 @@ export const publicOperationResult = (
   if (result._tag === "Completed") {
     return {
       status: 200,
-      body: { result: result.output, receipt: result.receipt },
+      body: {
+        result: result.output,
+        receipt: result.receipt,
+        // Exact `{ clientRef, entityId }` mappings for the slots this caller
+        // bound, sealed. Absent when nothing was bound; an exact replay
+        // returns the identical list without a second commit (#475).
+        ...(result.mappings === undefined ? {} : { mappings: result.mappings }),
+      },
     };
   }
   if (result._tag === "Failed") {

@@ -33,6 +33,11 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-version-changed",
   "operations-version-shape",
   "operations-version-pinned-replay",
+  "operations-allocation-mappings",
+  "operations-allocation-undeclared",
+  "operations-sealed-target",
+  "operations-sealed-hidden",
+  "operations-sealed-quarantine",
 ]);
 
 const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
@@ -82,6 +87,29 @@ export const Other = Entity("nativeOther", { name: Field.unique(string(), "stric
         return { id: op.create({ name: input.name }) };
       },
     }),
+    /**
+     * `nativeOther` is readable by `reader` only, while this is invocable by
+     * `member` — so a member can mint a sealed handle it cannot then target.
+     * That is the sealed-target admission rerun (#475 WR-9): resolution
+     * succeeds and visibility still refuses.
+     */
+    createAllocating: Operation({
+      self: false,
+      allocates: { other: ["id"] },
+      input: EffectSchema.Struct({ name: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        return { id: op.create({ name: input.name }) };
+      },
+    }),
+    rename: Operation({
+      input: EffectSchema.Struct({ name: EffectSchema.String }),
+      output: EffectSchema.Struct({ name: EffectSchema.String }),
+      run(op, input) {
+        op.self.set(Other.name, input.name);
+        return { name: input.name };
+      },
+    }),
   }),
 });
 
@@ -95,6 +123,21 @@ export const Item = Entity("nativeItem", {
   operations: (Operation) => ({
     create: Operation({
       self: false,
+      input: EffectSchema.Struct({ title: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        return { id: op.create({ title: input.title }) };
+      },
+    }),
+    /**
+     * The same contract as `create` plus one named client-ref allocation slot
+     * bound to its declared entity-reference output position (#475). It is a
+     * separate operation so `create`'s pinned {@link OperationVersion} — which
+     * several compatibility tests reconstruct independently — does not move.
+     */
+    createAllocating: Operation({
+      self: false,
+      allocates: { item: ["id"] },
       input: EffectSchema.Struct({ title: EffectSchema.String }),
       output: EffectSchema.Struct({ id: OperationEntityId }),
       run(op, input) {
@@ -222,6 +265,9 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     Policy.read(Item).when(Policy.any(Policy.hasClass("member"), Policy.hasClass("reader"))),
     Policy.read(Other).when(Policy.hasClass("reader")),
     Policy.invoke(Item[OwnedOperations].create).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].createAllocating).when(Policy.hasClass("member")),
+    Policy.invoke(Other[OwnedOperations].createAllocating).when(Policy.hasClass("member")),
+    Policy.invoke(Other[OwnedOperations].rename).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].rename).when(Policy.any(
       Policy.hasClass("member"),
       Policy.hasClass("operator"),

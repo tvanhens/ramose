@@ -7,7 +7,9 @@
  */
 
 import * as Effect from "effect/Effect";
+import { isAllocationSlotName } from "../../db/allocations.ts";
 import { InvalidRequest } from "../../db/Errors.ts";
+import { isClientRef, isEntityId } from "../../db/refs.ts";
 import { sha256Hex } from "../core/bytes.ts";
 import { toJson } from "../core/json.ts";
 import { canonicalizeJson } from "./canonical-json.ts";
@@ -126,6 +128,28 @@ export type InvocationReplayFenceV1 = {
   }[];
 };
 
+/**
+ * Exact `{ clientRef, entityId }` mappings for the named allocation slots this
+ * invocation declared (#475).
+ *
+ * A *versioned extension* of the one durable receipt: same table, same key,
+ * same state machine, same replay path. It is present only on a completed
+ * receipt for an invocation that actually bound slots, so every receipt written
+ * before this extension existed parses unchanged and replays unchanged.
+ *
+ * Handles are sealed. A numeric eid never reaches a receipt, a replay, or any
+ * public projection of either.
+ */
+export type InvocationAllocationMappingsV1 = {
+  readonly version: 1;
+  readonly entries: readonly {
+    readonly slot: string;
+    readonly clientRef: string;
+    /** The sealed public handle. Never a numeric eid. */
+    readonly entityId: string;
+  }[];
+};
+
 export type CompletedInvocationReceipt = InvocationReceiptIdentity & {
   readonly status: "completed";
   /** Private writer position used only for cache invalidation. Never public. */
@@ -134,6 +158,8 @@ export type CompletedInvocationReceipt = InvocationReceiptIdentity & {
   readonly output: unknown;
   /** Private, data-only exemption for absences caused by this exact commit. */
   readonly replayFence: InvocationReplayFenceV1;
+  /** Absent when this invocation bound no allocation slots. */
+  readonly allocations?: InvocationAllocationMappingsV1;
 };
 
 export type RejectedInvocationReceipt = InvocationReceiptIdentity & {
@@ -190,6 +216,8 @@ export type InvocationReceiptEvent =
     readonly committedT: number;
     readonly output: unknown;
     readonly replayFence: InvocationReplayFenceV1;
+    /** Omitted when this invocation bound no allocation slots (#475). */
+    readonly allocations?: InvocationAllocationMappingsV1;
   }
   | {
     readonly _tag: "Reject";
@@ -204,6 +232,15 @@ export type InvocationReceiptOutcome =
     readonly receipt: PublicInvocationReceipt & { readonly status: "completed" };
     readonly committedT: number;
     readonly output: unknown;
+    /**
+     * Exact `{ clientRef, entityId }` mappings, sealed. Present only when this
+     * invocation bound allocation slots; an exact replay returns the same
+     * mappings without a second commit (#475).
+     */
+    readonly mappings?: readonly {
+      readonly clientRef: string;
+      readonly entityId: string;
+    }[];
   }
   | {
     readonly _tag: "Rejected";
@@ -312,6 +349,24 @@ export const invocationDigestMaterial = (
   input: invocation.input === undefined
     ? { present: false }
     : { present: true, value: invocation.input as JsonValue },
+  // The ordered `{ slot, clientRef }` binding this invocation supplied (#475).
+  // The *declaration* — slot names and their output paths — is already covered
+  // through `operationVersion` by descriptor generation 2; this covers which
+  // durable client identity each slot was promised to, so the same invocation
+  // id reused with a different binding is an ordinary conflict rather than a
+  // silent rebinding of a durable client ref to a different entity.
+  //
+  // Omitted entirely when nothing is bound, so an invocation that allocates
+  // nothing digests exactly as it did before this field existed and every
+  // receipt already stored stays replayable.
+  ...(invocation.allocations === undefined || invocation.allocations.length === 0
+    ? {}
+    : {
+      allocations: invocation.allocations.map((allocation) => ({
+        slot: allocation.slot,
+        clientRef: allocation.clientRef as string,
+      })),
+    }),
 });
 
 const hashCanonical = Effect.fn("Authorization.hashInvocationReceiptMaterial")(
@@ -542,6 +597,64 @@ const snapshotInvocationReplayFence = (
 };
 
 /**
+ * Strict validation of the mapping extension, applied on the way in *and* on
+ * the way out of durable storage.
+ *
+ * Slots and client refs are both unique: a slot names exactly one entity and a
+ * client ref names exactly one entity, so either duplicate would make the
+ * durable mapping ambiguous in precisely the way this design exists to
+ * prevent. Handles are checked for the sealed wire shape, so a numeric eid can
+ * never be written into a receipt even by a defect above this line.
+ */
+const isAllocationMappings = (
+  value: unknown,
+): value is InvocationAllocationMappingsV1 => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 || !Array.isArray(record.entries) ||
+    !hasExactKeys(record, ["version", "entries"])
+  ) return false;
+  const slots = new Set<string>();
+  const refs = new Set<string>();
+  for (const entry of record.entries) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return false;
+    }
+    const mapping = entry as Record<string, unknown>;
+    if (
+      !isAllocationSlotName(mapping.slot) || !isClientRef(mapping.clientRef) ||
+      !isEntityId(mapping.entityId) ||
+      !hasExactKeys(mapping, ["slot", "clientRef", "entityId"])
+    ) return false;
+    if (slots.has(mapping.slot) || refs.has(mapping.clientRef)) return false;
+    slots.add(mapping.slot);
+    refs.add(mapping.clientRef);
+  }
+  return true;
+};
+
+const snapshotAllocationMappings = (
+  value: InvocationAllocationMappingsV1,
+): InvocationAllocationMappingsV1 => {
+  if (!isAllocationMappings(value)) {
+    throw new TypeError("completed invocation receipt has invalid allocation mappings");
+  }
+  return Object.freeze({
+    version: 1,
+    entries: Object.freeze(value.entries.map((entry) =>
+      Object.freeze({
+        slot: entry.slot,
+        clientRef: entry.clientRef,
+        entityId: entry.entityId,
+      })
+    )),
+  });
+};
+
+/**
  * Pure claim/replay/conflict/recovery decision for one durable key.
  *
  * Order matters. A pre-correction row is `UpdateRequired` before anything
@@ -596,6 +709,9 @@ export const transitionInvocationReceipt = (
         committedT: event.committedT,
         output: event.output,
         replayFence: snapshotInvocationReplayFence(event.replayFence),
+        ...(event.allocations === undefined ? {} : {
+          allocations: snapshotAllocationMappings(event.allocations),
+        }),
       });
     case "Reject":
       return Object.freeze({
@@ -632,6 +748,17 @@ export const invocationReceiptOutcome = (
         },
         committedT: receipt.committedT,
         output: receipt.output,
+        // The slot name stays private to the durable row: the caller supplied
+        // the `{ slot, clientRef }` binding, so `clientRef` is the half it
+        // needs back, and the mapping is exactly what a replay returns again.
+        ...(receipt.allocations === undefined ? {} : {
+          mappings: Object.freeze(receipt.allocations.entries.map((entry) =>
+            Object.freeze({
+              clientRef: entry.clientRef,
+              entityId: entry.entityId,
+            })
+          )),
+        }),
       };
     case "rejected":
       return {
@@ -753,11 +880,16 @@ export const parseStoredInvocationReceipt = (
     Number.isSafeInteger(record.committedT) && (record.committedT as number) >= 0 &&
     Object.hasOwn(record, "output") &&
     isInvocationReplayFence(record.replayFence) &&
+    // Absent on every receipt written before the extension existed, and on
+    // every invocation that binds no slots. Present but malformed is a
+    // corrupt row, never an absent mapping.
+    (record.allocations === undefined || isAllocationMappings(record.allocations)) &&
     hasExactKeys(record, [
       ...IDENTITY_KEYS,
       "committedT",
       "output",
       "replayFence",
+      ...(record.allocations === undefined ? [] : ["allocations"]),
     ])
   ) return record as StoredInvocationReceipt;
   if (
@@ -783,6 +915,29 @@ const hasPublicReceipt = (
     Object.keys(receipt).length === 3;
 };
 
+/**
+ * The public mapping projection, validated on the Worker side of the internal
+ * hop. Sealed handles only: a numeric eid crossing this boundary is a rejected
+ * result, not a coerced one.
+ */
+const isPublicMappings = (value: unknown): boolean => {
+  if (!Array.isArray(value)) return false;
+  const refs = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return false;
+    }
+    const mapping = entry as Record<string, unknown>;
+    if (
+      !isClientRef(mapping.clientRef) || !isEntityId(mapping.entityId) ||
+      !hasExactKeys(mapping, ["clientRef", "entityId"])
+    ) return false;
+    if (refs.has(mapping.clientRef)) return false;
+    refs.add(mapping.clientRef);
+  }
+  return true;
+};
+
 /** Validate the private Transactor result without admitting extra metadata. */
 export const parseAuthoritativeInvocationResult = (
   value: unknown,
@@ -806,7 +961,14 @@ export const parseAuthoritativeInvocationResult = (
     hasPublicReceipt(result.receipt, invocationId, "completed") &&
     Number.isSafeInteger(result.committedT) && (result.committedT as number) >= 0 &&
     Object.hasOwn(result, "output") &&
-    hasExactKeys(result, ["_tag", "receipt", "committedT", "output"])
+    (result.mappings === undefined || isPublicMappings(result.mappings)) &&
+    hasExactKeys(result, [
+      "_tag",
+      "receipt",
+      "committedT",
+      "output",
+      ...(result.mappings === undefined ? [] : ["mappings"]),
+    ])
   ) return result as AuthoritativeInvocationResult;
   if (
     result._tag === "Rejected" &&

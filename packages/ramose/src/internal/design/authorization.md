@@ -311,6 +311,48 @@ before the atomic database commit.
 **WR-7.** Cross-catalog and stale operation handles fail without executing
 user operation code.
 
+### Sealed entity targets and exact allocation mappings (#475)
+
+**WR-8.** An invocation may name its target as an opaque sealed `EntityId`
+instead of a numeric eid or a lookup ref. The Worker derives the stable
+`{ server, principal, database }` scope from the *authenticated* request —
+never from the body — and the authoritative adapter resolves the handle with
+`openEntityId` under exactly that scope. Resolution is a decrypt, not a
+lookup: bounded, no scan, no mapping table.
+
+**WR-9.** Resolution grants nothing. The resolved eid replaces the invocation
+target *before* the #487 primitive sees it, and every ordinary check then runs
+against it unchanged: current visibility (**REF-3**, **REF-4**), type
+compatibility (**WR-3**), and operation admission (**WR-2**). A target whose
+visibility was revoked after the handle was minted fails exactly as a numeric
+eid naming the same entity would.
+
+**WR-10.** Sealed-target failure taxonomy. An unreadable codec version or a
+replaced key epoch is the typed, data-free `invocation_update_required`
+outcome, decided from the envelope preamble before any key is derived.
+Everything else — malformed, tampered, wrong scope, wrong key material —
+collapses into the ordinary sealed denial (**FC-1**, #419), indistinguishable
+from not-found and unauthorized.
+
+**WR-11.** An operation that declares named allocation slots binds each slot
+to a typed entity-reference path in its own declared output. The authoritative
+edge reads the slot's eid out of the *materialized authoritative output* at
+that declared path, and only where the deployed `OperationDescriptor`'s output
+shape says the position is a `ref`. Nothing is inferred from a transaction
+tempid name, a callback's source, or the shape of a raw output number. A slot
+whose path is absent, is not a ref position, or does not hold a resolved eid
+fails the invocation rather than producing a partial mapping.
+
+**WR-12.** The completed #487 receipt durably stores exact
+`{ clientRef, entityId }` mappings — sealed handles only, never numeric eids —
+as a versioned extension of the one receipt row and state machine. There is no
+second receipt table, digest, or replay path. The canonical invocation digest
+covers the ordered `{ slot, clientRef }` binding the caller supplied, so the
+same invocation id reused with a different binding is the ordinary
+`invocation_conflict`, and an exact replay returns byte-identical mappings
+without a second commit. The replay fence (**self-delete and lost-ack**)
+is unchanged by any of this.
+
 ## 11. Live queries and session replication
 
 **LIVE-1.** Initial live results and every subsequent delta are built from

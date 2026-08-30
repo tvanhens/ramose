@@ -84,6 +84,13 @@ import {
   uniqueCanonicalTypeName,
 } from "./read-filter.ts";
 import type { InvocationReplayFenceV1 } from "./invocation-receipts.ts";
+import {
+  extractAllocations,
+  type AllocatedSlot,
+  type InvocationAllocation,
+} from "./entity-targets.ts";
+import type { EntityIdScope } from "../replication/entity-id.ts";
+import type { ServerSealingKey } from "../replication/server-identity.ts";
 
 const REPLAY_AUTHORIZATION_DIGEST_DOMAIN =
   "ramose/operation-replay-authorization/v1\0";
@@ -103,6 +110,26 @@ export type OperationInvocation = {
    */
   readonly operationVersion?: OperationVersion;
   readonly target?: EntityRef;
+  /**
+   * An opaque sealed `EntityId` naming this invocation's target (#475).
+   * Mutually exclusive with {@link OperationInvocation.target}: the
+   * authoritative edge resolves it under {@link entityIdScope} and *replaces*
+   * `target` with the private eid before anything else runs, so every ordinary
+   * visibility, type, and admission check sees a numeric target exactly as it
+   * always did.
+   */
+  readonly sealedTarget?: string;
+  /**
+   * The stable `{ server, principal, database }` scope the Worker derived from
+   * the authenticated request. Required to open a sealed target and to seal
+   * allocation mappings; it never comes from the request body.
+   */
+  readonly entityIdScope?: EntityIdScope;
+  /**
+   * The caller's `{ slot, clientRef }` allocation binding, canonically ordered
+   * by slot name. Covered by the canonical invocation digest (#475).
+   */
+  readonly allocations?: readonly InvocationAllocation[];
   readonly input: unknown;
   readonly caller: AuthenticatedCaller;
   /** Trusted Worker-to-Transactor derivation for a nested dynamic database. */
@@ -114,6 +141,13 @@ export type OperationExecution = {
   readonly output: unknown;
   /** Private data-only replay exemption captured from the staged dbAfter. */
   readonly replayFence: InvocationReplayFenceV1;
+  /**
+   * The private eid each bound allocation slot resolved to, read from the
+   * declared entity-reference position of the materialized output *before* the
+   * commit. The Transactor seals these into the durable receipt; a numeric eid
+   * never leaves this boundary (#475).
+   */
+  readonly allocations: readonly AllocatedSlot[];
   /** Private lease fence retained by the serialized Transactor only. */
   readonly assertFresh: () => void;
 };
@@ -124,6 +158,13 @@ export type OperationRuntime = {
   readonly bindings?: DatabaseCatalogBindings;
   readonly environment: unknown;
   readonly now: () => number;
+  /**
+   * The durable server sealing root, isolate-cached by the runtime that
+   * supplies it. Only invocations that carry a sealed target or bind an
+   * allocation slot ever ask for it, so the ordinary operation path never
+   * pays for the lookup (#475).
+   */
+  readonly sealing?: () => Promise<ServerSealingKey>;
 };
 
 export type ResolvedOperationCatalog = {
@@ -1598,6 +1639,23 @@ const authorizeCatalogOperationOnDb = async (
     resolvedCatalog,
   );
 
+  // A binding for a slot this operation does not declare can never produce a
+  // mapping, so it is refused before the body runs rather than after a commit.
+  // When the caller pinned an `operationVersion` this is unreachable — the
+  // declaration is part of that digest — so it is the answer for an unpinned
+  // caller whose slot names are simply wrong.
+  for (const allocation of invocation.allocations ?? []) {
+    if (
+      !(descriptor.allocations ?? []).some(
+        (declared) => declared.slot === allocation.slot,
+      )
+    ) {
+      throw new InvalidRequest({
+        message: "operation does not declare this allocation slot",
+      });
+    }
+  }
+
   let target: { readonly eid: number; readonly type: string } | undefined;
   if (descriptor.id.target === "required") {
     if (invocation.target === undefined) throw deny();
@@ -1872,7 +1930,27 @@ export const executeCatalogOperation = async (
         admission,
         report.dbAfter,
       );
-      return { output: encoded, replayFence };
+      // Read the bound allocation slots out of the exact JSON the deployed
+      // codec just materialized, at the entity-reference positions the
+      // *descriptor* declares. Before the commit, so a declaration the
+      // operation's own output does not deliver refuses the invocation
+      // instead of committing an entity no client ref can ever name.
+      const requested = invocation.allocations ?? [];
+      const extraction = extractAllocations(
+        descriptor.allocations ?? [],
+        descriptor.output,
+        encoded,
+        requested,
+      );
+      if (extraction._tag === "Unallocated") {
+        throw rejected(
+          descriptor,
+          "operation did not allocate a declared client-ref slot",
+          "allocation",
+          extraction.slot,
+        );
+      }
+      return { output: encoded, replayFence, allocations: extraction.slots };
     },
     authoritativeNowMs,
     // Synchronous Connection pre-apply hook: every body/effect/read/output
@@ -1883,6 +1961,7 @@ export const executeCatalogOperation = async (
     report: staged.report,
     output: staged.value.output,
     replayFence: staged.value.replayFence,
+    allocations: staged.value.allocations,
     assertFresh: () => requireFreshAuthorization(runtime, expiresAtSeconds, descriptor),
   };
 };

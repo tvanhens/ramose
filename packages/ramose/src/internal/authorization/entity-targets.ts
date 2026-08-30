@@ -1,0 +1,279 @@
+/**
+ * Opaque entity handles at the authoritative operation edge (#475 slice 2).
+ *
+ * Two directions, one scope:
+ *
+ *  - **inbound** — an invocation may name its target as a sealed `EntityId`
+ *    rather than a numeric eid or a lookup ref. {@link resolveSealedTarget}
+ *    decrypts it under the scope the Worker derived from the *authenticated*
+ *    request and hands back the private eid. That is an identity claim and
+ *    nothing more: the caller then runs its ordinary visibility, type, and
+ *    admission checks on the resolved eid, exactly as it would for a numeric
+ *    target. Resolution grants nothing.
+ *  - **outbound** — an operation that declares named allocation slots gets
+ *    `{ slot → eid }` read out of its own authoritative output at the declared
+ *    entity-reference paths, and those eids are sealed back into handles for
+ *    the durable receipt. A numeric eid never reaches the receipt.
+ *
+ * ## Failure taxonomy, frozen
+ *
+ * An unreadable codec version or a replaced key epoch is the typed, *data-free*
+ * `update-required` quarantine, decided from the envelope preamble before any
+ * key is derived. Everything else — malformed, tampered, wrong scope, wrong key
+ * material — collapses into the single sealed denial (#419), indistinguishable
+ * from not-found and from unauthorized.
+ *
+ * ## Why the slot's value is never guessed
+ *
+ * A declared path is read against the *deployed descriptor's* output shape, and
+ * the position it lands on must be a `ref`. An operation output number is not
+ * self-describing, and a transaction tempid is transaction-local, so inferring
+ * a mapping from either would bind a durable client identity to a coincidence.
+ * A slot whose declared path is absent, is not a ref position, or does not hold
+ * a resolved eid fails the invocation rather than producing a partial mapping.
+ */
+
+import {
+  isAllocationSlotName,
+  readAllocationPath,
+  type AllocationPathSegment,
+} from "../../db/allocations.ts";
+import { isClientRef, isEntityId, type ClientRef } from "../../db/refs.ts";
+import {
+  openEntityId,
+  sealEntityId,
+  type EntityIdScope,
+  type SealedEntityId,
+} from "../replication/entity-id.ts";
+import type { ServerSealingKey } from "../replication/server-identity.ts";
+import type { AllocationSlotDescriptor, OperationInputShape } from "./catalog.ts";
+
+/**
+ * One `{ slot, clientRef }` binding a caller supplied with its invocation.
+ * The slot names a declaration on the deployed operation; the client ref is
+ * the durable identity the client already minted for that entity.
+ */
+export type InvocationAllocation = {
+  readonly slot: string;
+  readonly clientRef: ClientRef;
+};
+
+/**
+ * Validate and canonically order the caller's allocation bindings.
+ *
+ * Ordering is by slot name, matching how `allocationSlots` orders a
+ * declaration, so the canonical invocation digest cannot depend on the order a
+ * caller happened to serialize its bindings in. Returns `undefined` for
+ * anything malformed; the caller turns that into its ordinary refusal.
+ */
+export const parseInvocationAllocations = (
+  value: unknown,
+): readonly InvocationAllocation[] | undefined => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return undefined;
+  const slots = new Set<string>();
+  const refs = new Set<string>();
+  const parsed: InvocationAllocation[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return undefined;
+    }
+    const record = entry as Record<string, unknown>;
+    if (
+      Object.keys(record).length !== 2 ||
+      !isAllocationSlotName(record.slot) || !isClientRef(record.clientRef)
+    ) return undefined;
+    // A slot maps to exactly one entity and a client ref names exactly one
+    // entity, so either duplicate would make the durable mapping ambiguous.
+    if (slots.has(record.slot) || refs.has(record.clientRef)) return undefined;
+    slots.add(record.slot);
+    refs.add(record.clientRef);
+    parsed.push(Object.freeze({ slot: record.slot, clientRef: record.clientRef }));
+  }
+  return Object.freeze(
+    parsed.sort((left, right) =>
+      left.slot < right.slot ? -1 : left.slot > right.slot ? 1 : 0
+    ),
+  );
+};
+
+/**
+ * Strict decode of the scope the Worker derived. It arrives over the
+ * authenticated internal channel, so this is a shape check rather than an
+ * authorization decision — but a malformed scope must never be silently
+ * treated as "no scope", which would make every sealed handle undecodable and
+ * every allocation unsealable.
+ */
+export const parseEntityIdScope = (
+  value: unknown,
+): EntityIdScope | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.server !== "string" || record.server.length === 0 ||
+    typeof record.principal !== "string" || record.principal.length === 0 ||
+    typeof record.database !== "string" || record.database.length === 0
+  ) return undefined;
+  return Object.freeze({
+    server: record.server,
+    principal: record.principal,
+    database: record.database,
+  });
+};
+
+/** What resolving one sealed target produced. Both failures are data-free. */
+export type SealedTargetResolution =
+  | { readonly _tag: "Resolved"; readonly eid: number }
+  | { readonly _tag: "UpdateRequired" }
+  | { readonly _tag: "Denied" };
+
+const DENIED = Object.freeze({ _tag: "Denied" }) as SealedTargetResolution;
+const UPDATE_REQUIRED = Object.freeze(
+  { _tag: "UpdateRequired" },
+) as SealedTargetResolution;
+
+/**
+ * Resolve one sealed target to its private eid.
+ *
+ * This is the whole resolver: a decrypt, bounded and scan-free. A handle
+ * sealed for another server, principal, or database simply fails to
+ * authenticate, so a wrong-scope handle is the ordinary denial with no
+ * separate comparison to leak through.
+ */
+export const resolveSealedTarget = async (
+  sealing: ServerSealingKey,
+  scope: EntityIdScope,
+  token: string,
+): Promise<SealedTargetResolution> => {
+  if (!isEntityId(token)) return DENIED;
+  const resolution = await openEntityId(sealing, scope, token);
+  switch (resolution.type) {
+    case "resolved":
+      return Object.freeze({ _tag: "Resolved", eid: resolution.eid });
+    case "update-required":
+      return UPDATE_REQUIRED;
+    case "denied":
+      return DENIED;
+  }
+};
+
+/**
+ * Walk a declared allocation path through a deployed output *shape* and report
+ * whether it addresses an entity-reference position.
+ *
+ * The shape is what makes the binding real. A decoded `Ramose.EntityId` and a
+ * decoded number are the same runtime value, so without this the declaration
+ * `allocates: { issue: ["count"] }` would happily bind a durable client
+ * identity to an ordinary integer.
+ */
+export const isEntityRefPath = (
+  shape: OperationInputShape,
+  path: readonly AllocationPathSegment[],
+): boolean => {
+  let cursor: OperationInputShape = shape;
+  for (const segment of path) {
+    if (cursor._tag === "array") {
+      if (typeof segment !== "number") return false;
+      cursor = cursor.items;
+      continue;
+    }
+    if (cursor._tag === "struct") {
+      if (typeof segment !== "string") return false;
+      const field = cursor.fields.find((candidate) => candidate.key === segment);
+      if (field === undefined) return false;
+      cursor = field.shape;
+      continue;
+    }
+    return false;
+  }
+  return cursor._tag === "ref";
+};
+
+/** One slot resolved against the authoritative output, before sealing. */
+export type AllocatedSlot = {
+  readonly slot: string;
+  readonly eid: number;
+};
+
+export type AllocationExtraction =
+  | { readonly _tag: "Allocated"; readonly slots: readonly AllocatedSlot[] }
+  /**
+   * The operation declared a slot its own output does not deliver. That is an
+   * operation defect, not a caller error: the declaration is part of the
+   * pinned {@link OperationVersion}, so a caller that pinned it was promised
+   * this mapping.
+   */
+  | { readonly _tag: "Unallocated"; readonly slot: string };
+
+/**
+ * Read every declared slot out of the exact JSON output the operation
+ * materialized before its commit.
+ *
+ * Only the slots the *caller* bound to a client ref are read: an operation may
+ * declare more slots than a given invocation cares about, and a slot nobody
+ * bound produces no mapping and no failure.
+ */
+export const extractAllocations = (
+  declared: readonly AllocationSlotDescriptor[],
+  outputShape: OperationInputShape,
+  output: unknown,
+  requested: readonly InvocationAllocation[],
+): AllocationExtraction => {
+  const slots: AllocatedSlot[] = [];
+  for (const allocation of requested) {
+    const declaration = declared.find(
+      (candidate) => candidate.slot === allocation.slot,
+    );
+    if (
+      declaration === undefined ||
+      !isEntityRefPath(outputShape, declaration.path)
+    ) {
+      return Object.freeze({ _tag: "Unallocated", slot: allocation.slot });
+    }
+    const value = readAllocationPath(output, declaration.path);
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      return Object.freeze({ _tag: "Unallocated", slot: allocation.slot });
+    }
+    slots.push(Object.freeze({ slot: allocation.slot, eid: value }));
+  }
+  return Object.freeze({ _tag: "Allocated", slots: Object.freeze(slots) });
+};
+
+/** One durable `{ clientRef, entityId }` mapping, sealed. */
+export type SealedAllocationMapping = {
+  readonly slot: string;
+  readonly clientRef: string;
+  readonly entityId: SealedEntityId;
+};
+
+/**
+ * Seal every allocated eid into the public handle the receipt stores.
+ *
+ * Sealing is deterministic in `(root, scope, eid)`, so an exact replay of a
+ * completed receipt returns byte-identical handles without re-executing — and
+ * a handle minted here is the same handle logical replication carries for the
+ * same entity in the same scope.
+ */
+export const sealAllocationMappings = async (
+  sealing: ServerSealingKey,
+  scope: EntityIdScope,
+  slots: readonly AllocatedSlot[],
+  requested: readonly InvocationAllocation[],
+): Promise<readonly SealedAllocationMapping[]> => {
+  const bound = new Map(requested.map((entry) => [entry.slot, entry.clientRef]));
+  return Object.freeze(
+    await Promise.all(slots.map(async (allocated) => {
+      const clientRef = bound.get(allocated.slot);
+      if (clientRef === undefined) {
+        throw new Error("allocated slot has no bound client ref");
+      }
+      return Object.freeze({
+        slot: allocated.slot,
+        clientRef,
+        entityId: await sealEntityId(sealing, scope, allocated.eid),
+      });
+    })),
+  );
+};

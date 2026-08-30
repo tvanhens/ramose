@@ -381,6 +381,10 @@ export const handle = (
         try: () => invokeAuthoritativeOperation(
           env,
           database,
+          // The public origin the opaque-handle scope is bound to. It comes
+          // from the request the caller was authenticated on, never from the
+          // body, and matches the origin logical replication derives (#475).
+          new URL(request.url).origin,
           {
             catalogKey,
             unitHash,
@@ -391,6 +395,12 @@ export const handle = (
               ? {}
               : { operationVersion: parsed.operationVersion }),
             ...(parsed.target === undefined ? {} : { target: parsed.target }),
+            ...(parsed.sealedTarget === undefined
+              ? {}
+              : { sealedTarget: parsed.sealedTarget }),
+            ...(parsed.allocations === undefined
+              ? {}
+              : { allocations: parsed.allocations }),
             input: parsed.input,
           },
           caller,

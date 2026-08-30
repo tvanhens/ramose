@@ -4,11 +4,14 @@ import * as EffectSchema from "effect/Schema";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { schemaTx } from "../../packages/ramose/src/db/internal.ts";
 import {
+  clientRef,
   Entity,
   EntityId as OperationEntityId,
+  isEntityId,
   Schema,
   string,
 } from "ramose/db";
+import { base64Url } from "../../packages/ramose/src/internal/replication/server-identity.ts";
 import { lowerOwnedOperations } from "../../packages/ramose/src/internal/authorization/authoring/index.ts";
 import {
   CatalogId,
@@ -114,6 +117,37 @@ const targetedCreateVersion = async (): Promise<string> => {
     DigestHex.make("7d".repeat(32)),
   ));
   return lowered.descriptors[0]!.version as string;
+};
+
+/** The same `/op` boundary, for bodies this contract shapes itself. */
+const invokeWith = async (
+  base: string,
+  database: string,
+  token: string,
+  body: Record<string, unknown>,
+) => json(base, `/db/${database}/op`, {
+  method: "POST",
+  token,
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ ...operationProof, ...body }),
+});
+
+/**
+ * A syntactically valid sealed envelope this server cannot read.
+ *
+ * The preamble is what decides quarantine — byte 0 is the codec version and
+ * bytes 1..17 are the key id in *every* envelope version — so a handle can be
+ * built here without any key material at all, which is exactly the property
+ * that makes the quarantine data-free.
+ */
+const unreadableEntityId = (
+  kind: "codec-version" | "key-epoch",
+): string => {
+  const envelope = new Uint8Array(41);
+  envelope[0] = kind === "codec-version" ? 2 : 1;
+  // A key id no server ever minted, so the epoch cannot match.
+  for (let index = 1; index < 17; index++) envelope[index] = 0xa5;
+  return base64Url(envelope);
 };
 
 const withoutReceipt = (body: Record<string, unknown>) => {
@@ -1297,6 +1331,203 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         query: '[:find ?e :where [?e :nativeItem/title "Pinned replay"]]',
       });
       expect(rows.body.result.length).toBe(1);
+    });
+
+    describe("opaque targets and exact allocation mappings", () => {
+      const createItem = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "createAllocating",
+      };
+      const renameItem = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "rename",
+      };
+
+      test("a create with slots returns exact sealed mappings, and an exact replay returns the identical ones", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-allocation-mappings";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_allocations");
+        const ref = clientRef();
+        const invocationId = "allocation-invocation-01";
+        const body = {
+          invocationId,
+          operation: createItem,
+          input: { title: "Allocated" },
+          allocations: [{ slot: "item", clientRef: ref }],
+        };
+
+        const created = await invokeWith(base, database, token, body);
+        expect(created.status).toBe(200);
+        expect(created.body.mappings).toEqual([
+          { clientRef: ref, entityId: expect.any(String) },
+        ]);
+        const entityId = created.body.mappings[0].entityId as string;
+        // A sealed handle, never a numeric eid, and never the slot name.
+        expect(isEntityId(entityId)).toBe(true);
+        expect(JSON.stringify(created.body.mappings)).not.toContain("item");
+        expect(JSON.stringify(created.body.mappings)).not.toContain(
+          String(created.body.result.id),
+        );
+
+        const receiptsBefore = await operationReceiptCount(base, database);
+        // The lost-acknowledgement retry: #487's exact replay, extended with
+        // the same mappings and no second commit.
+        const replayed = await invokeWith(base, database, token, body);
+        expect(replayed.status).toBe(200);
+        expect(replayed.body).toEqual(created.body);
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Allocated"]]',
+        });
+        expect(rows.body.result.length).toBe(1);
+
+        // Reusing the id while promising the slot to a *different* durable
+        // client identity is the ordinary invocation conflict, not a silent
+        // rebinding of a client ref to a different entity.
+        const rebound = await invokeWith(base, database, token, {
+          ...body,
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(rebound.status).toBe(409);
+        expect(rebound.body).toEqual({
+          error: "request rejected",
+          code: "invocation_conflict",
+        });
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+      });
+
+      test("a sealed target resolves, and admission is rerun against the resolved entity", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-target";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_sealed_target");
+        const created = await invokeWith(base, database, token, {
+          invocationId: "sealed-target-create-01",
+          operation: createItem,
+          input: { title: "Sealed" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+        const entityId = created.body.mappings[0].entityId as string;
+
+        const renamed = await invokeWith(base, database, token, {
+          invocationId: "sealed-target-rename-01",
+          operation: renameItem,
+          target: entityId,
+          input: { title: "Renamed through a sealed handle" },
+        });
+        expect(renamed.status).toBe(200);
+        expect(renamed.body.result.title).toBe("Renamed through a sealed handle");
+
+        // Resolution grants nothing. Once the entity is gone, the same handle
+        // still opens deterministically and ordinary target visibility refuses
+        // exactly as it would for the numeric eid.
+        const deleted = await invokeWith(base, database, token, {
+          invocationId: "sealed-target-delete-01",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeItem" },
+            localName: "deleteAndEchoTitle",
+          },
+          target: entityId,
+          input: {},
+        });
+        expect(deleted.status).toBe(200);
+        const afterDelete = await invokeWith(base, database, token, {
+          invocationId: "sealed-target-rename-02",
+          operation: renameItem,
+          target: entityId,
+          input: { title: "Should never land" },
+        });
+        expect(afterDelete.status).toBe(403);
+
+        // Malformed, tampered, and foreign handles are the same sealed denial.
+        const tampered = `${entityId.slice(0, 30)}${entityId[30] === "A" ? "B" : "A"}${entityId.slice(31)}`;
+        const forged = await invokeWith(base, database, token, {
+          invocationId: "sealed-target-forged-01",
+          operation: renameItem,
+          target: tampered,
+          input: { title: "Should never land" },
+        });
+        expect(forged.status).toBe(403);
+      });
+
+      test("a target the caller may not read fails sealed even though its handle resolves", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-hidden";
+        await install(base, database);
+        // `nativeOther` is readable by `reader` only, while both operations
+        // below are invocable by `member`: the member mints a handle it can
+        // never target, so resolution succeeding is not visibility.
+        const token = await signToken(database, "member", "user_sealed_hidden");
+        const created = await invokeWith(base, database, token, {
+          invocationId: "sealed-hidden-create-01",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeOther" },
+            localName: "createAllocating",
+          },
+          input: { name: "hidden-other" },
+          allocations: [{ slot: "other", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+        const entityId = created.body.mappings[0].entityId as string;
+
+        const renamed = await invokeWith(base, database, token, {
+          invocationId: "sealed-hidden-rename-01",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeOther" },
+            localName: "rename",
+          },
+          target: entityId,
+          input: { name: "should-never-land" },
+        });
+        expect(renamed.status).toBe(403);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeOther/name "should-never-land"]]',
+        });
+        expect(rows.body.result).toEqual([]);
+      });
+
+      test("an unreadable codec version or key epoch quarantines data-free", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-quarantine";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_sealed_quarantine");
+        const receiptsBefore = await operationReceiptCount(base, database);
+        for (const kind of ["codec-version", "key-epoch"] as const) {
+          const quarantined = await invokeWith(base, database, token, {
+            invocationId: `sealed-quarantine-${kind}`,
+            operation: renameItem,
+            target: unreadableEntityId(kind),
+            input: { title: "Should never land" },
+          });
+          expect(quarantined.status).toBe(409);
+          expect(quarantined.body).toEqual({
+            error: "request rejected",
+            code: "invocation_update_required",
+          });
+        }
+        // Data-free and effect-free: nothing was claimed, nothing executed.
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+      });
+
+      test("an undeclared slot is refused before the operation body runs", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-allocation-undeclared";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_undeclared_slot");
+        const refused = await invokeWith(base, database, token, {
+          invocationId: "allocation-undeclared-01",
+          operation: createItem,
+          input: { title: "Undeclared" },
+          allocations: [{ slot: "nothingDeclaresThis", clientRef: clientRef() }],
+        });
+        expect(refused.status).toBe(400);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Undeclared"]]',
+        });
+        expect(rows.body.result).toEqual([]);
+      });
     });
   });
 };
