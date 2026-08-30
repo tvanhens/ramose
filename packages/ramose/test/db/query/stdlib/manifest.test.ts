@@ -120,9 +120,32 @@ describe("standard library manifest", () => {
     }
   });
 
-  test("no v1 function is superlinear", () => {
+  test("a card taking a nestable argument is never constant cost", () => {
+    // Validating a `collection` or `any` argument is a full pass over it —
+    // well-formed text and nesting depth — so a constant claim would be a
+    // budget the call cannot honour.
     for (const card of cards) {
-      expect(["constant", "linear"]).toContain(card.cost);
+      const nests = card.signature.parameters.some(
+        (parameter) => parameter.type === "collection" || parameter.type === "any",
+      );
+      if (!nests) continue;
+      expect({ name: card.name, cost: card.cost }).not.toEqual({
+        name: card.name,
+        cost: "constant",
+      });
+    }
+  });
+
+  test("superlinear is declared exactly where the work is superlinear", () => {
+    // `collection.distinct` canonicalizes object elements by sorting their
+    // keys, which is k log k in the element's key count. Every other v1
+    // function is constant or linear.
+    const superlinear = cards
+      .filter((card) => card.cost === "superlinear")
+      .map((card) => card.name);
+    expect(superlinear).toEqual(["collection.distinct"]);
+    for (const card of cards) {
+      expect(["constant", "linear", "superlinear"]).toContain(card.cost);
     }
   });
 

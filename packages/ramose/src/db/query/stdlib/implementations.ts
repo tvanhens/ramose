@@ -38,7 +38,6 @@ import {
   codePoints,
   deepEquals,
   isTimestamp,
-  isWellFormedText,
   trimPinned,
 } from "./values.ts";
 
@@ -219,9 +218,9 @@ export const standardLibraryImplementationsV1: {
     const parts: string[] = [];
     let produced = 0;
     for (const item of items) {
-      // Collection contents are not scanned by the argument check, so this
-      // is where an element earns its place in the text domain.
-      if (typeof item !== "string" || !isWellFormedText(item)) return null;
+      // Well-formedness is already settled: the argument check walks the whole
+      // collection. What is left is whether the element is text at all.
+      if (typeof item !== "string") return null;
       parts.push(item);
       produced += item.length;
     }
@@ -285,7 +284,21 @@ export const standardLibraryImplementationsV1: {
     const millis = num(args, 1);
     if (!Number.isSafeInteger(millis)) return null;
     const shifted = num(args, 0) + millis;
+    // A sum past integer precision is a rounded sum. Instants are exact
+    // integers by declaration, so an inexact one is absence, not a value that
+    // is nearly right — an off-by-a-few instant would quietly change what a
+    // filter matched.
+    if (!Number.isSafeInteger(shifted)) return null;
     return isTimestamp(shifted) ? shifted : null;
   },
-  "time.diffMillis": (args) => num(args, 1) - num(args, 0),
+  "time.diffMillis": (args) => {
+    // The admitted instant range spans more than 2^53 milliseconds, so a
+    // difference across it can exceed integer precision and silently round:
+    // -8.64e15 to 8639999999999999 is exactly 17279999999999999 ms, which a
+    // double reports as 17280000000000000. Absence, for the same reason
+    // dividing by zero is absence — the library does not return a number it
+    // cannot stand behind.
+    const difference = num(args, 1) - num(args, 0);
+    return Number.isSafeInteger(difference) ? difference : null;
+  },
 };

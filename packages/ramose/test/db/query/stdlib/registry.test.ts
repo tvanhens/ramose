@@ -353,6 +353,7 @@ describe("failures are value-sealed", () => {
       "context",
       "allowed",
       "limit",
+      "violation",
     ]);
     const cases: readonly SealedStdlibFailure[] = [
       sealed("nope.nope", []),
@@ -391,6 +392,24 @@ describe("failures are value-sealed", () => {
     expect(
       sealed("text.replace", ["a".repeat(2_000), "a", "b".repeat(1_000)]).code,
     ).toBe("query_function_output_size");
+    expect(sealed("collection.size", [[["\uD800"]]]).code).toBe(
+      "query_function_argument_domain",
+    );
+  });
+
+  test("a domain failure names the reason, never the offending value", () => {
+    const secret = "hidden-value-0xc0ffee";
+    const sealedFailure = sealed("collection.size", [[secret, "\uD800"]]);
+    expect(sealedFailure).toEqual({
+      code: "query_function_argument_domain",
+      function: "collection.size",
+      index: 0,
+      parameter: "value",
+      violation: "malformedText",
+    });
+    expect(JSON.stringify(sealedFailure)).not.toContain(secret);
+    // Neither does it say *where* inside the argument the violation was.
+    expect(JSON.stringify(sealedFailure)).not.toContain("path");
   });
 });
 

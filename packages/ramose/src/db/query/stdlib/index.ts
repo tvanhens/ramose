@@ -20,9 +20,12 @@
  *   context checking, reporting structured failures that carry only public
  *   names, declared types, value *kinds*, and counts — never a value.
  *
- * Three commitments hold the determinism claim up. Text is well-formed
- * Unicode, so the published code-point indices are total rather than
- * approximate. Case mapping and whitespace are pinned in this module instead
+ * Four commitments hold the totality and determinism claims up. Text is
+ * well-formed Unicode and nesting is bounded, so the published code-point
+ * indices are total and comparison work is bounded; both conditions are
+ * checked over the whole argument, and the traversals that check and use them
+ * run on explicit stacks so no path depends on the host's call-stack depth.
+ * Case mapping and whitespace are pinned in this module instead
  * of read from the host, whose Unicode tables move with its version. And a
  * call that could produce more text than the sum of its inputs sizes the
  * result first and refuses before allocating, so one expression cannot ask a
@@ -41,6 +44,7 @@
  */
 
 export {
+  QueryFunctionArgumentDomain,
   QueryFunctionArgumentType,
   QueryFunctionArity,
   QueryFunctionContext,
@@ -69,10 +73,12 @@ export {
 
 export {
   EXPRESSION_CONTEXTS,
+  MAX_VALUE_DEPTH,
   QUERY_STDLIB_VERSION,
   STDLIB_NAMESPACES,
   type Cardinality,
   type CostClass,
+  type DomainViolation,
   type ExpressionContext,
   type FunctionCard,
   type FunctionExample,
@@ -95,6 +101,7 @@ export {
   canonicalKey,
   classify,
   deepEquals,
+  domainViolation,
   isFiniteNumber,
   isTimestamp,
   isWellFormedText,

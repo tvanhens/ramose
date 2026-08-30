@@ -16,7 +16,12 @@
  */
 
 import * as Data from "effect/Data";
-import type { ExpressionContext, ValueType, ValueTypeName } from "./types.ts";
+import type {
+  DomainViolation,
+  ExpressionContext,
+  ValueType,
+  ValueTypeName,
+} from "./types.ts";
 
 /** The name is not in the public v1 allowlist. */
 export class UnknownQueryFunction extends Data.TaggedError(
@@ -43,6 +48,22 @@ export class QueryFunctionArgumentType extends Data.TaggedError(
   readonly expected: ValueType;
   /** The kind the value had. Never the value. */
   readonly received: ValueTypeName;
+}> {}
+
+/**
+ * An argument is the right kind but is not a value of the domain: it carries
+ * ill-formed text, or it nests deeper than the domain allows.
+ *
+ * Reports the reason only. Neither the offending value nor its position
+ * inside the argument is a public fact.
+ */
+export class QueryFunctionArgumentDomain extends Data.TaggedError(
+  "QueryFunctionArgumentDomain",
+)<{
+  readonly name: string;
+  readonly index: number;
+  readonly parameter: string;
+  readonly violation: DomainViolation;
 }> {}
 
 /** The function is not admitted in the expression context that called it. */
@@ -73,6 +94,7 @@ export type StdlibFailure =
   | UnknownQueryFunction
   | QueryFunctionArity
   | QueryFunctionArgumentType
+  | QueryFunctionArgumentDomain
   | QueryFunctionContext
   | QueryFunctionOutputSize;
 
@@ -81,6 +103,7 @@ export type StdlibFailureCode =
   | "query_function_unknown"
   | "query_function_arity"
   | "query_function_argument_type"
+  | "query_function_argument_domain"
   | "query_function_context"
   | "query_function_output_size";
 
@@ -103,6 +126,13 @@ export type SealedStdlibFailure =
       readonly parameter: string;
       readonly expected: ValueType;
       readonly received: ValueTypeName;
+    }
+  | {
+      readonly code: "query_function_argument_domain";
+      readonly function: string;
+      readonly index: number;
+      readonly parameter: string;
+      readonly violation: DomainViolation;
     }
   | {
       readonly code: "query_function_context";
@@ -139,6 +169,14 @@ export const sealStdlibFailure = (failure: StdlibFailure): SealedStdlibFailure =
         parameter: failure.parameter,
         expected: failure.expected,
         received: failure.received,
+      };
+    case "QueryFunctionArgumentDomain":
+      return {
+        code: "query_function_argument_domain",
+        function: failure.name,
+        index: failure.index,
+        parameter: failure.parameter,
+        violation: failure.violation,
       };
     case "QueryFunctionContext":
       return {

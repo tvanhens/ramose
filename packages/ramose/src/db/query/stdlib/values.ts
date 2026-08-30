@@ -7,7 +7,13 @@
  * a `null` or a `false`, never an exception.
  */
 
-import type { StdlibValue, ValueType, ValueTypeName } from "./types.ts";
+import { MAX_VALUE_DEPTH } from "./types.ts";
+import type {
+  DomainViolation,
+  StdlibValue,
+  ValueType,
+  ValueTypeName,
+} from "./types.ts";
 
 /**
  * Largest absolute epoch-millisecond value treated as a timestamp. Matches
@@ -82,8 +88,9 @@ export const isTimestamp = (value: StdlibValue): value is number =>
  *
  * A string that is not well-formed Unicode satisfies *no* declared type,
  * `any` included: it is outside the value domain, not a mistyped member of
- * it. Only top-level strings are checked; the contents of a collection are
- * not scanned, which is what keeps a collection check constant-cost.
+ * it. This is the shallow check — kind, plus well-formedness of a top-level
+ * string. {@link domainViolation} is the deep one that also screens
+ * collection contents and nesting depth; argument checking runs both.
  */
 export const matchesValueType = (value: StdlibValue, type: ValueType): boolean => {
   if (value === null) return true;
@@ -104,71 +111,155 @@ export const matchesValueType = (value: StdlibValue, type: ValueType): boolean =
   }
 };
 
+const asArray = (value: StdlibValue): readonly StdlibValue[] =>
+  value as readonly StdlibValue[];
+
+const asRecord = (value: StdlibValue): { readonly [key: string]: StdlibValue } =>
+  value as { readonly [key: string]: StdlibValue };
+
+/**
+ * Is this value inside the domain, and if not, why?
+ *
+ * Checks both membership conditions in one pass over the whole value: every
+ * string well-formed, and nesting within {@link MAX_VALUE_DEPTH}. The
+ * traversal uses an explicit stack, so its totality does not depend on the
+ * host's call-stack depth even for a value that would fail the limit.
+ */
+export const domainViolation = (value: StdlibValue): DomainViolation | undefined => {
+  const stack: { readonly node: StdlibValue; readonly depth: number }[] = [
+    { node: value, depth: 0 },
+  ];
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (frame === undefined) break;
+    const node = frame.node;
+    if (typeof node === "string") {
+      if (!isWellFormedText(node)) return "malformedText";
+      continue;
+    }
+    if (node === null || typeof node !== "object") continue;
+
+    const depth = frame.depth + 1;
+    if (depth > MAX_VALUE_DEPTH) return "tooDeep";
+    if (Array.isArray(node)) {
+      for (const item of asArray(node)) stack.push({ node: item, depth });
+    } else {
+      const record = asRecord(node);
+      for (const key of Object.keys(record)) {
+        stack.push({ node: record[key], depth });
+      }
+    }
+  }
+  return undefined;
+};
+
 /**
  * Structural equality over JSON values.
  *
  * Arrays compare element-wise in order; objects compare by own enumerable
  * keys regardless of key order; numbers compare with `===`, so `-0` and `0`
  * are equal, matching how both serialize.
+ *
+ * Iterative on purpose. Nesting is bounded by the domain check, but a public
+ * predicate whose totality rests on the host's call-stack depth is a crash
+ * waiting for the one path that skips that check, so this walks an explicit
+ * stack and cannot overflow whatever it is handed.
  */
 export const deepEquals = (left: StdlibValue, right: StdlibValue): boolean => {
-  if (left === right) return true;
-  if (left === null || right === null) return false;
+  const stack: (readonly [StdlibValue, StdlibValue])[] = [[left, right]];
+  while (stack.length > 0) {
+    const pair = stack.pop();
+    if (pair === undefined) break;
+    const a = pair[0];
+    const b = pair[1];
+    if (a === b) continue;
+    if (a === null || b === null) return false;
 
-  const leftIsArray = Array.isArray(left);
-  if (leftIsArray !== Array.isArray(right)) return false;
-  if (leftIsArray) {
-    const a = left as readonly StdlibValue[];
-    const b = right as readonly StdlibValue[];
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i += 1) {
-      if (!deepEquals(a[i], b[i])) return false;
+    const aIsArray = Array.isArray(a);
+    if (aIsArray !== Array.isArray(b)) return false;
+    if (aIsArray) {
+      const x = asArray(a);
+      const y = asArray(b);
+      if (x.length !== y.length) return false;
+      for (let i = 0; i < x.length; i += 1) stack.push([x[i], y[i]]);
+      continue;
     }
-    return true;
-  }
 
-  if (typeof left !== "object" || typeof right !== "object") return false;
-
-  const a = left as { readonly [key: string]: StdlibValue };
-  const b = right as { readonly [key: string]: StdlibValue };
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const key of aKeys) {
-    if (!Object.hasOwn(b, key)) return false;
-    if (!deepEquals(a[key], b[key])) return false;
+    // Two scalars that are not `===` are unequal; only objects go deeper.
+    if (typeof a !== "object" || typeof b !== "object") return false;
+    const x = asRecord(a);
+    const y = asRecord(b);
+    const xKeys = Object.keys(x);
+    if (xKeys.length !== Object.keys(y).length) return false;
+    for (const key of xKeys) {
+      if (!Object.hasOwn(y, key)) return false;
+      stack.push([x[key], y[key]]);
+    }
   }
   return true;
 };
 
 /**
- * A canonical string key for a value, used to deduplicate in linear time.
- * Object keys are sorted so key order never changes the key, and the type
- * tag prefixes keep `1` and `"1"` distinct.
+ * A canonical string key for a value, used to deduplicate by structure.
+ *
+ * A prefix encoding: each node emits a type tag, containers emit their size
+ * before their contents, and object keys are emitted in sorted order so key
+ * order never changes the key. Counts and tags make the token stream
+ * uniquely parseable, which is what makes the key injective — equal keys mean
+ * structurally equal values. Written iteratively for the same reason as
+ * {@link deepEquals}.
  */
 export const canonicalKey = (value: StdlibValue): string => {
-  if (value === null) return "z";
-  if (Array.isArray(value)) {
-    const items = value as readonly StdlibValue[];
-    return `a[${items.map(canonicalKey).join(",")}]`;
-  }
-  switch (typeof value) {
-    case "boolean":
-      return value ? "b1" : "b0";
-    case "number":
-      // `-0` and `0` are equal under `deepEquals`; normalize so they key alike.
-      return `n${value === 0 ? 0 : value}`;
-    case "string":
-      return `s${JSON.stringify(value)}`;
-    default: {
-      const record = value as { readonly [key: string]: StdlibValue };
-      const keys = Object.keys(record).sort();
-      const body = keys
-        .map((key) => `${JSON.stringify(key)}:${canonicalKey(record[key])}`)
-        .join(",");
-      return `o{${body}}`;
+  type Frame = { readonly emit: string } | { readonly node: StdlibValue };
+  const parts: string[] = [];
+  const stack: Frame[] = [{ node: value }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (frame === undefined) break;
+    if ("emit" in frame) {
+      parts.push(frame.emit);
+      continue;
+    }
+
+    const node = frame.node;
+    if (node === null) {
+      parts.push("z");
+      continue;
+    }
+    if (Array.isArray(node)) {
+      const items = asArray(node);
+      parts.push(`a${items.length}`);
+      // Reverse so the stack pops them in order.
+      for (let i = items.length - 1; i >= 0; i -= 1) stack.push({ node: items[i] });
+      continue;
+    }
+    switch (typeof node) {
+      case "boolean":
+        parts.push(node ? "b1" : "b0");
+        continue;
+      case "number":
+        // `-0` and `0` are equal under `deepEquals`; normalize so they key alike.
+        parts.push(`n${node === 0 ? 0 : node}`);
+        continue;
+      case "string":
+        parts.push(`s${JSON.stringify(node)}`);
+        continue;
+      default: {
+        const record = asRecord(node);
+        const keys = Object.keys(record).sort();
+        parts.push(`o${keys.length}`);
+        for (let i = keys.length - 1; i >= 0; i -= 1) {
+          const key = keys[i];
+          stack.push({ node: record[key] });
+          stack.push({ emit: `k${JSON.stringify(key)}` });
+        }
+        continue;
+      }
     }
   }
+
+  return parts.join("");
 };
 
 /**

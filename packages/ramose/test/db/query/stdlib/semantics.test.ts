@@ -13,11 +13,13 @@ import * as Result from "effect/Result";
 import {
   MAX_PRODUCED_TEXT_UNITS,
   MAX_TIMESTAMP_MILLIS,
+  MAX_VALUE_DEPTH,
   asciiLower,
   asciiUpper,
   canonicalKey,
   classify,
   deepEquals,
+  domainViolation,
   evaluateQueryCall,
   isWellFormedText,
   matchesValueType,
@@ -41,6 +43,26 @@ const call = (
     );
   }
   return outcome.success;
+};
+
+/** The sealed code of a call that must fail. */
+const failureCode = (
+  name: string,
+  args: readonly StdlibValue[],
+  context: ExpressionContext = "let",
+): string => {
+  const outcome = evaluateQueryCall({ name, context, args });
+  if (Result.isSuccess(outcome)) {
+    throw new Error(`expected a failure, got ${JSON.stringify(outcome.success)}`);
+  }
+  return sealStdlibFailure(outcome.failure).code;
+};
+
+/** A value nested `depth` containers deep around a scalar. Built iteratively. */
+const nest = (depth: number): StdlibValue => {
+  let value: StdlibValue = 1;
+  for (let i = 0; i < depth; i += 1) value = [value];
+  return value;
 };
 
 describe("value helpers", () => {
@@ -375,8 +397,6 @@ describe("text", () => {
     expect(call("text.join", [["a", 1], "-"])).toBe(null);
     expect(call("text.join", [["a", null], "-"])).toBe(null);
     expect(call("text.join", [["a", "b"], ""])).toBe("ab");
-    // Collection contents escape the argument check, so join screens them.
-    expect(call("text.join", [["a", "\uD800"], "-"])).toBe(null);
   });
 
   test("absence propagates through every text function", () => {
@@ -476,28 +496,45 @@ describe("time", () => {
     expect(call("time.addMillis", [0, MAX_TIMESTAMP_MILLIS])).toBe(MAX_TIMESTAMP_MILLIS);
   });
 
+  test("a shift too large to be exact is absent, not rounded", () => {
+    expect(call("time.addMillis", [MAX_TIMESTAMP_MILLIS, Number.MAX_SAFE_INTEGER])).toBe(
+      null,
+    );
+    expect(
+      call("time.addMillis", [-MAX_TIMESTAMP_MILLIS, -Number.MAX_SAFE_INTEGER]),
+    ).toBe(null);
+  });
+
   test("difference is signed", () => {
     expect(call("time.diffMillis", [1000, 2500])).toBe(1500);
     expect(call("time.diffMillis", [2500, 1000])).toBe(-1500);
     expect(call("time.diffMillis", [1000, 1000])).toBe(0);
     expect(call("time.diffMillis", [null, 1000])).toBe(null);
   });
+
+  test("a difference too large to be exact is absent, not rounded", () => {
+    // The exact span is 17_279_999_999_999_999 ms, which a double cannot
+    // hold: it would report 17_280_000_000_000_000 and hand a silently wrong
+    // duration to filtering, projection, or ordering.
+    const from = -MAX_TIMESTAMP_MILLIS;
+    const to = MAX_TIMESTAMP_MILLIS - 1;
+    expect(to - from).toBe(17_280_000_000_000_000);
+    expect(Number.isSafeInteger(to - from)).toBe(false);
+    expect(call("time.diffMillis", [from, to])).toBe(null);
+    expect(call("time.diffMillis", [to, from])).toBe(null);
+  });
+
+  test("a difference at the edge of exactness is still returned", () => {
+    expect(call("time.diffMillis", [0, MAX_TIMESTAMP_MILLIS])).toBe(
+      MAX_TIMESTAMP_MILLIS,
+    );
+    expect(call("time.diffMillis", [-1, MAX_TIMESTAMP_MILLIS])).toBe(
+      MAX_TIMESTAMP_MILLIS + 1,
+    );
+  });
 });
 
 describe("the text domain is well-formed Unicode", () => {
-  /** The sealed code of a call that must fail. */
-  const failureCode = (
-    name: string,
-    args: readonly StdlibValue[],
-    context: ExpressionContext = "let",
-  ): string => {
-    const outcome = evaluateQueryCall({ name, context, args });
-    if (Result.isSuccess(outcome)) {
-      throw new Error(`expected a failure, got ${JSON.stringify(outcome.success)}`);
-    }
-    return sealStdlibFailure(outcome.failure).code;
-  };
-
   test("an unpaired surrogate is rejected wherever text is accepted", () => {
     expect(failureCode("text.length", ["\uD800"])).toBe("query_function_argument_type");
     expect(failureCode("text.indexOf", ["\uD800", "a"])).toBe(
@@ -526,10 +563,21 @@ describe("the text domain is well-formed Unicode", () => {
     );
   });
 
-  test("an ill-formed element lifted out of a collection is sealed to absence", () => {
-    expect(call("collection.first", [["\uD800"]])).toBe(null);
-    expect(call("collection.last", [["a", "\uD800"]])).toBe(null);
-    expect(call("collection.at", [["\uD800"], 0])).toBe(null);
+  test("ill-formed text nested inside a collection is rejected too", () => {
+    // The argument check walks the whole value, so an element cannot smuggle
+    // ill-formed text past it and out through `collection.first`.
+    expect(failureCode("collection.first", [["\uD800"]])).toBe(
+      "query_function_argument_domain",
+    );
+    expect(failureCode("collection.last", [["a", "\uD800"]])).toBe(
+      "query_function_argument_domain",
+    );
+    expect(failureCode("text.join", [["a", "\uD800"], "-"])).toBe(
+      "query_function_argument_domain",
+    );
+    expect(failureCode("logic.eq", [{ a: ["\uD800"] }, 1])).toBe(
+      "query_function_argument_domain",
+    );
     expect(call("collection.first", [["😀"]])).toBe("😀");
   });
 
@@ -540,6 +588,93 @@ describe("the text domain is well-formed Unicode", () => {
     expect(call("text.indexOf", ["😀x", "x"])).toBe(1);
     expect(call("text.slice", ["😀x", 1, 2])).toBe("x");
     expect(call("text.length", ["😀x"])).toBe(2);
+  });
+});
+
+describe("the value domain bounds nesting depth", () => {
+  test("depth counts containers, with a scalar at zero", () => {
+    expect(domainViolation(1)).toBeUndefined();
+    expect(domainViolation(nest(1))).toBeUndefined();
+    expect(domainViolation(nest(MAX_VALUE_DEPTH))).toBeUndefined();
+    expect(domainViolation(nest(MAX_VALUE_DEPTH + 1))).toBe("tooDeep");
+    expect(domainViolation({ a: { b: 1 } })).toBeUndefined();
+  });
+
+  test("objects and arrays count the same way", () => {
+    let deep: StdlibValue = 1;
+    for (let i = 0; i < MAX_VALUE_DEPTH; i += 1) deep = { a: deep };
+    expect(domainViolation(deep)).toBeUndefined();
+    expect(domainViolation({ a: deep })).toBe("tooDeep");
+  });
+
+  test("a call at the limit succeeds and one past it is refused", () => {
+    const atLimit = nest(MAX_VALUE_DEPTH);
+    expect(call("logic.eq", [atLimit, atLimit])).toBe(true);
+    expect(call("collection.size", [atLimit])).toBe(1);
+
+    const pastLimit = nest(MAX_VALUE_DEPTH + 1);
+    expect(failureCode("logic.eq", [pastLimit, 1])).toBe(
+      "query_function_argument_domain",
+    );
+    expect(failureCode("collection.size", [pastLimit])).toBe(
+      "query_function_argument_domain",
+    );
+    expect(failureCode("collection.contains", [[1], pastLimit])).toBe(
+      "query_function_argument_domain",
+    );
+    expect(failureCode("collection.distinct", [[pastLimit]])).toBe(
+      "query_function_argument_domain",
+    );
+  });
+
+  test("a 200,000-deep value is refused rather than crashing the isolate", () => {
+    // Sub-megabyte JSON, and every traversal it can reach runs on an explicit
+    // stack, so this is a sealed failure and never a RangeError.
+    const veryDeep = nest(200_000);
+    const outcome = evaluateQueryCall({
+      name: "logic.eq",
+      context: "let",
+      args: [veryDeep, 1],
+    });
+    expect(Result.isFailure(outcome)).toBe(true);
+    if (Result.isFailure(outcome)) {
+      expect(sealStdlibFailure(outcome.failure)).toEqual({
+        code: "query_function_argument_domain",
+        function: "logic.eq",
+        index: 0,
+        parameter: "left",
+        violation: "tooDeep",
+      });
+    }
+  });
+
+  test("the traversals themselves do not depend on the host call stack", () => {
+    // Belt and braces: even called directly, past any domain check, the
+    // helpers must not overflow.
+    const a = nest(200_000);
+    const b = nest(200_000);
+    expect(() => deepEquals(a, b)).not.toThrow();
+    expect(deepEquals(a, b)).toBe(true);
+    expect(deepEquals(a, nest(199_999))).toBe(false);
+    expect(() => canonicalKey(a)).not.toThrow();
+    expect(canonicalKey(a)).toBe(canonicalKey(b));
+    expect(() => domainViolation(a)).not.toThrow();
+  });
+
+  test("canonical keys stay injective under the iterative encoding", () => {
+    expect(canonicalKey([1, [2]])).not.toBe(canonicalKey([[1], 2]));
+    expect(canonicalKey([[]])).not.toBe(canonicalKey([]));
+    expect(canonicalKey({ a: 1 })).not.toBe(canonicalKey([{ a: 1 }]));
+    expect(canonicalKey({ ab: 1 })).not.toBe(canonicalKey({ a: "b1" }));
+    expect(canonicalKey([1, 2])).not.toBe(canonicalKey([12]));
+    expect(canonicalKey(1e5)).not.toBe(canonicalKey("1e5"));
+    expect(canonicalKey({ a: 1, b: 2 })).toBe(canonicalKey({ b: 2, a: 1 }));
+  });
+
+  test("distinct deduplicates object elements regardless of key order", () => {
+    expect(
+      call("collection.distinct", [[{ a: 1, b: 2 }, { b: 2, a: 1 }, { a: 2 }]]),
+    ).toEqual([{ a: 1, b: 2 }, { a: 2 }]);
   });
 });
 

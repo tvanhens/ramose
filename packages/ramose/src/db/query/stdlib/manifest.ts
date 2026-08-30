@@ -24,6 +24,12 @@
  * arrive later under its own name. And text is well-formed Unicode: a string
  * carrying an unpaired surrogate is outside the value domain, which is what
  * makes the code-point indices in `length`, `slice` and `indexOf` total.
+ *
+ * The value domain also bounds nesting depth, and membership is checked over
+ * the whole argument. That is why every card taking a `collection` or an
+ * `any` declares at least linear cost: validating such an argument is a pass
+ * over it, and a card that claimed constant cost would be advertising a
+ * budget it could not honour.
  */
 
 import type {
@@ -171,7 +177,7 @@ const functions: readonly FunctionCard[] = [
     contexts: ANY_CONTEXT,
     deterministic: true,
     cardinality: "one",
-    cost: "constant",
+    cost: "linear",
     nulls: "explicit",
     doc: "True when the value is absent; never returns unknown.",
     examples: [
@@ -192,7 +198,7 @@ const functions: readonly FunctionCard[] = [
     contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "one",
-    cost: "constant",
+    cost: "linear",
     nulls: "explicit",
     doc: "Return the first value unless it is absent, then the fallback.",
     examples: [
@@ -218,7 +224,7 @@ const functions: readonly FunctionCard[] = [
     contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "one",
-    cost: "constant",
+    cost: "linear",
     nulls: "explicit",
     doc: "Choose between two values; an unknown condition takes the false branch.",
     examples: [
@@ -838,7 +844,7 @@ const functions: readonly FunctionCard[] = [
     cardinality: "one",
     cost: "linear",
     nulls: "propagate",
-    doc: "Join a collection of text; absent when any element is not well-formed text.",
+    doc: "Join a collection of text; absent when any element is not text.",
     examples: [
       { args: [["a", "b"], "-"], result: "a-b" },
       { args: [[], "-"], result: "" },
@@ -858,7 +864,7 @@ const functions: readonly FunctionCard[] = [
     contexts: ANY_CONTEXT,
     deterministic: true,
     cardinality: "one",
-    cost: "constant",
+    cost: "linear",
     nulls: "propagate",
     doc: "Number of elements.",
     examples: [
@@ -876,7 +882,7 @@ const functions: readonly FunctionCard[] = [
     contexts: ANY_CONTEXT,
     deterministic: true,
     cardinality: "one",
-    cost: "constant",
+    cost: "linear",
     nulls: "propagate",
     doc: "True when the collection has no elements.",
     examples: [
@@ -916,7 +922,7 @@ const functions: readonly FunctionCard[] = [
     contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "one",
-    cost: "constant",
+    cost: "linear",
     nulls: "propagate",
     doc: "First element, or absent when the collection is empty.",
     examples: [
@@ -934,7 +940,7 @@ const functions: readonly FunctionCard[] = [
     contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "one",
-    cost: "constant",
+    cost: "linear",
     nulls: "propagate",
     doc: "Last element, or absent when the collection is empty.",
     examples: [
@@ -955,7 +961,7 @@ const functions: readonly FunctionCard[] = [
     contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "one",
-    cost: "constant",
+    cost: "linear",
     nulls: "propagate",
     doc: "Element at a zero-based index; out of range or non-integer is absent.",
     examples: [
@@ -974,12 +980,23 @@ const functions: readonly FunctionCard[] = [
     contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "collection",
-    cost: "linear",
+    // Superlinear, and the card says so rather than the implementation
+    // pretending otherwise. Deduplication canonicalizes each element, and an
+    // object element is canonicalized by sorting its keys so that key order
+    // cannot change the answer - k log k in that element's key count. Scalar
+    // and array elements are linear. Budget accounting reads this field, so
+    // it has to describe the worst case the function actually admits.
+    cost: "superlinear",
     nulls: "propagate",
     doc: "Remove structural duplicates, keeping first-occurrence order.",
     examples: [
       { args: [["b", "a", "b"]], result: ["b", "a"] },
       { args: [[[1], [1], [2]]], result: [[1], [2]] },
+      {
+        args: [[{ a: 1, b: 2 }, { b: 2, a: 1 }]],
+        result: [{ a: 1, b: 2 }],
+        note: "Object key order does not make two elements distinct.",
+      },
     ],
   },
   {
@@ -1079,11 +1096,16 @@ const functions: readonly FunctionCard[] = [
     cardinality: "one",
     cost: "constant",
     nulls: "propagate",
-    doc: "Shift an instant by whole milliseconds; leaving the instant range is absent.",
+    doc: "Shift an instant by whole milliseconds; a result outside the instant range is absent.",
     examples: [
       { args: [1000, -250], result: 750 },
       { args: [0, 0.5], result: null, note: "Fractional milliseconds are absent." },
       { args: [0, 8_640_000_000_000_001], result: null },
+      {
+        args: [8_640_000_000_000_000, 9_007_199_254_740_991],
+        result: null,
+        note: "A sum too large to be exact is absent, never rounded.",
+      },
     ],
   },
   {
@@ -1101,10 +1123,15 @@ const functions: readonly FunctionCard[] = [
     cardinality: "one",
     cost: "constant",
     nulls: "propagate",
-    doc: "Milliseconds from the first instant to the second; negative when reversed.",
+    doc: "Exact milliseconds from the first instant to the second; an inexact difference is absent.",
     examples: [
       { args: [1000, 2500], result: 1500 },
       { args: [2500, 1000], result: -1500 },
+      {
+        args: [-8_640_000_000_000_000, 8_639_999_999_999_999],
+        result: null,
+        note: "The exact span exceeds integer precision, so it is absent, not rounded.",
+      },
     ],
   },
 ];

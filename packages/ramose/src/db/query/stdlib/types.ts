@@ -24,15 +24,26 @@ export type StdlibScalar = string | number | boolean | null;
  * object, no bigint, no `undefined`, and no non-finite number — a timestamp
  * is epoch milliseconds and a collection is a JSON array.
  *
+ * The domain has two membership conditions beyond being JSON, and an
+ * argument that fails either is rejected with a sealed failure before any
+ * implementation runs.
+ *
  * Text is *well-formed* Unicode. JSON can carry an escaped unpaired
  * surrogate (`"\ud800"`), and such a string has no meaning as a sequence of
  * code points: `text.indexOf` could report an index that `text.slice` cannot
  * cut at. Rather than publish a semantics with a hole in it, a string
- * containing an unpaired surrogate is not a value of this domain — it
- * classifies as `malformedText` and is rejected wherever text is accepted.
- * Well-formedness is checked on every top-level string, at argument time and
- * again on the result; the contents of a collection are not scanned, which
- * is what keeps `collection.size` a constant-cost call.
+ * containing an unpaired surrogate is not a value of this domain.
+ *
+ * Nesting is bounded by {@link MAX_VALUE_DEPTH}. Depth is a property of the
+ * value, so it belongs to the domain rather than to any one function: a
+ * deeply nested argument would otherwise make comparison and canonicalization
+ * unbounded work, and adding the bound after v1 published an unrestricted
+ * domain would be a compatibility change. Real application data does not come
+ * close to the limit.
+ *
+ * Both conditions are checked over the whole argument, collection contents
+ * included, which is why every function taking a `collection` or an `any`
+ * argument declares at least linear cost.
  */
 export type StdlibValue =
   | StdlibScalar
@@ -51,6 +62,23 @@ export type ValueTypeName =
   | "malformedText"
   | "collection"
   | "object";
+
+/**
+ * Maximum nesting depth of a value in the domain. A scalar is depth 0, `[]`
+ * and `{}` are depth 1, and each further container adds one.
+ *
+ * Generous on purpose: application data nests a handful of levels, so the
+ * limit is invisible in practice and exists to keep traversal work bounded
+ * and to keep an adversarial sub-megabyte document from asking for unbounded
+ * comparison or canonicalization.
+ */
+export const MAX_VALUE_DEPTH = 64;
+
+/**
+ * Why a value is outside the domain. Reported as a reason, never with the
+ * offending value or its position inside the argument.
+ */
+export type DomainViolation = "malformedText" | "tooDeep";
 
 /**
  * A declared parameter or result type.

@@ -12,15 +12,20 @@
  * any row is touched:
  *
  * 1. {@link validateQueryCall} — static: allowlist, arity, context.
- * 2. {@link checkQueryCallArguments} — per-value: declared argument types.
+ * 2. {@link checkQueryCallArguments} — per-value: declared argument types,
+ *    then domain membership (well-formed text and nesting depth) over the
+ *    whole argument.
  * 3. {@link evaluateQueryCall} — both, then a total pure evaluation.
  *
- * Evaluation itself never fails: an undefined case is `null`. The only
- * failures are the four structured, value-sealed ones in `./failures.ts`.
+ * Evaluation itself never fails on the value: an undefined case is `null`.
+ * The only failures are the structured, value-sealed ones in `./failures.ts`,
+ * and the one budget-shaped refusal a call makes before allocating an output
+ * it has sized.
  */
 
 import * as Result from "effect/Result";
 import {
+  QueryFunctionArgumentDomain,
   QueryFunctionArgumentType,
   QueryFunctionArity,
   QueryFunctionContext,
@@ -37,7 +42,12 @@ import type {
   StdlibManifest,
   StdlibValue,
 } from "./types.ts";
-import { MAX_PRODUCED_TEXT_UNITS, classify, matchesValueType } from "./values.ts";
+import {
+  MAX_PRODUCED_TEXT_UNITS,
+  classify,
+  domainViolation,
+  matchesValueType,
+} from "./values.ts";
 
 /** The versioned manifest, re-exported as the registry's source of truth. */
 export const standardLibraryV1: StdlibManifest = standardLibraryManifestV1;
@@ -54,6 +64,9 @@ const cardsByName: ReadonlyMap<string, FunctionCard> = new Map(
 const implementationsByName = new Map(
   Object.entries(standardLibraryImplementationsV1),
 );
+
+/** Parameter types whose values can nest, and so cost a full domain pass. */
+const NESTING_PARAMETER_TYPES: ReadonlySet<string> = new Set(["collection", "any"]);
 
 /**
  * Result types that are totally ordered, and so admissible as a sort key.
@@ -172,6 +185,20 @@ export const checkQueryCallArguments = (
         }),
       );
     }
+    // The kind is right; is the value in the domain? This is the deep pass —
+    // ill-formed text anywhere inside, and nesting past the depth limit. It
+    // is why a function taking a collection or an `any` is at least linear.
+    const violation = domainViolation(value);
+    if (violation !== undefined) {
+      return Result.fail(
+        new QueryFunctionArgumentDomain({
+          name: card.name,
+          index,
+          parameter: parameter.name,
+          violation,
+        }),
+      );
+    }
   }
 
   return Result.succeed(undefined);
@@ -179,11 +206,13 @@ export const checkQueryCallArguments = (
 
 /**
  * Constrain a result to its declared type. In practice this fires for
- * arithmetic that overflowed to a non-finite number, an instant that left the
- * representable range, or an element lifted out of a collection that is not a
- * value of the domain; either way the answer is absence, never a poisoned
- * `Infinity`, an out-of-range instant, or ill-formed text leaking into a
- * result set.
+ * arithmetic that overflowed to a non-finite number or an instant that left
+ * the representable range; either way the answer is absence, never a poisoned
+ * `Infinity` or an out-of-range instant leaking into a result set.
+ *
+ * A shallow check is enough here. Arguments are domain-checked in full, and
+ * no implementation manufactures text or adds nesting, so a result derived
+ * from in-domain arguments is in-domain.
  */
 const sealResult = (card: FunctionCard, value: StdlibValue): StdlibValue =>
   matchesValueType(value, card.signature.result) ? value : null;
@@ -267,6 +296,15 @@ export const stdlibIntegrityProblems = (): readonly string[] => {
       if (card.outputLimit !== MAX_PRODUCED_TEXT_UNITS) {
         problems.push(`output limit is not the declared cap: ${card.name}`);
       }
+    }
+    const nests = card.signature.parameters.some((parameter) =>
+      NESTING_PARAMETER_TYPES.has(parameter.type),
+    );
+    if (nests && card.cost === "constant") {
+      // Validating a nestable argument is a full pass over it, so a card that
+      // takes one and calls itself constant is advertising a budget it cannot
+      // honour.
+      problems.push(`constant cost with a nestable parameter: ${card.name}`);
     }
     if (card.contexts.includes("orderBy") && !ORDERABLE_RESULTS.has(card.signature.result)) {
       // A result type that cannot statically exclude a collection cannot be a
