@@ -36,6 +36,7 @@
     "paths": {
       "ramose": ["./packages/ramose/src/index.ts"],
       "ramose/db": ["./packages/ramose/src/db/index.ts"],
+      "ramose/client": ["./packages/ramose/src/client/index.ts"],
       "ramose/worker": ["./packages/ramose/src/worker/index.ts"],
       "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"]
     },

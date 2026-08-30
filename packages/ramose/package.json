@@ -2,7 +2,7 @@
   "name": "ramose",
   "version": "0.3.0",
   "type": "module",
-  "description": "Ramose — an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: portable authoring (`ramose/db`), Alchemy resources (`ramose`), the peer Worker (`ramose/worker`) and the Better Auth plugin (`ramose/better-auth`).",
+  "description": "Ramose — an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: portable authoring (`ramose/db`), Alchemy resources (`ramose`), the offline-first browser client (`ramose/client`), the peer Worker (`ramose/worker`) and the Better Auth plugin (`ramose/better-auth`).",
   "license": "Apache-2.0",
   "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
   "homepage": "https://ramose.ai",
@@ -77,6 +77,10 @@
     "./db": {
       "types": "./dist/db/index.d.ts",
       "default": "./dist/db/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
     },
     "./worker": {
       "types": "./dist/worker/index.d.ts",

@@ -20,7 +20,8 @@ Ramose is pre-release: expect the API to change between minor versions.
 
 | Import | What it is |
 | --- | --- |
-| `ramose/db` | Portable schema, query, pull, operation, transaction-authoring primitives, and tagged errors. No online client. |
+| `ramose/db` | Portable schema, query, pull, operation, transaction-authoring primitives, and tagged errors. |
+| `ramose/client` | The offline-first browser client: `createClient`, one interned root handle, local query execution over a durable authorized replica, and framework-neutral subscriptions. |
 | `ramose` | Deploy barrel: everything on `ramose/db` plus `Server`, `Database`, JWT claims, providers, and HTTP error mapping. |
 | `ramose/worker` | The peer Worker itself. Hand it to Alchemy as `main: import.meta.resolve("ramose/worker")` — `main` is a path, so a bare specifier there silently resolves to nothing. |
 | `ramose/better-auth` | The Better Auth plugin that mints the workspace-scoped JWT a peer verifies. Needs optional peers `better-auth` and `zod`. |

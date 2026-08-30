@@ -4,7 +4,7 @@
  * files npm needs alongside it (LICENSE, NOTICE, README.md).
  *
  * There is one package and therefore no build order: `tsc` compiles the whole
- * `src` tree — the four public entries, the `ramose/worker` script and the
+ * `src` tree — the five public entries, the `ramose/worker` script and the
  * engine under `src/internal/` — in a single pass.
  *
  * The staged LICENSE/NOTICE are generated artifacts — gitignored and rewritten

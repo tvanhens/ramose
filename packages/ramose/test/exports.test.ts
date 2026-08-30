@@ -25,6 +25,7 @@ const manifest = JSON.parse(
 const PUBLIC = [
   "ramose",
   "ramose/db",
+  "ramose/client",
   "ramose/worker",
   "ramose/better-auth",
 ] as const;

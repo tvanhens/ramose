@@ -1,8 +1,8 @@
 /**
  * The ops HTTP harness — **not** a client SDK and not a package.
  *
- * There is no separate client package: the typed surface is `ramose/db`
- * (`Ramose.layer` + `Databases` + `Db<C>`), and HTTP is Worker internals.
+ * The typed surfaces are `ramose/db` (`Ramose.layer` + `Databases` + `Db<C>`)
+ * and `ramose/client` (the browser client); HTTP is Worker internals.
  * What is left here is the *ops* half that no public API names — raw datalog
  * strings, the metrics response headers, and the admin routes the server
  * reference documents (https://ramose.ai/reference/server/ — `/info`,
