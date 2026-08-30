@@ -7,12 +7,20 @@
  * here invents a successful transact, query, or socket frame.
  */
 
+import * as Effect from "effect/Effect";
 import {
+  makeEntityIdScope,
   openEntityId,
   sealEntityId,
   sealingKeyOf,
   type EntityIdScope,
 } from "../internal/replication/index.ts";
+import {
+  callerFromVerified,
+  DatabaseId,
+} from "../internal/authorization/index.ts";
+import { authenticateRequest } from "./admit.ts";
+import { JwtVerifier, fromEnv } from "./jwt.ts";
 import { dbPrefix, prefixedBucket } from "../internal/storage/index.ts";
 import {
   armCheckpoint,
@@ -295,12 +303,14 @@ const entityIdScopeOfBody = (value: unknown): EntityIdScope => {
 const handleServerIdentity = async (
   request: Request,
   env: RamoseEnv,
+  db: string,
 ): Promise<Response> => {
   const body = (await request.json()) as {
     action?: unknown;
     eid?: unknown;
     token?: unknown;
     scope?: unknown;
+    bearer?: unknown;
   };
   if (body.action === "forget-isolate-cache") {
     clearServerIdentityRootCache();
@@ -309,14 +319,43 @@ const handleServerIdentity = async (
   if (
     body.action !== "probe" &&
     body.action !== "seal-entity-id" &&
-    body.action !== "open-entity-id"
+    body.action !== "open-entity-id" &&
+    body.action !== "invocation-entity-id-scope"
   ) {
     throw new BadRequest({
       message:
-        "server-identity action must be probe|forget-isolate-cache|seal-entity-id|open-entity-id",
+        "server-identity action must be probe|forget-isolate-cache|seal-entity-id|open-entity-id|invocation-entity-id-scope",
     });
   }
   const root = await serverIdentityRoot(env);
+  if (body.action === "invocation-entity-id-scope") {
+    // The exact scope the `/op` boundary derives, computed by the same code
+    // from the same three inputs: the request origin, the *really verified*
+    // caller behind this bearer, and this database. Nothing is invented — the
+    // real JWT verifier runs, and a scope that disagreed with the one an
+    // invocation was sealed under simply fails to open its handles.
+    if (typeof body.bearer !== "string" || body.bearer.length === 0) {
+      throw new BadRequest({
+        message: "invocation-entity-id-scope needs a bearer",
+      });
+    }
+    const verified = await Effect.runPromise(
+      authenticateRequest(
+        new Request(request.url, {
+          headers: { authorization: `Bearer ${body.bearer}` },
+        }),
+      ).pipe(Effect.provideService(JwtVerifier, fromEnv(env))),
+    );
+    return json({
+      ok: true,
+      keyId: root.keyId,
+      scope: await makeEntityIdScope(sealingKeyOf(root), {
+        origin: new URL(request.url).origin,
+        caller: callerFromVerified(verified),
+        database: DatabaseId.make(db),
+      }),
+    });
+  }
   if (body.action === "seal-entity-id") {
     if (typeof body.eid !== "number") {
       throw new BadRequest({ message: "seal-entity-id needs a numeric eid" });
@@ -446,7 +485,7 @@ export const handleTestAdmin = async (
   }
   if (request.method !== "POST") throw new BadRequest({ message: "test admin is POST" });
   if (rest === "/r2") return handleR2(request, env, db);
-  if (rest === "/server-identity") return handleServerIdentity(request, env);
+  if (rest === "/server-identity") return handleServerIdentity(request, env, db);
   if (rest === "/replication-revision") {
     return handleReplicationRevision(request, env, db);
   }

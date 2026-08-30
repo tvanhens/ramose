@@ -61,7 +61,7 @@ import {
 } from "../../db/Errors.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
-import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError } from "./errors.ts";
+import { BadRequest, NotFound, TransactorDeadError, Unavailable, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
@@ -70,21 +70,28 @@ import {
   type RuntimeBoundaries,
 } from "../runtime-boundaries.ts";
 import {
+  allocationMappingsResolvable,
   authorizeCatalogOperation,
   authorizeCatalogOperationGrant,
   authorizeCatalogOperationReplay,
   catalogProvisioningAttributes,
+  decideEpoch,
   decideInvocationReceipt,
+  deployedOperationOutputShape,
   deployedOperationVersion,
   executeCatalogOperation,
   invocationReceiptOutcome,
   isLegacyInvocationReceiptRow,
   OperationRuntimeFault,
   opaqueOperationDenial,
+  outputEntityRefPaths,
+  parseEntityIdScope,
+  parseInvocationAllocations,
   parseStoredInvocationReceipt,
   prepareInvocationReceipt,
   requireSuppliedOperationVersion,
   resolveOperationCatalog,
+  resolveSealedTarget,
   transitionInvocationReceipt,
   type AuthoritativeInvocationResult,
   type AuthoritativeOperationInvocation,
@@ -92,6 +99,7 @@ import {
   type ClaimedInvocationReceipt,
   type InstalledCatalogDefinition,
   type InvocationReceiptEvent,
+  type InvocationReceiptOutcome,
   type LegacyInvocationReceiptRow,
   type OperationRuntime,
   type PreparedInvocationReceipt,
@@ -99,6 +107,8 @@ import {
   type StoredInvocationReceipt,
   type TerminalInvocationReceipt,
 } from "../authorization/index.ts";
+import type { EntityIdScope } from "../replication/entity-id.ts";
+import type { ServerSealingKey } from "../replication/server-identity.ts";
 
 export { TransactorDeadError };
 
@@ -169,9 +179,22 @@ interface Pending {
   system?: boolean | undefined;
   /** Native deployed invocation; mutually exclusive with raw `tx`. */
   operation?: AuthoritativeOperationInvocation | undefined;
+  /**
+   * The durable sealing root, resolved *before* this invocation is queued so
+   * the serialized writer loop never waits on a Durable Object hop. Present
+   * only for an invocation that carries a sealed target or binds an
+   * allocation slot (#475).
+   */
+  sealing?: ServerSealingKey | undefined;
   resolve: (r: TxAck | OperationAck) => void;
   reject: (e: unknown) => void;
 }
+
+/** The root and scope one invocation's opaque handles are bound to (#475). */
+type SealingContext = {
+  readonly sealing: ServerSealingKey;
+  readonly scope: EntityIdScope;
+};
 
 /** How many recent `clientTxId`s this instance remembers. FIFO once full. */
 const RECENT_CLIENT_TX_LIMIT = 256;
@@ -558,16 +581,151 @@ export class Transactor {
     });
   }
 
+  /**
+   * Whether a durable receipt's stored mappings can still be opened by the
+   * caller replaying it.
+   *
+   * The receipt identity covers the database and the verified claims but not
+   * the public origin the request arrived on and not the server sealing key,
+   * and a sealed handle is bound to both. After a key rotation — or through a
+   * second origin serving the same database — a replay would otherwise return
+   * handles the caller cannot resolve, and the client would durably persist
+   * client ref mappings that are permanently unusable. That answer is the
+   * typed, data-free update-required, not a denial: the receipt is genuine.
+   */
+  private replayableMappings(
+    receipt: TerminalInvocationReceipt,
+    context: SealingContext | undefined,
+  ): boolean {
+    if (receipt.status !== "completed" || receipt.allocations === undefined) {
+      return true;
+    }
+    // A receipt with mappings was claimed under an invocation that bound slots,
+    // and the binding is in the digest, so a matching replay bound them too.
+    if (context === undefined) return false;
+    return allocationMappingsResolvable(receipt.allocations, {
+      keyId: context.sealing.keyId,
+      scope: context.scope,
+    });
+  }
+
+  /**
+   * The root and scope this invocation's allocation mappings are sealed under.
+   *
+   * `invoke` established both before the invocation was ever queued, so a
+   * missing one is an engine defect rather than a caller error — and it is
+   * refused here, before the operation body runs, so the sealing step that
+   * follows the staged commit cannot be the thing that fails.
+   */
+  private decideInvocationEpoch(
+    p: Pending,
+  ):
+    | { readonly _tag: "Agreed"; readonly context: SealingContext | undefined }
+    | { readonly _tag: "UpdateRequired" }
+  {
+    const operation = p.operation!;
+    // An invocation that names no opaque handle has no epoch to agree about.
+    if (!this.needsSealingKey(operation)) return { _tag: "Agreed", context: undefined };
+    const scope = operation.entityIdScope;
+    const keyId = operation.entityIdKeyId;
+    // `invoke` established both before this was queued and the route refuses an
+    // invocation carrying one without the other, so absence here is an engine
+    // defect rather than a caller error or a moved epoch.
+    if (p.sealing === undefined || scope === undefined || keyId === undefined) {
+      throw opaqueOperationDenial();
+    }
+    const decision = decideEpoch({ keyId, scope }, p.sealing);
+    if (decision._tag === "UpdateRequired") return decision;
+    return {
+      _tag: "Agreed",
+      context: { sealing: decision.sealing, scope: decision.scope },
+    };
+  }
+
+  /**
+   * Whether this invocation needs the durable sealing root at all: it names an
+   * opaque target that has to be opened, or it binds allocation slots whose
+   * eids have to be sealed into the receipt.
+   */
+  private needsSealingKey(
+    invocation: AuthoritativeOperationInvocation,
+  ): boolean {
+    return invocation.sealedTarget !== undefined ||
+      (invocation.allocations !== undefined && invocation.allocations.length > 0);
+  }
+
+  /**
+   * Translate one opaque sealed target into the private eid the rest of the
+   * pipeline already understands.
+   *
+   * Returns the invocation to run, or `undefined` when the handle's codec
+   * version or key epoch is beyond this build — the caller turns that into the
+   * typed, data-free `UpdateRequired` outcome. Every other failure is the
+   * ordinary sealed denial, thrown here so it is indistinguishable from
+   * not-found and from unauthorized.
+   *
+   * An invocation that supplies both a numeric/lookup target and a sealed one
+   * is refused: two targets are two different invocations, and silently
+   * preferring either would let a caller's durable queue and the authoritative
+   * writer disagree about what was acted on.
+   */
+  private async resolveInvocationTarget(
+    p: Pending,
+    context: SealingContext | undefined,
+  ): Promise<AuthoritativeOperationInvocation | undefined> {
+    const invocation = p.operation!;
+    if (invocation.sealedTarget === undefined) return invocation;
+    if (invocation.target !== undefined) throw opaqueOperationDenial();
+    if (context === undefined) throw opaqueOperationDenial();
+    const resolution = await resolveSealedTarget(
+      context.sealing,
+      context.scope,
+      invocation.sealedTarget,
+    );
+    if (resolution._tag === "UpdateRequired") return undefined;
+    if (resolution._tag === "Denied") throw opaqueOperationDenial();
+    return Object.freeze({ ...invocation, target: resolution.eid });
+  }
+
   /** Submit one exact deployed-catalog invocation to the serialized writer. */
-  invoke(invocation: AuthoritativeOperationInvocation): Promise<OperationAck> {
-    if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
-    if (this.operationRuntime === undefined) {
-      return Promise.reject(opaqueOperationDenial());
+  async invoke(
+    invocation: AuthoritativeOperationInvocation,
+  ): Promise<OperationAck> {
+    if (this.dead !== undefined) throw new TransactorDeadError(this.dead);
+    const runtime = this.operationRuntime;
+    if (runtime === undefined) throw opaqueOperationDenial();
+    // Resolved here rather than inside the commit loop: it is a Durable Object
+    // hop on a cold isolate, and the serialized writer must not wait on the
+    // network between two batches. Only invocations that actually use opaque
+    // handles pay for it; every other operation path is untouched.
+    let sealing: ServerSealingKey | undefined;
+    if (this.needsSealingKey(invocation)) {
+      if (runtime.sealing === undefined || invocation.entityIdScope === undefined) {
+        throw opaqueOperationDenial();
+      }
+      try {
+        sealing = await runtime.sealing();
+      } catch (cause) {
+        // The root lives in another Durable Object, so a cold isolate has to
+        // fetch it. A transient failure there is not an engine defect and not a
+        // denial: nothing about this invocation is wrong and asking again is
+        // the right answer. Answering an opaque 500 instead would be
+        // indistinguishable, to a durable offline queue, from a permanent one —
+        // and it would be invisible here, which is exactly what made an earlier
+        // occurrence of this undiagnosable.
+        const message = cause instanceof Error ? cause.message : String(cause);
+        this.log.error("operation.sealing-root-unavailable", { error: message });
+        throw new Unavailable({
+          message: "the server sealing root is momentarily unavailable",
+          retryAfterMs: 1_000,
+        });
+      }
     }
     return new Promise<OperationAck>((resolve, reject) => {
       this.queue.push({
         tx: [],
         operation: invocation,
+        ...(sealing === undefined ? {} : { sealing }),
         resolve: resolve as (result: TxAck | OperationAck) => void,
         reject,
       });
@@ -744,29 +902,83 @@ export class Transactor {
                 p.operation.localName,
               );
               if (operationVersion === undefined) throw opaqueOperationDenial();
+              // Where the public projection has to seal (#475). Read from the
+              // *deployed* output shape, which is part of the pinned operation
+              // version, so a replayed receipt is described by exactly the
+              // shape it was written against. The durable row keeps its
+              // resolved eids and is never rewritten: it is the replay, and its
+              // bytes are what the exact-replay comparison is over.
+              const outputShape = deployedOperationOutputShape(
+                resolved,
+                p.operation.owner,
+                p.operation.localName,
+              );
+              const outcomeOf = (
+                receipt: TerminalInvocationReceipt,
+              ): InvocationReceiptOutcome => {
+                const outcome = invocationReceiptOutcome(receipt);
+                if (outcome._tag !== "Completed" || outputShape === undefined) {
+                  return outcome;
+                }
+                const outputRefPaths = outputEntityRefPaths(
+                  outputShape,
+                  outcome.output,
+                );
+                return outputRefPaths.length === 0
+                  ? outcome
+                  : { ...outcome, outputRefPaths };
+              };
               // Every effect-free compatibility answer is disclosed only to a
               // caller who may still invoke the operation as it stands now.
               // Grant-only admission deliberately stops before the target and
               // input checks — those are exactly what a changed operation
               // moves — and its sealed denial wins over the answer (#419).
               const operationRuntime = this.operationRuntime;
-              const operation = p.operation;
               const resolveCompatibility = async (
                 tag: "OperationChanged" | "UpdateRequired",
               ) => {
+                // Grant-only admission never reads the target, so it is the
+                // same answer before and after opaque-target resolution.
                 await authorizeCatalogOperationGrant(
                   this.conn,
                   operationRuntime,
-                  operation,
+                  p.operation!,
                   resolved,
                 );
                 this.stats.rejected++;
                 p.resolve({ _tag: tag });
               };
+              // Opaque target translation, at the authoritative edge and
+              // before the #487 primitive sees anything. Resolution is a
+              // bounded decrypt that grants nothing: it only replaces the
+              // caller's handle with the private eid, and every ordinary
+              // visibility, type, and admission check below then runs against
+              // that eid exactly as it would for a numeric target.
+              // The one epoch comparison, made once, before anything is opened
+              // or sealed. Resolved before the body runs — not after the commit
+              // — so sealing an allocated eid cannot fail between the staged
+              // transaction and the durable batch write.
+              const epoch = this.decideInvocationEpoch(p);
+              if (epoch._tag === "UpdateRequired") {
+                await resolveCompatibility("UpdateRequired");
+                continue;
+              }
+              const sealingContext = epoch.context;
+              const operation = await this.resolveInvocationTarget(
+                p,
+                sealingContext,
+              );
+              if (operation === undefined) {
+                // The handle's own codec version or key epoch is beyond this
+                // build. Data-free, and disclosed only to a caller who may
+                // still invoke the operation as it stands now.
+                await resolveCompatibility("UpdateRequired");
+                continue;
+              }
               // Prepared first so a malformed invocation id or an unverified
               // principal keeps its ordinary invalid-request answer.
               const prepared = await Effect.runPromise(
-                prepareInvocationReceipt(p.operation, operationVersion),
+                prepareInvocationReceipt(operation, operationVersion),
               );
               // A pin the caller supplied and the deployment no longer has
               // decides before the durable row is read at all: an explicit
@@ -804,7 +1016,11 @@ export class Transactor {
                   continue;
                 }
                 if (recovered._tag === "Replay" || recovered._tag === "Recover") {
-                  p.resolve(invocationReceiptOutcome(recovered.receipt));
+                  if (!this.replayableMappings(recovered.receipt, sealingContext)) {
+                    await resolveCompatibility("UpdateRequired");
+                    continue;
+                  }
+                  p.resolve(outcomeOf(recovered.receipt));
                   continue;
                 }
                 // A missing row cannot normally race inside one serialized DO,
@@ -813,11 +1029,15 @@ export class Transactor {
               // An exact replay keeps PR #527's behavior byte for byte. The
               // fenced admission below is unchanged and still runs first.
               if (inspected._tag === "Replay") {
+                if (!this.replayableMappings(inspected.receipt, sealingContext)) {
+                  await resolveCompatibility("UpdateRequired");
+                  continue;
+                }
                 if (inspected.receipt.status === "completed") {
                   await authorizeCatalogOperationReplay(
                     this.conn,
                     this.operationRuntime,
-                    p.operation,
+                    operation,
                     inspected.receipt.replayFence,
                     resolved,
                   );
@@ -825,11 +1045,11 @@ export class Transactor {
                   await authorizeCatalogOperation(
                     this.conn,
                     this.operationRuntime,
-                    p.operation,
+                    operation,
                     resolved,
                   );
                 }
-                p.resolve(invocationReceiptOutcome(inspected.receipt));
+                p.resolve(outcomeOf(inspected.receipt));
                 continue;
               }
 
@@ -837,7 +1057,7 @@ export class Transactor {
                 await authorizeCatalogOperation(
                   this.conn,
                   this.operationRuntime,
-                  p.operation,
+                  operation,
                   resolved,
                 );
 
@@ -854,16 +1074,20 @@ export class Transactor {
                 continue;
               }
               if (decision._tag === "Replay" || decision._tag === "Recover") {
+                if (!this.replayableMappings(decision.receipt, sealingContext)) {
+                  await resolveCompatibility("UpdateRequired");
+                  continue;
+                }
                 if (decision.receipt.status === "completed") {
                   await authorizeCatalogOperationReplay(
                     this.conn,
                     this.operationRuntime,
-                    p.operation,
+                    operation,
                     decision.receipt.replayFence,
                     resolved,
                   );
                 }
-                p.resolve(invocationReceiptOutcome(decision.receipt));
+                p.resolve(outcomeOf(decision.receipt));
                 continue;
               }
               claim = decision.receipt;
@@ -871,23 +1095,40 @@ export class Transactor {
               const executed = await executeCatalogOperation(
                 this.conn,
                 this.operationRuntime,
-                p.operation,
+                operation,
                 resolved,
                 admission,
+                sealingContext?.sealing,
               );
               const rep = executed.report;
+              // Already sealed, inside the pre-commit validator: nothing
+              // between the staged transaction and this batch's durable write
+              // can fail, and the durable row carries opaque handles only.
+              // Sealing is deterministic in (root, scope, eid), so a replay
+              // reproduces these bytes without re-executing.
               const event = {
                 _tag: "Complete" as const,
                 committedT: rep.t,
                 output: executed.output,
                 replayFence: executed.replayFence,
+                ...(sealingContext === undefined ||
+                    executed.allocations.length === 0
+                  ? {}
+                  : {
+                    allocations: {
+                      version: 1 as const,
+                      keyId: sealingContext.sealing.keyId,
+                      scope: { ...sealingContext.scope },
+                      entries: executed.allocations,
+                    },
+                  }),
               };
               const terminal = transitionInvocationReceipt(claim, event);
               const txInstant = rep.txData[0]?.v as number;
               entries.push({ t: rep.t, txInstant, datoms: rep.txData });
               acks.push({
                 p,
-                ack: invocationReceiptOutcome(terminal),
+                ack: outcomeOf(terminal),
                 assertFresh: executed.assertFresh,
                 receiptCompletion: { claim, event },
               });
@@ -1217,6 +1458,7 @@ export class Transactor {
           Unauthorized: (e) => Effect.sync(() => errorResponse(e)),
           OperationRejected: (e) => Effect.sync(() => errorResponse(e)),
           TransactorDead: (e) => Effect.sync(() => errorResponse(e)),
+          Unavailable: (e) => Effect.sync(() => errorResponse(e)),
           BadRequest: (e) => Effect.sync(() => errorResponse(e)),
           NotFound: (e) => Effect.sync(() => errorResponse(e)),
           Internal: (e) => Effect.sync(() => errorResponse(e)),
@@ -1243,10 +1485,42 @@ export class Transactor {
       ) {
         throw new BadRequest({ message: "invalid deployed operation invocation" });
       }
+      // The channel is already authenticated, so this is defense in depth
+      // rather than an authorization decision. It is not skippable, though: a
+      // malformed scope read as "no scope" would make an opaque handle
+      // silently unresolvable and a bound slot silently unsealable, and the
+      // *decoded* values are the ones used, so the canonical slot order the
+      // digest covers cannot depend on how the envelope was serialized (#475).
+      const entityIdScope = parseEntityIdScope(invocation.entityIdScope);
+      const allocations = parseInvocationAllocations(invocation.allocations);
+      if (
+        allocations === undefined ||
+        (invocation.sealedTarget !== undefined &&
+          (typeof invocation.sealedTarget !== "string" ||
+            entityIdScope === undefined)) ||
+        (allocations.length > 0 && entityIdScope === undefined)
+      ) {
+        throw new BadRequest({ message: "invalid deployed operation invocation" });
+      }
+      // The key id the scope was derived under is part of the same claim: a
+      // scope without one cannot be checked for epoch agreement, so it is not
+      // a usable scope.
+      if (
+        entityIdScope !== undefined &&
+        (typeof invocation.entityIdKeyId !== "string" ||
+          invocation.entityIdKeyId.length === 0)
+      ) {
+        throw new BadRequest({ message: "invalid deployed operation invocation" });
+      }
+      const resolved: AuthoritativeOperationInvocation = {
+        ...invocation,
+        ...(entityIdScope === undefined ? {} : { entityIdScope }),
+        ...(allocations.length === 0 ? {} : { allocations }),
+      };
       // Operation output was already materialized as exact JSON before the
       // commit. Native serialization preserves codec-owned object shapes;
       // the generic Ramose encoder would reinterpret `{ vt, v }` here.
-      return new Response(JSON.stringify(await this.invoke(invocation)), {
+      return new Response(JSON.stringify(await this.invoke(resolved)), {
         headers: { "content-type": "application/json" },
       });
     }

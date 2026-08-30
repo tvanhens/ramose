@@ -295,6 +295,7 @@ const descriptorFixture = (
   output: { representation: { type: "object" }, shape: { _tag: "opaque" } },
   composers: [],
   writes: [],
+  allocations: [],
   ...overrides,
 });
 
@@ -305,7 +306,7 @@ describe("canonical operation version descriptor", () => {
       writes: ["audit", "note", "audit"],
       revision: 3,
     }))).toEqual({
-      version: 1,
+      version: 2,
       operation: {
         catalog: "app",
         owner: { kind: "entity", name: "issue" },
@@ -318,7 +319,29 @@ describe("canonical operation version descriptor", () => {
         output: { representation: { type: "object" }, shape: { _tag: "opaque" } },
       },
       // Deduplicated and sorted: authoring or discovery order never rotates.
-      behavior: { composers: ["issue", "note"], writes: ["audit", "note"] },
+      behavior: {
+        composers: ["issue", "note"],
+        writes: ["audit", "note"],
+        allocations: [],
+      },
+    });
+  });
+
+  test("covers the named client-ref allocation declaration", () => {
+    expect(
+      (operationVersionMaterial(descriptorFixture({
+        allocations: [
+          { slot: "note", path: ["nested", "note"] },
+          { slot: "issue", path: ["issue"] },
+        ],
+      })) as { readonly behavior: unknown }).behavior,
+    ).toEqual({
+      composers: [],
+      writes: [],
+      allocations: [
+        { slot: "issue", path: ["issue"] },
+        { slot: "note", path: ["nested", "note"] },
+      ],
     });
   });
 
@@ -443,6 +466,12 @@ describe("canonical operation version descriptor", () => {
       }),
       descriptorFixture({ composers: ["note"] }),
       descriptorFixture({ writes: ["audit"] }),
+      // An offline client pins this version before it can submit, so moving a
+      // slot's output path must rotate it or a queued invocation would bind
+      // its client ref to a different output entity.
+      descriptorFixture({ allocations: [{ slot: "issue", path: ["issue"] }] }),
+      descriptorFixture({ allocations: [{ slot: "issue", path: ["other"] }] }),
+      descriptorFixture({ allocations: [{ slot: "renamed", path: ["issue"] }] }),
     ].map((descriptor) => Effect.runPromise(hashOperationVersion(descriptor))));
     expect(new Set(rotations).size).toBe(rotations.length);
     for (const rotated of rotations) expect(rotated).not.toBe(base);

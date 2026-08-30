@@ -24,6 +24,7 @@ import {
   type ReplicaLease,
 } from "./replica-lifecycle.ts";
 import type { ReplicationFrame, ReplicationIdentity } from "./protocol.ts";
+import { satisfiesActivationFence } from "./activation-fence.ts";
 import {
   openReplicationResponse,
   readReplicationFrames,
@@ -71,6 +72,21 @@ export type ReplicationSessionOptions = {
   readonly attributes: readonly AttributeSpec[];
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly storage: IndexedDbReplicaStorage;
+  /**
+   * The post-commit activation fence (#475 slice 3).
+   *
+   * Invoked at most once per session, on the *first* frame this activation
+   * settles as an authoritative outcome: a `Change` that continued the
+   * committed revision (or that this replica already held), a matching
+   * `ResumeReady`, or a `SnapshotCommit` that installed. Keepalive, staging,
+   * terminals, quarantine, and anything on a superseded generation never
+   * invoke it.
+   *
+   * Observation is downstream of persistence: a hook that throws never fails
+   * the session, and the next settled frame on this activation invokes it
+   * again.
+   */
+  readonly onActivationOutcome?: (() => void | Promise<void>) | undefined;
 };
 
 type ChangeFrame = Extract<ReplicationFrame, { readonly type: "Change" }>;
@@ -200,17 +216,39 @@ export class ReplicationSession {
   private readonly lease: ReplicaLease;
   private tracking: readonly (() => void)[] = [];
   private trackedDatabase: string | undefined;
+  /**
+   * The roots of the value this session currently publishes, kept alive against
+   * reachability GC. A published `Db` reads its nodes directly and no longer
+   * depends on the manifest, so a sweep that reclaimed superseded roots would
+   * otherwise turn it into a value that throws mid-query.
+   */
+  private releaseRetention: (() => void) | undefined;
+  private retainedDb: Db | undefined;
+  /**
+   * Whether this activation has already invoked its fence hook. One activation
+   * fences once: every later outcome on it describes state the first one
+   * already proved was at or past the commit.
+   */
+  private fenced = false;
 
   private constructor(
     private readonly storage: IndexedDbReplicaStorage,
     private readonly attributes: readonly AttributeSpec[],
     private readonly readCompatibilityHash: ReadCompatibilityHash,
+    private readonly onActivationOutcome:
+      | (() => void | Promise<void>)
+      | undefined,
     initial: BoundRestoredReplica | undefined,
     lease: ReplicaLease,
     registration: SessionRegistration | undefined,
+    retention: (() => void) | undefined,
     run: (session: ReplicationSession, generation: number) => Promise<void>,
   ) {
     this.lease = lease;
+    // Adopt the retention `open` took in the same synchronous block as the pin,
+    // rather than taking a second one over the same roots.
+    this.releaseRetention = retention;
+    this.retainedDb = initial?.db;
     this.state = Object.freeze({
       status: "connecting",
       ...(initial === undefined
@@ -300,6 +338,13 @@ export class ReplicationSession {
         await live?.close();
       },
     );
+    // The storage already retained this value's roots — synchronously, before
+    // the transaction that cleared it to be handed back — so the session adopts
+    // that retention rather than taking a second one. Taking its own here would
+    // be strictly too late: a sweep that planned while nothing was retained can
+    // create its transaction after the publish fence's and still delete these
+    // nodes, and only a retention that exists before that fence closes it.
+    const retention = restored?.release;
     let candidate: ReplicaCacheCandidate | undefined;
     let lease: ReplicaLease;
     try {
@@ -318,15 +363,18 @@ export class ReplicationSession {
         : await options.storage.leaseFor(restored.identity);
     } catch (error) {
       for (const release of registration?.releases ?? []) release();
+      retention?.();
       throw error;
     }
     const session = new ReplicationSession(
       options.storage,
       options.attributes,
       options.readCompatibilityHash,
+      options.onActivationOutcome,
       restored,
       lease,
       registration,
+      retention,
       async (session, generation) => {
         let responseIdentity: ReplicationIdentity | undefined;
         let bindingConfirmed = restored !== undefined && candidateKey === undefined &&
@@ -450,6 +498,10 @@ export class ReplicationSession {
     } catch {
       // Close owns cancellation; non-cancellation failures were already observed.
     }
+    // A closed session is no longer a live holder, so its last value stops
+    // retaining nodes. The snapshot keeps carrying it for observers that are
+    // mid-render; nothing rebuilds a query from it.
+    this.release();
     const closed = Object.freeze({
       status: "closed" as const,
       ...(this.state.value === undefined ? {} : { value: this.state.value }),
@@ -464,8 +516,42 @@ export class ReplicationSession {
   }
 
   private publish(snapshot: ReplicationSessionSnapshot): void {
+    // A snapshot carrying no value drops whatever this session was holding; one
+    // carrying the same `Db` (a stale flag flipping, a terminal keeping its
+    // last value) keeps the retention it already adopted. A snapshot carrying a
+    // *different* `Db` only ever arrives through `adopt` below, which has
+    // already moved the retention across.
+    if (snapshot.value === undefined) this.release();
     this.state = Object.freeze(snapshot);
     for (const observer of this.observers) this.notify(observer);
+  }
+
+  /**
+   * Take over the retention the storage handed out with a value.
+   *
+   * Every value the storage returns arrives already retained — taken
+   * synchronously, before the transaction that cleared it to be handed back —
+   * so the session never takes its own and never has to be fast enough. It
+   * owns exactly one release per value: adopting a new one releases the value
+   * it replaces, which is correct, because superseded roots are precisely what
+   * a sweep exists to reclaim. Adopting the same `Db` twice releases the
+   * duplicate rather than leaking it.
+   */
+  private adopt(replica: RestoredReplica): void {
+    if (replica.db === this.retainedDb) {
+      replica.release();
+      return;
+    }
+    this.releaseRetention?.();
+    this.releaseRetention = replica.release;
+    this.retainedDb = replica.db;
+  }
+
+  /** Drop this session's retention, if it still holds one. */
+  private release(): void {
+    this.releaseRetention?.();
+    this.releaseRetention = undefined;
+    this.retainedDb = undefined;
   }
 
   private notify(observer: ReplicationSessionObserver): void {
@@ -473,6 +559,33 @@ export class ReplicationSession {
       observer(this.state);
     } catch {
       // Observation is downstream of persistence and cannot stop replication.
+    }
+  }
+
+  /**
+   * Report one settled authoritative outcome to the post-commit fence.
+   *
+   * Every caller has already established that this frame carried the current
+   * committed state — a change that continued or was already held, a matching
+   * resume, an installed snapshot commit — so the pure predicate is here only
+   * to keep a future call site from fencing on a frame the contract excludes.
+   *
+   * A hook that throws leaves this activation unfenced, so the next settled
+   * frame tries again; observation is downstream of persistence and never
+   * fails the session.
+   */
+  private async settled(
+    frame: ReplicationFrame,
+    generation: number,
+  ): Promise<void> {
+    const hook = this.onActivationOutcome;
+    if (hook === undefined || this.fenced || !this.current(generation)) return;
+    if (!satisfiesActivationFence({ frame: frame.type, settled: true })) return;
+    this.fenced = true;
+    try {
+      await hook();
+    } catch {
+      this.fenced = false;
     }
   }
 
@@ -487,7 +600,11 @@ export class ReplicationSession {
     stale: boolean,
     generation: number,
   ): void {
-    if (!this.current(generation)) return;
+    if (!this.current(generation)) {
+      replica.release();
+      return;
+    }
+    this.adopt(replica);
     this.publish({ status: "open", value: valueFrom(identity, replica, stale) });
   }
 
@@ -496,7 +613,11 @@ export class ReplicationSession {
     replica: RestoredReplica,
     generation: number,
   ): void {
-    if (!this.current(generation)) return;
+    if (!this.current(generation)) {
+      replica.release();
+      return;
+    }
+    this.adopt(replica);
     this.publish({
       status: "connecting",
       value: valueFrom(identity, replica, true),
@@ -570,6 +691,7 @@ export class ReplicationSession {
         }
         const restored = await this.confirmedCandidate(prior);
         this.publishReplica(restored.identity, restored, false, generation);
+        await this.settled(frame, generation);
         return false;
       }
       case "change": {
@@ -581,17 +703,20 @@ export class ReplicationSession {
         // validated at open. This path has not: a metadata-only candidate is
         // the first time this partition is touched, and the change is about to
         // be combined with a journal nothing has checked. Validate it first —
-        // the result is discarded, since the change supersedes it.
-        await this.confirmedCandidate(prior);
+        // the result is discarded, since the change supersedes it, so its
+        // retention is released rather than leaked.
+        (await this.confirmedCandidate(prior)).release();
         if (!this.current(generation)) return false;
         const installed = await this.storage.applyChange(frame, {
           signal: this.controller.signal,
           lease: this.lease,
         });
         if (installed === undefined || installed.revision !== frame.revision) {
+          installed?.release();
           throw new Error("authenticated change did not continue the cache candidate");
         }
         this.publishReplica(frame.identity, installed, false, generation);
+        await this.settled(frame, generation);
         return false;
       }
       case "reset":
@@ -604,12 +729,13 @@ export class ReplicationSession {
           throw new Error("authenticated candidate action disagrees with its frame");
         }
         // Validate — and if it comes to it, quarantine — the committed value
-        // before this frame stages its replacement. Quarantine removes the
-        // partition's staging along with everything else, so running it
-        // afterwards would delete the staging record this very snapshot is
-        // being written into, and its commit could never install. Doing it
-        // first also lets the new staging record observe the absent committed
-        // revision as its base, so the commit is unconditionally installable.
+        // before this frame stages its replacement. Quarantine leaves staging
+        // alone, but it does remove the committed manifest, so running it
+        // afterwards would move the base revision out from under a staging
+        // record already opened against it and that snapshot's commit could
+        // never install. Doing it first lets the new staging record observe the
+        // absent committed revision as its base instead, so the commit is
+        // unconditionally installable.
         const restored = restoredReplica(
           await this.storage.restoreOutcome(
             frame.identity,
@@ -617,9 +743,15 @@ export class ReplicationSession {
             this.readCompatibilityHash,
           ),
         );
-        if (!this.current(generation)) return false;
+        if (!this.current(generation)) {
+          restored?.release();
+          return false;
+        }
         const terminal = await this.accept(frame, generation);
-        if (terminal || !this.current(generation)) return terminal;
+        if (terminal || !this.current(generation)) {
+          restored?.release();
+          return terminal;
+        }
         // A quarantined partition simply publishes nothing here; the snapshot
         // this response is already sending replaces it.
         if (restored !== undefined) {
@@ -690,15 +822,29 @@ export class ReplicationSession {
           this.attributes,
           { signal: this.controller.signal, lease: this.lease },
         );
-        if (installed !== undefined && installed.revision === frame.revision) {
+        if (installed === undefined) return false;
+        if (installed.revision === frame.revision) {
           this.publishReplica(frame.identity, installed, false, generation);
+          await this.settled(frame, generation);
+        } else {
+          // A lost CAS: the value is not the one this frame names, so it is
+          // never published and its retention is released rather than leaked.
+          // It settles nothing either: this session installed no outcome, and
+          // the next one on this activation will fence.
+          installed.release();
         }
         return false;
       }
       case "Change": {
         const prior = this.state.value;
         const disposition = classifyReplicationChange(prior, frame);
-        if (disposition === "duplicate") return false;
+        if (disposition === "duplicate") {
+          // The server acknowledged, on *this* activation, a revision this
+          // replica already holds. Nothing to install, but the causal fact the
+          // fence needs is exactly the same one an applied change carries.
+          await this.settled(frame, generation);
+          return false;
+        }
         if (disposition === "gap") {
           throw new Error("replication change does not continue the committed revision");
         }
@@ -706,8 +852,16 @@ export class ReplicationSession {
           signal: this.controller.signal,
           lease: this.lease,
         });
-        if (installed !== undefined && installed.revision === frame.revision) {
+        if (installed === undefined) return false;
+        if (installed.revision === frame.revision) {
           this.publishReplica(frame.identity, installed, false, generation);
+          await this.settled(frame, generation);
+        } else {
+          // A lost CAS: the value is not the one this frame names, so it is
+          // never published and its retention is released rather than leaked.
+          // It settles nothing either; the next outcome on this activation
+          // will fence.
+          installed.release();
         }
         return false;
       }
@@ -724,6 +878,7 @@ export class ReplicationSession {
           status: "open",
           value: Object.freeze({ ...prior, stale: false }),
         });
+        await this.settled(frame, generation);
         return false;
       }
       case "KeepAlive":

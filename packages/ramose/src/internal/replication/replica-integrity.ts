@@ -63,6 +63,21 @@ export type ReplicaManifest = {
   readonly attributeIds: readonly (readonly [string, number])[];
   readonly roots: Roots;
   readonly nextLocalId: number;
+  /**
+   * Unique to the act of installing this record, not to the value it holds.
+   *
+   * Two installs of the same revision produce identical roots, identical maps,
+   * and identical sizes, so nothing else in the record can tell them apart —
+   * and the one case where that matters is a repair: a restore refuses a
+   * partition whose node was damaged, and while it is deciding, another
+   * session re-installs the very same revision and rewrites the damaged node
+   * under its own address. Without this field the quarantine CAS would
+   * conclude it is still looking at the manifest it refused and withdraw a
+   * healthy one. Records written before this field existed carry none, and
+   * {@link replicaManifestFingerprint} reads an absent field as `null`, which
+   * leaves their behavior exactly as it was.
+   */
+  readonly installId?: string | undefined;
 };
 
 /**
@@ -158,6 +173,15 @@ export type ReplicaRestoreOutcome<A> =
   | { readonly _tag: "restored"; readonly replica: A }
   /** Nothing is stored for this selection. Not an error; snapshot from scratch. */
   | { readonly _tag: "absent" }
+  /**
+   * The partition is intact and probably still holds exactly what was asked
+   * for, but it kept moving — an install, or a sweep of the roots that install
+   * superseded — for every attempt this restore was willing to make. Nothing
+   * was refused and nothing was withdrawn; opening again is the whole remedy.
+   * It is deliberately distinct from `absent`, which asserts that nothing is
+   * stored, so a caller can never mistake contention for an empty partition.
+   */
+  | { readonly _tag: "contended"; readonly partition: string; readonly attempts: number }
   /** The partition was quarantined; the caller must re-snapshot it. */
   | {
     readonly _tag: "replacement-required";
@@ -178,6 +202,11 @@ export const replicaRestored = <A>(replica: A): ReplicaRestoreOutcome<A> =>
 
 export const replicaAbsent = <A>(): ReplicaRestoreOutcome<A> =>
   Object.freeze({ _tag: "absent" });
+
+export const replicaContended = <A>(
+  partition: string,
+  attempts: number,
+): ReplicaRestoreOutcome<A> => Object.freeze({ _tag: "contended", partition, attempts });
 
 /** Build the outcome a reason implies, so classification lives in one place. */
 export const replicaUnusable = <A>(
@@ -314,6 +343,15 @@ export const replicaManifestIdentity = (
  * changes on every install and is cheap to compare; the datom journal is not.
  * Unreadable fields become explicit nulls so a damaged record still compares
  * equal to itself and unequal to a repaired one.
+ *
+ * A re-install of the *same* revision rebuilds identical roots and identical
+ * maps, so the value's own shape cannot separate the refused manifest from a
+ * repaired one written in its place — which is exactly the case a mid-walk
+ * repair produces. {@link ReplicaManifest.installId} is what separates them:
+ * it is unique to the install rather than to the value, so any replacement
+ * this client wrote fails the comparison and the healthy manifest survives.
+ * Records installed before that field existed carry none and compare as `null`
+ * on both sides, which is the behavior they already had.
  */
 export const replicaManifestFingerprint = (record: unknown): string => {
   const manifest = isRecord(record) ? record : {};
@@ -325,9 +363,10 @@ export const replicaManifestFingerprint = (record: unknown): string => {
       const ref = roots[name];
       return isRecord(ref) && typeof ref.hash === "string" ? ref.hash : null;
     }),
-    // A re-install of the same revision rebuilds identical roots, so the shape
-    // of everything else in the record is what separates the manifest that was
-    // refused from a repaired one written in its place.
+    // Unique to the install rather than to the value, so a re-install of the
+    // same revision — the shape a mid-walk repair takes — is distinguishable
+    // from the manifest that was refused. Absent on pre-existing records.
+    typeof manifest.installId === "string" ? manifest.installId : null,
     typeof roots.t === "number" ? roots.t : null,
     typeof manifest.nextLocalId === "number" ? manifest.nextLocalId : null,
     size(manifest.datoms),

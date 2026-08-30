@@ -23,6 +23,7 @@ import {
   type DeployedCatalogDefinitions,
 } from "../authorization/index.ts";
 import { toJson } from "../core/index.ts";
+import { serverSealingKey } from "../replication/identity-root.ts";
 import { dbPrefix, prefixedBucket } from "../storage/index.ts";
 import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
@@ -109,6 +110,10 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
             : { bindings: databaseCatalogBindings }),
           environment: env,
           now: () => host.now(),
+          // The same isolate-cached durable root the Worker derives replication
+          // identities from, so a handle minted here and one carried by logical
+          // replication name the same entity in the same scope (#475).
+          sealing: () => serverSealingKey(env),
         },
       testing?.boundaries,
     );

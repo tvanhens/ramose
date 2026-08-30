@@ -4,17 +4,38 @@ import * as EffectSchema from "effect/Schema";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { schemaTx } from "../../packages/ramose/src/db/internal.ts";
 import {
+  clientRef,
   Entity,
   EntityId as OperationEntityId,
+  isEntityId,
   Schema,
   string,
 } from "ramose/db";
+import { invocationId, type EntityId } from "../../packages/ramose/src/db/refs.ts";
+import { base64Url } from "../../packages/ramose/src/internal/replication/server-identity.ts";
+import {
+  buildOutboxRecord,
+  mappingKey,
+  type OutboxDraft,
+  type OutboxRecord,
+} from "../../packages/ramose/src/internal/replication/outbox.ts";
+import {
+  buildMutationRequest,
+  classifyMutationResponse,
+  substituteMutationRefs,
+} from "../../packages/ramose/src/internal/replication/submission.ts";
+import { submitMutation } from "../../packages/ramose/src/internal/replication/transport.ts";
 import { lowerOwnedOperations } from "../../packages/ramose/src/internal/authorization/authoring/index.ts";
 import {
   CatalogId,
   DigestHex,
 } from "../../packages/ramose/src/internal/authorization/identities.ts";
-import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
+import {
+  json,
+  openEntityHandle,
+  testAdmin,
+  type LocalUrls,
+} from "./fixtures.ts";
 import {
   OperationSchema,
 } from "./operation-catalog.ts";
@@ -116,6 +137,37 @@ const targetedCreateVersion = async (): Promise<string> => {
   return lowered.descriptors[0]!.version as string;
 };
 
+/** The same `/op` boundary, for bodies this contract shapes itself. */
+const invokeWith = async (
+  base: string,
+  database: string,
+  token: string,
+  body: Record<string, unknown>,
+) => json(base, `/db/${database}/op`, {
+  method: "POST",
+  token,
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ ...operationProof, ...body }),
+});
+
+/**
+ * A syntactically valid sealed envelope this server cannot read.
+ *
+ * The preamble is what decides quarantine — byte 0 is the codec version and
+ * bytes 1..17 are the key id in *every* envelope version — so a handle can be
+ * built here without any key material at all, which is exactly the property
+ * that makes the quarantine data-free.
+ */
+const unreadableEntityId = (
+  kind: "codec-version" | "key-epoch",
+): string => {
+  const envelope = new Uint8Array(41);
+  envelope[0] = kind === "codec-version" ? 2 : 1;
+  // A key id no server ever minted, so the epoch cannot match.
+  for (let index = 1; index < 17; index++) envelope[index] = 0xa5;
+  return base64Url(envelope);
+};
+
 const withoutReceipt = (body: Record<string, unknown>) => {
   const { receipt: _receipt, ...rest } = body;
   return rest;
@@ -174,7 +226,14 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { title: "Created" });
       expect(created.status).toBe(200);
-      expect(typeof created.body.result.id).toBe("number");
+      // The opaque server-issued handle, never the private eid (#475).
+      expect(isEntityId(created.body.result.id)).toBe(true);
+      const createdEid = await openEntityHandle(
+        base,
+        database,
+        token,
+        created.body.result.id as string,
+      );
       expect(created.body.receipt).toEqual({
         version: 2,
         invocationId: expect.any(String),
@@ -191,7 +250,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(basis.status).toBe(200);
       const committedT = basis.body.basis.t as number;
 
-      const readBack = await json(base, `/db/${database}/entity/${created.body.result.id}`, {
+      const readBack = await json(base, `/db/${database}/entity/${createdEid}`, {
         token,
         headers: {
           "x-ramose-catalog": operationProof.catalog,
@@ -279,7 +338,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(delivered.every((response) => response.status === 200)).toBe(true);
       const first = delivered[0]!.body;
-      expect(typeof first.result.id).toBe("number");
+      expect(isEntityId(first.result.id)).toBe(true);
       expect(first.receipt).toEqual({
         version: 2,
         invocationId,
@@ -292,7 +351,9 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       const beforeRestart = await testAdmin(base, database, "/query", {
         query: '[:find ?e :where [?e :nativeItem/title "Exactly once"]]',
       });
-      expect(beforeRestart.body.result).toEqual([[first.result.id]]);
+      expect(beforeRestart.body.result).toEqual([[
+        await openEntityHandle(base, database, token, first.result.id as string),
+      ]]);
 
       const aborted = await testAdmin(base, database, "/abort", {
         target: "transactor",
@@ -459,7 +520,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         invocationId,
       );
       expect(replayed.status).toBe(200);
-      expect(typeof replayed.body.result.id).toBe("number");
+      expect(isEntityId(replayed.body.result.id)).toBe(true);
       expect(replayed.body.receipt).toEqual({
         version: 2,
         invocationId,
@@ -468,7 +529,9 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       const committed = await testAdmin(base, database, "/query", {
         query: '[:find ?e :where [?e :nativeItem/title "Lost acknowledgement"]]',
       });
-      expect(committed.body.result).toEqual([[replayed.body.result.id]]);
+      expect(committed.body.result).toEqual([[
+        await openEntityHandle(base, database, token, replayed.body.result.id as string),
+      ]]);
     });
 
     test("authorization-scope changes conflict instead of replaying or executing", async () => {
@@ -536,11 +599,20 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         undefined,
         invocationId,
       );
+      // Byte-identical, including the sealed handle: an ordinary token
+      // refresh changes `iat`/`exp`, which the scope deliberately excludes.
       expect(replayed.body).toEqual(completed.body);
       const committed = await testAdmin(base, database, "/query", {
         query: '[:find ?e :where [?e :nativeItem/title "Scoped result"]]',
       });
-      expect(committed.body.result).toEqual([[completed.body.result.id]]);
+      expect(committed.body.result).toEqual([[
+        await openEntityHandle(
+          base,
+          database,
+          member,
+          completed.body.result.id as string,
+        ),
+      ]]);
     });
 
     test("the first exact retry lazily recovers an isolate-lost claim without execution", async () => {
@@ -807,7 +879,12 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { name: "Hidden" });
       expect(created.status).toBe(200);
-      const hiddenId = created.body.result.id as number;
+      const hiddenId = await openEntityHandle(
+        base,
+        database,
+        member,
+        created.body.result.id as string,
+      );
 
       const ordinaryRead = await json(base, `/db/${database}/entity/${hiddenId}`, {
         token: member,
@@ -983,10 +1060,18 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         query: "[:find ?e :where [?e :nativeItem/title ?title]]",
       });
       expect(beforeRefCodec.status).toBe(200);
+      // An entity-reference *input* position still takes the private eid: only
+      // the invocation target and client-visible output are opaque today.
+      const firstUniqueEid = await openEntityHandle(
+        base,
+        database,
+        token,
+        firstUnique.body.result.id as string,
+      );
       const invalidRef = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "refFieldCodec",
-      }, { kind: "invalid", id: firstUnique.body.result.id }, item.body.result.id);
+      }, { kind: "invalid", id: firstUniqueEid }, item.body.result.id);
       expect(invalidRef.status).toBe(400);
       expect(invalidRef.body).toMatchObject({
         error: "invalid request",
@@ -996,7 +1081,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       const refCrashed = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "refFieldCodec",
-      }, { kind: "crash", id: firstUnique.body.result.id }, item.body.result.id);
+      }, { kind: "crash", id: firstUniqueEid }, item.body.result.id);
       expect(refCrashed.status).toBe(500);
       expect(refCrashed.body).toMatchObject({
         error: "internal error",
@@ -1298,5 +1383,591 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       });
       expect(rows.body.result.length).toBe(1);
     });
+
+    describe("opaque targets and exact allocation mappings", () => {
+      const createItem = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "createAllocating",
+      };
+      const renameItem = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "rename",
+      };
+
+      test("a create with slots returns exact sealed mappings, and an exact replay returns the identical ones", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-allocation-mappings";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_allocations");
+        const ref = clientRef();
+        const invocationId = "allocation-invocation-01";
+        const body = {
+          invocationId,
+          operation: createItem,
+          input: { title: "Allocated" },
+          allocations: [{ slot: "item", clientRef: ref }],
+        };
+
+        const created = await invokeWith(base, database, token, body);
+        expect(created.status).toBe(200);
+        expect(created.body.mappings).toEqual([
+          { clientRef: ref, entityId: expect.any(String) },
+        ]);
+        const entityId = created.body.mappings[0].entityId as string;
+        // A sealed handle, never a numeric eid, and never the slot name.
+        expect(isEntityId(entityId)).toBe(true);
+        expect(JSON.stringify(created.body.mappings)).not.toContain("item");
+        // One entity is one handle: the mapping and the sealed output position
+        // that named the same allocated entity are byte-identical (#475).
+        expect(created.body.result.id).toBe(entityId);
+        // And the frozen rule itself, checked against the private eid the real
+        // resolver hands back: no numeric eid crosses the operation boundary.
+        const allocatedEid = await openEntityHandle(
+          base,
+          database,
+          token,
+          entityId,
+        );
+        expect(JSON.stringify(created.body)).not.toContain(String(allocatedEid));
+
+        const receiptsBefore = await operationReceiptCount(base, database);
+        // The lost-acknowledgement retry: #487's exact replay, extended with
+        // the same mappings and no second commit.
+        const replayed = await invokeWith(base, database, token, body);
+        expect(replayed.status).toBe(200);
+        expect(replayed.body).toEqual(created.body);
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Allocated"]]',
+        });
+        expect(rows.body.result.length).toBe(1);
+
+        // Reusing the id while promising the slot to a *different* durable
+        // client identity is the ordinary invocation conflict, not a silent
+        // rebinding of a client ref to a different entity.
+        const rebound = await invokeWith(base, database, token, {
+          ...body,
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(rebound.status).toBe(409);
+        expect(rebound.body).toEqual({
+          error: "request rejected",
+          code: "invocation_conflict",
+        });
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+      });
+
+      test("a sealed target resolves, and admission is rerun against the resolved entity", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-target";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_sealed_target");
+        const created = await invokeWith(base, database, token, {
+          invocationId: "sealed-target-create-01",
+          operation: createItem,
+          input: { title: "Sealed" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+        const entityId = created.body.mappings[0].entityId as string;
+
+        const renamed = await invokeWith(base, database, token, {
+          invocationId: "sealed-target-rename-01",
+          operation: renameItem,
+          target: entityId,
+          input: { title: "Renamed through a sealed handle" },
+        });
+        expect(renamed.status).toBe(200);
+        expect(renamed.body.result.title).toBe("Renamed through a sealed handle");
+
+        // Resolution grants nothing. Once the entity is gone, the same handle
+        // still opens deterministically and ordinary target visibility refuses
+        // exactly as it would for the numeric eid.
+        const deleted = await invokeWith(base, database, token, {
+          invocationId: "sealed-target-delete-01",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeItem" },
+            localName: "deleteAndEchoTitle",
+          },
+          target: entityId,
+          input: {},
+        });
+        expect(deleted.status).toBe(200);
+        const afterDelete = await invokeWith(base, database, token, {
+          invocationId: "sealed-target-rename-02",
+          operation: renameItem,
+          target: entityId,
+          input: { title: "Should never land" },
+        });
+        expect(afterDelete.status).toBe(403);
+
+        // Malformed, tampered, and foreign handles are all the same sealed
+        // denial — a truncated or non-canonical handle must be
+        // indistinguishable from a wrong-scope or unauthorized one, so none of
+        // them may come back as a shape complaint.
+        const tampered = `${entityId.slice(0, 30)}${entityId[30] === "A" ? "B" : "A"}${entityId.slice(31)}`;
+        for (const [label, target] of [
+          ["tampered", tampered],
+          ["truncated", entityId.slice(0, 40)],
+          ["non-base64url", `${"!".repeat(54)}A`],
+          ["empty", ""],
+        ] as const) {
+          const forged = await invokeWith(base, database, token, {
+            invocationId: `sealed-target-forged-${label}`,
+            operation: renameItem,
+            target,
+            input: { title: "Should never land" },
+          });
+          expect([label, forged.status]).toEqual([label, 403]);
+        }
+      });
+
+      test("a target the caller may not read fails sealed even though its handle resolves", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-hidden";
+        await install(base, database);
+        // `nativeOther` is readable by `reader` only, while both operations
+        // below are invocable by `member`: the member mints a handle it can
+        // never target, so resolution succeeding is not visibility.
+        const token = await signToken(database, "member", "user_sealed_hidden");
+        const created = await invokeWith(base, database, token, {
+          invocationId: "sealed-hidden-create-01",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeOther" },
+            localName: "createAllocating",
+          },
+          input: { name: "hidden-other" },
+          allocations: [{ slot: "other", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+        const entityId = created.body.mappings[0].entityId as string;
+
+        const renamed = await invokeWith(base, database, token, {
+          invocationId: "sealed-hidden-rename-01",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeOther" },
+            localName: "rename",
+          },
+          target: entityId,
+          input: { name: "should-never-land" },
+        });
+        expect(renamed.status).toBe(403);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeOther/name "should-never-land"]]',
+        });
+        expect(rows.body.result).toEqual([]);
+      });
+
+      test("an unreadable codec version or key epoch quarantines data-free", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-quarantine";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_sealed_quarantine");
+        const receiptsBefore = await operationReceiptCount(base, database);
+        for (const kind of ["codec-version", "key-epoch"] as const) {
+          const quarantined = await invokeWith(base, database, token, {
+            invocationId: `sealed-quarantine-${kind}`,
+            operation: renameItem,
+            target: unreadableEntityId(kind),
+            input: { title: "Should never land" },
+          });
+          expect(quarantined.status).toBe(409);
+          expect(quarantined.body).toEqual({
+            error: "request rejected",
+            code: "invocation_update_required",
+          });
+        }
+        // Data-free and effect-free: nothing was claimed, nothing executed.
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+      });
+
+      test("a cold Worker isolate re-derives the same epoch and scope", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-cold";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_sealed_cold");
+
+        // The Worker derives the scope from its cached root and the writer
+        // seals from its own; the two caches are independent. Discarding the
+        // Worker's forces a fresh derivation against the same durable root,
+        // which is the seam the epoch rule exists to keep coherent — if the
+        // carried key id and the writer's disagreed, this would quarantine
+        // rather than commit.
+        const forget = await testAdmin(base, database, "/server-identity", {
+          action: "forget-isolate-cache",
+        });
+        expect(forget.status).toBe(200);
+
+        const created = await invokeWith(base, database, token, {
+          invocationId: "sealed-cold-create-01",
+          operation: createItem,
+          input: { title: "Cold isolate" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+        const entityId = created.body.mappings[0].entityId as string;
+        expect(isEntityId(entityId)).toBe(true);
+
+        // Cold again, then use the handle the previous (equally cold)
+        // derivation produced: it resolves under the scope this fresh
+        // derivation computes, which is the whole point of binding the two.
+        await testAdmin(base, database, "/server-identity", {
+          action: "forget-isolate-cache",
+        });
+        const renamed = await invokeWith(base, database, token, {
+          invocationId: "sealed-cold-rename-01",
+          operation: renameItem,
+          target: entityId,
+          input: { title: "Renamed after a cold derivation" },
+        });
+        expect(renamed.status).toBe(200);
+
+        // And the exact replay across another cold derivation is byte-identical:
+        // sealing is deterministic in (root, scope, eid), so a restarted isolate
+        // reproduces the same handle rather than minting a second identity.
+        await testAdmin(base, database, "/server-identity", {
+          action: "forget-isolate-cache",
+        });
+        const replayed = await invokeWith(base, database, token, {
+          invocationId: "sealed-cold-create-01",
+          operation: createItem,
+          input: { title: "Cold isolate" },
+          allocations: created.body.mappings.map((mapping: {
+            readonly clientRef: string;
+          }) => ({ slot: "item", clientRef: mapping.clientRef })),
+        });
+        expect(replayed.status).toBe(200);
+        expect(replayed.body.mappings).toEqual(created.body.mappings);
+      });
+
+      test("a slot bound to an entity the commit did not allocate is refused", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-allocation-misbound";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_misallocating");
+        const created = await invokeWith(base, database, token, {
+          invocationId: "allocation-misbound-create-01",
+          operation: createItem,
+          input: { title: "Pre-existing" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+
+        // `misallocating` returns `op.self` at its declared slot path. The
+        // entity is real and visible, and the path is a genuine ref position —
+        // it simply is not one this transaction allocated, so the client would
+        // otherwise bind a fresh, immutable ClientRef to a pre-existing row.
+        const refused = await invokeWith(base, database, token, {
+          invocationId: "allocation-misbound-01",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeItem" },
+            localName: "misallocating",
+          },
+          target: created.body.mappings[0].entityId,
+          input: { title: "Should never land" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(refused.status).toBe(409);
+        expect(refused.body.tag).toBe("OperationRejected");
+        // Refused before the commit: the write the body attempted is absent.
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Should never land"]]',
+        });
+        expect(rows.body.result).toEqual([]);
+      });
+
+      test("an undeclared slot is refused before the operation body runs", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-allocation-undeclared";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_undeclared_slot");
+        const refused = await invokeWith(base, database, token, {
+          invocationId: "allocation-undeclared-01",
+          operation: createItem,
+          input: { title: "Undeclared" },
+          allocations: [{ slot: "nothingDeclaresThis", clientRef: clientRef() }],
+        });
+        expect(refused.status).toBe(400);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Undeclared"]]',
+        });
+        expect(rows.body.result).toEqual([]);
+      });
+    });
+
+    /**
+     * The offline client's own submission path, end to end.
+     *
+     * The record is a real durable outbox row, built by the same canonical
+     * builder the browser queue writes through; the request is the one
+     * `buildMutationRequest` produces; the transport is the real `submitMutation`
+     * over `fetch`; and the answers are the real deployed Worker's. Nothing is
+     * scripted, so the classification table is proven against the responses the
+     * server actually sends rather than against an imagined vocabulary.
+     */
+    describe("offline client submission through the real transport", () => {
+      const RECEIVER = Object.freeze({
+        server: "s".repeat(43),
+        principal: "p".repeat(43),
+        database: "d".repeat(43),
+      });
+
+      const endpointFor = (base: string, database: string, token: string) =>
+        Object.freeze({
+          origin: new URL(base).origin,
+          database,
+          graphPath: [] as readonly string[],
+          credential: token,
+          catalog: operationProof.catalog,
+          unitHash: operationProof.unitHash,
+        });
+
+      const queued = (
+        version: string,
+        overrides: Partial<OutboxDraft> = {},
+      ): OutboxRecord =>
+        buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "createAllocating",
+          },
+          operationVersion: version as never,
+          target: { type: "none" },
+          input: { title: "Queued offline" },
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_000,
+          ...overrides,
+        }, "scope", 1);
+
+      /**
+       * The classification, and the raw answer it came from.
+       *
+       * The raw answer is kept so an unexpected classification names the status
+       * and body the server actually sent. A bare "expected Committed, received
+       * Retry" says nothing about which 5xx produced it, and a `/op` answer this
+       * contract did not anticipate is exactly the thing worth seeing.
+       */
+      const submitRaw = async (
+        record: OutboxRecord,
+        endpoint: ReturnType<typeof endpointFor>,
+        handles: ReadonlyMap<string, EntityId> = new Map(),
+      ) => {
+        const substituted = substituteMutationRefs(record, handles);
+        expect(substituted).toBeDefined();
+        const response = await submitMutation(
+          buildMutationRequest(record, endpoint, substituted!),
+        );
+        return {
+          acknowledgement: classifyMutationResponse(record, response),
+          raw: JSON.stringify(response),
+        };
+      };
+
+      const submit = async (
+        record: OutboxRecord,
+        endpoint: ReturnType<typeof endpointFor>,
+        handles: ReadonlyMap<string, EntityId> = new Map(),
+      ) => (await submitRaw(record, endpoint, handles)).acknowledgement;
+
+      /**
+       * Submit until the queue reaches an answer it would act on.
+       *
+       * `Retry` is *defined* as non-terminal: the record stays queued and the
+       * driver asks again. A test that demanded a terminal answer from the
+       * first attempt would be asserting something stronger than the contract,
+       * and would fail on any transient the contract already covers — a
+       * momentarily unreachable sealing root, a restarting Durable Object. What
+       * the contract does promise is that the answer eventually reached is
+       * exact and idempotent, which is what the callers below assert.
+       */
+      const submitUntilTerminal = async (
+        record: OutboxRecord,
+        endpoint: ReturnType<typeof endpointFor>,
+        handles: ReadonlyMap<string, EntityId> = new Map(),
+      ) => {
+        const seen: string[] = [];
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const result = await submitRaw(record, endpoint, handles);
+          seen.push(result.raw);
+          if (result.acknowledgement._tag !== "Retry") {
+            return { ...result, seen: seen.join(" | ") };
+          }
+          await Bun.sleep(100);
+        }
+        throw new Error(`submission never left Retry: ${seen.join(" | ")}`);
+      };
+
+      test("a queued create commits, and the lost-ack retry returns the identical mappings", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-client-submission";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_client_submit");
+        const endpoint = endpointFor(base, database, token);
+        const version = (await otherDeploymentVersions())
+          .get("nativeItem/createAllocating")!;
+        const ref = clientRef();
+        const record = queued(version, {
+          allocations: [{ slot: "item", clientRef: ref }],
+        });
+
+        const first = await submitUntilTerminal(record, endpoint);
+        const committed = first.acknowledgement;
+        expect([first.seen, committed._tag]).toEqual([first.seen, "Committed"]);
+        if (committed._tag !== "Committed") throw new Error("expected a commit");
+        expect(committed.mappings).toHaveLength(1);
+        expect(committed.mappings[0]!.clientRef).toBe(ref);
+        expect(isEntityId(committed.mappings[0]!.entityId)).toBe(true);
+
+        const receiptsBefore = await operationReceiptCount(base, database);
+        // The acknowledgement this client never received: resubmitting the same
+        // durable row consumes #487's exact replay. However many times it takes
+        // to get an answer, the answer is byte-identical and commits nothing
+        // further — that idempotence is the whole contract.
+        const replayed = await submitUntilTerminal(record, endpoint);
+        expect([replayed.seen, replayed.acknowledgement])
+          .toEqual([replayed.seen, committed]);
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Queued offline"]]',
+        });
+        expect(rows.body.result.length).toBe(1);
+
+        // A dependent record submits the sealed handle in place of the ref,
+        // exactly as the queue would once the mapping is durable.
+        const dependent = buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "rename",
+          },
+          operationVersion: (await otherDeploymentVersions())
+            .get("nativeItem/rename")! as never,
+          target: { type: "client-ref", clientRef: ref },
+          input: { title: "Renamed through the queue" },
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_001,
+        }, "scope", 2);
+        expect(substituteMutationRefs(dependent, new Map())).toBeUndefined();
+        const renamed = await submitUntilTerminal(
+          dependent,
+          endpoint,
+          new Map([[
+            mappingKey(dependent.partition, ref),
+            committed.mappings[0]!.entityId as EntityId,
+          ]]),
+        );
+        expect([renamed.seen, renamed.acknowledgement]).toMatchObject([
+          renamed.seen,
+          { _tag: "Committed", output: { title: "Renamed through the queue" } },
+        ]);
+      });
+
+      test("every non-terminal and terminal answer classifies from the real Worker", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-client-answers";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_client_answers");
+        const endpoint = endpointFor(base, database, token);
+        const versions = await otherDeploymentVersions();
+        const version = versions.get("nativeItem/createAllocating")!;
+        const ref = clientRef();
+        const record = queued(version, {
+          allocations: [{ slot: "item", clientRef: ref }],
+        });
+        expect((await submitUntilTerminal(record, endpoint)).acknowledgement._tag).toBe("Committed");
+
+        // Same id, a different durable client identity for the slot.
+        const rebound = buildOutboxRecord({
+          invocation: record.invocation,
+          receiver: RECEIVER,
+          operation: record.operation,
+          operationVersion: record.operationVersion,
+          target: { type: "none" },
+          input: record.input,
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_002,
+        }, "scope", 1);
+        expect((await submitUntilTerminal(rebound, endpoint)).acknowledgement)
+          .toEqual({ _tag: "Rejected", code: "invocation_conflict" });
+
+        // A queued invocation pinned to a contract the deployment has moved
+        // past: non-terminal, typed, and never a silent drop.
+        const stale = queued(versions.get("nativeItem/create")!, {
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect((await submitUntilTerminal(stale, endpoint)).acknowledgement)
+          .toEqual({ _tag: "UpdateRequired", reason: "operation-changed" });
+
+        // An unreadable sealing epoch reaches the same non-terminal state
+        // through a different code, and still commits nothing.
+        const quarantined = buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "rename",
+          },
+          operationVersion: versions.get("nativeItem/rename")! as never,
+          target: {
+            type: "entity",
+            entityId: unreadableEntityId("key-epoch") as EntityId,
+          },
+          input: { title: "Should never land" },
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_003,
+        }, "scope", 3);
+        expect((await submitUntilTerminal(quarantined, endpoint)).acknowledgement).toEqual({
+          _tag: "UpdateRequired",
+          reason: "invocation-update-required",
+        });
+
+        // A refusal the server bound to a durable receipt is terminal: the
+        // operation body refused, after the claim, so replaying returns the
+        // same answer forever.
+        const refused = buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "reject",
+          },
+          operationVersion: versions.get("nativeItem/reject")! as never,
+          target: { type: "none" },
+          input: {},
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_004,
+        }, "scope", 4);
+        expect((await submitUntilTerminal(refused, endpoint)).acknowledgement)
+          .toEqual({ _tag: "Rejected", code: "operation_rejected" });
+
+        // A refusal the server reached *before* writing any receipt carries
+        // none, and must never remove durable work — the same shape the Worker
+        // answers when a lease expires between the commit and the response.
+        const unproven = await submit(queued(version), {
+          ...endpoint,
+          credential: await signToken(database, "reader", "user_client_reader"),
+        });
+        expect(unproven._tag).toBe("Retry");
+
+        // And an unreachable peer is the one answer that must be asked again.
+        expect(await submit(queued(version), {
+          ...endpoint,
+          origin: "http://127.0.0.1:1",
+        })).toEqual({ _tag: "Retry", reason: "unreachable" });
+      });
+    });
+
   });
 };

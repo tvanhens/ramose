@@ -17,6 +17,7 @@ import {
   readReplicationNdjson,
   type ObservedReplicationFrame,
 } from "../support/replication.ts";
+import { closeObservedStream, type CancellableStream } from "../support/stream.ts";
 import {
   CONFORMANCE_DATABASES,
   ConformanceIssue,
@@ -104,7 +105,8 @@ const titlesOf = (state: ClientReplicationState): string[] =>
     .map((datom) => datom.value.value as string)
     .sort();
 
-const observed = async (
+/** Read one frame, bounded. Every frame read in these suites goes through this. */
+export const observed = async (
   iterator: AsyncIterator<ObservedReplicationFrame>,
   label: string,
 ): Promise<ObservedReplicationFrame> => {
@@ -113,11 +115,9 @@ const observed = async (
   return next.value;
 };
 
-export const closeIterator = async (
-  iterator: AsyncIterator<ObservedReplicationFrame>,
-): Promise<void> => {
-  await iterator.return?.(undefined);
-};
+export const closeIterator = (
+  iterator: AsyncIterator<ObservedReplicationFrame> & CancellableStream,
+): Promise<void> => closeObservedStream(iterator);
 
 const waitForCheckpoint = async (
   base: string,

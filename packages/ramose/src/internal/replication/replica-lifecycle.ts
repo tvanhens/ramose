@@ -29,6 +29,13 @@
 import * as Data from "effect/Data";
 import { REPLICA_STORAGE_VERSION, type ReplicationIdentity } from "./protocol.ts";
 
+/**
+ * The durable generation store. Named here rather than in the storage adapter
+ * because every family that must be fenced — the committed replica and, since
+ * #475, the mutation queue — names the same store inside its own write.
+ */
+export const REPLICA_GENERATIONS_STORE = "replica-generations-v1";
+
 /** One server/authenticated-principal realm. Both halves are server-minted. */
 export type ReplicaScope = {
   readonly server: string;
@@ -86,6 +93,24 @@ export const replicaPartitionKey = (identity: ReplicationIdentity): string =>
     identity.readView,
     identity.readCompatibilityHash,
   ].join(":");
+
+/**
+ * The scope key owning one partition key, when the string really is one.
+ *
+ * A sweep records its generation against a partition it may only know as a
+ * stored key — a quarantined partition has no manifest left to name its
+ * identity — so the owning scope has to be recovered from the key itself.
+ * That is sound because the components are fixed-shape opaque identifiers that
+ * never contain the separator: a partition key splits into exactly the version
+ * tag and its five components, and anything else is not one.
+ */
+export const replicaPartitionScopeKey = (partition: string): string | undefined => {
+  const parts = partition.split(":");
+  if (parts.length !== 6 || parts[0] !== `ramose-replica-v${REPLICA_STORAGE_VERSION}`) {
+    return undefined;
+  }
+  return replicaScopeKey({ server: parts[1], principal: parts[2] });
+};
 
 /** Prefix owning every partition of one server/principal scope. */
 export const replicaScopePartitionPrefix = (scope: ReplicaScope): string =>

@@ -92,8 +92,15 @@ const ENVELOPE_BYTES = 1 + KEY_ID_BYTES + SIV_BYTES + EID_BYTES;
 const SIV_AT = 1 + KEY_ID_BYTES;
 const SEALED_AT = SIV_AT + SIV_BYTES;
 
-/** Canonical unpadded base64url of exactly {@link ENVELOPE_BYTES} bytes. */
-export const SEALED_ENTITY_ID_PATTERN = /^[A-Za-z0-9_-]{55}$/;
+/**
+ * Canonical unpadded base64url of exactly {@link ENVELOPE_BYTES} bytes.
+ *
+ * The final character's low two bits are padding over 41 bytes, so only the
+ * sixteen alphabet positions divisible by four appear there. `openEntityId`
+ * enforces this anyway by re-encoding, but the pattern is the shape callers
+ * check *before* they persist a handle, so it states the same rule.
+ */
+export const SEALED_ENTITY_ID_PATTERN = /^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/;
 
 /** Fixed, non-secret HKDF salt. Domain separation lives in the info strings. */
 const HKDF_SALT = utf8.encode("ramose:entity-id:v1");

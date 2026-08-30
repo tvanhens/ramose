@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
+import { clientRef, ENTITY_ID_CODEC } from "../../../src/db/refs.ts";
+import { sealEntityId } from "../../../src/internal/replication/entity-id.ts";
+import { base64Url } from "../../../src/internal/replication/server-identity.ts";
 import {
+  allocationMappingsResolvable,
   CatalogId,
   CatalogUnitHash,
   DatabaseId,
@@ -19,6 +23,28 @@ import {
 } from "../../../src/internal/authorization/index.ts";
 
 const unitHash = CatalogUnitHash.make("ab".repeat(32));
+const allocatedRef = clientRef();
+const idScope = Object.freeze({
+  server: "srv",
+  principal: "prn",
+  database: "dbs",
+});
+/** The epoch the fixture mappings record, and one that is not it. */
+const fixtureEpoch = Object.freeze({
+  keyId: "AAECAwQFBgcICQoLDA0ODw",
+  material: "c2VhbGluZy1tYXRlcmlhbC1mb3ItcmVjZWlwdC1maXh0dXJlcw",
+});
+const otherEpoch = Object.freeze({
+  keyId: "EBESExQVFhcYGRobHB0eHw",
+  material: "YW5vdGhlci1zZWFsaW5nLXJvb3QtZm9yLXJlY2VpcHQtdGVzdHM",
+});
+const otherAllocatedRef = clientRef();
+/**
+ * A genuinely sealed handle, not a synthetic 55-character string: the durable
+ * mapping check reads each handle's own preamble for the codec version and the
+ * key epoch, so only a real one can stand in for a stored mapping.
+ */
+const sealedEntityId = await sealEntityId(fixtureEpoch, idScope, 4242);
 const operationVersion = OperationVersion.make("1f".repeat(32));
 const otherOperationVersion = OperationVersion.make("2e".repeat(32));
 
@@ -169,6 +195,38 @@ describe("authoritative invocation receipt identity", () => {
     expect(material).not.toContain(unitHash);
     expect(material).not.toContain("catalogKey");
   });
+
+  test("the allocation binding is covered, and an empty one leaves the digest untouched", async () => {
+    const base = await prepare(invocation());
+    // The extension has to be absence-preserving: every receipt already stored
+    // was digested without it, and adding a field unconditionally would turn a
+    // lost acknowledgement into a conflict instead of an exact replay.
+    expect((await prepare(invocation({ allocations: [] }))).invocationDigest)
+      .toBe(base.invocationDigest);
+    expect(
+      invocationDigestMaterial(invocation({ allocations: [] }), operationVersion),
+    ).not.toHaveProperty("allocations");
+
+    const bound = invocation({
+      allocations: [{ slot: "item", clientRef: allocatedRef }],
+    });
+    const withBinding = await prepare(bound);
+    expect(withBinding.invocationDigest).not.toBe(base.invocationDigest);
+    expect(invocationDigestMaterial(bound, operationVersion)).toMatchObject({
+      allocations: [{ slot: "item", clientRef: allocatedRef }],
+    });
+
+    // The same invocation id promised to a *different* durable client identity
+    // is a different intent, so #487's ordinary conflict applies.
+    const rebound = await prepare(invocation({
+      allocations: [{ slot: "item", clientRef: otherAllocatedRef }],
+    }));
+    expect(rebound.invocationDigest).not.toBe(withBinding.invocationDigest);
+    expect(decideInvocationReceipt(
+      { ...withBinding, status: "failed" },
+      rebound,
+    )._tag).toBe("Conflict");
+  });
 });
 
 describe("authoritative invocation receipt state machine", () => {
@@ -312,6 +370,218 @@ describe("authoritative invocation receipt serialization", () => {
     expect(publicText).not.toContain("committedT");
     expect(publicText).not.toContain("replayFence");
     expect(publicText).not.toContain("receipts");
+  });
+
+  test("output entity-reference positions round-trip, and an unaddressable one is refused", () => {
+    const claim = decideInvocationReceipt(undefined, preparedFixture());
+    if (claim._tag !== "Claim") throw new Error("expected claim");
+    const completed = transitionInvocationReceipt(claim.receipt, {
+      _tag: "Complete",
+      committedT: 42,
+      output: { id: 1001, rows: [1002] },
+      replayFence,
+    });
+    if (completed.status !== "completed") throw new Error("expected completion");
+    // Where the public projection must seal, carried over the internal hop and
+    // never onto a response. The durable output keeps its resolved eids.
+    const outcome = {
+      ...invocationReceiptOutcome(completed),
+      outputRefPaths: [["id"], ["rows", 0]],
+    };
+    const wire = JSON.parse(JSON.stringify(outcome));
+    expect(parseAuthoritativeInvocationResult(wire, "invocation-01"))
+      .toEqual(outcome);
+    // A path this build cannot follow is refused rather than skipped: skipping
+    // one would publish the raw eid it names.
+    // An empty path is addressable — it names the whole output — but an empty
+    // *list* is not: the field is omitted when nothing needs sealing.
+    expect(
+      parseAuthoritativeInvocationResult(
+        { ...wire, outputRefPaths: [[]] },
+        "invocation-01",
+      ),
+    ).toMatchObject({ outputRefPaths: [[]] });
+    for (const bad of [[], [[""]], [[-1]], [[1.5]], [[{}]], "id"]) {
+      expect(() =>
+        parseAuthoritativeInvocationResult(
+          { ...wire, outputRefPaths: bad },
+          "invocation-01",
+        )
+      ).toThrow(TypeError);
+    }
+  });
+
+  test("the mapping extension round-trips, projects sealed handles, and never admits an eid", async () => {
+    const claim = decideInvocationReceipt(undefined, preparedFixture());
+    if (claim._tag !== "Claim") throw new Error("expected claim");
+    const allocations = {
+      version: 1 as const,
+      keyId: fixtureEpoch.keyId,
+      scope: idScope,
+      entries: [{
+        slot: "item",
+        clientRef: allocatedRef,
+        entityId: sealedEntityId,
+      }],
+    };
+    const completed = transitionInvocationReceipt(claim.receipt, {
+      _tag: "Complete",
+      committedT: 42,
+      output: { id: 1001 },
+      replayFence,
+      allocations,
+    });
+    if (completed.status !== "completed") throw new Error("expected completion");
+    // Same row, same key, same state machine: only the extension is added.
+    expect(completed.allocations).toEqual(allocations);
+    expect(parseStoredInvocationReceipt(JSON.parse(JSON.stringify(completed))))
+      .toEqual(completed);
+
+    const outcome = invocationReceiptOutcome(completed);
+    if (outcome._tag !== "Completed") throw new Error("expected completion");
+    // The slot name stays private to the durable row.
+    expect(outcome.mappings).toEqual([
+      { clientRef: allocatedRef, entityId: sealedEntityId },
+    ]);
+    expect(JSON.stringify(outcome.mappings)).not.toContain("item");
+    expect(parseAuthoritativeInvocationResult(
+      JSON.parse(JSON.stringify(outcome)),
+      "invocation-01",
+    )).toEqual(outcome);
+
+    // A numeric eid can never enter or leave a receipt, even from above.
+    expect(() => parseStoredInvocationReceipt({
+      ...completed,
+      allocations: { ...allocations, entries: [{
+        slot: "item",
+        clientRef: allocatedRef,
+        entityId: 1001,
+      }] },
+    })).toThrow("invalid durable invocation receipt");
+    // A row that does not say which epoch and scope it was sealed under cannot
+    // be checked for resolvability, so it is corruption rather than a replay.
+    expect(() => parseStoredInvocationReceipt({
+      ...completed,
+      allocations: { version: 1, entries: allocations.entries },
+    })).toThrow("invalid durable invocation receipt");
+    expect(() => parseAuthoritativeInvocationResult({
+      ...JSON.parse(JSON.stringify(outcome)),
+      mappings: [{ clientRef: allocatedRef, entityId: 1001 }],
+    }, "invocation-01")).toThrow("invalid authoritative invocation result");
+    // Two slots naming one client ref would make the mapping ambiguous.
+    expect(() => parseStoredInvocationReceipt({
+      ...completed,
+      allocations: {
+        ...allocations,
+        entries: [
+          { slot: "one", clientRef: allocatedRef, entityId: sealedEntityId },
+          { slot: "two", clientRef: allocatedRef, entityId: sealedEntityId },
+        ],
+      },
+    })).toThrow("invalid durable invocation receipt");
+
+    // The stored handles are openable only under the epoch and scope they were
+    // sealed to. A rotated key or a second public origin serving the same
+    // database must not hand back mappings the caller can never resolve.
+    const bound = { keyId: allocations.keyId, scope: allocations.scope };
+    expect(allocationMappingsResolvable(allocations, bound)).toBe(true);
+    // Every handle must say the epoch itself. The recorded `keyId` is not
+    // believed alone, so a row whose epoch was rewritten to the current one
+    // cannot present handles this build has no key for.
+    expect(allocationMappingsResolvable({
+      ...allocations,
+      entries: [{
+        ...allocations.entries[0]!,
+        entityId: await sealEntityId(otherEpoch, idScope, 4242),
+      }],
+    }, bound)).toBe(false);
+    // And a newer codec that keeps this envelope *length* and moves only its
+    // version byte is not merely the right shape — it is unopenable, and the
+    // preamble is where that shows.
+    const futureEnvelope = new Uint8Array(41);
+    futureEnvelope[0] = ENTITY_ID_CODEC + 1;
+    expect(allocationMappingsResolvable({
+      ...allocations,
+      entries: [{
+        ...allocations.entries[0]!,
+        entityId: base64Url(futureEnvelope),
+      }],
+    }, bound)).toBe(false);
+    expect(allocationMappingsResolvable(allocations, {
+      ...bound,
+      keyId: "another-key-epoch",
+    })).toBe(false);
+    for (const component of ["server", "principal", "database"] as const) {
+      expect(allocationMappingsResolvable(allocations, {
+        ...bound,
+        scope: { ...bound.scope, [component]: "elsewhere" },
+      })).toBe(false);
+    }
+  });
+
+  test("a receipt whose handles a newer codec wrote is recognized, not corruption", () => {
+    // A newer entity-id codec wrote this row and the service was then rolled
+    // back. The row must survive its own decoder — throwing would make an
+    // exact retry an internal 500 forever, before the replay decision that
+    // would have told the client to update.
+    const future = "Z".repeat(80);
+    const claim = decideInvocationReceipt(undefined, preparedFixture());
+    if (claim._tag !== "Claim") throw new Error("expected claim");
+    const rolled = {
+      ...transitionInvocationReceipt(claim.receipt, {
+        _tag: "Complete",
+        committedT: 42,
+        output: null,
+        replayFence,
+      }),
+      allocations: {
+        version: 1 as const,
+        keyId: fixtureEpoch.keyId,
+        scope: idScope,
+        entries: [{ slot: "item", clientRef: allocatedRef, entityId: future }],
+      },
+    };
+    const decoded = parseStoredInvocationReceipt(JSON.parse(JSON.stringify(rolled)));
+    expect(decoded).toEqual(rolled as never);
+    // And it is not replayable: this build cannot open those handles, so the
+    // caller is told to update rather than handed something unusable.
+    const stored = decoded as typeof rolled;
+    expect(allocationMappingsResolvable(stored.allocations, {
+      keyId: stored.allocations.keyId,
+      scope: stored.allocations.scope,
+    })).toBe(false);
+    // A numeric eid is still refused outright — that is a type error, not a
+    // codec generation, and no rollback can produce it.
+    expect(() => parseStoredInvocationReceipt({
+      ...rolled,
+      allocations: {
+        ...rolled.allocations,
+        entries: [{ slot: "item", clientRef: allocatedRef, entityId: 1001 }],
+      },
+    })).toThrow("invalid durable invocation receipt");
+  });
+
+  test("a completed receipt written before the mapping extension stays replayable", () => {
+    const claim = decideInvocationReceipt(undefined, preparedFixture());
+    if (claim._tag !== "Claim") throw new Error("expected claim");
+    const completed = transitionInvocationReceipt(claim.receipt, {
+      _tag: "Complete",
+      committedT: 42,
+      output: { id: 1001 },
+      replayFence,
+    });
+    expect(Object.hasOwn(completed, "allocations")).toBe(false);
+    const decoded = parseStoredInvocationReceipt(
+      JSON.parse(JSON.stringify(completed)),
+    );
+    expect(decoded).toEqual(completed);
+    const replay = decideInvocationReceipt(decoded, preparedFixture());
+    expect(replay._tag).toBe("Replay");
+    if (replay._tag !== "Replay") throw new Error("expected replay");
+    expect(replay.receipt).toEqual(decoded as never);
+    const outcome = invocationReceiptOutcome(completed);
+    if (outcome._tag !== "Completed") throw new Error("expected completion");
+    expect(Object.hasOwn(outcome, "mappings")).toBe(false);
   });
 
   test("durable decode preserves exact terminal output and rejects corruption", () => {

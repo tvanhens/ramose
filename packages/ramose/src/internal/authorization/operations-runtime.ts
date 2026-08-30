@@ -84,6 +84,15 @@ import {
   uniqueCanonicalTypeName,
 } from "./read-filter.ts";
 import type { InvocationReplayFenceV1 } from "./invocation-receipts.ts";
+import {
+  allocatedEids,
+  extractAllocations,
+  sealAllocationMappings,
+  type InvocationAllocation,
+  type SealedAllocationMapping,
+} from "./entity-targets.ts";
+import type { EntityIdScope } from "../replication/entity-id.ts";
+import type { ServerSealingKey } from "../replication/server-identity.ts";
 
 const REPLAY_AUTHORIZATION_DIGEST_DOMAIN =
   "ramose/operation-replay-authorization/v1\0";
@@ -103,6 +112,37 @@ export type OperationInvocation = {
    */
   readonly operationVersion?: OperationVersion;
   readonly target?: EntityRef;
+  /**
+   * An opaque sealed `EntityId` naming this invocation's target (#475).
+   * Mutually exclusive with {@link OperationInvocation.target}: the
+   * authoritative edge resolves it under {@link entityIdScope} and *replaces*
+   * `target` with the private eid before anything else runs, so every ordinary
+   * visibility, type, and admission check sees a numeric target exactly as it
+   * always did.
+   */
+  readonly sealedTarget?: string;
+  /**
+   * The stable `{ server, principal, database }` scope the Worker derived from
+   * the authenticated request. Required to open a sealed target and to seal
+   * allocation mappings; it never comes from the request body.
+   */
+  readonly entityIdScope?: EntityIdScope;
+  /**
+   * The sealing key epoch {@link entityIdScope} was derived under.
+   *
+   * Every scope component is a PRF of the durable root, so a handle sealed
+   * under a different epoch but bound to these scope strings could never be
+   * opened again — and the client would already have stored the mapping
+   * durably. The Worker and the writer cache the root in separate isolates, so
+   * a root replacement can leave them briefly disagreeing; the writer compares
+   * this and refuses rather than minting an unopenable handle.
+   */
+  readonly entityIdKeyId?: string;
+  /**
+   * The caller's `{ slot, clientRef }` allocation binding, canonically ordered
+   * by slot name. Covered by the canonical invocation digest (#475).
+   */
+  readonly allocations?: readonly InvocationAllocation[];
   readonly input: unknown;
   readonly caller: AuthenticatedCaller;
   /** Trusted Worker-to-Transactor derivation for a nested dynamic database. */
@@ -114,6 +154,16 @@ export type OperationExecution = {
   readonly output: unknown;
   /** Private data-only replay exemption captured from the staged dbAfter. */
   readonly replayFence: InvocationReplayFenceV1;
+  /**
+   * The exact `{ slot, clientRef, entityId }` mappings for this invocation's
+   * bound allocation slots, already sealed (#475).
+   *
+   * Read *and sealed* inside the pre-commit validator, so a numeric eid never
+   * leaves this boundary and so a sealing failure aborts the staged
+   * transaction instead of leaving the in-memory writer holding a commit the
+   * durable log will never receive.
+   */
+  readonly allocations: readonly SealedAllocationMapping[];
   /** Private lease fence retained by the serialized Transactor only. */
   readonly assertFresh: () => void;
 };
@@ -124,6 +174,13 @@ export type OperationRuntime = {
   readonly bindings?: DatabaseCatalogBindings;
   readonly environment: unknown;
   readonly now: () => number;
+  /**
+   * The durable server sealing root, isolate-cached by the runtime that
+   * supplies it. Only invocations that carry a sealed target or bind an
+   * allocation slot ever ask for it, so the ordinary operation path never
+   * pays for the lookup (#475).
+   */
+  readonly sealing?: () => Promise<ServerSealingKey>;
 };
 
 export type ResolvedOperationCatalog = {
@@ -321,6 +378,19 @@ export const deployedOperationVersion = (
   localName: string,
 ): OperationVersion | undefined =>
   bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.version;
+
+/**
+ * The deployed output shape, which is what decides where an operation's result
+ * holds entity references (#475). The shape is part of the pinned
+ * {@link OperationVersion}, so a receipt this build replays was written against
+ * exactly this shape.
+ */
+export const deployedOperationOutputShape = (
+  resolved: ResolvedOperationCatalog,
+  owner: OwnerRef,
+  localName: string,
+): OperationInputShape | undefined =>
+  bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.output;
 
 const fieldIdent = (field: FieldDescriptor): string =>
   `:${field.id.owner.name}/${field.id.localName}`;
@@ -1598,6 +1668,23 @@ const authorizeCatalogOperationOnDb = async (
     resolvedCatalog,
   );
 
+  // A binding for a slot this operation does not declare can never produce a
+  // mapping, so it is refused before the body runs rather than after a commit.
+  // When the caller pinned an `operationVersion` this is unreachable — the
+  // declaration is part of that digest — so it is the answer for an unpinned
+  // caller whose slot names are simply wrong.
+  for (const allocation of invocation.allocations ?? []) {
+    if (
+      !(descriptor.allocations ?? []).some(
+        (declared) => declared.slot === allocation.slot,
+      )
+    ) {
+      throw new InvalidRequest({
+        message: "operation does not declare this allocation slot",
+      });
+    }
+  }
+
   let target: { readonly eid: number; readonly type: string } | undefined;
   if (descriptor.id.target === "required") {
     if (invocation.target === undefined) throw deny();
@@ -1778,6 +1865,34 @@ export const authorizeCatalogOperationReplay = async (
   );
 };
 
+/**
+ * The sealing root and scope an invocation that binds allocation slots must
+ * have. The Transactor establishes both before the invocation is queued, so a
+ * missing one is an engine defect — and raising it here, inside the pre-commit
+ * validator, aborts the staged transaction rather than stranding it.
+ */
+const requireSealing = (
+  sealing: ServerSealingKey | undefined,
+): ServerSealingKey => {
+  if (sealing === undefined) {
+    throw new OperationRuntimeFault(
+      "allocation",
+      new Error("allocation mappings have no server sealing root"),
+    );
+  }
+  return sealing;
+};
+
+const requireEntityIdScope = (invocation: OperationInvocation): EntityIdScope => {
+  if (invocation.entityIdScope === undefined) {
+    throw new OperationRuntimeFault(
+      "allocation",
+      new Error("allocation mappings have no sealing scope"),
+    );
+  }
+  return invocation.entityIdScope;
+};
+
 /** Execute one invocation while the Transactor's serialized writer owns the basis. */
 export const executeCatalogOperation = async (
   connection: Connection,
@@ -1785,6 +1900,8 @@ export const executeCatalogOperation = async (
   invocation: OperationInvocation,
   resolvedCatalog?: ResolvedOperationCatalog,
   admitted?: CatalogOperationAdmission,
+  /** Required only when this invocation binds allocation slots (#475). */
+  sealing?: ServerSealingKey,
 ): Promise<OperationExecution> => {
   const admission = admitted ?? await authorizeCatalogOperation(
     connection,
@@ -1872,7 +1989,54 @@ export const executeCatalogOperation = async (
         admission,
         report.dbAfter,
       );
-      return { output: encoded, replayFence };
+      // Read the bound allocation slots out of the exact JSON the deployed
+      // codec just materialized, at the entity-reference positions the
+      // *descriptor* declares. Before the commit, so a declaration the
+      // operation's own output does not deliver refuses the invocation
+      // instead of committing an entity no client ref can ever name.
+      const requested = invocation.allocations ?? [];
+      const extraction = extractAllocations(
+        descriptor.allocations ?? [],
+        descriptor.output,
+        encoded,
+        requested,
+        allocatedEids(report.tempids),
+      );
+      if (extraction._tag === "Unallocated") {
+        throw rejected(
+          descriptor,
+          "operation did not allocate a declared client-ref slot",
+          "allocation",
+          extraction.slot,
+        );
+      }
+      // And it has to survive its own transaction. A client cannot be handed a
+      // durable, immutable identity for an entity this very commit removed —
+      // every later invocation depending on that ref would be admitted against
+      // a row that is already gone.
+      for (const slot of extraction.slots) {
+        if (!(await report.dbAfter.exists(slot.eid))) {
+          throw rejected(
+            descriptor,
+            "operation did not allocate a declared client-ref slot",
+            "allocation",
+            slot.slot,
+          );
+        }
+      }
+      // Sealed here, still before the commit. Doing it after `transactValidated`
+      // returns would mean a WebCrypto failure left this writer's in-memory
+      // state advanced past a transaction the durable log never receives, and
+      // every later commit would run on phantom state.
+      const allocations = extraction.slots.length === 0
+        ? []
+        : await sealAllocationMappings(
+          requireSealing(sealing),
+          requireEntityIdScope(invocation),
+          extraction.slots,
+          requested,
+        );
+      return { output: encoded, replayFence, allocations };
     },
     authoritativeNowMs,
     // Synchronous Connection pre-apply hook: every body/effect/read/output
@@ -1883,6 +2047,7 @@ export const executeCatalogOperation = async (
     report: staged.report,
     output: staged.value.output,
     replayFence: staged.value.replayFence,
+    allocations: staged.value.allocations,
     assertFresh: () => requireFreshAuthorization(runtime, expiresAtSeconds, descriptor),
   };
 };

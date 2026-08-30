@@ -385,9 +385,7 @@ describe("manifest validation", () => {
       ...stored,
       roots: roots({ eavt: ref({ hash: hash("9"), count: 4 }) }),
     })).not.toBe(replicaManifestFingerprint(stored));
-    // A re-install of the same revision rebuilds identical roots, so the rest
-    // of the record's shape is what separates a refused manifest from one
-    // repaired in its place.
+    // Any other difference in the record's shape separates two manifests too.
     for (
       const repaired of [
         { ...stored, datoms: [] },
@@ -401,6 +399,21 @@ describe("manifest validation", () => {
       expect(replicaManifestFingerprint(repaired))
         .not.toBe(replicaManifestFingerprint(stored));
     }
+    // A repair re-installs the same revision, so it rebuilds identical roots
+    // and identical maps and nothing above separates it from the manifest that
+    // was refused. The install identifier is what does, so a quarantine can
+    // never withdraw a healthy manifest written in a damaged one's place.
+    const installed = { ...stored, installId: "a".repeat(32) };
+    expect(replicaManifestFingerprint(installed))
+      .not.toBe(replicaManifestFingerprint({ ...installed, installId: "b".repeat(32) }));
+    expect(replicaManifestFingerprint(installed))
+      .not.toBe(replicaManifestFingerprint(stored));
+    // Records written before the field existed carry none, and an absent one
+    // compares as absent rather than as some particular value.
+    expect(replicaManifestFingerprint(stored))
+      .toBe(replicaManifestFingerprint({ ...stored, installId: undefined }));
+    expect(replicaManifestFingerprint(stored))
+      .toBe(replicaManifestFingerprint({ ...stored, installId: 7 }));
     // A damaged record still compares equal to itself, so a refusal of it is
     // not mistaken for a concurrent replacement.
     expect(replicaManifestFingerprint({ revision: 7 }))

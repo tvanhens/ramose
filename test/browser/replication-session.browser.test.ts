@@ -3,6 +3,7 @@ import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/author
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
 import {
   IndexedDbReplicaStorage,
+  REPLICA_DATABASE_VERSION,
   replicaPartitionKey,
   type ReplicaCacheCandidate,
 } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
@@ -146,12 +147,19 @@ browserTest("restores only an exact credential binding and isolates observer fai
     expect(bindingRecords).toHaveLength(1);
     expect(candidateRecords).toHaveLength(1);
 
+    // The post-commit activation fence: an activation that never delivers an
+    // authoritative outcome never fences. Restoring a stale value, opening,
+    // failing to connect, and closing are none of them.
+    let fences = 0;
     session = await ReplicationSession.open({
       activation,
       credential: "known-credential",
       attributes,
       readCompatibilityHash: selected.readCompatibilityHash,
       storage,
+      onActivationOutcome: () => {
+        fences++;
+      },
     });
     expect(session.snapshot()).toMatchObject({
       status: "connecting",
@@ -171,6 +179,7 @@ browserTest("restores only an exact credential binding and isolates observer fai
       value: { revision: opaque("r"), stale: true },
     });
     await session.close();
+    expect(fences).toBe(0);
 
     const unknown = await ReplicationSession.open({
       activation,
@@ -608,7 +617,7 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
 
     upgraded = await IndexedDbReplicaStorage.open(legacyName);
     const reopened = await openNative(legacyName);
-    expect(reopened.version).toBe(6);
+    expect(reopened.version).toBe(REPLICA_DATABASE_VERSION);
     expect([...reopened.objectStoreNames]).toContain("replica-route-slots-v1");
     const inspect = reopened.transaction([
       ...LEGACY_STORE_KEY_PATHS.map(([store]) => store),

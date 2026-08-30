@@ -275,8 +275,9 @@ currently installed client hash and compare it before `dbFromRecord` or any
 other `Db` construction. A mismatch removes only that committed replica,
 its committed head and local candidate bindings, staging/chunks, its
 partitioned content-addressed nodes, and its exact local credential binding.
-It never deletes the IndexedDB database or future outbox, receipt, client-ref,
-or optimistic store families.
+It never deletes the IndexedDB database or the mutation store families —
+#475's outbox, queue cursors, receipts, ClientRefs and their mappings, or
+#476's future optimistic layers.
 
 IndexedDB schema version 4 upgrades the landed replica stores conditionally.
 Compatible version-2/3 manifests carrying the confirmed hash survive. Legacy
@@ -335,8 +336,243 @@ revision.
 The `replica-cache-candidates-v1` and `replica-committed-heads-v1` object stores
 are separate from heavy committed manifests, exact credential bindings,
 staging, and content nodes. Candidate selection reads only those two bounded
-stores. Future outbox, receipt, ClientRef, and optimistic-layer stores remain
-independently clearable and are never part of candidate lookup or rebinding.
+stores. The mutation store families — outbox, queue cursors, receipts,
+ClientRefs and their mappings, and #476's future optimistic layers — are keyed
+by the stable server/principal/database triple rather than by the replica
+partition, so a read-view change or a database eviction leaves them intact.
+They are never part of candidate lookup or rebinding, and only an explicit
+scoped clear removes them, in the same transaction as the replicas.
+
+### Submission and acknowledgement (#475 slice 2)
+
+One pass drives at most one head per receiver database, and only the head.
+Databases are decided independently and driven concurrently, so a blocked,
+quarantined, or unreadable head holds its own queue and no other; within a
+database, moving only the head is what preserves FIFO across a restart.
+
+A record naming an unmapped `ClientRef` waits exactly where it is. Once its
+mapping is durable, the *submitted* body carries the sealed handle in the
+target and at each declared input position — computed fresh at submission time
+from the mappings that exist then. The durable row is never rewritten: it
+records what the client actually intended, and the canonical invocation digest
+is over that intent.
+
+The plan and the handles its ready records will submit are read in **one**
+readonly transaction. Read separately, an acknowledgement committing in between
+would let the plan report a head blocked on a ref that is already resolved, or
+report a record ready whose own row the same acknowledgement has removed.
+
+Every terminal answer is persisted in exactly one client transaction: the
+receipt with its output and mappings, the removal of the submitted outbox row,
+and — for a commit — the internal `committed-unobserved` marker. The
+independent replication stream is deliberately *not* in that transaction, which
+is precisely why the marker exists: the commit is durable here and the causally
+fresh activation that observes it is a separate, later event (#476, slice 3).
+A crash cut anywhere leaves the invocation queued, and the next pass consumes
+#487's exact replay — the same receipt, the same mappings, no second commit.
+
+Non-terminal answers change nothing durable and surface as typed queue states.
+`operation_changed` and `invocation_update_required` are never silent drops:
+the record stays queued at its head and the reason is reported. A transport
+failure and an answer this build cannot interpret are both `Retry`, never a
+silent commit.
+
+**Every terminal answer needs proof.** Acting on one is irreversible: it
+removes the durable outbox row, and for an allocating invocation it is also the
+only chance to recover the authoritative mappings — miss it and every dependent
+record blocks on a ref nothing can resolve. A commit is accepted only with the
+durable `completed` receipt for that exact invocation, so an object-shaped 200
+from an incompatible server mid-rollout, a proxy, or a captive portal stays
+queued rather than being read as a commit. A refusal is terminal only when the
+server bound it to a durable receipt, or when it is `invocation_conflict`, which
+says a *different* receipt already owns this id.
+
+A status code alone is never enough in either direction. The Worker
+deliberately answers a bare, receipt-free 403 when the caller's lease expires
+between the authoritative commit and the response, and that invocation *did*
+commit. A 409 code this build does not recognize is non-terminal for the same
+reason: a newer server may name an outcome an older client has never heard of,
+and the client must not answer that by destroying durable work. An absent
+`result` on an otherwise valid 200 is malformed rather than `null`: recording
+it would corrupt the output and remove the only copy that could be replayed.
+
+A 409 carrying no receipt at all is a refusal decided *before* the claim — the
+request never reached the one authoritative state machine — so it commits
+nothing and answers the identical request identically. It stays non-terminal,
+because an older client must never destroy durable work over an outcome a newer
+server named and it has not heard of, but it is reported as `Refused` rather
+than as `Retry`: an ordinary retry state makes that loop silent, with nothing
+naming what has to change (the invocation, the caller's authorization, or the
+deployed operation). A 409 that *does* carry a receipt this build will not act
+on is a different problem — an answer this client cannot interpret — and stays
+`Retry`.
+
+One pass settles its databases rather than joining them. A durable write that
+throws for one database must not discard what every sibling database did in the
+same pass: that progress is the caller's only report, and the work behind it is
+already durable. The failing database reports `Interrupted`, which claims
+nothing in either direction — the next pass decides the same head again.
+
+Two durable outputs are compared canonically, and structurally when the
+canonical form is undefined for them. Durable output is deliberately not held
+to RFC 8785's rules, so a value the queue is required to store can be one the
+canonicalizer refuses; both throwing and calling such an output unequal would
+wedge the very head the comparison exists to release.
+
+### Queue liveness
+
+The invariant every durable transition preserves: **after any transaction
+commits, every non-terminal row is progressable** — its database's FIFO head
+can eventually submit, become terminal, or be unblocked by a mapping some live
+path can still produce, or it is reported with a typed non-terminal state that
+names what must change — and no removed or terminal row strands ownership
+(client refs, slots, FIFO sequences) that new work could need.
+
+| transition | effect | why the invariant holds |
+|---|---|---|
+| enqueue | adds a row | refuses a dependency with no local allocator, one owned by another database, one it allocates itself, and one whose allocator was already rejected. An allocator always precedes its dependents in FIFO order by construction: the ownership row must already exist, so it was enqueued earlier — a dependent can never wait on a record behind it. It also refuses an invocation id any receipt already owns, in any database. |
+| acknowledge `Committed` | mappings + receipt + row removal | every allocated slot must come back mapped, so no registered ref is stranded; an unreadable mapping row is repaired rather than skipped; dependents unblock on the mapping. |
+| acknowledge `Rejected` | receipt + row removal + cascade | the refused slots can never map, so every transitively dependent row becomes terminal in the same transaction; the ownership rows survive as history and new work behind them is refused at enqueue. |
+| cascade `dependency_rejected` | receipt + row removal | same cut, and confined to one database — a cross-database dependency cannot exist, because enqueue refuses one. |
+| re-acknowledge (converged) | row removal only | the terminal answer must match exactly — state, failure code, mappings, and the output, compared canonically — so two passes that disagree conflict instead of one silently keeping the other's result; the receipt and its `observation` are left untouched, so a fence that already advanced is not reset. |
+| `blocked` | nothing durable | the allocator is queued ahead of it, so a mapping is still producible. |
+| `update-required`, `unreadable`, `refused` | nothing durable | deliberately holds its own database and is *reported*; never silently cleared, never re-executed. Client action is what clears it. |
+| `beginActivation` | bumps the receiver's activation counter | changes no row's terminality and no FIFO position; a strictly larger number can only ever fence more receipts, never fewer, and an unused number costs nothing. |
+| activation fence | flips `unobserved` to `observed` | touches no queue row at all: the receipt was already terminal and the marker is internal. Idempotent, so a repeat selects nothing. |
+| `clearScope` | removes all five families by prefix | everything in the scope goes together, so nothing survives to be stranded. |
+
+Global invocation ownership lives on the receipt store, not the outbox. The
+outbox's own index only holds while its row does, and an acknowledgement
+removes the row — so without a receipt-side index the same globally unique
+invocation id could be queued again for a sibling database, miss the old
+receipt under its own `[partition, invocation]` key, and execute one intent
+twice. Receipts outlive their rows and are removed only by a scoped clear, so
+they are what can say "this id is spoken for" for as long as it matters.
+
+A property test drives random dependency graphs across two databases through
+random accept/refuse interleavings against real IndexedDB, asserting the end
+state directly: nothing queued, nothing blocked, every invocation terminal. It
+also asserts that the sweep actually produced a cascade, so it cannot pass
+vacuously.
+
+**A rejection is a cut through the dependency graph, not one record.** A
+refused invocation's allocation slots can never be mapped — the one queued
+record that could have produced them is the one being removed — so everything
+depending on those refs, and on *their* allocations transitively, becomes
+terminal in the same transaction with a typed `dependency_rejected` failure.
+Leaving them queued would make the next one the head, blocked on a ref nothing
+can resolve, holding its database forever. Independent work in the same
+database is untouched, and new work may not be enqueued behind a ref whose
+allocating invocation was already rejected.
+
+Every reader of the mapping store goes through its decoder, including the
+acknowledgement. A row that *looks* right but does not decode would otherwise
+be treated as already installed and skipped, while planning drops it — dependents
+blocked forever, with the record that could have replayed already removed. The
+acknowledgement is the authoritative answer for exactly that ref, so it repairs
+such a row rather than refusing.
+
+### The post-commit activation fence (#475 slice 3)
+
+**The invariant.** A committed receipt is marked `observed` only when the
+authoritative replication stream has, on an activation that *began after that
+receipt was already durable*, delivered a matching outcome carrying the current
+committed state. Causal freshness is the whole point: output from a generation
+that was already open when the acknowledgement landed proves nothing about
+whether the server's stream has caught up to the commit, so it may not clear
+the marker.
+
+The client half is therefore three steps, in this order and no other:
+
+1. the acknowledgement transaction persists receipt, output, mappings, outbox
+   removal, and the `unobserved` marker — stamped with the activation counter
+   in force at that moment;
+2. the prior replication generation for that database is invalidated and
+   closed, and the counter is incremented durably: that increment *is* the
+   fresh activation's identity;
+3. a new activation opens from the client's current committed revision, and its
+   first matching outcome fences — in one client transaction — every receipt
+   stamped **strictly below** the new counter.
+
+Between steps 1 and 3 the marker is durable and the operation is visible as
+public `committed`. Nothing about the fence is public: no transaction position,
+no observation token, no server-visible acknowledgement.
+
+**One counter, not one fence record per receipt.** The counter is per receiver
+database — the same `{server, principal, database}` triple every mutation
+family is keyed by, and exactly the granularity one replication activation
+covers — and it lives on the durable queue cursor that already exists for that
+receiver. It is monotonic and never reused. A receipt stamped `c` is fenced by
+the first matching outcome of any activation `n > c`; a receipt acknowledged
+*after* activation `n` began is stamped `n`, is not `< n`, and therefore
+requires a later activation. That is the whole bookkeeping: coalescing (one
+`Change` clearing many receipts) and the "later commits need a later
+generation" rule both fall out of the single comparison, and no per-receipt
+fence row can drift from the receipts it claims to describe.
+
+A stored row written before the counter existed decodes as `0` — "durable
+before any activation this build began" — which is exactly what such a row
+means, so no migration is needed and no queue is orphaned.
+
+**What satisfies the fence.** Only an authoritative outcome on the fresh
+activation, and only the first one:
+
+| frame | fences? | why |
+|---|---|---|
+| `Change` that continues the committed revision and installs | yes | the server advanced this activation's stream past the commit |
+| `Change` the client already holds (`duplicate`) | yes | the same acknowledgement, for a revision already durable here |
+| `Change` whose local install lost its CAS | no | this session installed nothing; the next outcome fences |
+| `ResumeReady` matching the resumed identity and revision | yes | the authorized no-op / hidden-result answer |
+| `SnapshotCommit` that actually installs | yes | the completed reset staging |
+| `Reset`, `SnapshotStart`, `SnapshotChunk` | no | incomplete staging is not an outcome |
+| `KeepAlive` | no | liveness, not state |
+| `TerminalError` | no | the activation ended without an outcome |
+| identity or `readCompatibilityHash` mismatch | no | the session quarantines and fails before any outcome |
+| anything on a superseded generation | no | `current(generation)` refuses it |
+
+The frozen contract names the reset case as "`SnapshotCommit` following a
+matching `Reset`". A fresh activation that supplies no resume revision — its
+local replica was quarantined between the acknowledgement and the reconnect —
+receives `SnapshotStart` with no preceding `Reset`, because there was no
+revision to reset *from*. That commit fences on the same terms. Reading it any
+other way would leave such an activation permanently unable to fence, and it
+cannot fence early: the snapshot is taken after this activation's own
+authoritative basis fence. Nothing else about the reset case changes —
+incomplete staging never installs, so it never fences.
+
+**The crash-cut matrix.** Every cut converges because the durable state after
+it is the input the next start reads, and the next start always begins a *new*
+activation:
+
+| cut | durable state after the cut | recovery |
+|---|---|---|
+| during the acknowledgement transaction | invocation still queued, receipt still `queued` | the next pass resubmits and consumes #487's exact replay; identical answer, no second commit |
+| after the acknowledgement, before the counter increment | receipt `committed`/`unobserved` stamped `c`; counter `c` | restart reconstructs the unobserved set, increments to `c+1`, and `c < c+1` fences |
+| after the increment, before the activation opens | counter `n`; receipt stamped `c < n` | restart increments to `n+1`; the receipt is still `< n+1`. Skipping `n` costs nothing: the counter is an ordering, not a resource |
+| after the activation opens, before the first frame | counter `n`; nothing observed | same as above — a new activation, a strictly larger number |
+| after the first matching frame, before the fence transaction | receipt still `unobserved` | the fence transaction is all-or-nothing; the restart's activation fences it |
+| during the fence transaction | either every selected receipt is `observed` or none is | IndexedDB aborts the whole transaction; the next activation reselects |
+| after the fence transaction | receipt `observed` | a later activation selects nothing; re-fencing is idempotent |
+
+Two rules make the matrix collapse to "always converges". First, the counter is
+incremented *before* the activation opens, so a cut can only ever make the
+client fence with a **larger** number than it needed — never a smaller one.
+Second, the fence transaction is a single client transaction over the receipt
+family, so it has no partial state to reconcile.
+
+**Failure taxonomy.** A fence attempt that throws leaves the durable marker
+untouched and is retried by the next matching outcome on the same activation,
+and failing that by the next activation; it never fails the replication
+session, because observation is downstream of persistence. A fence that would
+land behind a completed `clearLocalData()` is refused by the same scope
+generation check every other durable mutation write makes. A rejection is not
+fenced at all — nothing committed, so the marker is `null` and stays `null`.
+
+**What #476 consumes.** `ActivationFence` exposes the durable transition as a
+queryable and subscribable snapshot: the activation in force, the receipts
+still awaiting a fence, and the invocations the last fence cleared. #475 owns
+persisting and exposing that transition; #476 owns atomically removing or
+replaying optimistic layers when it occurs.
 
 ## Integrity validation and corruption recovery
 
@@ -450,7 +686,10 @@ depended on. Every path derives from the one invariant:
   reconnect resumes the very same staging, and a base its commit can never
   satisfy again would strand the partition on every following attempt;
 - a **snapshot commit** and a **change apply** re-confirm their base revision
-  inside the very transaction that installs.
+  inside the very transaction that installs;
+- a **restored replica** additionally re-confirms the partition's sweep
+  generation, because reachability GC is a second writer that deletes nodes
+  without touching a manifest (see below).
 
 A failed generation re-check surfaces the ordinary typed fence error; a failed
 committed-state re-check reports that nothing is selected, so the caller chooses
@@ -460,14 +699,230 @@ Validating a partition takes as long as reading it, so another session may
 install a complete replacement while a walk is still running. Withdrawal is
 therefore conditional on the refused manifest still being the stored one,
 compared by revision, the four root addresses, the basis, the allocator, and the
-size of every stored map — a re-install of the same revision rebuilds identical
-roots, so the rest of the record's shape is what separates the manifest that was
-refused from a repaired one written in its place. A refusal that loses that
+size of every stored map, and the install identifier. A refusal that loses that
 comparison withdraws nothing and reports that nothing is selected, rather than
 acting on a value it never examined. For the same reason a restore that ran
 after a snapshot had begun streaming would quarantine underneath the replacement
 being received, so the session validates the committed value before it stages
 that snapshot's first frame.
+
+The install identifier is what makes that comparison complete. A re-install of
+the *same* revision rebuilds identical roots and identical maps, so nothing the
+record says about its own value can separate the manifest that was refused from
+a repaired one written in its place — and a repair is exactly what a
+re-install of the same revision is: it rewrites the damaged node under its own
+address. Every install therefore stamps the manifest with an identifier unique
+to the act of installing rather than to the value, which nothing authorizes
+anything with and which never leaves the device. Manifests written before that
+field existed carry none and compare as absent on both sides, so their behavior
+is unchanged.
+
+One `Db` construction is deliberately not preceded by a walk: the duplicate or
+out-of-order `Change`, which installs nothing and hands back the value already
+committed. A session reaches that path only after it restored the partition
+through the walk or installed a snapshot into it, so the manifest it reads is
+that one or a strictly later install some live client materialized — never a
+cold unverified record. The only check worth making there is a full walk, a
+partial one would pass over exactly the damage it skipped, and at 100k datoms
+that walk costs a whole cold restore per duplicate frame. Damage appearing
+afterwards is caught by the next restore's walk, with every other stored-node
+failure.
+
+## Reachability GC and bounded quota recovery
+
+A committed replica is content-addressed and immutable, so every install writes
+a new set of nodes and abandons the ones it superseded. At 100k datoms a whole
+replica is 81 nodes and 430 KiB, and one changed datom orphans 62 of those 81
+immediately. Quarantine leaves a partition's nodes and staging behind by design,
+and a failed install leaves the nodes it had already written. Reclaiming that is
+one sweep, and the only interesting part of it is what it may never delete.
+
+### Retention
+
+A node record is *retained* when it is reachable from a live root set of its own
+partition. Reachability is partition-local by construction: node records are
+keyed by `[partition, hash]`, so no partition can keep another's node alive. The
+live root sets are exactly:
+
+1. the four index roots of the partition's committed manifest, when one is
+   stored;
+2. every root set an in-process holder has retained — a replication session
+   retains the roots of the value it currently publishes, including a stale
+   value published over a partition that has since been quarantined;
+3. nothing at all for a partition with an in-flight materialization: its fresh
+   nodes have no roots yet, so that partition is excluded from the sweep
+   entirely rather than described by a root set.
+
+Everything else in the partition is unreachable from every value a live
+participant can read, and is swept. One thing is deliberately *not* retained: a
+`Db` older than the one its session currently publishes. Reclaiming superseded
+roots is the entire point of the sweep — they are where the garbage comes from —
+so a holder that needs an older value to stay readable must retain it. GC never
+writes a manifest, a head, a binding, or a candidate, so no install identifier
+can be dropped or invented by a sweep, and `writeCounts()` shows zero manifests
+and zero heads for any GC pass.
+
+### Sweep invariants
+
+- **Fail closed on damage.** A body believed wrongly under-reports its children,
+  and the intact descendants would then be classified as garbage, so the sweep
+  refuses to believe anything it cannot authenticate. Content addresses do that
+  for the *structure*: a body that hashes to the address its parent filed it
+  under is the node that address names, so the children it lists are the real
+  ones, while a valid leaf stored under a directory's address, a half-written
+  record, or a missing node is refused.
+
+  A manifest authenticates nothing. It is an ordinary stored record and its four
+  roots are just hashes, so damage that swapped one for another correctly stored
+  node — a superseded root of the same index and count — passes every address
+  check and would hand the sweep a live set describing some other value, which
+  it would then delete the current one to honour. Roots therefore get the full
+  restore-strength validation, ending in the digest fold that proves the walked
+  trees are the ones this manifest's own journal describes. Retained roots skip
+  it: they are values this process restored through that same walk or
+  materialized itself, and retaining too much is safe anyway.
+
+  Any of those refusals leaves the partition's live set unknown, and GC sweeps
+  nothing in it. Damage is never converted into deletion; the restore walk is
+  what classifies and quarantines it, on nodes the sweep left in place.
+- **Materialization exclusion.** An install marks its partition in flight
+  synchronously before materialization creates its first node transaction, and
+  clears the mark only after the install transaction settles — closing the
+  storage handle does not clear it, because a closed IndexedDB connection still
+  runs the transactions it already created to completion. GC reads that mark and
+  creates its sweep transaction in one synchronous block, with no `await`
+  between them. Either GC saw the mark and skipped the partition, or the
+  materialization had not yet created a node transaction — and every transaction
+  it creates afterwards is created after the sweep transaction. IndexedDB
+  serializes overlapping `readwrite` transactions in creation order, so a
+  content-addressed re-put of a node the sweep is deleting always lands after
+  the delete, never before it.
+
+  The mark is realm-local, like every other in-process lifecycle registration
+  here, so a sweep in another tab cannot see it: it would find nodes reachable
+  from nothing — because the manifest naming them is not committed yet — and
+  could delete them while the installer's base-revision CAS still passed. An
+  install therefore records the partition's sweep generation before it
+  materializes and re-confirms it inside the transaction that installs. In one
+  realm that value cannot move inside that window, so no live session is ever
+  fenced by it; across realms it is the durable trace such a sweep leaves, and
+  re-reading it turns the hazard into a refused install rather than a manifest
+  committed over deleted nodes. #478's all-tab barrier replaces the mark; this
+  record is what makes the interval safe until it does.
+- **Sweep CAS.** The live set is computed from a committed manifest read outside
+  the sweep transaction. The sweep transaction re-reads that manifest and
+  requires its fingerprint — including the install identifier — to be unchanged.
+  A sweep is therefore always consistent with the committed value as of the
+  instant it commits, and a partition whose manifest moved is skipped rather
+  than swept against a value nobody examined.
+- **Retention re-check.** The manifest CAS does not cover retention, because a
+  restore that validated an *older* manifest publishes without moving the
+  manifest at all, and the pass may have computed its live set before that
+  happened. The same synchronous block that reads the materialization mark
+  therefore re-reads the retained roots, and skips the partition when one has
+  appeared that the live set does not already cover. A root that has gone since
+  is harmless — the live set was simply more generous than it needed to be.
+
+  This composes with the publish fence only because a restore retains *before*
+  its fence transaction exists, with no await in between, so exactly one of two
+  orders can hold. If the sweep's synchronous block ran first, its transaction
+  was created before the fence's, IndexedDB orders the generation bump ahead of
+  the fence's read, and the fence sees it and refuses. If it runs second, it
+  finds the retention covering the roots it was about to reclaim and skips. A
+  holder that retained *after* receiving its value would sit in neither order:
+  the sweep could plan while nothing was retained and still transact after a
+  fence that had already read a generation of zero. Every value the storage
+  hands out therefore arrives already retained, and its receiver owns exactly
+  one release.
+- **Only impossible staging.** Staging is swept only when its recorded base
+  revision is no longer the committed one, which is exactly the condition under
+  which its `SnapshotCommit` can never install again. A snapshot still streaming
+  against a current base is never touched, and a reconnect rebases the stale
+  case anyway.
+- **Content only.** A sweep reclaims content nodes and impossible staging. The
+  #475 mutation families — outbox, queues, receipts, ClientRefs, mappings — are
+  not merely skipped but structurally out of reach: the sweep transaction never
+  names those stores, so IndexedDB itself would refuse a write to one. Storage
+  pressure is no reason to discard work the user has not yet had acknowledged,
+  which is why the quota recovery pass is this same pass and nothing wider.
+- **One transaction.** The generation bump, the node deletes, and the staging
+  deletes are one IndexedDB transaction with a boundary immediately before its
+  commit, so a crash cut leaves either the complete pre-sweep state or the
+  complete post-sweep state. Both are states a later walk accepts, because the
+  swept set was provably unreachable from the committed manifest either way.
+
+### The sweep generation
+
+The publish fence rests on one premise: only a clear and an eviction delete
+content nodes, and both bump a generation the fence re-observes. GC deletes
+nodes without touching a manifest, so it must either take that same fence or
+break it. Two mechanisms were available.
+
+Bumping the guarded **database** generation was rejected. Every live session of
+that database leases that record, so a sweep would refuse those sessions' next
+install with the ordinary fence error — and sweeping superseded roots while a
+session is running is the normal case, not the exception. GC would then be
+unable to reclaim anything without disturbing exactly the sessions it must leave
+alone.
+
+Instead GC bumps a per-partition **sweep generation**: one more record in the
+same `replica-generations-v1` store, under the same discipline of being readable
+inside any transaction, with exactly one writer (a sweep that deleted at least
+one node) and exactly one reader (the restore publish fence). `validated` reads
+it in the same transaction that takes the walk's lifecycle lease, before the
+walk, and re-reads it in the same transaction that re-confirms the scope and
+database generations, after it. A changed value means nodes were deleted in this
+partition while the walk was running, so the manifest it read is no longer safe
+to publish.
+
+That outcome says nothing about the partition — only about this attempt — and
+commonly the partition is untouched, because a sweep reclaims superseded roots
+while the current manifest stands. The same is true of a refusal whose
+withdrawal loses its manifest CAS: an install moved the record on, and a sweep
+of the roots it superseded is exactly how a healthy partition reaches that
+branch. Reporting an absence for either would strand an offline restore that has
+no other way to obtain the value, so both make the restore read the stored
+record again and walk it again, up to a small bounded number of attempts. A
+partition that keeps moving under every attempt is reported as *contended* — a
+typed outcome distinct from an absence, because something is certainly stored
+and a caller must never read persistent contention as an empty partition worth
+re-snapshotting from scratch. A clear or an eviction keeps surfacing the
+ordinary typed fence error, unchanged.
+
+A scoped clear and a database eviction remove the sweep-generation records of
+the partitions they delete, in the same transaction and by the same prefix
+range: a record is named after its partition, so nothing else would ever remove
+it once that partition is gone. The scope and database generations they bump
+survive by design, exactly as before.
+
+The install paths observe it too, but only for the window between writing their
+nodes and committing the manifest that names them, and never through the
+session's long-lived lease. In one realm the materialization mark keeps that
+value still, so a sweep of the roots a running session superseded still fences
+nothing; across realms it is the only signal an install has that its fresh nodes
+may already be gone.
+
+### Bounded quota recovery
+
+Native quota exhaustion is a typed outcome, not a corruption. `QuotaExceededError`
+and the historical browser spellings — Firefox's `NS_ERROR_DOM_QUOTA_REACHED`
+and legacy code 1014, Safari's `QUOTA_EXCEEDED_ERR` and legacy code 22 — are
+classified together; everything else propagates unchanged.
+
+An install that fails that way performs at most one GC pass and at most one
+retry. The failed attempt's own nodes are unreachable, so the pass reclaims them
+along with every superseded root, and the pass runs between the two attempts —
+after the first attempt released its materialization mark, before the retry
+takes it — so the partition that needs the space is not the one partition GC
+skips. The pass is unscoped, because storage pressure is a property of the
+origin rather than of one principal, and it can still only delete what is
+provably unreachable.
+
+If the retry also exhausts quota, the install throws a typed quota error
+carrying what the pass reclaimed. Nothing was installed: materialization writes
+only content nodes, and the install itself is one atomic transaction, so the
+previously committed manifest is byte-identical to what it was and the
+old-or-new guarantee holds. Active data is never evicted to make room.
 
 ## Authorization and noninterference
 

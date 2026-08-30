@@ -517,11 +517,61 @@ browserTest(
       await installOne(writer, selected, opaque("2"), "replacement");
       releaseCheckpoint("replica.refused");
 
-      // Nothing was removed, and the refusal describes nothing that is stored.
-      expect(await refusing).toEqual({ _tag: "absent" });
+      // Nothing was removed, and the refusal described nothing that is stored,
+      // so the restore reads the record again and returns the replacement
+      // rather than reporting an absence over an intact partition.
+      const outcome = await refusing;
+      expect(outcome._tag).toBe("restored");
+      expect(outcome._tag === "restored" ? outcome.replica.revision : undefined)
+        .toBe(opaque("2"));
+      expect(await names((outcome as { replica: { db: Db } }).replica.db))
+        .toEqual(["replacement"]);
       expect(await names((await writer.restore(selected, attributes, READ_COMPATIBILITY))!.db))
         .toEqual(["replacement"]);
       expect(partitioned((await dump(name))[COMMITTED], partition)).toHaveLength(1);
+    } finally {
+      resetTestHooks();
+      reader.close();
+      writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a same-revision repair installed while the walk runs is never quarantined",
+  async ({ browser }) => {
+    const name = `ramose-integrity-repair-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const reader = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    const writer = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installOne(reader, selected, opaque("1"), "repaired");
+      const roots = (await committedOf(name, partition)).roots as Record<string, { hash: string }>;
+      await flipNodeByte(name, partition, roots.eavt.hash);
+
+      armCheckpoint("replica.refused", "wait");
+      const refusing = reader.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
+      // The repair case: another session re-installs the *same* revision, which
+      // rebuilds byte-identical roots and rewrites the damaged node under its
+      // own address. Only the install identifier separates this manifest from
+      // the one the walk refused; everything the record says about its value is
+      // identical.
+      await installOne(writer, selected, opaque("1"), "repaired");
+      const repaired = (await committedOf(name, partition)) as { roots: typeof roots };
+      expect(repaired.roots.eavt.hash).toBe(roots.eavt.hash);
+      releaseCheckpoint("replica.refused");
+
+      // The healthy manifest survives, and the restore reads the repaired
+      // record again rather than reporting an absence over it.
+      const outcome = await refusing;
+      expect(outcome._tag).toBe("restored");
+      expect(await names((outcome as { replica: { db: Db } }).replica.db))
+        .toEqual(["repaired"]);
+      expect(partitioned((await dump(name))[COMMITTED], partition)).toHaveLength(1);
+      expect(await names((await writer.restore(selected, attributes, READ_COMPATIBILITY))!.db))
+        .toEqual(["repaired"]);
     } finally {
       resetTestHooks();
       reader.close();

@@ -33,6 +33,20 @@ export class TransactorDeadError extends Error {
 
 /** This instance is dead and is being rebuilt from durable state → 503. Maps to `Unavailable` at the client boundary. */
 export class TransactorDead extends Data.TaggedError("TransactorDead")<{ message: string; retryAfterMs: number }> {}
+/**
+ * A dependency this request needs is momentarily out of reach → 503.
+ *
+ * Distinct from {@link Internal}: nothing is wrong with the request or with
+ * this instance's state, and asking again is the correct response. The durable
+ * sealing root is the case that exists today — it lives in another Durable
+ * Object, so a cold isolate has to fetch it, and a transient failure there must
+ * not look like an engine defect or answer an opaque 500 that a durable offline
+ * queue cannot tell apart from a permanent one.
+ */
+export class Unavailable extends Data.TaggedError("Unavailable")<{
+  message: string;
+  retryAfterMs: number;
+}> {}
 /** Malformed request → 400. */
 export class BadRequest extends Data.TaggedError("BadRequest")<{ message: string }> {}
 /** Unknown route → 404. */
@@ -45,6 +59,7 @@ export type TransactorHttpError =
   | Unauthorized
   | OperationRejected
   | TransactorDead
+  | Unavailable
   | BadRequest
   | NotFound
   | Internal;
@@ -54,6 +69,7 @@ const TAGS = {
   Unauthorized: 401,
   OperationRejected: 409,
   TransactorDead: 503,
+  Unavailable: 503,
   BadRequest: 400,
   NotFound: 404,
   Internal: 500,
@@ -64,7 +80,8 @@ export function toHttpError(err: unknown): TransactorHttpError {
   if (
     err instanceof TxRejected || err instanceof Unauthorized ||
     err instanceof OperationRejected || err instanceof TransactorDead ||
-    err instanceof BadRequest || err instanceof NotFound || err instanceof Internal
+    err instanceof BadRequest || err instanceof NotFound || err instanceof Internal ||
+    err instanceof Unavailable
   ) return err;
   if (err instanceof InvalidRequest) return new BadRequest({ message: err.message });
   if (err instanceof TxError) return new TxRejected({ message: err.message, code: err.code });
@@ -83,7 +100,7 @@ export function errorResponse(e: TransactorHttpError): Response {
     body.code = e.code;
     if (e.attr !== undefined) body.attr = e.attr;
   }
-  if (e._tag === "TransactorDead") {
+  if (e._tag === "TransactorDead" || e._tag === "Unavailable") {
     body.retryAfterMs = e.retryAfterMs;
     headers["retry-after"] = String(Math.ceil(e.retryAfterMs / 1000));
   }

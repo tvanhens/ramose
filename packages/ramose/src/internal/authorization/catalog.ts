@@ -208,6 +208,22 @@ const OperationRevision = Schema.Int.check(
   ),
 );
 
+/**
+ * One declared client-ref allocation slot, inert (#475).
+ *
+ * The slot name predicate is the *same* one `db/allocations.ts` applies when
+ * the declaration is authored and when a durable queue row is decoded, spelled
+ * here as its regular expression so the catalog descriptor cannot accept a
+ * name the durable client would refuse — or the reverse, which would leave a
+ * queued invocation permanently unmappable.
+ */
+export const AllocationSlotDescriptor = Schema.Struct({
+  slot: Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/)),
+  /** Property names and array indexes into the operation's declared output. */
+  path: Schema.Array(Schema.Union([Schema.String, Schema.Int])),
+});
+export type AllocationSlotDescriptor = typeof AllocationSlotDescriptor.Type;
+
 export const OperationDescriptor = Schema.Struct({
   id: OperationId,
   input: OperationInputShape,
@@ -229,6 +245,15 @@ export const OperationDescriptor = Schema.Struct({
   composers: Schema.Array(EntityId),
   /** Additional entity definitions retained as authoring/reachability metadata. */
   writes: Schema.Array(EntityId),
+  /**
+   * Named client-ref allocation slots, canonically ordered by slot name (#475).
+   * Omitted entirely when the operation allocates nothing, so a descriptor for
+   * an operation that declares no slots encodes exactly as it did before this
+   * field existed. Already folded into {@link OperationVersion} by descriptor
+   * generation 2; carried here so the authoritative edge can read a slot's
+   * declared output path without re-deriving it.
+   */
+  allocations: Schema.optionalKey(Schema.Array(AllocationSlotDescriptor)),
   /** Optional operation documentation. */
   doc: Schema.optionalKey(Schema.String),
 });

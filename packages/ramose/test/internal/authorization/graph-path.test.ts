@@ -615,11 +615,21 @@ describe("authorized Graph paths", () => {
     const holdEmit = new Promise<void>((resolve) => {
       releaseEmit = resolve;
     });
+    let authentications = 0;
     const seen: LiveQueryDiff[] = [];
     const program = Effect.gen(function* () {
-      const scope = yield* Scope.make();
       const fiber = yield* executeAuthorizedGraphPathLive({
-        authenticate: Effect.succeed(caller(["member"])),
+        // Expiry needs the real clock (#390). The lease is generous so the
+        // recompute and enqueue land inside it even when parallel test lanes
+        // starve this process; the failed second authentication closes the
+        // loop on its own once the first lease ends, so awaiting the fiber
+        // proves the held delivery ran its expiry check to completion.
+        authenticate: Effect.suspend(() => {
+          authentications += 1;
+          return authentications === 1
+            ? Effect.succeed(caller(["member"]))
+            : Effect.fail(new Unauthorized({}));
+        }),
         bindings: world.bindings,
         root: world.root,
         path,
@@ -627,7 +637,7 @@ describe("authorized Graph paths", () => {
           Effect.succeed(world.connections.get(database)!.db()),
         provision: () => Effect.void,
         expectedLeaseIdentity,
-        interruptAfter: "25 millis",
+        interruptAfter: "500 millis",
         boundaries: {
           checkpoint: (name) => {
             if (name !== "live.emit") return Promise.resolve();
@@ -638,19 +648,24 @@ describe("authorized Graph paths", () => {
         },
       }, nestedNotesQuery).pipe(
         Stream.runForEach((diff) => Effect.sync(() => seen.push(diff))),
-        Effect.forkIn(scope, { startImmediately: true }),
+        Effect.forkChild,
       );
-      yield* Effect.promise(() => entered);
-      yield* Effect.sleep("50 millis");
+      // If the enqueue still misses the lease, the stream closes with nothing
+      // held — fail immediately instead of hanging on the entered promise.
+      const outcome = yield* Effect.raceFirst(
+        Effect.promise(() => entered).pipe(Effect.as("entered" as const)),
+        Fiber.await(fiber).pipe(Effect.as("closed" as const)),
+      );
+      expect(outcome).toBe("entered");
+      // The lease clock started before the held emit was reached, so sleeping
+      // the full lease plus a margin from here strictly passes its expiry.
+      yield* Effect.sleep("600 millis");
       releaseEmit();
-      yield* Effect.yieldNow;
-      yield* Effect.yieldNow;
-      expect(seen).toEqual([]);
-      yield* Scope.close(scope, Exit.void);
       yield* Fiber.await(fiber);
+      expect(seen).toEqual([]);
     });
     await Effect.runPromise(program);
-  });
+  }, 15_000);
 
   test("does not renew a path lease under another principal", async () => {
     const world = await buildWorld();
@@ -660,6 +675,13 @@ describe("authorized Graph paths", () => {
     let authentications = 0;
     const seen: LiveQueryDiff[] = [];
     await Effect.runPromise(Effect.gen(function* () {
+      // #390 keeps the Effect clock real, so a basis wake — offered only
+      // after the first diff has been observed — drives the renewal instead
+      // of a short real-clock lease expiry. Every lease-loop iteration runs
+      // the same authenticate and principal-identity check regardless of
+      // whether a wake or an expiry woke it.
+      const wakes = yield* Queue.unbounded<void>();
+      const delivered = yield* Queue.unbounded<void>();
       const fiber = yield* executeAuthorizedGraphPathLive({
         authenticate: Effect.sync(() => {
           authentications += 1;
@@ -679,11 +701,17 @@ describe("authorized Graph paths", () => {
           Effect.succeed(world.connections.get(database)!.db()),
         provision: () => Effect.void,
         expectedLeaseIdentity,
-        interruptAfter: "25 millis",
+        wakes,
       }, nestedNotesQuery).pipe(
-        Stream.runForEach((diff) => Effect.sync(() => seen.push(diff))),
+        Stream.runForEach((diff) =>
+          Effect.sync(() => seen.push(diff)).pipe(
+            Effect.andThen(Queue.offer(delivered, undefined)),
+          )
+        ),
         Effect.forkChild,
       );
+      yield* Queue.take(delivered);
+      yield* Queue.offer(wakes, undefined);
       yield* Fiber.await(fiber);
     }));
     expect(authentications).toBe(2);

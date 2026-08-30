@@ -4,6 +4,7 @@ import * as Result from "effect/Result";
 import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import { localDigest } from "./digest.ts";
 import type { ReplicaRouteSlot } from "./route-slot.ts";
+import type { MutationTransport } from "./submission.ts";
 import {
   MAX_REPLICATION_FRAME_BYTES,
   REPLICATION_PROTOCOL_VERSION,
@@ -228,6 +229,47 @@ export async function* readReplicationFrames(
     }
   }
 }
+
+/**
+ * The real `/op` submission (#475 slice 2).
+ *
+ * A transport failure is not a status: it becomes `Unreachable`, so the queue
+ * holds its head and retries instead of interpreting a network error as an
+ * authoritative answer. A body this build cannot parse is reported as an
+ * unparsed answer under its real status, and the pure classifier decides — it
+ * is never read as a commit.
+ */
+export const submitMutation: MutationTransport = async (request, signal) => {
+  const { endpoint } = request;
+  let response: Response;
+  try {
+    response = await fetch(
+      `${endpoint.origin}/db/${encodeURIComponent(endpoint.database)}/op`,
+      {
+        method: "POST",
+        // A redirect must never carry the credential, and an operation is not
+        // idempotent to re-issue at another origin.
+        redirect: "error",
+        headers: {
+          authorization: `Bearer ${endpoint.credential}`,
+          accept: "application/json",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(request.body),
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+  } catch {
+    return { _tag: "Unreachable" };
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
+  return { _tag: "Response", status: response.status, body };
+};
 
 /** Pure bounded decoder for arbitrary transport byte chunks. */
 export async function* decodeReplicationNdjson(

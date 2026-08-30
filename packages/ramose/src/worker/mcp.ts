@@ -172,6 +172,10 @@ const mcpTools = (input: McpRouteInput) => ({
     const result = await invokeAuthoritativeOperation(
       input.env,
       resolved.route.database,
+      // The public origin the opaque-handle scope is bound to (#475/#566).
+      // Same source `/op` uses: the request the caller was authenticated on,
+      // never anything from the body.
+      new URL(input.request.url).origin,
       {
         catalogKey: resolved.route.deployed.catalogKey,
         unitHash: resolved.route.deployed.unitHash,

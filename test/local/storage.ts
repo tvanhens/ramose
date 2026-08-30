@@ -30,10 +30,21 @@ export function registerStorage(target: { urls: () => LocalUrls }): void {
       expect(reuse.stats.cacheHits).toBe(0);
       expect(reuse.stats.memHits + reuse.stats.peekHits).toBeGreaterThan(0);
 
+      // The warm read runs on a fresh store, so every node it needs comes from
+      // the Cache API entries the cold read wrote. The Cache API promises no
+      // retention: `cache.put` is best-effort and an entry may be evicted at
+      // any moment, so demanding `r2Gets === 0` asserted more than the
+      // contract and failed under parallel load with two nodes evicted and
+      // correctly refetched. What the tier does promise is that it serves the
+      // read, that an eviction falls back to R2 rather than to a wrong answer,
+      // and that it never reaches for a node the cold read did not fetch.
       expect(warm.rows).toBe(expectedRows);
-      expect(warm.stats.r2Gets).toBe(0);
       expect(warm.stats.cacheHits).toBeGreaterThan(0);
-      expect(warm.gets).toEqual([]);
+      expect(warm.stats.r2Gets).toBeLessThan(cold.stats.r2Gets);
+      expect(warm.stats.r2Gets).toBe(warm.gets.length);
+      expect(new Set(warm.gets).size).toBe(warm.gets.length);
+      const coldKeys = new Set<string>(cold.gets);
+      expect(warm.gets.filter((key: string) => !coldKeys.has(key))).toEqual([]);
 
       expect(fallback.corruptedKeys.length).toBeGreaterThan(0);
       expect(fallback.rows).toBe(expectedRows);

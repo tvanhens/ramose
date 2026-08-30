@@ -80,6 +80,28 @@ export {
   type RuleValue,
 } from "./query/index.ts";
 export * from "./Tx.ts";
+export * from "./allocations.ts";
+// `EntityId` is re-declared by `Operation.ts` alongside its schema value, so
+// it is deliberately absent here: two star exports of one name resolve to
+// neither.
+export {
+  clientRef,
+  entityIdEnvelope,
+  ENTITY_ID_CODEC,
+  ENTITY_ID_PATTERN,
+  CLIENT_REF_PATTERN,
+  INVOCATION_ID_PATTERN,
+  invocationId,
+  isClientRef,
+  isEntityId,
+  isInvocationId,
+  isMutationRef,
+  unsafeEntityId,
+  type ClientRef,
+  type EntityIdEnvelope,
+  type InvocationId,
+  type MutationRef,
+} from "./refs.ts";
 export * from "./Operation.ts";
 export * from "./valueTypes.ts";
 // Field-returning `Ref` (eager entity / thunk / self) wins over the

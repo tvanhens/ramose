@@ -782,6 +782,10 @@ export const snapshotOwnedOperations = (
           },
           composers: composers.map((entity) => entity.name),
           writes: writes.map((entity) => entity.name),
+          // Inert declaration only: slot names and the output paths they bind.
+          // It rotates the version because a queued invocation pins that
+          // version before it can be submitted.
+          allocations: operation.allocations ?? [],
         }) as OperationVersionDescriptor,
         inputShape: deepFreeze(inputShape),
         outputShape: deepFreeze(outputShape),
@@ -839,6 +843,13 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
         bodyHash: implementationHash,
         composers: snapshot.composers,
         writes: snapshot.writes,
+        // Exactly the list already folded into `version`; omitted when empty so
+        // an operation that allocates nothing keeps its previous descriptor.
+        ...(snapshot.versionDescriptor.allocations.length === 0 ? {} : {
+          allocations: snapshot.versionDescriptor.allocations.map(
+            (allocation) => ({ slot: allocation.slot, path: [...allocation.path] }),
+          ),
+        }),
         ...(snapshot.doc === undefined ? {} : { doc: snapshot.doc }),
       };
       const descriptor = yield* Effect.fromResult(
