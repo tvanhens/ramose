@@ -7,6 +7,13 @@
 name: stress
 
 on:
+  # `workflow_dispatch` only becomes selectable once this file is on the
+  # default branch. Until then the diagnostic branches carry it themselves,
+  # so a push there can drive a run. No other branch is affected.
+  push:
+    branches:
+      - "claude/551-**"
+      - "**/551-transport-forensics"
   workflow_dispatch:
     inputs:
       rounds:
@@ -41,10 +48,10 @@ jobs:
           docker info --format '{{.ServerVersion}}' 2>/dev/null || echo "no docker"
       - name: Transport forensics
         env:
-          RAMOSE_STRESS_ROUNDS: ${{ inputs.rounds }}
-          RAMOSE_STRESS_LANES: ${{ inputs.lanes }}
+          RAMOSE_STRESS_ROUNDS: ${{ inputs.rounds || 8 }}
+          RAMOSE_STRESS_LANES: ${{ inputs.lanes || 12 }}
         run: |
-          for i in $(seq 1 "${{ inputs.repeats }}"); do
+          for i in $(seq 1 "${{ inputs.repeats || 1 }}"); do
             echo "::group::stress run $i"
             bun run test:stress
             echo "::endgroup::"
@@ -72,15 +79,15 @@ jobs:
           RAMOSE_TRACE_IDLE: "1"
         run: |
           set +e
-          for i in $(seq 1 "${{ inputs.repeats }}"); do
+          for i in $(seq 1 "${{ inputs.repeats || 6 }}"); do
             echo "::group::conformance run $i"
             bun run test:conformance 2>&1 | tee "conformance-$i.log"
             echo "::endgroup::"
           done
           echo "== reuses within 500ms of the 5000ms idle-close bound =="
           grep -h "^IDLE" conformance-*.log \
-            | awk -F'idleBefore=' '{split($2,a,"ms"); if (a[1] >= 4500 && a[1] <= 5500) print}' \
-            | sort | uniq -c | sort -rn | head -50
+            | awk -F'idleBefore=' '{split($2,a,"ms"); if (a[1]+0 >= 4500 && a[1]+0 <= 5500) print}' \
+            | head -80
           echo "== reuses lost before the Worker (reset or silently dropped) =="
           grep -h "^IDLE" conformance-*.log | grep -E -- "-> (reset|dropped)" | head -50
       - uses: actions/upload-artifact@v4
