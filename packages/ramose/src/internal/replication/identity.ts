@@ -19,6 +19,7 @@ import type {
   OpaqueReplicationId,
   ReplicationIdentity,
 } from "./protocol.ts";
+import type { EntityIdScope } from "./entity-id.ts";
 import { base64Url, type ServerSealingKey } from "./server-identity.ts";
 
 const utf8 = new TextEncoder();
@@ -140,6 +141,53 @@ export const replicationReadRouteIdentities = async (
   readPolicy: canonicalizeReadPolicy(route.deployed.unit.policy),
 })));
 
+export type EntityIdScopeInput = {
+  readonly origin: string;
+  readonly caller: AuthenticatedCaller;
+  readonly database: DatabaseId;
+};
+
+/** An {@link EntityIdScope} whose components keep their opaque brand. */
+export type ReplicationEntityIdScope = EntityIdScope & {
+  readonly server: OpaqueReplicationId;
+  readonly principal: OpaqueReplicationId;
+  readonly database: OpaqueReplicationId;
+};
+
+/**
+ * The stable server/principal/database scope a sealed `EntityId` is bound to.
+ *
+ * These are exactly the three replication-identity components that survive a
+ * catalog, read-view, schema, or deployment change, derived under the same
+ * domains — so a handle minted at the operation boundary and one carried by
+ * logical replication name the same scope.
+ */
+export const makeEntityIdScope = async (
+  sealing: ServerSealingKey,
+  input: EntityIdScopeInput,
+): Promise<ReplicationEntityIdScope> => {
+  const [server, principal, database] = await Promise.all([
+    opaqueHmac(sealing, "ramose:replication:server:v1", input.origin),
+    opaqueHmac(
+      sealing,
+      "ramose:replication:principal:v1",
+      callerMaterial(input.caller),
+    ),
+    opaqueHmac(sealing, "ramose:replication:database:v1", input.database),
+  ]);
+  return Object.freeze({ server, principal, database });
+};
+
+/** The same scope, read off an identity that already carries its components. */
+export const entityIdScopeOf = (
+  identity: ReplicationIdentity,
+): ReplicationEntityIdScope =>
+  Object.freeze({
+    server: identity.server,
+    principal: identity.principal,
+    database: identity.database,
+  });
+
 /**
  * Derive the five partition dimensions solely from authenticated server
  * state. JWT expiry/issued-at are absent, so ordinary refresh is stable;
@@ -150,20 +198,13 @@ export const makeReplicationIdentity = async (
 ): Promise<ReplicationIdentity> => {
   const target = input.path.routes[input.path.routes.length - 1];
   if (target === undefined) throw new Error("replication path has no target");
-  const server = await opaqueHmac(
+  const { server, principal, database } = await makeEntityIdScope(
     input.sealing,
-    "ramose:replication:server:v1",
-    input.origin,
-  );
-  const principal = await opaqueHmac(
-    input.sealing,
-    "ramose:replication:principal:v1",
-    callerMaterial(input.caller),
-  );
-  const database = await opaqueHmac(
-    input.sealing,
-    "ramose:replication:database:v1",
-    target.database,
+    {
+      origin: input.origin,
+      caller: input.caller,
+      database: target.database,
+    },
   );
   const catalog = await opaqueHmac(
     input.sealing,

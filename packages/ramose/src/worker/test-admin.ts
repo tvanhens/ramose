@@ -7,6 +7,12 @@
  * here invents a successful transact, query, or socket frame.
  */
 
+import {
+  openEntityId,
+  sealEntityId,
+  sealingKeyOf,
+  type EntityIdScope,
+} from "../internal/replication/index.ts";
 import { dbPrefix, prefixedBucket } from "../internal/storage/index.ts";
 import {
   armCheckpoint,
@@ -259,27 +265,86 @@ const forward = async (
   }
 };
 
+const entityIdScopeOfBody = (value: unknown): EntityIdScope => {
+  const record = typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : {};
+  const { server, principal, database } = record;
+  if (
+    typeof server !== "string" ||
+    typeof principal !== "string" ||
+    typeof database !== "string"
+  ) {
+    throw new BadRequest({
+      message: "entity-id scope needs server, principal and database",
+    });
+  }
+  return { server, principal, database };
+};
+
 /**
  * Real durable identity/sealing root, read through the same internal boundary
  * production uses. Key material never crosses this route: only the public key
  * id, and one boolean proving the root is not the rotating Worker→DO
  * capability.
+ *
+ * The `seal-entity-id` / `open-entity-id` actions run the real #475 E0 codec
+ * against that live record inside workerd — no key, eid, or scope is invented
+ * here.
  */
 const handleServerIdentity = async (
   request: Request,
   env: RamoseEnv,
 ): Promise<Response> => {
-  const body = (await request.json()) as { action?: unknown };
+  const body = (await request.json()) as {
+    action?: unknown;
+    eid?: unknown;
+    token?: unknown;
+    scope?: unknown;
+  };
   if (body.action === "forget-isolate-cache") {
     clearServerIdentityRootCache();
     return json({ ok: true, forgotten: true });
   }
-  if (body.action !== "probe") {
+  if (
+    body.action !== "probe" &&
+    body.action !== "seal-entity-id" &&
+    body.action !== "open-entity-id"
+  ) {
     throw new BadRequest({
-      message: "server-identity action must be probe|forget-isolate-cache",
+      message:
+        "server-identity action must be probe|forget-isolate-cache|seal-entity-id|open-entity-id",
     });
   }
   const root = await serverIdentityRoot(env);
+  if (body.action === "seal-entity-id") {
+    if (typeof body.eid !== "number") {
+      throw new BadRequest({ message: "seal-entity-id needs a numeric eid" });
+    }
+    return json({
+      ok: true,
+      keyId: root.keyId,
+      token: await sealEntityId(
+        sealingKeyOf(root),
+        entityIdScopeOfBody(body.scope),
+        body.eid,
+      ),
+    });
+  }
+  if (body.action === "open-entity-id") {
+    if (typeof body.token !== "string") {
+      throw new BadRequest({ message: "open-entity-id needs a token" });
+    }
+    return json({
+      ok: true,
+      keyId: root.keyId,
+      resolution: await openEntityId(
+        sealingKeyOf(root),
+        entityIdScopeOfBody(body.scope),
+        body.token,
+      ),
+    });
+  }
   return json({
     ok: true,
     version: root.version,

@@ -1,3 +1,4 @@
+export * from "./entity-id.ts";
 export * from "./identity.ts";
 export * from "./logical.ts";
 export * from "./protocol.ts";

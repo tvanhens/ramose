@@ -8,9 +8,13 @@ import {
   type GraphPathLeaseIdentity,
 } from "../../../src/internal/authorization/index.ts";
 import {
+  entityIdScopeOf,
   makeEntityIdentity,
+  makeEntityIdScope,
   makeReplicationIdentity,
   makeRevision,
+  openEntityId,
+  sealEntityId,
   type ServerSealingKey,
 } from "../../../src/internal/replication/index.ts";
 import { replicaPartitionKey } from "../../../src/internal/replication/indexeddb.ts";
@@ -167,6 +171,35 @@ describe("opaque replication identities", () => {
         readPolicy: digest("f"),
       }],
     })).graphLineage).not.toEqual(baseline.graphLineage);
+  });
+
+  test("the sealed entity-id scope is exactly the stable server/principal/database", async () => {
+    const identity = await make();
+    expect(entityIdScopeOf(identity)).toEqual(
+      await makeEntityIdScope(sealing, {
+        origin: "https://ramose.test",
+        caller: caller(2_000_000_000),
+        database: DatabaseId.make("child-db"),
+      }),
+    );
+    // The #475 contract: a compatible read-view, catalog, deployment, or token
+    // refresh preserves a queued target; a different database does not.
+    const token = await sealEntityId(sealing, entityIdScopeOf(identity), 42);
+    const redeployed = await make({
+      caller: caller(2_100_000_000),
+      path: path("child-db", "other-catalog", digest("c")),
+      compatibility: compatibility("x"),
+      policy: digest("e"),
+    });
+    expect(await openEntityId(sealing, entityIdScopeOf(redeployed), token))
+      .toEqual({
+        type: "resolved",
+        eid: 42,
+        scope: entityIdScopeOf(redeployed),
+      });
+    const elsewhere = await make({ path: path("other-db") });
+    expect(await openEntityId(sealing, entityIdScopeOf(elsewhere), token))
+      .toEqual({ type: "denied" });
   });
 
   test("entity identities and revisions are stable opaque PRF outputs within one partition", async () => {

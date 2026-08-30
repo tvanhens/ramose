@@ -8,6 +8,10 @@
  * orphaned every persisted revision. Identities now come from a once-generated
  * record in Durable Object state, and the rotating secret stays the Worker→DO
  * capability only.
+ *
+ * It also covers #475 milestone E0: the sealed `EntityId` codec derives from
+ * that same live record, inside workerd, using only WebCrypto (HKDF-SHA-256,
+ * AES-256-GCM, HMAC-SHA-256).
  */
 
 import { beforeAll, describe, expect, test } from "bun:test";
@@ -50,6 +54,54 @@ const coldIsolate = async (base: string, database: string): Promise<void> => {
   expect(response.status).toBe(200);
   expect(response.body.forgotten).toBe(true);
 };
+
+type EntityIdScope = {
+  readonly server: string;
+  readonly principal: string;
+  readonly database: string;
+};
+
+const sealEntityId = async (
+  base: string,
+  database: string,
+  scope: EntityIdScope,
+  eid: number,
+): Promise<string> => {
+  const response = await testAdmin(base, database, "/server-identity", {
+    action: "seal-entity-id",
+    scope,
+    eid,
+  });
+  expect(response.status).toBe(200);
+  return response.body.token as string;
+};
+
+const openEntityId = async (
+  base: string,
+  database: string,
+  scope: EntityIdScope,
+  token: string,
+): Promise<unknown> => {
+  const response = await testAdmin(base, database, "/server-identity", {
+    action: "open-entity-id",
+    scope,
+    token,
+  });
+  expect(response.status).toBe(200);
+  return response.body.resolution;
+};
+
+const base64Url = (bytes: Uint8Array): string =>
+  btoa(String.fromCharCode(...bytes))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+
+const envelopeOf = (token: string): Uint8Array =>
+  Uint8Array.from(
+    atob(`${token.replaceAll("-", "+").replaceAll("_", "/")}=`),
+    (character) => character.charCodeAt(0),
+  );
 
 const opaqueId = (): string => {
   const bytes = new Uint8Array(32);
@@ -131,6 +183,72 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       } finally {
         await closeIterator(resumedIterator);
       }
+    });
+
+    test("the sealed EntityId codec derives from the live root and survives a cold isolate", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = uniqueDb("entity-id");
+      const scope: EntityIdScope = {
+        server: opaqueId(),
+        principal: opaqueId(),
+        database: opaqueId(),
+      };
+      // Beyond 32 bits: the eight-byte big-endian encoding is exercised in the
+      // real runtime, not only in the pure suite.
+      const eid = 4_294_967_296;
+
+      const token = await sealEntityId(base, database, scope, eid);
+      expect(token).toMatch(/^[A-Za-z0-9_-]{71}$/);
+      // Deterministic inside the live Worker: handles are cache- and
+      // replay-comparable.
+      expect(await sealEntityId(base, database, scope, eid)).toBe(token);
+
+      // A cold Worker isolate — what an ordinary redeploy produces — re-reads
+      // the same durable record, reproduces the same handle, and still opens
+      // the one minted before the restart.
+      await coldIsolate(base, database);
+      expect(await sealEntityId(base, database, scope, eid)).toBe(token);
+      expect(await openEntityId(base, database, scope, token)).toEqual({
+        type: "resolved",
+        eid,
+        scope,
+      });
+    });
+
+    test("a wrong scope or tampered handle is sealed, and an unreadable codec version quarantines", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = uniqueDb("entity-id-failures");
+      const scope: EntityIdScope = {
+        server: opaqueId(),
+        principal: opaqueId(),
+        database: opaqueId(),
+      };
+      const token = await sealEntityId(base, database, scope, 12);
+
+      // Another principal or another database gets the ordinary sealed denial,
+      // indistinguishable from not-found.
+      for (
+        const wrong of [
+          { ...scope, principal: opaqueId() },
+          { ...scope, database: opaqueId() },
+          { ...scope, server: opaqueId() },
+        ]
+      ) {
+        expect(await openEntityId(base, database, wrong, token))
+          .toEqual({ type: "denied" });
+      }
+
+      const tampered = envelopeOf(token);
+      tampered[30] = tampered[30]! ^ 0x40;
+      expect(await openEntityId(base, database, scope, base64Url(tampered)))
+        .toEqual({ type: "denied" });
+
+      // A codec version this build cannot read is a data-free quarantine, so a
+      // queued target is reported update-required rather than cleared.
+      const versioned = envelopeOf(token);
+      versioned[0] = 2;
+      expect(await openEntityId(base, database, scope, base64Url(versioned)))
+        .toEqual({ type: "update-required", reason: "codec-version" });
     });
 
     test("a revision store quarantines state sealed under a replaced key id", async () => {
