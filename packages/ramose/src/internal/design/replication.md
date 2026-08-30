@@ -585,6 +585,12 @@ and zero heads for any GC pass.
   which its `SnapshotCommit` can never install again. A snapshot still streaming
   against a current base is never touched, and a reconnect rebases the stale
   case anyway.
+- **Content only.** A sweep reclaims content nodes and impossible staging. The
+  #475 mutation families — outbox, queues, receipts, ClientRefs, mappings — are
+  not merely skipped but structurally out of reach: the sweep transaction never
+  names those stores, so IndexedDB itself would refuse a write to one. Storage
+  pressure is no reason to discard work the user has not yet had acknowledged,
+  which is why the quota recovery pass is this same pass and nothing wider.
 - **One transaction.** The generation bump, the node deletes, and the staging
   deletes are one IndexedDB transaction with a boundary immediately before its
   commit, so a crash cut leaves either the complete pre-sweep state or the

@@ -1535,7 +1535,11 @@ export class IndexedDbReplicaStorage {
    *
    * Nothing here writes a manifest, a head, a credential binding, or a cache
    * candidate, so no install identifier can be dropped or minted by a sweep and
-   * no selection changes. A sweep that removed at least one node bumps that
+   * no selection changes. The #475 mutation families are not merely skipped but
+   * structurally out of reach: no transaction below names those stores, so
+   * IndexedDB itself would refuse a write to one. Content is re-fetchable; a
+   * durable operation identity is not, and storage pressure is no reason to
+   * discard work the user has not yet had acknowledged. A sweep that removed at least one node bumps that
    * partition's sweep generation, which is the record the restore publish fence
    * re-observes; live sessions do not lease it, so reclaiming the roots they
    * superseded leaves them running.

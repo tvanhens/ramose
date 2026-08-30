@@ -12,6 +12,8 @@
 
 import { expect } from "vitest";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
+import type { OperationVersion } from "../../packages/ramose/src/internal/authorization/identities.ts";
+import { invocationId } from "../../packages/ramose/src/db/refs.ts";
 import { Index } from "../../packages/ramose/src/internal/core/datom.ts";
 import type { Db } from "../../packages/ramose/src/internal/core/db.ts";
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
@@ -175,6 +177,26 @@ const supersededRoot = async (
   const orphan = records.find((record) => !live.has(record.hash));
   if (orphan === undefined) throw new Error("no superseded node to swap in");
   return orphan.hash;
+};
+
+/**
+ * Every record of the five #475 mutation families. The sweep transaction never
+ * names these stores, so IndexedDB itself would refuse a write to one; this
+ * reads them back to say so from the outside.
+ */
+const dumpMutations = async (name: string): Promise<Record<string, unknown[]>> => {
+  const database = await openNative(name);
+  const stores = [...database.objectStoreNames].filter((store) =>
+    store.startsWith("mutation-")
+  );
+  const transaction = database.transaction(stores, "readonly");
+  const contents: Record<string, unknown[]> = {};
+  for (const store of stores) {
+    contents[store] = await requestResult<unknown[]>(transaction.objectStore(store).getAll());
+  }
+  await transactionDone(transaction);
+  database.close();
+  return contents;
 };
 
 const sweepGeneration = async (name: string, partition: string): Promise<number> => {
@@ -828,6 +850,64 @@ browserTest(
       const restored = await storage.restore(selected, attributes, READ_COMPATIBILITY);
       expect(restored?.revision).toBe(opaque("1"));
       expect((await names(restored!.db)).length).toBe(40);
+    } finally {
+      resetTestHooks();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "neither a sweep nor quota recovery can reach the mutation families",
+  async ({ browser }) => {
+    const name = `ramose-gc-mutations-${browser.uniqueId}`;
+    const selected = identity();
+    const scope = { server: SERVER, principal: PRINCIPAL };
+    const receiver = { ...scope, database: ROOT_DATABASE };
+    const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(120, "seed"));
+      await confirm(storage, selected, "queued");
+      // Real durable work, queued through the real outbox.
+      await storage.outbox().enqueue({
+        invocation: invocationId(),
+        receiver,
+        operation: {
+          catalog: "movies" as never,
+          owner: { kind: "entity", name: "issue" },
+          localName: "create",
+        },
+        operationVersion: "b".repeat(64) as OperationVersion,
+        target: { type: "none" },
+        input: { title: "offline" },
+        allocations: [],
+        inputRefs: [],
+        enqueuedAt: Date.now(),
+      }, { scope });
+      const queued = bytes(await dumpMutations(name));
+      expect(queued).toContain("offline");
+
+      // A change orphans roots, so the pass below really does delete something.
+      await storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), "entity-000003".padEnd(43, "z"), "changed"),
+      );
+      const swept = await storage.collectGarbage();
+      expect(swept.nodes).toBeGreaterThan(0);
+      expect(bytes(await dumpMutations(name))).toBe(queued);
+
+      // And the recovery pass an exhausted quota triggers is the same pass:
+      // storage pressure never evicts unsubmitted work.
+      armCheckpointThrow("replica.install", {
+        error: "storage is full",
+        errorName: "QuotaExceededError",
+        times: 1,
+      });
+      const applied = await storage.applyChange(
+        changeOne(selected, opaque("2"), opaque("3"), "entity-000004".padEnd(43, "z"), "later"),
+      );
+      expect(applied?.revision).toBe(opaque("3"));
+      expect(bytes(await dumpMutations(name))).toBe(queued);
     } finally {
       resetTestHooks();
       storage.close();
