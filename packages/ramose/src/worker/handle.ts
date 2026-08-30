@@ -70,6 +70,7 @@ import {
   toHttp,
 } from "./errors.ts";
 import { JwtVerifier, fromEnv } from "./jwt.ts";
+import { mcpResponse } from "./mcp.ts";
 import { watchBasisChanges } from "./peer.ts";
 import {
   invokeAuthoritativeOperation,
@@ -365,6 +366,25 @@ export const handle = (
       }).pipe(Effect.mapError((cause) => fromThrown(cause, {
         stacks: env.RAMOSE_STAGE !== "prod",
       })));
+    }
+    // Experimental agent surface (#484). Authentication has already happened
+    // above, so a missing or invalid credential is a challenge, never a tool
+    // result. Everything past this point is per-call authorization.
+    if (rest === "/mcp" && request.method === "POST") {
+      if (databaseBindings === undefined) {
+        return yield* new Unauthorized({ status: 403 });
+      }
+      const root = yield* Effect.fromResult(
+        databaseBindings.root(DatabaseId.make(db)),
+      ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
+      return yield* mcpResponse({
+        env,
+        request,
+        bindings: databaseBindings,
+        root,
+        caller: callerFromVerified(verified),
+        headers: cors,
+      });
     }
     if (rest === "/op" && request.method === "POST") {
       if (peer.operationCatalogs === undefined) {
