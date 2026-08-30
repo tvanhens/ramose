@@ -1521,6 +1521,42 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
       });
 
+      test("a slot bound to an entity the commit did not allocate is refused", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-allocation-misbound";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_misallocating");
+        const created = await invokeWith(base, database, token, {
+          invocationId: "allocation-misbound-create-01",
+          operation: createItem,
+          input: { title: "Pre-existing" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+
+        // `misallocating` returns `op.self` at its declared slot path. The
+        // entity is real and visible, and the path is a genuine ref position —
+        // it simply is not one this transaction allocated, so the client would
+        // otherwise bind a fresh, immutable ClientRef to a pre-existing row.
+        const refused = await invokeWith(base, database, token, {
+          invocationId: "allocation-misbound-01",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeItem" },
+            localName: "misallocating",
+          },
+          target: created.body.mappings[0].entityId,
+          input: { title: "Should never land" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(refused.status).toBe(409);
+        expect(refused.body.tag).toBe("OperationRejected");
+        // Refused before the commit: the write the body attempted is absent.
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Should never land"]]',
+        });
+        expect(rows.body.result).toEqual([]);
+      });
+
       test("an undeclared slot is refused before the operation body runs", async () => {
         const base = ctx.urls().nativeOperationsUrl;
         const database = "operations-allocation-undeclared";

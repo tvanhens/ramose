@@ -85,6 +85,7 @@ import {
 } from "./read-filter.ts";
 import type { InvocationReplayFenceV1 } from "./invocation-receipts.ts";
 import {
+  allocatedEids,
   extractAllocations,
   sealAllocationMappings,
   type InvocationAllocation,
@@ -1975,6 +1976,7 @@ export const executeCatalogOperation = async (
         descriptor.output,
         encoded,
         requested,
+        allocatedEids(report.tempids),
       );
       if (extraction._tag === "Unallocated") {
         throw rejected(
@@ -1983,6 +1985,20 @@ export const executeCatalogOperation = async (
           "allocation",
           extraction.slot,
         );
+      }
+      // And it has to survive its own transaction. A client cannot be handed a
+      // durable, immutable identity for an entity this very commit removed —
+      // every later invocation depending on that ref would be admitted against
+      // a row that is already gone.
+      for (const slot of extraction.slots) {
+        if (!(await report.dbAfter.exists(slot.eid))) {
+          throw rejected(
+            descriptor,
+            "operation did not allocate a declared client-ref slot",
+            "allocation",
+            slot.slot,
+          );
+        }
       }
       // Sealed here, still before the commit. Doing it after `transactValidated`
       // returns would mean a WebCrypto failure left this writer's in-memory

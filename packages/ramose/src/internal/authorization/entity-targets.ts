@@ -38,7 +38,7 @@ import {
   readAllocationPath,
   type AllocationPathSegment,
 } from "../../db/allocations.ts";
-import { isClientRef, isEntityId, type ClientRef } from "../../db/refs.ts";
+import { isClientRef, type ClientRef } from "../../db/refs.ts";
 import {
   openEntityId,
   sealEntityId,
@@ -123,6 +123,13 @@ export const parseEntityIdScope = (
   });
 };
 
+/**
+ * A sanity cap on a caller-supplied handle, not a format decision. The v1
+ * envelope is 55 characters; nothing that could plausibly be a future envelope
+ * approaches this, so widening the codec never has to revisit it.
+ */
+const MAX_SEALED_TARGET_LENGTH = 4096;
+
 /** What resolving one sealed target produced. Both failures are data-free. */
 export type SealedTargetResolution =
   | { readonly _tag: "Resolved"; readonly eid: number }
@@ -147,7 +154,18 @@ export const resolveSealedTarget = async (
   scope: EntityIdScope,
   token: string,
 ): Promise<SealedTargetResolution> => {
-  if (!isEntityId(token)) return DENIED;
+  // Deliberately *not* an `isEntityId` shape check first. That predicate knows
+  // only the v1 envelope length, and `openEntityId` reads the codec version
+  // byte *before* it enforces any length — which is exactly what lets an older
+  // build quarantine a handle minted by a newer codec instead of denying it. A
+  // shape gate here would turn that promised `update-required` into a sealed
+  // denial for every future envelope whose length changed, and a client whose
+  // durable queue holds such handles would have no way back.
+  //
+  // The only bound is a sanity cap, far above any plausible envelope (v1 is 55
+  // characters), so it can never participate in the version decision — it just
+  // stops an absurd body from being base64-decoded.
+  if (token.length === 0 || token.length > MAX_SEALED_TARGET_LENGTH) return DENIED;
   const resolution = await openEntityId(sealing, scope, token);
   switch (resolution.type) {
     case "resolved":
@@ -200,12 +218,35 @@ export type AllocatedSlot = {
 export type AllocationExtraction =
   | { readonly _tag: "Allocated"; readonly slots: readonly AllocatedSlot[] }
   /**
-   * The operation declared a slot its own output does not deliver. That is an
-   * operation defect, not a caller error: the declaration is part of the
-   * pinned {@link OperationVersion}, so a caller that pinned it was promised
-   * this mapping.
+   * The operation declared a slot its own output does not deliver, or delivers
+   * as an entity this transaction did not allocate. That is an operation
+   * defect, not a caller error: the declaration is part of the pinned
+   * {@link OperationVersion}, so a caller that pinned it was promised this
+   * mapping.
    */
   | { readonly _tag: "Unallocated"; readonly slot: string };
+
+/**
+ * The entities this transaction allocated, by eid.
+ *
+ * A slot may only name one of these. `allocates` means exactly what it says:
+ * the client minted a fresh {@link ClientRef} for an entity it intends to
+ * *create*, and the mapping it gets back is durable and immutable, resolving
+ * every later queued dependency. An operation that returned an entity it did
+ * not allocate — `op.self`, an input ref, a literal eid — would silently bind
+ * that fresh client identity to a pre-existing row and redirect all of the
+ * client's subsequent offline writes onto it. Nothing after the commit can
+ * repair that, so it is refused before one.
+ *
+ * Every entity an operation creates is staged under a tempid — the collector
+ * generates one for `op.create` and `op.put`, and `op.tempid` names one
+ * explicitly — so the report's resolved tempids are exactly the allocations.
+ * An upsert that resolved a tempid to an existing row is included, and
+ * correctly so: that is the entity the operation's own declaration named.
+ */
+export const allocatedEids = (
+  tempids: Readonly<Record<string, number>>,
+): ReadonlySet<number> => new Set(Object.values(tempids));
 
 /**
  * Read every declared slot out of the exact JSON output the operation
@@ -220,6 +261,8 @@ export const extractAllocations = (
   outputShape: OperationInputShape,
   output: unknown,
   requested: readonly InvocationAllocation[],
+  /** Exactly the eids this transaction allocated — see {@link allocatedEids}. */
+  allocated: ReadonlySet<number>,
 ): AllocationExtraction => {
   const slots: AllocatedSlot[] = [];
   for (const allocation of requested) {
@@ -234,6 +277,12 @@ export const extractAllocations = (
     }
     const value = readAllocationPath(output, declaration.path);
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      return Object.freeze({ _tag: "Unallocated", slot: allocation.slot });
+    }
+    // The entity has to be one this transaction allocated. A slot that named
+    // `op.self`, an input ref, or a literal eid would bind the client's fresh,
+    // immutable ClientRef to a pre-existing row.
+    if (!allocated.has(value)) {
       return Object.freeze({ _tag: "Unallocated", slot: allocation.slot });
     }
     slots.push(Object.freeze({ slot: allocation.slot, eid: value }));

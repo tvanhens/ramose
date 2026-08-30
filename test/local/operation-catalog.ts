@@ -38,6 +38,7 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-sealed-target",
   "operations-sealed-hidden",
   "operations-sealed-quarantine",
+  "operations-allocation-misbound",
 ]);
 
 const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
@@ -142,6 +143,21 @@ export const Item = Entity("nativeItem", {
       output: EffectSchema.Struct({ id: OperationEntityId }),
       run(op, input) {
         return { id: op.create({ title: input.title }) };
+      },
+    }),
+    /**
+     * Declares a slot but returns its own pre-existing target at the declared
+     * path. The authoritative edge must refuse this before the commit: binding
+     * a fresh, immutable `ClientRef` to an entity this transaction did not
+     * allocate would redirect every later offline write onto that row (#475).
+     */
+    misallocating: Operation({
+      allocates: { item: ["id"] },
+      input: EffectSchema.Struct({ title: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        op.self.set(Item.title, input.title);
+        return { id: op.self };
       },
     }),
     rename: Operation({
@@ -266,6 +282,7 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     Policy.read(Other).when(Policy.hasClass("reader")),
     Policy.invoke(Item[OwnedOperations].create).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].createAllocating).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].misallocating).when(Policy.hasClass("member")),
     Policy.invoke(Other[OwnedOperations].createAllocating).when(Policy.hasClass("member")),
     Policy.invoke(Other[OwnedOperations].rename).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].rename).when(Policy.any(

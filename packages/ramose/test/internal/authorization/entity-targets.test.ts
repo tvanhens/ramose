@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  allocatedEids,
   extractAllocations,
   isEntityRefPath,
   parseEntityIdScope,
@@ -13,9 +14,11 @@ import type {
   OperationInputShape,
 } from "../../../src/internal/authorization/catalog.ts";
 import {
+  ENTITY_ID_CODEC_VERSION,
   sealEntityId,
   type EntityIdScope,
 } from "../../../src/internal/replication/entity-id.ts";
+import { base64Url } from "../../../src/internal/replication/server-identity.ts";
 import type { ServerSealingKey } from "../../../src/internal/replication/server-identity.ts";
 import { clientRef, isEntityId, type ClientRef } from "../../../src/db/refs.ts";
 
@@ -142,6 +145,8 @@ describe("isEntityRefPath", () => {
 
 describe("extractAllocations", () => {
   const output = { id: 42, count: 7, rows: [11, 12] };
+  /** Exactly what this transaction allocated. `7` deliberately is not here. */
+  const allocated = allocatedEids({ "__ramose.operation/1": 42, item: 11, other: 12 });
 
   test("reads only the slots the caller bound, at the declared ref path", () => {
     const item = ref();
@@ -149,7 +154,7 @@ describe("extractAllocations", () => {
     expect(extractAllocations(declared, outputShape, output, [
       { slot: "first", clientRef: first },
       { slot: "item", clientRef: item },
-    ])).toEqual({
+    ], allocated)).toEqual({
       _tag: "Allocated",
       slots: [{ slot: "first", eid: 11 }, { slot: "item", eid: 42 }],
     });
@@ -158,26 +163,51 @@ describe("extractAllocations", () => {
   test("a slot declared on a non-ref position never binds", () => {
     expect(extractAllocations(declared, outputShape, output, [
       { slot: "count", clientRef: ref() },
-    ])).toEqual({ _tag: "Unallocated", slot: "count" });
+    ], allocated)).toEqual({ _tag: "Unallocated", slot: "count" });
   });
 
   test("a slot whose declared path the output does not deliver never binds", () => {
     expect(extractAllocations(declared, outputShape, output, [
       { slot: "missing", clientRef: ref() },
-    ])).toEqual({ _tag: "Unallocated", slot: "missing" });
+    ], allocated)).toEqual({ _tag: "Unallocated", slot: "missing" });
     expect(extractAllocations(declared, outputShape, { count: 7, rows: [] }, [
       { slot: "item", clientRef: ref() },
-    ])).toEqual({ _tag: "Unallocated", slot: "item" });
+    ], allocated)).toEqual({ _tag: "Unallocated", slot: "item" });
   });
 
   test("a slot the operation does not declare never binds", () => {
     expect(extractAllocations([], outputShape, output, [
       { slot: "item", clientRef: ref() },
-    ])).toEqual({ _tag: "Unallocated", slot: "item" });
+    ], allocated)).toEqual({ _tag: "Unallocated", slot: "item" });
+  });
+
+  test("a slot naming an entity this transaction did not allocate never binds", () => {
+    // The shape is right and the value is a live eid — it is simply not one
+    // this commit created. Binding a fresh, immutable ClientRef to it would
+    // redirect every later offline write onto a pre-existing row, which is
+    // exactly what `allocates` promises cannot happen. Returning `op.self` is
+    // the ordinary way an operation could do this by accident.
+    expect(extractAllocations(declared, outputShape, output, [
+      { slot: "item", clientRef: ref() },
+    ], allocatedEids({}))).toEqual({ _tag: "Unallocated", slot: "item" });
+    expect(extractAllocations(declared, outputShape, output, [
+      { slot: "first", clientRef: ref() },
+    ], allocatedEids({ self: 42 }))).toEqual({ _tag: "Unallocated", slot: "first" });
+  });
+
+  test("an upsert that resolved a tempid to an existing row still allocates", () => {
+    // The operation's own declaration named it, and the tempid is how it did
+    // so, so the client is addressing exactly the entity it asked for.
+    expect(extractAllocations(declared, outputShape, output, [
+      { slot: "item", clientRef: ref() },
+    ], allocatedEids({ upserted: 42 }))).toEqual({
+      _tag: "Allocated",
+      slots: [{ slot: "item", eid: 42 }],
+    });
   });
 
   test("binding nothing allocates nothing", () => {
-    expect(extractAllocations(declared, outputShape, output, []))
+    expect(extractAllocations(declared, outputShape, output, [], allocated))
       .toEqual({ _tag: "Allocated", slots: [] });
   });
 });
@@ -208,15 +238,63 @@ describe("resolveSealedTarget", () => {
       .toEqual({ _tag: "Denied" });
   });
 
-  test("a value that is not a sealed handle at all is denied without a key", async () => {
-    expect(await resolveSealedTarget(sealing, scope, "cr1_not-a-handle"))
+  test("the boundary between denial and quarantine is the preamble, not the shape", async () => {
+    const token = await sealEntityId(sealing, scope, 4242);
+    // Not canonical base64url at all: there is no preamble to read.
+    for (const junk of ["!".repeat(55), `${token}=`, "a".repeat(41)]) {
+      expect([junk, await resolveSealedTarget(sealing, scope, junk)])
+        .toEqual([junk, { _tag: "Denied" }]);
+    }
+    // A truncated v1 handle *does* have a readable preamble, and it says v1 —
+    // so the length check that follows denies it, exactly as a tampered or
+    // wrong-scope handle is denied.
+    expect(await resolveSealedTarget(sealing, scope, token.slice(0, 40)))
       .toEqual({ _tag: "Denied" });
+    // Anything whose preamble names a version this build does not have is
+    // update-required instead, deliberately: that is the one signal that lets
+    // a client holding newer handles learn to update rather than be told its
+    // durable work is forbidden. It is a statement about the caller's own
+    // bytes and discloses nothing about any entity.
+    const future = new Uint8Array(41);
+    future[0] = ENTITY_ID_CODEC_VERSION + 1;
+    expect(await resolveSealedTarget(sealing, scope, base64Url(future)))
+      .toEqual({ _tag: "UpdateRequired" });
+    // The deliberate cost of that rule: any canonical base64url whose first
+    // byte is not this codec's version reads as a newer codec, including a
+    // client ref someone put in a target position by mistake. It is harmless —
+    // both answers are effect-free and neither names an entity — and a durable
+    // queue cannot produce one, because `buildOutboxRecord` only ever stores a
+    // well-formed sealed handle as an entity target.
+    expect(await resolveSealedTarget(sealing, scope, clientRef()))
+      .toEqual({ _tag: "UpdateRequired" });
   });
 
   test("a replaced key epoch quarantines data-free instead of denying", async () => {
     const token = await sealEntityId(sealing, scope, 4242);
     expect(await resolveSealedTarget(rotatedSealing, scope, token))
       .toEqual({ _tag: "UpdateRequired" });
+  });
+
+  test("a newer codec quarantines even when its envelope is a different size", async () => {
+    // The frozen forward-compatibility contract: byte 0 is the codec version in
+    // *every* envelope version, and it is read before any length is enforced,
+    // so a rolled-back server tells a client holding newer handles to update
+    // rather than denying work it can never recover. A v1-shaped pre-check here
+    // would collapse all of these into a sealed denial.
+    for (const size of [41, 48, 64]) {
+      const envelope = new Uint8Array(size);
+      envelope[0] = ENTITY_ID_CODEC_VERSION + 1;
+      expect([size, await resolveSealedTarget(sealing, scope, base64Url(envelope))])
+        .toEqual([size, { _tag: "UpdateRequired" }]);
+    }
+  });
+
+  test("an absurdly long target is denied without being decoded", async () => {
+    // A sanity cap only — far above any plausible envelope, so it can never
+    // participate in the version decision.
+    expect(await resolveSealedTarget(sealing, scope, "A".repeat(100_000)))
+      .toEqual({ _tag: "Denied" });
+    expect(await resolveSealedTarget(sealing, scope, "")).toEqual({ _tag: "Denied" });
   });
 });
 

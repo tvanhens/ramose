@@ -334,6 +334,16 @@ Everything else — malformed, tampered, wrong scope, wrong key material —
 collapses into the ordinary sealed denial (**FC-1**, #419), indistinguishable
 from not-found and unauthorized.
 
+The edge applies **no shape check of its own** before the resolver. The
+preamble is version-first by design, so a handle minted by a newer codec —
+whatever its envelope length — must reach the resolver and come back
+`update-required`; a v1-shaped gate would turn the one signal that lets a
+client recover into a permanent denial of its durable work. The cost is that
+any canonical base64url whose first byte is not this codec's version reads as a
+newer codec. That is harmless: both answers are effect-free, neither names an
+entity, and a durable queue cannot produce one, because only a well-formed
+sealed handle is ever stored as an entity target.
+
 **WR-11.** An operation that declares named allocation slots binds each slot
 to a typed entity-reference path in its own declared output. The authoritative
 edge reads the slot's eid out of the *materialized authoritative output* at
@@ -342,6 +352,15 @@ shape says the position is a `ref`. Nothing is inferred from a transaction
 tempid name, a callback's source, or the shape of a raw output number. A slot
 whose path is absent, is not a ref position, or does not hold a resolved eid
 fails the invocation rather than producing a partial mapping.
+
+**WR-11b.** A slot may name only an entity *this* transaction allocated, and
+only one that still exists after it. `allocates` means what it says: the client
+minted a fresh `ClientRef` for an entity it intends to create, and the mapping
+it gets back is durable and immutable, resolving every later queued dependency.
+An operation returning an entity it did not allocate — `op.self`, an input ref,
+a literal eid — would silently bind that fresh identity to a pre-existing row
+and redirect all of the client's subsequent offline writes onto it, which
+nothing after the commit can repair.
 
 **WR-11a.** A slot's eid is sealed inside the same pre-commit validator that
 read it. A sealing failure therefore aborts the staged transaction rather than

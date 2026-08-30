@@ -61,7 +61,7 @@ import {
 } from "../../db/Errors.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
-import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError } from "./errors.ts";
+import { BadRequest, NotFound, TransactorDeadError, Unavailable, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
@@ -682,7 +682,23 @@ export class Transactor {
       if (runtime.sealing === undefined || invocation.entityIdScope === undefined) {
         throw opaqueOperationDenial();
       }
-      sealing = await runtime.sealing();
+      try {
+        sealing = await runtime.sealing();
+      } catch (cause) {
+        // The root lives in another Durable Object, so a cold isolate has to
+        // fetch it. A transient failure there is not an engine defect and not a
+        // denial: nothing about this invocation is wrong and asking again is
+        // the right answer. Answering an opaque 500 instead would be
+        // indistinguishable, to a durable offline queue, from a permanent one —
+        // and it would be invisible here, which is exactly what made an earlier
+        // occurrence of this undiagnosable.
+        const message = cause instanceof Error ? cause.message : String(cause);
+        this.log.error("operation.sealing-root-unavailable", { error: message });
+        throw new Unavailable({
+          message: "the server sealing root is momentarily unavailable",
+          retryAfterMs: 1_000,
+        });
+      }
     }
     return new Promise<OperationAck>((resolve, reject) => {
       this.queue.push({
@@ -1389,6 +1405,7 @@ export class Transactor {
           Unauthorized: (e) => Effect.sync(() => errorResponse(e)),
           OperationRejected: (e) => Effect.sync(() => errorResponse(e)),
           TransactorDead: (e) => Effect.sync(() => errorResponse(e)),
+          Unavailable: (e) => Effect.sync(() => errorResponse(e)),
           BadRequest: (e) => Effect.sync(() => errorResponse(e)),
           NotFound: (e) => Effect.sync(() => errorResponse(e)),
           Internal: (e) => Effect.sync(() => errorResponse(e)),
