@@ -16,10 +16,14 @@
  *   confirmed it: a restored offline replica, or a reconnect in progress.
  * - `offline` — the activation could not reach the server. Whatever local value
  *   was already confirmed stays readable; nothing new is.
- * - `update-required` — this client build cannot read the server's current
- *   authorized view (schema, trait, read-policy, or graph-read change), or
- *   cannot replay its own durable optimistic layers. No data is published and
- *   no retry helps; ship a new build.
+ * - `update-required` — this client build is behind, and no retry helps; ship a
+ *   new build. Two causes, and they differ in what stays readable. The server
+ *   rotated the authorized view (a schema, trait, read-policy, or graph-read
+ *   change): nothing is published, because this build cannot read what the
+ *   server now serves. Or this build cannot replay its own durable optimistic
+ *   layers: those layers are withheld, but the committed replica is untouched
+ *   and stays readable, so queries keep answering from it without the pending
+ *   work folded in.
  * - `authentication-required` — the credential was refused, or the principal
  *   behind it was replaced. There is no anonymous fallback and no other
  *   candidate: the prior partition is fenced and publishes nothing.

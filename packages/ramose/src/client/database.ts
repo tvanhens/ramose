@@ -186,8 +186,26 @@ export type DatabaseContext = {
  * `subscribe`: the last unsubscribe drops it from the database's intern map, so
  * a query nobody watches stops costing anything.
  */
+/**
+ * What a released observation was last showing.
+ *
+ * Kept so a remount resumes from it instead of flashing back through
+ * `pending`: a released observation is not a *changed* one, and the snapshot
+ * contract says identity changes only when the value does. It comes back
+ * marked stale, because nothing has re-derived it against the current view
+ * yet — which is the honest reading, and is free when it was already stale.
+ */
+const resumed = (
+  prior: QuerySnapshot<unknown> | undefined,
+): QuerySnapshot<unknown> => {
+  if (prior === undefined || prior.status === "pending") return PENDING;
+  // Already stale means already resumable: returning it unchanged is what
+  // makes a remount cost no re-render at all.
+  return prior.stale ? prior : Object.freeze({ ...prior, stale: true });
+};
+
 class QueryObserver {
-  readonly store = new Store<QuerySnapshot<unknown>>(PENDING);
+  readonly store: Store<QuerySnapshot<unknown>>;
   /**
    * The newest generation this observer has been asked to answer for.
    *
@@ -201,7 +219,10 @@ class QueryObserver {
   constructor(
     private readonly lowered: LoweredKernelQuery,
     private readonly release: (self: QueryObserver) => void,
-  ) {}
+    prior?: QuerySnapshot<unknown> | undefined,
+  ) {
+    this.store = new Store<QuerySnapshot<unknown>>(resumed(prior));
+  }
 
   subscribe(onChange: () => void): () => void {
     const stop = this.store.subscribe(onChange);
@@ -309,6 +330,12 @@ export class ClientDatabaseHandle implements ClientDatabase {
   readonly sync = this.syncStore.subscription;
 
   private readonly observers = new Map<string, QueryObserver>();
+  /**
+   * The last snapshot of each released observation, so a resubscribe resumes
+   * from it. Emptied whenever the value behind it stops being this database's:
+   * a partition transition, a fence, or a close.
+   */
+  private readonly retired = new Map<string, QuerySnapshot<unknown>>();
   private activation: Promise<void> | undefined;
   private catalog: ClientCatalog | undefined;
   private session: ReplicationSession | undefined;
@@ -360,9 +387,17 @@ export class ClientDatabaseHandle implements ClientDatabase {
         return observer.subscribe(onChange);
       },
       getSnapshot: (): QuerySnapshot<Out> => {
+        // A closed database maintains nothing, so nothing it once published is
+        // still an answer — including through a subscription value an
+        // application is still holding.
+        if (this.closed) return PENDING as QuerySnapshot<Out>;
         const observer = this.observers.get(key);
         if (observer !== undefined) last = observer;
-        return (last?.store.getSnapshot() ?? PENDING) as QuerySnapshot<Out>;
+        // A released observation is not a changed one: a value built for this
+        // query after the release still answers with what it was showing,
+        // exactly as a resubscribe does.
+        return (last?.store.getSnapshot() ?? this.retired.get(key) ??
+          PENDING) as QuerySnapshot<Out>;
       },
     });
   }
@@ -378,11 +413,17 @@ export class ClientDatabaseHandle implements ClientDatabase {
   private acquire(key: string, lowered: LoweredKernelQuery): QueryObserver {
     const existing = this.observers.get(key);
     if (existing !== undefined) return existing;
+    const prior = this.retired.get(key);
+    this.retired.delete(key);
     const observer = new QueryObserver(lowered, (self) => {
       // Only if it is still the installed one: a release that raced a
       // reacquisition must not evict the replacement.
-      if (this.observers.get(key) === self) this.observers.delete(key);
-    });
+      if (this.observers.get(key) !== self) return;
+      this.observers.delete(key);
+      // Normalized here rather than at each read, so every reader of a retired
+      // snapshot gets one stable identity for it.
+      this.retired.set(key, resumed(self.store.getSnapshot()));
+    }, prior);
     // A closed database installs nothing: its observers were released and
     // nothing will ever run again, so the fresh one is handed back detached
     // with its `pending` snapshot rather than added to a map close() emptied.
@@ -500,6 +541,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
       void observer.run(this.generation, undefined, true);
     }
     this.observers.clear();
+    this.retired.clear();
     this.syncStore.publish(syncState("closed"));
   }
 
@@ -520,6 +562,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
     this.releaseOverlay?.();
     this.releaseOverlay = undefined;
     this.updateRequired = false;
+    this.retired.clear();
     this.publishStatus("authentication-required");
     for (const observer of this.observers.values()) {
       void observer.run(this.generation, undefined, true);
@@ -683,7 +726,14 @@ export class ClientDatabaseHandle implements ClientDatabase {
     this.reconcilerPending = undefined;
     this.committed = undefined;
     this.viewValue = undefined;
+    // Reset, then drop — the same order `fence` takes. A held subscription
+    // must not keep answering with the value a closed client is no longer
+    // maintaining.
+    for (const observer of this.observers.values()) {
+      void observer.run(this.generation, undefined, true);
+    }
     this.observers.clear();
+    this.retired.clear();
     this.syncStore.publish(syncState("closed"));
     const session = this.session;
     this.session = undefined;

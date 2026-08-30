@@ -110,6 +110,16 @@ const nonEmpty = (value: unknown): value is string =>
 const settled = (status: SyncStatus): boolean =>
   status !== "idle" && status !== "connecting";
 
+/**
+ * How long `clearLocalData()` waits for an activation to name its scope.
+ *
+ * A server that accepts the connection and then sends nothing would otherwise
+ * hang the one destructive entry point indefinitely, while every other one
+ * fails fast. The deadline does not invent a scope: it gives up waiting, and
+ * the ordinary typed `no-confirmed-scope` failure is what the caller sees.
+ */
+const SCOPE_CONFIRMATION_TIMEOUT_MS = 10_000;
+
 class RamoseClient implements Client {
   private readonly syncStore = new Store<SyncState>(syncState("idle"));
   readonly sync = this.syncStore.subscription;
@@ -235,11 +245,19 @@ class RamoseClient implements Client {
     void root.activate();
     if (settled(root.sync.getSnapshot().status)) return;
     await new Promise<void>((resolve) => {
-      const stop = root.sync.subscribe(() => {
+      const timer = setTimeout(() => {
+        stop();
+        resolve();
+      }, SCOPE_CONFIRMATION_TIMEOUT_MS);
+      const release = root.sync.subscribe(() => {
         if (!settled(root.sync.getSnapshot().status)) return;
         stop();
         resolve();
       });
+      const stop = (): void => {
+        clearTimeout(timer);
+        release();
+      };
       if (settled(root.sync.getSnapshot().status)) {
         stop();
         resolve();

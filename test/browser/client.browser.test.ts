@@ -190,6 +190,8 @@ browserTest("renders an exact bearer binding's replica offline and closes determ
     { entity: opaque("f"), title: "first", rank: "a" },
   ]);
   const client = offlineClient(name);
+  /** Kept past `close()`, to read what a held subscription answers after it. */
+  let closed!: ReturnType<typeof titles>;
   try {
     const db = client.open();
     // Observing is what activates; opening the handle did nothing.
@@ -216,15 +218,22 @@ browserTest("renders an exact bearer binding's replica offline and closes determ
     // The local value stays readable while the server is unreachable.
     expect(notes.getSnapshot().data).toEqual([{ title: "first" }, { title: "second" }]);
 
-    // The last listener releases the observation; a later one starts fresh.
+    // The last listener releases the observation, but a release is not a
+    // change: what it was showing is still the answer, and reading it again
+    // returns the very same snapshot rather than flashing back to pending.
     held();
-    expect(titles(db).getSnapshot().status).toBe("pending");
+    expect(titles(db).getSnapshot()).toBe(ready);
+    closed = notes;
   } finally {
     await client.close();
   }
 
   expect(client.sync.getSnapshot().status).toBe("closed");
   expect(() => client.open()).toThrow();
+  // A closed client maintains nothing, so a subscription still held by an
+  // application stops answering with a value nothing is keeping current.
+  expect(closed.getSnapshot().status).toBe("pending");
+  expect(closed.getSnapshot().data).toBeUndefined();
 
   // `close()` released the session, never the durable work: a fresh handle
   // still restores exactly the same committed replica.
@@ -325,14 +334,20 @@ browserTest("reattaches a subscription that is resubscribed after its last liste
     expect((await waitFor(notes, (snapshot) => snapshot.status === "ready")).data)
       .toEqual([{ title: "kept" }]);
 
+    const before = notes.getSnapshot();
     // The last listener leaves, which releases the observation.
     first();
     // The same subscription value is subscribed again — the unmount/remount a
     // framework performs. It must reattach to a live observation, not go on
-    // reading a detached one that no replica or overlay change will ever touch.
-    const second = notes.subscribe(() => undefined);
+    // reading a detached one that no replica or overlay change will ever touch,
+    // and it must not flash: a remount that rendered data → pending → data
+    // would contradict the snapshot contract on every mount.
+    const seen: string[] = [];
+    const second = notes.subscribe(() => seen.push(notes.getSnapshot().status));
+    expect(notes.getSnapshot()).toBe(before);
     const reattached = await waitFor(notes, (snapshot) => snapshot.status === "ready");
     expect(reattached.data).toEqual([{ title: "kept" }]);
+    expect(seen).not.toContain("pending");
     // Reattached to *the* observation for this query, not to a private copy.
     expect(titles(db).getSnapshot()).toBe(notes.getSnapshot());
 
@@ -452,7 +467,8 @@ browserTest("quarantines a layer this build cannot replay, without hiding the co
     const held = notes.subscribe(() => undefined);
     const ready = await waitFor(notes, (snapshot) => snapshot.status === "ready");
     // The durable rows are kept and no layer is presented; the committed
-    // replica is untouched and still readable.
+    // replica is untouched and still readable, which is the half of
+    // `update-required` that keeps answering.
     expect(ready.data).toEqual([{ title: "committed" }]);
     expect(await waitFor(client.sync, (state) => state.status === "update-required"))
       .toBeDefined();

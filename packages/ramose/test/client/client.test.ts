@@ -89,17 +89,26 @@ describe("createClient", () => {
   });
 });
 
-describe("the ramose/client barrel", () => {
+describe("the ramose/client bundle", () => {
   test("bundles for browsers without the deploy engine", async () => {
+    // `client.ts`, not the barrel: the barrel is re-exports, and bundling it
+    // emits a hundred-byte stub that would pass this assertion with the deploy
+    // engine sitting one import away. This is the module that actually pulls
+    // the client's whole graph — the catalog install, the replication session,
+    // the storage, the query engine.
     const built = await Bun.build({
-      entrypoints: [resolve(dirname(fileURLToPath(import.meta.url)), "../../src/client/index.ts")],
+      entrypoints: [resolve(dirname(fileURLToPath(import.meta.url)), "../../src/client/client.ts")],
       target: "browser",
       external: ["effect", "effect/*"],
     });
     expect(built.success).toBe(true);
+    const bundle = await built.outputs[0]!.text();
+    // Proof that the graph is really in here, so the assertion below is about
+    // what the bundle contains rather than about how little of it was built.
+    expect(bundle.length).toBeGreaterThan(200_000);
     // The client is a browser package: Alchemy, the peer Worker, and the
     // Cloudflare bindings must not be reachable from it.
-    expect(await built.outputs[0]!.text()).not.toContain("alchemy");
+    expect(bundle).not.toContain("alchemy");
   });
 });
 
