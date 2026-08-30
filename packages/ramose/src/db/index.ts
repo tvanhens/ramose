@@ -151,6 +151,23 @@ export {
   type EntityRefPath,
 } from "./allocations.ts";
 export { tempid, type Tempid } from "./entityArg.ts";
+// ── optimistic projections (#476) ──────────────────────────────────────────
+export {
+  DEFAULT_PROJECTION_REVISION,
+  normalizeProjectionRevision,
+  runProjection,
+  type AnyOptimisticProjection,
+  type OptimisticProjection,
+  type ProjectionChangeset,
+  type ProjectionContext,
+  type ProjectionEntity,
+  type ProjectionField,
+  type ProjectionInvocation,
+  type ProjectionOp,
+  type ProjectionOutcome,
+  type ProjectionTx,
+  type ProjectionValue,
+} from "./Projection.ts";
 // the pattern-side types too, so pull helpers can accept exactly what
 // `db.pull` accepts (type-only: the runtime surface is unchanged)
 export type {

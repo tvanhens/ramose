@@ -16,6 +16,11 @@ import {
   type AllocationDeclaration,
   type AllocationSlots,
 } from "./allocations.ts";
+import {
+  normalizeProjectionRevision,
+  type AnyOptimisticProjection,
+  type OptimisticProjection,
+} from "./Projection.ts";
 import type { EntityId as OpaqueEntityId } from "./refs.ts";
 import { COMPOSED_TRAITS } from "./Composer.ts";
 import { normalizeDoc } from "./documentation.ts";
@@ -741,6 +746,14 @@ export interface UnboundOperation<
   readonly allocations: AllocationSlots;
   /** Author-declared executable revision; `1` when undeclared. */
   readonly revision: number;
+  /**
+   * The optional pure optimistic projection (#476). Trusted client-bundle
+   * code, never serialized, inferred, or interpreted; `undefined` when the
+   * operation declares none, in which case it still queues normally.
+   */
+  readonly optimistic: AnyOptimisticProjection | undefined;
+  /** Author-declared projection revision; `1` when undeclared. */
+  readonly optimisticRevision: number;
   readonly doc: string | undefined;
   readonly run: UnboundOwnedRun<ICodec, OCodec, Self>;
 }
@@ -783,6 +796,10 @@ export interface OwnedOperation<
   readonly allocations: AllocationSlots;
   /** Author-declared executable revision; `1` when undeclared. */
   readonly revision: number;
+  /** The optional pure optimistic projection (#476); `undefined` when none. */
+  readonly optimistic: AnyOptimisticProjection | undefined;
+  /** Author-declared projection revision; `1` when undeclared. */
+  readonly optimisticRevision: number;
   readonly doc: string | undefined;
   readonly run: OwnedRun<Owner, ICodec, OCodec, Self, Writes>;
 }
@@ -798,6 +815,8 @@ export type AnyOwnedOperation = {
   readonly writes: readonly AnyEntity[];
   readonly allocations: AllocationSlots;
   readonly revision: number;
+  readonly optimistic: AnyOptimisticProjection | undefined;
+  readonly optimisticRevision: number;
   readonly doc: string | undefined;
   readonly run: (...args: never[]) => unknown;
 };
@@ -913,6 +932,21 @@ const emptyOutput = Schema.Struct({});
 export const DEFAULT_OPERATION_REVISION = 1;
 
 /**
+ * A declared projection is a function and nothing else. Refusing anything else
+ * here — rather than at replay, on a device that is already offline — is what
+ * keeps a durable layer's binding a lookup instead of a gamble.
+ */
+const normalizeOptimistic = (value: unknown): AnyOptimisticProjection | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "function") {
+    throw new Error(
+      "ramose/schema: an operation's optimistic projection must be a function",
+    );
+  }
+  return value as AnyOptimisticProjection;
+};
+
+/**
  * Normalize the author-declared executable revision. The operation-scoped
  * compatibility version excludes executable source, so this is the author's
  * explicit control for rotating a behavior-only change.
@@ -975,6 +1009,30 @@ type OwnedOperationSpec<
    * contract is unchanged but whose behavior is not.
    */
   readonly revision?: number;
+  /**
+   * One optional pure optimistic projection (#476). It receives the validated
+   * invocation input, this invocation's own target, and a transaction builder
+   * — no local-database query, no Effect, no clock, and no server capability.
+   *
+   * It is a separate client-side declaration, never a serialized, inferred,
+   * restricted, or interpreted form of `run`: the authoritative body stays
+   * deployed server code and never crosses the client boundary.
+   *
+   * ```ts
+   * optimistic: ({ input, tx }) => tx.set(input.issue, Issue.status, input.status)
+   * ```
+   */
+  readonly optimistic?: OptimisticProjection<CodecType<ICodec>>;
+  /**
+   * Author-declared projection revision (default `1`). Bump it when the
+   * projection no longer means what it meant; a durable layer minted under an
+   * older revision then becomes the typed update-required state instead of
+   * being replayed against incompatible code.
+   *
+   * It is independent of `revision` and of #487's `OperationVersion`, so
+   * editing a projection never revokes a queued invocation's right to submit.
+   */
+  readonly optimisticRevision?: number;
   readonly doc?: string;
   readonly run: [Context] extends [never]
     ? UnboundOwnedRun<ICodec, OCodec, NormalizeOwnedSelf<Self>>
@@ -1107,6 +1165,10 @@ function defineOperation(
     writes: Object.freeze([...(nameOrSpec.writes ?? [])]),
     allocations: allocationSlots(nameOrSpec.allocates),
     revision: normalizeOperationRevision(nameOrSpec.revision),
+    optimistic: normalizeOptimistic(nameOrSpec.optimistic),
+    optimisticRevision: normalizeProjectionRevision(
+      nameOrSpec.optimisticRevision,
+    ),
     doc: normalizeDoc(nameOrSpec.doc),
     run: nameOrSpec.run,
   } as AnyUnboundOperation;
@@ -1268,6 +1330,10 @@ export const bindOwnedOperations = <
       writes: operation.writes,
       allocations: operation.allocations ?? [],
       revision: normalizeOperationRevision(operation.revision),
+      optimistic: normalizeOptimistic(operation.optimistic),
+      optimisticRevision: normalizeProjectionRevision(
+        operation.optimisticRevision,
+      ),
       doc: operation.doc,
       run: operation.run,
     } as unknown as AnyOwnedOperation;

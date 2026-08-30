@@ -574,6 +574,195 @@ still awaiting a fence, and the invocations the last fence cleared. #475 owns
 persisting and exposing that transition; #476 owns atomically removing or
 replaying optimistic layers when it occurs.
 
+## Optimistic projections and the speculative overlay (#476 slice 1)
+
+An operation may declare one optional pure optimistic projection. It is trusted
+code from the installed client bundle, not a serialized, inferred, restricted,
+or interpreted form of the authoritative body — that body stays deployed server
+code and never crosses the client boundary. **Nothing in this design reads
+callback source.** There is no parser, no AST, no bytecode, no interpreter, and
+no `Function.prototype.toString`; a projection is executed by calling it.
+
+This section specifies slice 1: the contract, the identity, native execution,
+and the deterministic in-memory overlay. Durability and the observation fence
+are slice 2.
+
+### The determinism contract
+
+The local view is a *function*, not an accumulator:
+
+```
+view = project(committed, [layer₀ … layerₙ₋₁], resolver)
+```
+
+`committed` is the immutable replica `Db`. Each layer is one invocation's plain
+data changeset. `project` is deterministic: the same committed value, the same
+ordered layers, and the same resolver produce byte-identical datoms, so the
+same query answers. Three rules make that hold.
+
+1. **Ordering is positional, never causal.** The fold runs in
+   `(layer, operation)` order above `committed.basisT`, one transaction per
+   emitting operation — so a projection that sets one cardinality-one field
+   twice replaces its own first write, exactly as a later layer replaces an
+   earlier one. There is no dependency graph: removing a layer removes exactly
+   one, and every later layer is re-applied at its new position. Nothing is
+   derived from wall-clock time, iteration order of an unordered map, or a
+   random source.
+2. **Speculative ids are assigned by first appearance.** A ref the committed
+   replica cannot resolve gets a local id from `committed.nextEid` upward, in
+   the same `(layer, operation)` order. These ids are *derived*, never durable,
+   and never leave the client: the overlay is rebuilt whenever the committed
+   value or the layer list changes.
+3. **A projection cannot observe anything but its own input.** The API supplies
+   validated invocation input, the invocation's own target, the client refs its
+   declared allocation slots minted, and a transaction builder. It supplies no
+   local-database query, no Effect, no clock, and no server capability. This is
+   an API and authoring constraint, enforced by what is *passed*, never by
+   inspecting what the author wrote.
+
+### The changeset
+
+A layer's changeset is plain datom-level data over the replica's own value
+model — the same eight logical value types the replica materializes, with
+`ref` carrying an `EntityId` or a `ClientRef` instead of a replication
+identity. Four operations: `set`, `remove`, `create`, `delete`. There is no
+changeset algebra beyond that, and no executable form: the whole record is
+structured-cloneable, which is what makes slice 2's durable row a store rather
+than a serializer.
+
+Values are lowered from the *declared* field, so a projection passes a stamped
+field ref (`Issue.status`) rather than a bare ident. A bare ident cannot say
+whether a 55-character string is a handle or a title, and guessing would bind a
+durable intent to a coincidence.
+
+The overlay lowers each operation through `replicaFactDatom` — the same
+projection the replica installer and the integrity validator share — so a value
+type the committed schema does not admit is refused identically in all three.
+A refusal is recorded and skipped; it never throws, because one bad operation
+must not wedge the queue it belongs to.
+
+`set` on a cardinality-one field retracts the current value first, exactly as
+the public verb means. `delete` retracts the entity's own datoms and the
+inbound reference datoms that would otherwise dangle. Both read the view built
+from the committed value and the layers *below* — never the layers above — so
+application is a fold, not a fixpoint.
+
+### Layer lifecycle
+
+One layer per invocation, in invocation (FIFO) order. The state machine is
+pure; slice 2 gives it a durable store.
+
+| state | means | leaves by |
+|---|---|---|
+| `queued` | the projection ran and the invocation has not received a terminal answer | `commit` → `committed-unobserved`; `reject` → removed |
+| `committed-unobserved` | the authoritative receipt, output, and mappings are durably known; the independent replication stream has not caught up | `fence(n)` when the layer's stamped activation is `< n` → removed |
+
+| event | effect | replay |
+|---|---|---|
+| `enqueue` | appends a layer with a strictly greater FIFO sequence | none — the new layer is last |
+| `commit(invocation, activation)` | the layer stays in place, stamped with the activation counter in force | none — the visible datoms do not change, so the UI cannot flash |
+| `reject(invocation)` | removes exactly that layer | from its index |
+| `fence(n)` | removes every `committed-unobserved` layer stamped `< n` | from the lowest removed index |
+
+`commit` deliberately changes no datom. That is what makes "receipt completion
+followed by a delayed or coalesced `Change` never produces a rollback flash" a
+property of the state machine rather than of timing: the layer is retained,
+under a new name, until a causally fresh activation fences it.
+
+A `reject` on a `committed-unobserved` layer is refused, not silently applied —
+the invocation is already terminal, and removing its layer would roll the view
+back under an authoritative commit. Out-of-order sequences and duplicate
+invocations are refused the same way.
+
+### ClientRef aliasing
+
+A projection may create or use a `ClientRef` only through a declared allocation
+slot. It cannot manufacture an `EntityId`, a mapping, a receipt, an
+authorization, or a commit result.
+
+Reference resolution is one function with three cases, and the middle case is
+the whole aliasing rule:
+
+- a `ClientRef` with no durable mapping resolves to a speculative id keyed by
+  the ref;
+- a `ClientRef` whose mapping is known resolves through the mapped `EntityId`
+  — to the committed local id when the replica already holds that entity, and
+  otherwise to a speculative id keyed by the *`EntityId`*. Either way it is the
+  same id any direct reference to that handle resolves to, so a mapped entity
+  is presented once, never twice;
+- an `EntityId` resolves to its committed local id, or to a speculative id an
+  alias already assigned to it. An `EntityId` the client has never seen is
+  refused rather than invented: only a ref this device minted may bring a new
+  entity into the local view.
+
+Both lookups are *injected*, as pure functions over a fixed snapshot, and that
+is deliberate rather than incidental. The replication stream names an entity by
+`makeEntityIdentity` — a one-way HMAC over `{database, eid}` — while a sealed
+`EntityId` is a reversible ciphertext under different scope material that only
+the server can open. They are two different derivations of the same private
+eid, so a client holding one cannot relate it to the other. Today the only
+handles a client has at all come from operation outputs and allocation
+mappings; a replicated row carries none. **Optimistic updates addressed by
+`EntityId` therefore need a handle-to-local-id binding that does not exist
+yet** — creates addressed by `ClientRef` are complete without it, because a
+speculative id needs no bridge. Closing that gap belongs with the public
+surface work that first hands an application a handle for a replicated row
+(#477 / #480); until then the resolver's `entity` half is supplied by whoever
+holds such a binding, and the overlay refuses what it cannot resolve rather
+than inventing a row.
+
+### What the overlay is not
+
+It is not a second index. The overlay is the committed `Db`'s roots with the
+layer datoms in novelty and a raised basis, so query membership, sorting,
+reference joins, and graph-local pulls reflect it because the engine reads only
+through `Db.datoms` / `Db.seekMany` / `Db.first` / `Db.datomsArray`. Nothing in
+the query path knows a layer exists. The committed replica is untouched, and a
+projection-only client change never invalidates it.
+
+### Projection identity
+
+The projection's identity is explicit, declared, and independent of `readView`,
+`readCompatibilityHash`, Worker deployment identity, and `OperationVersion`. It
+is never derived from the callback's source.
+
+- `revision` — the author-declared projection revision, defaulting to `1`. It
+  is deliberately *not* part of the operation's canonical descriptor: bumping
+  it must not rotate `OperationVersion`, or a projection edit would invalidate
+  every already-queued invocation's right to submit.
+- `build` — the installed client build identity, the same for every projection
+  in one bundle. It records which bundle produced a durable layer.
+
+On restart the callback is resolved from the installed client bundle before
+replay, keyed by the operation's catalog / owner / local name. The decision
+table is total:
+
+| durable record | installed bundle | outcome |
+|---|---|---|
+| no projection identity | anything | `none` — the invocation never had a layer, so reconstructing none is exact |
+| identity present | operation absent | `update-required: operation-missing` |
+| identity present | operation declares no projection | `update-required: projection-missing` |
+| `revision` differs | — | `update-required: projection-revision` |
+| `revision` matches, `build` differs | — | `bound`, marked `rebound` |
+| `revision` and `build` match | — | `bound` |
+
+Build drift alone is not `update-required`. An unchanged revision from a new
+bundle is the author's explicit statement that the projection's behavior did
+not change, and treating every client redeploy as drift would quarantine every
+queued layer on every deploy — the opposite of what #475's stable handles buy.
+Revision drift *is* `update-required`: the alternative is executing a
+projection whose author has said it no longer means the same thing.
+
+### What slice 2 owns
+
+Durable layer rows scoped by the confirmed server/principal/database triple and
+removed by `clearLocalData()`; reconstructing layers and `ClientRef` mappings on
+restart; wiring `ActivationFence` to `fence(n)` and the submission pass's
+rejections to `reject`; the atomic "install the fenced replica, remove those
+layers, replay the rest" transaction; the `.local` sidecar pending metadata;
+and proving quarantine on a codec/key-epoch incompatibility. Slice 1 fixes the
+shapes those transitions move; it persists nothing.
+
 ## Integrity validation and corruption recovery
 
 Every restore path — cold restore, confirmed-candidate restore, and exact
