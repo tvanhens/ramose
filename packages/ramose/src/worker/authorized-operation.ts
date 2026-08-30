@@ -5,6 +5,7 @@ import * as Result from "effect/Result";
 import {
   DatabaseId,
   MAX_INVOCATION_ID_LENGTH,
+  mayCarrySealedEntityId,
   OperationVersion,
   parseAuthoritativeInvocationResult,
   parseInvocationAllocations,
@@ -244,9 +245,9 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
  * It is exactly the scope logical replication derives, so a handle minted by
  * one and resolved by the other names the same entity. Its callers derive it
  * only when this invocation actually uses opaque handles — as a target, as an
- * allocation, or in an output that holds an entity reference — so every other
- * operation keeps its previous cost, including the durable-root lookup it
- * never performed.
+ * allocation, at a declared entity-reference input position, or in an output
+ * that holds an entity reference — so every other operation keeps its previous
+ * cost, including the durable-root lookup it never performed.
  */
 const deriveEntityIdScope = async (
   env: RamoseEnv,
@@ -286,6 +287,18 @@ type EpochBoundSealing = {
   readonly scope: EntityIdScope;
 };
 
+/**
+ * Whether this invocation might carry an opaque handle inbound.
+ *
+ * The target and the allocation binding are distinguished fields, so those two
+ * questions are exact. An input handle is not: the *deployed input shape*
+ * decides which positions are refs, and the Worker cannot see it here. So the
+ * third question is deliberately an over-approximation over the raw input —
+ * could any string in it be an envelope of any codec version — and it carries
+ * no semantics whatever. Nothing is opened because of it and nothing is refused
+ * because of it; the writer, which does have the descriptor, opens handles at
+ * declared ref positions only (WR-17c).
+ */
 const invocationEntityIdScope = async (
   env: RamoseEnv,
   database: string,
@@ -295,7 +308,8 @@ const invocationEntityIdScope = async (
 ): Promise<EpochBoundSealing | undefined> => {
   if (
     parsed.sealedTarget === undefined &&
-    (parsed.allocations === undefined || parsed.allocations.length === 0)
+    (parsed.allocations === undefined || parsed.allocations.length === 0) &&
+    !mayCarrySealedEntityId(parsed.input)
   ) return undefined;
   return deriveEntityIdScope(env, database, origin, caller);
 };

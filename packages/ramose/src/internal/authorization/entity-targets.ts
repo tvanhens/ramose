@@ -3,13 +3,15 @@
  *
  * Two directions, one scope:
  *
- *  - **inbound** — an invocation may name its target as a sealed `EntityId`
- *    rather than a numeric eid or a lookup ref. {@link resolveSealedTarget}
- *    decrypts it under the scope the Worker derived from the *authenticated*
- *    request and hands back the private eid. That is an identity claim and
+ *  - **inbound** — an invocation may name an entity as a sealed `EntityId`
+ *    rather than a numeric eid or a lookup ref, both as its target and at any
+ *    position the deployed input shape declares a `ref`
+ *    ({@link resolveSealedTarget}, {@link resolveSealedInputRefs}). Each is
+ *    decrypted under the scope the Worker derived from the *authenticated*
+ *    request and replaced by the private eid. That is an identity claim and
  *    nothing more: the caller then runs its ordinary visibility, type, and
- *    admission checks on the resolved eid, exactly as it would for a numeric
- *    target. Resolution grants nothing.
+ *    admission checks on the resolved eids, exactly as it would for numeric
+ *    ones. Resolution grants nothing.
  *  - **outbound** — an operation that declares named allocation slots gets
  *    `{ slot → eid }` read out of its own authoritative output at the declared
  *    entity-reference paths, and those eids are sealed back into handles for
@@ -440,27 +442,36 @@ export const outputEntityRefPaths = (
   return Object.freeze(paths);
 };
 
+/**
+ * Structurally replace the value at one declared entity-reference position.
+ *
+ * Shared by both directions: the public projection writes a sealed handle out,
+ * and the authoritative edge writes a resolved eid in. The path always exists —
+ * it came from a walk over this same value — so an absent one is an engine
+ * defect and throws rather than inventing a position. The input is never
+ * mutated; the caller's copy is the durable one.
+ */
 const replaceAt = (
   value: unknown,
   path: readonly AllocationPathSegment[],
-  replacement: string,
+  replacement: unknown,
 ): unknown => {
   const [head, ...rest] = path;
   if (head === undefined) return replacement;
   if (typeof head === "number") {
     if (!Array.isArray(value) || head >= value.length) {
-      throw new Error("output entity-reference position is not an array index");
+      throw new Error("entity-reference position is not an array index");
     }
     const copy = [...value];
     copy[head] = replaceAt(value[head], rest, replacement);
     return copy;
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("output entity-reference position is not an object property");
+    throw new Error("entity-reference position is not an object property");
   }
   const record = value as Record<string, unknown>;
   if (!Object.hasOwn(record, head)) {
-    throw new Error("output entity-reference position is absent");
+    throw new Error("entity-reference position is absent");
   }
   return { ...record, [head]: replaceAt(record[head], rest, replacement) };
 };
@@ -494,6 +505,181 @@ export const sealOutputEntityRefs = async (
     projected = replaceAt(projected, path, handle);
   }
   return projected;
+};
+
+/* ── sealed handles at declared input entity-ref positions (WR-17) ────────
+ *
+ * The structural twin of the output side above, run inbound instead of
+ * outbound: {@link inputEntityRefHandles} finds the declared ref positions of
+ * the *input* shape that hold a string, exactly as {@link outputEntityRefPaths}
+ * finds the ones of the output shape that hold an eid, and
+ * {@link resolveSealedInputRefs} replaces each through the same `replaceAt`.
+ *
+ * The target position and the input positions are then one mechanism: the same
+ * scope opens them, the same epoch comparison gates them, and the same taxonomy
+ * answers them. Only *declared* positions are opened — a handle-shaped string
+ * anywhere else is data, never decrypted and never inspected, and reaches the
+ * deployed codec exactly as it was submitted.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The shortest string that could be *any* codec version's envelope.
+ *
+ * Byte 0 is the version and bytes 1..17 are the key id in every envelope
+ * version — that preamble is frozen — and an envelope that named nothing would
+ * be pointless, so 17 preamble bytes plus an eight-byte payload is the floor:
+ * 25 bytes, 34 canonical base64url characters. Deliberately not v1's 55: this
+ * predicate must not become the shape gate **WR-10** forbids.
+ */
+const MIN_SEALED_ENVELOPE_LENGTH = 34;
+
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+
+/** Whether one string could be a sealed handle minted by *some* codec version. */
+const mayBeSealedEntityId = (value: string): boolean =>
+  value.length >= MIN_SEALED_ENVELOPE_LENGTH &&
+  value.length <= MAX_SEALED_TARGET_LENGTH &&
+  // Canonical unpadded base64url. A length congruent to 1 (mod 4) cannot encode
+  // any byte string, so it is not canonical whatever its alphabet.
+  value.length % 4 !== 1 &&
+  BASE64URL.test(value);
+
+/**
+ * Whether this invocation input might carry a sealed handle at a position the
+ * deployed operation declares as a ref.
+ *
+ * The Worker has to decide whether to derive the sealing scope *before* it can
+ * see the deployed input shape, so it cannot ask the precise question. It asks
+ * this one instead, over the raw JSON, and over-approximates: nothing is opened
+ * because of the answer and nothing is refused because of it. The writer, which
+ * does have the descriptor, then makes the only decision that matters —
+ * {@link inputEntityRefHandles}.
+ *
+ * A false positive costs one isolate-cached root read. A false negative cannot
+ * happen for anything a codec could have minted, which is what keeps the
+ * `update-required` answer reachable for a handle from a newer codec (WR-17c).
+ */
+export const mayCarrySealedEntityId = (input: unknown): boolean => {
+  const seen = new Set<object>();
+  const visit = (value: unknown): boolean => {
+    if (typeof value === "string") return mayBeSealedEntityId(value);
+    if (typeof value !== "object" || value === null) return false;
+    // Request bodies are parsed JSON and therefore acyclic, but this walk is
+    // reached from the public edge and must not depend on that.
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return Array.isArray(value)
+      ? value.some(visit)
+      : Object.values(value).some(visit);
+  };
+  return visit(input);
+};
+
+/**
+ * Every position the deployed input shape declares as a ref that this exact
+ * invocation input fills with a string, in a stable depth-first order.
+ *
+ * The precise question, asked where the descriptor is known. It decides whether
+ * the epoch comparison runs at all, so an ordinary operation whose input merely
+ * *looks* like it carries a handle is never dragged into one. A declared ref
+ * holding a number is left out and keeps its previous path through the codec,
+ * byte for byte.
+ */
+export const inputEntityRefHandles = (
+  shape: OperationInputShape,
+  input: unknown,
+): readonly (readonly AllocationPathSegment[])[] => {
+  const paths: (readonly AllocationPathSegment[])[] = [];
+  const walk = (
+    current: OperationInputShape,
+    value: unknown,
+    path: readonly AllocationPathSegment[],
+  ): void => {
+    switch (current._tag) {
+      case "ref":
+        if (typeof value === "string") paths.push(Object.freeze([...path]));
+        return;
+      case "array":
+        if (Array.isArray(value)) {
+          for (let index = 0; index < value.length; index++) {
+            walk(current.items, value[index], [...path, index]);
+          }
+        }
+        return;
+      case "struct":
+        if (
+          typeof value === "object" && value !== null && !Array.isArray(value)
+        ) {
+          for (const field of current.fields) {
+            if (!Object.hasOwn(value, field.key)) continue;
+            walk(
+              field.shape,
+              (value as Record<string, unknown>)[field.key],
+              [...path, field.key],
+            );
+          }
+        }
+        return;
+      case "scalar":
+      case "opaque":
+        return;
+    }
+  };
+  walk(shape, input, []);
+  return Object.freeze(paths);
+};
+
+/** What opening this invocation's declared input handles produced. */
+export type SealedInputResolution =
+  | { readonly _tag: "Resolved"; readonly input: unknown }
+  | { readonly _tag: "UpdateRequired" }
+  | { readonly _tag: "Denied" };
+
+const DENIED_INPUT = Object.freeze({ _tag: "Denied" }) as SealedInputResolution;
+const UPDATE_REQUIRED_INPUT = Object.freeze(
+  { _tag: "UpdateRequired" },
+) as SealedInputResolution;
+
+/**
+ * Open every sealed handle at a declared input entity-ref position and give
+ * back the invocation input with private eids in their place.
+ *
+ * The returned input is what the #487 primitive digests, what the deployed
+ * codec decodes, and what the replay fence's consumed refs are matched
+ * against — so a sealed input and the numeric input naming the same entity are
+ * the same invocation from here on (**WR-17a**).
+ *
+ * The paths come from {@link inputEntityRefHandles} over this same value, and
+ * the replacement is the structural one the output projection uses, so every
+ * key the shape does not describe survives untouched: the digest is over this
+ * exact object. `UpdateRequired` wins over `Denied` when one invocation carries
+ * both, for determinism only — both are effect-free and name no entity.
+ */
+export const resolveSealedInputRefs = async (
+  sealing: ServerSealingKey,
+  scope: EntityIdScope,
+  input: unknown,
+  paths: readonly (readonly AllocationPathSegment[])[],
+): Promise<SealedInputResolution> => {
+  const opened = await Promise.all(paths.map(async (path) => {
+    const token = readAllocationPath(input, path);
+    if (typeof token !== "string") {
+      throw new Error("input entity-reference position holds no handle");
+    }
+    return { path, resolution: await resolveSealedTarget(sealing, scope, token) };
+  }));
+  if (opened.some(({ resolution }) => resolution._tag === "UpdateRequired")) {
+    return UPDATE_REQUIRED_INPUT;
+  }
+  if (opened.some(({ resolution }) => resolution._tag === "Denied")) {
+    return DENIED_INPUT;
+  }
+  let resolved = input;
+  for (const { path, resolution } of opened) {
+    if (resolution._tag !== "Resolved") continue;
+    resolved = replaceAt(resolved, path, resolution.eid);
+  }
+  return Object.freeze({ _tag: "Resolved" as const, input: resolved });
 };
 
 /** One durable `{ clientRef, entityId }` mapping, sealed. */

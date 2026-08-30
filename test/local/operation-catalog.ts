@@ -51,6 +51,9 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-mcp-mutate",
   "operations-mcp-expiry",
   "operations-mcp-budget",
+  "operations-sealed-input",
+  "operations-sealed-input-taxonomy",
+  "operations-client-input-refs",
 ]);
 
 const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
@@ -178,6 +181,32 @@ export const Item = Entity("nativeItem", {
       run(op, input) {
         op.self.set(Item.title, input.title);
         return { id: op.self, title: input.title };
+      },
+    }),
+    /**
+     * The shape a dependent offline invocation has: no target at all, the
+     * entity it acts on arriving at a *declared* entity-reference input
+     * position (#475 WR-17).
+     *
+     * `note` is an ordinary string beside it, and the tests put a genuine
+     * sealed handle there: a position the deployed input shape does not
+     * declare as a ref is data, so the handle must come back verbatim rather
+     * than opened.
+     */
+    retitleByRef: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        item: OperationEntityId,
+        title: EffectSchema.String,
+        note: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({
+        title: EffectSchema.String,
+        note: EffectSchema.String,
+      }),
+      run(op, input) {
+        op.set(Item, input.item, Item.title, input.title);
+        return { title: input.title, note: input.note };
       },
     }),
     deleteAndEchoTitle: Operation({
@@ -388,6 +417,7 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
       Policy.hasClass("member"),
       Policy.hasClass("operator"),
     )),
+    Policy.invoke(Item[OwnedOperations].retitleByRef).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].deleteAndEchoTitle).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].deleteHiddenOther).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].crash).when(Policy.hasClass("member")),

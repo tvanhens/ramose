@@ -77,9 +77,11 @@ import {
   catalogProvisioningAttributes,
   decideEpoch,
   decideInvocationReceipt,
+  deployedOperationInputShape,
   deployedOperationOutputShape,
   deployedOperationVersion,
   executeCatalogOperation,
+  inputEntityRefHandles,
   invocationReceiptOutcome,
   isLegacyInvocationReceiptRow,
   OperationRuntimeFault,
@@ -91,6 +93,7 @@ import {
   prepareInvocationReceipt,
   requireSuppliedOperationVersion,
   resolveOperationCatalog,
+  resolveSealedInputRefs,
   resolveSealedTarget,
   transitionInvocationReceipt,
   type AuthoritativeInvocationResult,
@@ -195,6 +198,12 @@ type SealingContext = {
   readonly sealing: ServerSealingKey;
   readonly scope: EntityIdScope;
 };
+
+/**
+ * The declared input entity-reference positions this invocation filled with a
+ * string, walked once against the deployed input shape and then carried (#475).
+ */
+type InputHandlePaths = ReturnType<typeof inputEntityRefHandles>;
 
 /** How many recent `clientTxId`s this instance remembers. FIFO once full. */
 const RECENT_CLIENT_TX_LIMIT = 256;
@@ -619,13 +628,22 @@ export class Transactor {
    */
   private decideInvocationEpoch(
     p: Pending,
+    inputHandles: InputHandlePaths,
   ):
     | { readonly _tag: "Agreed"; readonly context: SealingContext | undefined }
     | { readonly _tag: "UpdateRequired" }
   {
     const operation = p.operation!;
     // An invocation that names no opaque handle has no epoch to agree about.
-    if (!this.needsSealingKey(operation)) return { _tag: "Agreed", context: undefined };
+    //
+    // Asked precisely, against the deployed input shape: the Worker had to
+    // over-approximate to decide whether to derive a scope at all (WR-17c), and
+    // believing that approximation here would let an ordinary operation whose
+    // input merely *looks* like it carries a handle answer `update-required`
+    // during a root replacement.
+    if (!this.usesOpaqueHandles(operation, inputHandles)) {
+      return { _tag: "Agreed", context: undefined };
+    }
     const scope = operation.entityIdScope;
     const keyId = operation.entityIdKeyId;
     // `invoke` established both before this was queued and the route refuses an
@@ -643,15 +661,37 @@ export class Transactor {
   }
 
   /**
-   * Whether this invocation needs the durable sealing root at all: it names an
-   * opaque target that has to be opened, or it binds allocation slots whose
-   * eids have to be sealed into the receipt.
+   * Whether this invocation actually uses opaque handles, asked against the
+   * deployed input shape: an opaque target to open, a declared input ref
+   * position holding one, or allocation slots whose eids have to be sealed
+   * into the receipt.
+   */
+  private usesOpaqueHandles(
+    invocation: AuthoritativeOperationInvocation,
+    inputHandles: InputHandlePaths,
+  ): boolean {
+    return invocation.sealedTarget !== undefined ||
+      (invocation.allocations !== undefined && invocation.allocations.length > 0) ||
+      inputHandles.length > 0;
+  }
+
+  /**
+   * Whether to fetch the durable sealing root before queueing.
+   *
+   * Asked without the descriptor, because the root is a Durable Object hop and
+   * the serialized writer must not wait on the network between two batches. The
+   * scope stands in for the question: the Worker derives one exactly when this
+   * invocation might use an opaque handle, and never otherwise, so an operation
+   * that uses none still pays for no lookup. Over-approximating here costs an
+   * isolate-cached read and decides nothing — {@link usesOpaqueHandles} makes
+   * every actual decision once the deployed input shape is known (WR-17c).
    */
   private needsSealingKey(
     invocation: AuthoritativeOperationInvocation,
   ): boolean {
     return invocation.sealedTarget !== undefined ||
-      (invocation.allocations !== undefined && invocation.allocations.length > 0);
+      (invocation.allocations !== undefined && invocation.allocations.length > 0) ||
+      invocation.entityIdScope !== undefined;
   }
 
   /**
@@ -685,6 +725,41 @@ export class Transactor {
     if (resolution._tag === "UpdateRequired") return undefined;
     if (resolution._tag === "Denied") throw opaqueOperationDenial();
     return Object.freeze({ ...invocation, target: resolution.eid });
+  }
+
+  /**
+   * Translate every opaque sealed handle at a *declared* input entity-ref
+   * position into the private eid, exactly as the target position is
+   * translated (**WR-17**).
+   *
+   * The substituted input is what the #487 primitive digests, so a sealed
+   * input and the numeric input naming the same entity are one invocation and
+   * an exact replay reproduces the digest byte for byte (**WR-17a**). Nothing
+   * outside a declared ref position is read, let alone opened: a handle-shaped
+   * string elsewhere stays the deployed codec's data.
+   *
+   * `undefined` is the typed, data-free `UpdateRequired`; every other failure
+   * is the ordinary sealed denial, thrown here. A string at a declared position
+   * with no sealing context reaches this only when the Worker's provisioning
+   * predicate saw nothing an envelope could be — so it is no codec's handle,
+   * and the denial is the right answer rather than a quarantine.
+   */
+  private async resolveInvocationInput(
+    invocation: AuthoritativeOperationInvocation,
+    context: SealingContext | undefined,
+    inputHandles: InputHandlePaths,
+  ): Promise<AuthoritativeOperationInvocation | undefined> {
+    if (inputHandles.length === 0) return invocation;
+    if (context === undefined) throw opaqueOperationDenial();
+    const resolution = await resolveSealedInputRefs(
+      context.sealing,
+      context.scope,
+      invocation.input,
+      inputHandles,
+    );
+    if (resolution._tag === "UpdateRequired") return undefined;
+    if (resolution._tag === "Denied") throw opaqueOperationDenial();
+    return Object.freeze({ ...invocation, input: resolution.input });
   }
 
   /** Submit one exact deployed-catalog invocation to the serialized writer. */
@@ -902,12 +977,27 @@ export class Transactor {
                 p.operation.localName,
               );
               if (operationVersion === undefined) throw opaqueOperationDenial();
-              // Where the public projection has to seal (#475). Read from the
-              // *deployed* output shape, which is part of the pinned operation
-              // version, so a replayed receipt is described by exactly the
-              // shape it was written against. The durable row keeps its
-              // resolved eids and is never rewritten: it is the replay, and its
-              // bytes are what the exact-replay comparison is over.
+              // The declared input shape decides which positions may hold an
+              // opaque handle inbound; the declared output shape decides where
+              // the public projection has to seal one outbound (#475). Both
+              // come from the same deployed binding the version above does, and
+              // both are part of the pinned operation version — so a replayed
+              // receipt is described by exactly the shapes it was written
+              // against. The durable row keeps its resolved eids and is never
+              // rewritten: it is the replay, and its bytes are what the
+              // exact-replay comparison is over.
+              const inputShape = deployedOperationInputShape(
+                resolved,
+                p.operation.owner,
+                p.operation.localName,
+              );
+              if (inputShape === undefined) throw opaqueOperationDenial();
+              // Walked once, then carried: the epoch decision and the resolver
+              // must agree exactly on which positions hold a handle.
+              const inputHandles = inputEntityRefHandles(
+                inputShape,
+                p.operation.input,
+              );
               const outputShape = deployedOperationOutputShape(
                 resolved,
                 p.operation.owner,
@@ -948,30 +1038,41 @@ export class Transactor {
                 this.stats.rejected++;
                 p.resolve({ _tag: tag });
               };
-              // Opaque target translation, at the authoritative edge and
+              // Opaque handle translation, at the authoritative edge and
               // before the #487 primitive sees anything. Resolution is a
               // bounded decrypt that grants nothing: it only replaces the
-              // caller's handle with the private eid, and every ordinary
+              // caller's handles with private eids, and every ordinary
               // visibility, type, and admission check below then runs against
-              // that eid exactly as it would for a numeric target.
+              // those eids exactly as it would for numeric ones. The target
+              // position and the declared input ref positions are one
+              // mechanism (WR-17).
               // The one epoch comparison, made once, before anything is opened
               // or sealed. Resolved before the body runs — not after the commit
               // — so sealing an allocated eid cannot fail between the staged
               // transaction and the durable batch write.
-              const epoch = this.decideInvocationEpoch(p);
+              const epoch = this.decideInvocationEpoch(p, inputHandles);
               if (epoch._tag === "UpdateRequired") {
                 await resolveCompatibility("UpdateRequired");
                 continue;
               }
               const sealingContext = epoch.context;
-              const operation = await this.resolveInvocationTarget(
+              const targeted = await this.resolveInvocationTarget(
                 p,
                 sealingContext,
               );
+              // The handle's own codec version or key epoch is beyond this
+              // build. Data-free, and disclosed only to a caller who may still
+              // invoke the operation as it stands now.
+              if (targeted === undefined) {
+                await resolveCompatibility("UpdateRequired");
+                continue;
+              }
+              const operation = await this.resolveInvocationInput(
+                targeted,
+                sealingContext,
+                inputHandles,
+              );
               if (operation === undefined) {
-                // The handle's own codec version or key epoch is beyond this
-                // build. Data-free, and disclosed only to a caller who may
-                // still invoke the operation as it stands now.
                 await resolveCompatibility("UpdateRequired");
                 continue;
               }

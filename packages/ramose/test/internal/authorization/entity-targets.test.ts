@@ -3,10 +3,13 @@ import {
   allocatedEids,
   decideEpoch,
   extractAllocations,
+  inputEntityRefHandles,
   isEntityRefPath,
+  mayCarrySealedEntityId,
   outputEntityRefPaths,
   parseEntityIdScope,
   parseInvocationAllocations,
+  resolveSealedInputRefs,
   resolveSealedTarget,
   sameEpochScope,
   sealAllocationMappings,
@@ -59,6 +62,11 @@ const refShape: OperationInputShape = {
 const scalarShape: OperationInputShape = {
   _tag: "scalar",
   valueType: "long",
+} as OperationInputShape;
+
+const stringShape: OperationInputShape = {
+  _tag: "scalar",
+  valueType: "string",
 } as OperationInputShape;
 
 const outputShape: OperationInputShape = {
@@ -460,5 +468,125 @@ describe("entity references in client-visible output", () => {
     await expect(
       sealOutputEntityRefs(sealing, scope, output, [["count", "deeper"]]),
     ).rejects.toThrow(/entity-reference position/);
+  });
+});
+
+describe("sealed handles at declared input entity-ref positions", () => {
+  const inputShape: OperationInputShape = {
+    _tag: "struct",
+    fields: [
+      { key: "count", optional: false, shape: scalarShape },
+      { key: "item", optional: false, shape: refShape },
+      { key: "note", optional: false, shape: stringShape },
+      { key: "rows", optional: false, shape: { _tag: "array", items: refShape } },
+    ],
+  };
+
+  const handleFor = (eid: number) => sealEntityId(sealing, scope, eid);
+
+  test("only declared ref positions holding a string are candidates", async () => {
+    const handle = await handleFor(4242);
+    expect(inputEntityRefHandles(inputShape, {
+      count: 7,
+      item: handle,
+      // The same handle at a position the shape declares a string. It is data:
+      // never opened, never even looked at.
+      note: handle,
+      rows: [handle, await handleFor(11)],
+    })).toEqual([["item"], ["rows", 0], ["rows", 1]]);
+    // A declared ref holding a number is the pre-existing numeric path, so it
+    // is left out and digests exactly as it always did.
+    expect(inputEntityRefHandles(inputShape, {
+      count: 7,
+      item: 4242,
+      note: handle,
+      rows: [],
+    })).toEqual([]);
+    expect(inputEntityRefHandles(scalarShape, "not-a-ref-position")).toEqual([]);
+  });
+
+  test("mixed numeric and sealed positions resolve to one numeric input", async () => {
+    const input = {
+      count: 7,
+      item: await handleFor(4242),
+      note: await handleFor(4242),
+      rows: [11, await handleFor(12)],
+    };
+    const paths = inputEntityRefHandles(inputShape, input);
+    const resolved = await resolveSealedInputRefs(sealing, scope, input, paths);
+    expect(resolved._tag).toBe("Resolved");
+    if (resolved._tag !== "Resolved") throw new Error("expected Resolved");
+    // Exactly the input a numeric caller would have submitted — which is why
+    // the two are one invocation to the canonical digest, not a conflict.
+    expect(resolved.input).toEqual({
+      count: 7,
+      item: 4242,
+      note: input.note,
+      rows: [11, 12],
+    });
+    // The caller's value is never mutated.
+    expect(input.item).toBe(await handleFor(4242));
+  });
+
+  test("an unreadable codec version or key epoch quarantines, everything else denies", async () => {
+    const withItem = async (item: string) => {
+      const input = { count: 7, item, note: "", rows: [] };
+      return resolveSealedInputRefs(
+        sealing,
+        scope,
+        input,
+        inputEntityRefHandles(inputShape, input),
+      );
+    };
+    const preamble = (version: number) => {
+      const envelope = new Uint8Array(41);
+      envelope[0] = version;
+      for (let index = 1; index < 17; index++) envelope[index] = 0xa5;
+      return base64Url(envelope);
+    };
+    expect(await withItem(preamble(ENTITY_ID_CODEC_VERSION + 1)))
+      .toEqual({ _tag: "UpdateRequired" });
+    expect(await withItem(preamble(ENTITY_ID_CODEC_VERSION)))
+      .toEqual({ _tag: "UpdateRequired" });
+
+    const handle = await handleFor(4242);
+    // Wrong scope, wrong root, tampered, truncated, and plainly not an
+    // envelope all collapse into the one sealed denial.
+    expect(await withItem(await sealEntityId(sealing, otherScope, 4242)))
+      .toEqual({ _tag: "Denied" });
+    expect(await withItem(await sealEntityId(otherSealing, scope, 4242)))
+      .toEqual({ _tag: "Denied" });
+    expect(await withItem(handle.slice(0, 40))).toEqual({ _tag: "Denied" });
+    expect(await withItem("")).toEqual({ _tag: "Denied" });
+  });
+
+  test("the provisioning predicate over-approximates and never under-approximates", async () => {
+    const handle = await handleFor(4242);
+    // Anything a codec could have minted has to be recognized, wherever it
+    // sits, or the scope the writer needs would never be derived.
+    expect(mayCarrySealedEntityId({ item: handle })).toBe(true);
+    expect(mayCarrySealedEntityId([[{ deep: handle }]])).toBe(true);
+    // Including an envelope no build here can read: a shape gate on v1's length
+    // would turn the one recoverable answer into a permanent denial.
+    expect(mayCarrySealedEntityId({ item: `${handle}extra` })).toBe(true);
+    // Over-approximation is the point, so a long base64url-shaped string that
+    // is not a handle answers yes. It costs one cached root read and decides
+    // nothing: `inputEntityRefHandles` makes every real decision.
+    expect(mayCarrySealedEntityId({ digest: "a".repeat(64) })).toBe(true);
+    // Nothing shorter than the frozen preamble plus a payload, nothing outside
+    // the alphabet, and no non-string can be an envelope of any version.
+    expect(mayCarrySealedEntityId({ title: "a short title" })).toBe(false);
+    expect(mayCarrySealedEntityId({ title: "a".repeat(33) })).toBe(false);
+    expect(mayCarrySealedEntityId({ title: `${"a".repeat(54)}!` })).toBe(false);
+    expect(mayCarrySealedEntityId({ count: 4242, ok: true, none: null })).toBe(false);
+    expect(mayCarrySealedEntityId(undefined)).toBe(false);
+  });
+
+  test("a cyclic input terminates rather than exhausting the stack", () => {
+    // Request bodies are parsed JSON and acyclic, but this walk is reached from
+    // the public edge and must not depend on that.
+    const cyclic: Record<string, unknown> = { title: "x" };
+    cyclic.self = cyclic;
+    expect(mayCarrySealedEntityId(cyclic)).toBe(false);
   });
 });

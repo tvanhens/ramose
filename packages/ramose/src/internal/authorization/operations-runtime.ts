@@ -392,6 +392,20 @@ export const deployedOperationOutputShape = (
 ): OperationInputShape | undefined =>
   bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.output;
 
+/**
+ * The deployed operation's declared input shape.
+ *
+ * The authoritative edge needs it before admission, to find the positions a
+ * sealed `EntityId` may be opened at (**WR-17**). `undefined` is the same
+ * sealed denial {@link deployedOperationVersion} answers with.
+ */
+export const deployedOperationInputShape = (
+  resolved: ResolvedOperationCatalog,
+  owner: OwnerRef,
+  localName: string,
+): OperationInputShape | undefined =>
+  bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.input;
+
 const fieldIdent = (field: FieldDescriptor): string =>
   `:${field.id.owner.name}/${field.id.localName}`;
 

@@ -1676,6 +1676,170 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(rows.body.result).toEqual([]);
       });
 
+      const retitleByRef = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "retitleByRef",
+      };
+
+      test("a sealed handle at a declared input position commits, and the same invocation replays exactly", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-input";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_sealed_input");
+        const created = await invokeWith(base, database, token, {
+          invocationId: "sealed-input-create-01",
+          operation: createItem,
+          input: { title: "Dependency" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+        const entityId = created.body.mappings[0].entityId as string;
+        expect(isEntityId(entityId)).toBe(true);
+
+        // The dependent invocation: no target at all, the entity named only by
+        // its sealed handle at the declared `item` ref position — and the same
+        // handle repeated at `note`, which the deployed input shape declares a
+        // plain string.
+        const body = {
+          invocationId: "sealed-input-retitle-01",
+          operation: retitleByRef,
+          input: {
+            item: entityId,
+            title: "Retitled through an input handle",
+            note: entityId,
+          },
+        };
+        const retitled = await invokeWith(base, database, token, body);
+        expect(retitled.status).toBe(200);
+        // An undeclared position is data: the handle was never opened, so it
+        // comes back exactly as it was submitted.
+        expect(retitled.body.result).toEqual({
+          title: "Retitled through an input handle",
+          note: entityId,
+        });
+
+        // It committed against the entity the handle named, and only it.
+        const rows = await testAdmin(base, database, "/query", {
+          query:
+            '[:find ?e :where [?e :nativeItem/title "Retitled through an input handle"]]',
+        });
+        expect(rows.body.result.length).toBe(1);
+        const stale = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Dependency"]]',
+        });
+        expect(stale.body.result).toEqual([]);
+
+        // A second entity, so the conflict below names a different one.
+        const other = await invokeWith(base, database, token, {
+          invocationId: "sealed-input-create-02",
+          operation: createItem,
+          input: { title: "Other dependency" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(other.status).toBe(200);
+
+        // The lost-acknowledgement retry. The canonical digest covers the
+        // *resolved* eid, and resolution is deterministic, so the identical
+        // sealed input reproduces the digest and consumes #487's exact replay
+        // rather than committing again.
+        const receiptsBefore = await operationReceiptCount(base, database);
+        const replayed = await invokeWith(base, database, token, body);
+        expect(replayed.status).toBe(200);
+        expect(replayed.body).toEqual(retitled.body);
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+
+        // Reusing the id with a different entity at the same input position is
+        // a different invocation, and the conflict proves the input ref really
+        // is inside the digest.
+        const rebound = await invokeWith(base, database, token, {
+          ...body,
+          input: { ...body.input, item: other.body.mappings[0].entityId },
+        });
+        expect(rebound.status).toBe(409);
+        expect(rebound.body).toEqual({
+          error: "request rejected",
+          code: "invocation_conflict",
+        });
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+      });
+
+      test("input handles carry the target position's exact failure taxonomy", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-input-taxonomy";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_sealed_input_tax");
+        const created = await invokeWith(base, database, token, {
+          invocationId: "sealed-input-tax-create-01",
+          operation: createItem,
+          input: { title: "Taxonomy" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+        const entityId = created.body.mappings[0].entityId as string;
+        const receiptsBefore = await operationReceiptCount(base, database);
+
+        // An unreadable codec version or a replaced key epoch is the typed,
+        // data-free quarantine — decided from the envelope preamble, exactly as
+        // it is for a target.
+        for (const kind of ["codec-version", "key-epoch"] as const) {
+          const quarantined = await invokeWith(base, database, token, {
+            invocationId: `sealed-input-tax-${kind}`,
+            operation: retitleByRef,
+            input: {
+              item: unreadableEntityId(kind),
+              title: "Should never land",
+              note: "",
+            },
+          });
+          expect([kind, quarantined.status]).toEqual([kind, 409]);
+          expect(quarantined.body).toEqual({
+            error: "request rejected",
+            code: "invocation_update_required",
+          });
+        }
+
+        // Everything else collapses into the ordinary sealed denial. A string
+        // no codec could have minted is that same denial, not a shape
+        // complaint and not a quarantine.
+        const tampered =
+          `${entityId.slice(0, 30)}${entityId[30] === "A" ? "B" : "A"}${entityId.slice(31)}`;
+        for (const [label, handle] of [
+          ["tampered", tampered],
+          ["truncated", entityId.slice(0, 40)],
+          ["non-base64url", `${"!".repeat(54)}A`],
+          ["far too short", "nope"],
+          ["empty", ""],
+        ] as const) {
+          const forged = await invokeWith(base, database, token, {
+            invocationId: `sealed-input-tax-forged-${label}`,
+            operation: retitleByRef,
+            input: { item: handle, title: "Should never land", note: "" },
+          });
+          expect([label, forged.status]).toEqual([label, 403]);
+        }
+
+        // Resolution grants nothing, and the ordinary entity-type check reruns
+        // against the resolved eid: a `nativeItem` handle at a position
+        // declared `Ref(nativeOther)` is refused exactly as the numeric eid
+        // would be.
+        const mistyped = await invokeWith(base, database, token, {
+          invocationId: "sealed-input-tax-mistyped",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeItem" },
+            localName: "deleteHiddenOther",
+          },
+          input: { id: entityId },
+        });
+        expect(mistyped.status).toBe(400);
+
+        // Effect-free throughout: nothing was claimed and nothing executed.
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Should never land"]]',
+        });
+        expect(rows.body.result).toEqual([]);
+      });
+
       test("an undeclared slot is refused before the operation body runs", async () => {
         const base = ctx.urls().nativeOperationsUrl;
         const database = "operations-allocation-undeclared";
@@ -1867,6 +2031,86 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           renamed.seen,
           { _tag: "Committed", output: { title: "Renamed through the queue" } },
         ]);
+      });
+
+
+      /**
+       * Acceptance: an offline create followed by a dependent invocation that
+       * refers to its `ClientRef` at a *declared input position* (#475 WR-17).
+       *
+       * Both records are durable before either is submitted, and the dependent
+       * one holds the client ref itself — no mapping exists yet. Reconnecting
+       * submits the create, the exact mapping unblocks the dependent record,
+       * and the sealed handle the queue substitutes is what the authoritative
+       * edge opens. Each commits exactly once even though both are submitted
+       * twice, and no raw eid appears anywhere.
+       */
+      test("a dependent invocation resolves its ClientRef into a sealed input handle", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-client-input-refs";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_client_input_refs");
+        const endpoint = endpointFor(base, database, token);
+        const versions = await otherDeploymentVersions();
+        const ref = clientRef();
+        const create = queued(versions.get("nativeItem/createAllocating")!, {
+          input: { title: "Created offline" },
+          allocations: [{ slot: "item", clientRef: ref }],
+        });
+        const dependent = buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "retitleByRef",
+          },
+          operationVersion: versions.get("nativeItem/retitleByRef")! as never,
+          target: { type: "none" },
+          input: { item: ref, title: "Retitled offline", note: "plain" },
+          allocations: [],
+          inputRefs: [{ path: ["item"], ref }],
+          enqueuedAt: 1_700_000_000_010,
+        }, "scope", 2);
+        // Blocked while the dependency is unmapped: the queue never submits a
+        // client ref as if it were an entity.
+        expect(substituteMutationRefs(dependent, new Map())).toBeUndefined();
+
+        const first = await submitUntilTerminal(create, endpoint);
+        const committed = first.acknowledgement;
+        expect([first.seen, committed._tag]).toEqual([first.seen, "Committed"]);
+        if (committed._tag !== "Committed") throw new Error("expected a commit");
+        expect(committed.mappings).toHaveLength(1);
+        const handles = new Map([[
+          mappingKey(dependent.partition, ref),
+          committed.mappings[0]!.entityId as EntityId,
+        ]]);
+
+        const done = await submitUntilTerminal(dependent, endpoint, handles);
+        expect([done.seen, done.acknowledgement]).toMatchObject([
+          done.seen,
+          {
+            _tag: "Committed",
+            output: { title: "Retitled offline", note: "plain" },
+          },
+        ]);
+
+        // Exactly once, both of them, however many acknowledgements were lost.
+        const receiptsBefore = await operationReceiptCount(base, database);
+        expect((await submitUntilTerminal(create, endpoint)).acknowledgement)
+          .toEqual(committed);
+        expect(
+          (await submitUntilTerminal(dependent, endpoint, handles)).acknowledgement,
+        ).toEqual(done.acknowledgement);
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Retitled offline"]]',
+        });
+        expect(rows.body.result.length).toBe(1);
+        const stale = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Created offline"]]',
+        });
+        expect(stale.body.result).toEqual([]);
       });
 
       test("every non-terminal and terminal answer classifies from the real Worker", async () => {
