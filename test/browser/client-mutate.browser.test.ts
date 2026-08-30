@@ -6,6 +6,7 @@ import {
   Entity,
   Field,
   Graph,
+  Ref,
   Schema,
   string,
   type CodeDefinition,
@@ -23,18 +24,29 @@ import {
 } from "../../packages/ramose/src/internal/replication/transport.ts";
 import { replicaScopeOf } from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
 import { isInvocationId } from "../../packages/ramose/src/db/refs.ts";
+import { Query as PortableQuery } from "../../packages/ramose/src/db/internal.ts";
 import { browserTest } from "./fixtures.ts";
 import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
 const Child = { key: "child", schema: Schema({}) } satisfies CodeDefinition;
 
+const Person = Entity("person", { name: string() });
+
 const Issue = Entity("issue", {
   title: Field.unique(string(), "strict"),
+  author: Ref(Person, { optional: true }),
 }, {
   operations: (Operation) => ({
     createIssue: Operation({
       self: false,
       input: EffectSchema.Struct({ title: EffectSchema.String }),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+    close: Operation({
+      input: EffectSchema.Struct({}),
       output: EffectSchema.Struct({}),
       run() {
         return {};
@@ -47,7 +59,11 @@ const Organization = Entity("organization", {
   slug: Field.unique(string(), "strict"),
 }, { traits: [Graph(Child)] });
 
-const AppSchema = Schema({ issue: Issue, organization: Organization });
+const AppSchema = Schema({
+  person: Person,
+  issue: Issue,
+  organization: Organization,
+});
 const AppCatalog = Catalog("client-mutate", {
   schema: AppSchema,
   policy: compileReadAuthorization({ schema: AppSchema, rules: [] }),
@@ -59,6 +75,9 @@ const TOKEN = "bearer-a";
 const CACHE_KEY = "account-a";
 
 const opaque = (character: string): string => character.repeat(43);
+
+/** A sealed entity handle: 55 canonical base64url characters. */
+const SEALED = /^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/;
 
 const deleteDatabase = (name: string): Promise<void> =>
   new Promise((resolve, reject) => {
@@ -121,8 +140,11 @@ const seedRoot = async (name: string): Promise<ReplicationIdentity> => {
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0,
       datoms: [
+        { entity: opaque("p"), field: ":ramose/type", value: { type: "string", value: ":person" }, op: "add" },
+        { entity: opaque("p"), field: ":person/name", value: { type: "string", value: "Ada" }, op: "add" },
         { entity: opaque("e"), field: ":ramose/type", value: { type: "string", value: ":issue" }, op: "add" },
         { entity: opaque("e"), field: ":issue/title", value: { type: "string", value: "Seeded" }, op: "add" },
+        { entity: opaque("e"), field: ":issue/author", value: { type: "ref", value: opaque("p") }, op: "add" },
       ],
     }));
     const committed = await storage.commitSnapshot({
@@ -345,6 +367,220 @@ browserTest(
       } finally {
         storage.close();
       }
+    } finally {
+      await app.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest("an entity-focused query returns live handles", async ({ browser }) => {
+  const name = `ramose-mutate-handles-${browser.uniqueId}`;
+  await seedRoot(name);
+  const app = client(name);
+  try {
+    const db = app.open();
+    const issues = db.observe(db.query.from(Issue));
+    const stop = issues.subscribe(() => undefined);
+    const ready = await waitFor(issues, (snapshot) => snapshot.status === "ready");
+    const rows = ready.data!;
+    expect(rows).toHaveLength(1);
+    const issue = rows[0]!;
+
+    expect(issue.id).toMatch(SEALED);
+
+    expect(issue.data).toMatchObject({ id: issue.id, title: "Seeded" });
+    expect(structuredClone(issue.data)).toEqual(issue.data);
+    for (const value of Object.values(issue.data as Record<string, unknown>)) {
+      expect(typeof value).not.toBe("function");
+    }
+
+    expect(issue.local).toEqual({ pending: false, created: false });
+
+    expect(Object.keys(issue.mutate)).toEqual(["close"]);
+
+    const again = await waitFor(issues, (snapshot) => snapshot.status === "ready");
+    expect(again.data![0]).toBe(issue);
+    stop();
+  } finally {
+    await app.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a projection returns plain rows, not handles", async ({ browser }) => {
+  const name = `ramose-mutate-projection-${browser.uniqueId}`;
+  await seedRoot(name);
+  const app = client(name);
+  try {
+    const db = app.open();
+    const titles = db.observe(db.query.from(Issue).select({ title: Issue.title }));
+    const stop = titles.subscribe(() => undefined);
+    const ready = await waitFor(titles, (snapshot) => snapshot.status === "ready");
+    expect(ready.data).toEqual([{ title: "Seeded" }]);
+    stop();
+  } finally {
+    await app.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a paged entity query returns a page of handles", async ({ browser }) => {
+  const name = `ramose-mutate-paged-${browser.uniqueId}`;
+  await seedRoot(name);
+  const app = client(name);
+  try {
+    const db = app.open();
+    const page = db.observe(
+      db.query.from(Issue).orderBy(Issue.title).limit(1).after(null),
+    );
+    const stop = page.subscribe(() => undefined);
+    const ready = await waitFor(page, (snapshot) => snapshot.status === "ready");
+    const rows = ready.data!.rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.data).toMatchObject({ id: rows[0]!.id, title: "Seeded" });
+    expect(Object.keys(rows[0]!.mutate)).toEqual(["close"]);
+    // The tie-breaker is the paging root's identity, so a full page's cursor
+    // always carries one — matched against the sealed shape rather than merely
+    // "not a number", which a stringified eid would also satisfy.
+    expect(ready.data!.cursor?.keys).toHaveLength(2);
+    expect(ready.data!.cursor!.keys.filter((key) =>
+      typeof key === "string" && SEALED.test(key)
+    )).toHaveLength(1);
+    stop();
+
+    const byAuthor = db.observe(
+      db.query.from(Issue).orderBy(Issue.author).limit(1).after(null),
+    );
+    const stopByAuthor = byAuthor.subscribe(() => undefined);
+    const sorted = await waitFor(byAuthor, (snapshot) => snapshot.status === "ready");
+    const cursor = sorted.data!.cursor;
+    // Both cells are identities here — the reference sort key and the root
+    // tie-breaker — so both must be sealed handles.
+    expect(cursor?.keys).toHaveLength(2);
+    for (const key of cursor!.keys) expect(key).toMatch(SEALED);
+
+    const next = db.observe(
+      db.query.from(Issue).orderBy(Issue.author).limit(1).after(cursor),
+    );
+    const stopNext = next.subscribe(() => undefined);
+    await waitFor(next, (snapshot) => snapshot.status !== "pending");
+    expect(next.getSnapshot().error).toBeUndefined();
+    stopNext();
+    stopByAuthor();
+  } finally {
+    await app.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest(
+  "closing while a graph path is unresolved settles its receipt",
+  async ({ browser }) => {
+    const name = `ramose-mutate-close-unresolved-${browser.uniqueId}`;
+    const identity = await seedRoot(name);
+    const app = client(name);
+    const db = app.open();
+    try {
+      const child = db.query
+        .from(Organization)
+        .where({ slug: "never-resolves" })
+        .one()
+        .db();
+      const receipt = child.mutate.createIssue({ title: "Offline" });
+
+      await app.close();
+
+      await expect(receipt.queued).rejects.toMatchObject({
+        _tag: "GraphReceiverError",
+        reason: "closed",
+      });
+      await expect(receipt.committed).rejects.toMatchObject({
+        _tag: "GraphReceiverError",
+      });
+      expect(receipt.getSnapshot().status).toBe("failed");
+      expect(await queued(name, identity)).toHaveLength(0);
+    } finally {
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a committed acknowledgement settles its receipt and keeps held handles",
+  async ({ browser }) => {
+    const name = `ramose-mutate-restart-${browser.uniqueId}`;
+    const identity = await seedRoot(name);
+    const app = client(name);
+    try {
+      const db = app.open();
+      const issues = db.observe(db.query.from(Issue));
+      const stop = issues.subscribe(() => undefined);
+      const ready = await waitFor(issues, (snapshot) => snapshot.status === "ready");
+      const held = ready.data![0]!;
+      expect(Object.keys(held.mutate)).toEqual(["close"]);
+
+      const receipt = held.mutate.close!({});
+      await receipt.queued;
+      expect(receipt.getSnapshot().status).toBe("queued");
+
+      const seen: string[] = [];
+      const watchSync = db.sync.subscribe(() => {
+        seen.push(db.sync.getSnapshot().status);
+      });
+      const loop = (app as unknown as {
+        submissions: () => {
+          settle: (progress: readonly unknown[]) => Promise<void>;
+        };
+      }).submissions();
+      await loop.settle([{
+        partition: "restart",
+        receiver: {
+          server: identity.server,
+          principal: identity.principal,
+          database: identity.database,
+        },
+        state: { _tag: "Committed", invocation: receipt.invocation },
+      }]);
+
+      watchSync();
+      expect(seen).toContain("connecting");
+
+      await receipt.committed;
+      expect(receipt.getSnapshot().status).toBe("committed");
+
+      const after = await waitFor(issues, (snapshot) => snapshot.status === "ready");
+      expect(after.data![0]).toBe(held);
+      expect(held.data).toMatchObject({ id: held.id, title: "Seeded" });
+      expect(Object.keys(held.mutate)).toEqual(["close"]);
+      stop();
+    } finally {
+      await app.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "an entity query and the same portable query do not share an observation",
+  async ({ browser }) => {
+    const name = `ramose-mutate-interning-${browser.uniqueId}`;
+    await seedRoot(name);
+    const app = client(name);
+    try {
+      const db = app.open();
+      const handles = db.observe(db.query.from(Issue));
+      const plain = db.observe(PortableQuery.from(Issue));
+      const stopHandles = handles.subscribe(() => undefined);
+      const stopPlain = plain.subscribe(() => undefined);
+      const shaped = await waitFor(handles, (s) => s.status === "ready");
+      const rows = await waitFor(plain, (s) => s.status === "ready");
+
+      expect(shaped.data![0]!.data).toMatchObject({ id: shaped.data![0]!.id, title: "Seeded" });
+      expect(rows.data![0]).toMatchObject({ id: shaped.data![0]!.id, title: "Seeded" });
+      expect(rows.data![0]).not.toHaveProperty("mutate");
+      stopHandles();
+      stopPlain();
     } finally {
       await app.close();
       await deleteDatabase(name);

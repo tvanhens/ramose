@@ -3,7 +3,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
 import { Catalog } from "../../src/Catalog.ts";
-import { Entity, Field, Schema, string } from "../../src/db/internal.ts";
+import {
+  Entity,
+  Field,
+  Query as PortableQuery,
+  Schema,
+  string,
+} from "../../src/db/internal.ts";
 import { compileReadAuthorization } from "../../src/internal/authorization/index.ts";
 import { queryObservationKey } from "../../src/client/database.ts";
 import {
@@ -79,7 +85,6 @@ describe("createClient", () => {
 
 describe("the ramose/client bundle", () => {
   test("bundles for browsers without the deploy engine", async () => {
-
     const built = await Bun.build({
       entrypoints: [resolve(dirname(fileURLToPath(import.meta.url)), "../../src/client/client.ts")],
       target: "browser",
@@ -131,6 +136,7 @@ describe("queryObservationKey", () => {
 
       queryObservationKey(db.query.from(Note)),
       queryObservationKey(db.query.from(Note).ids()),
+      queryObservationKey(PortableQuery.from(Note)),
     ];
     expect(new Set(keys).size).toBe(keys.length);
   });

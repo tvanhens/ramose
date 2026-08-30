@@ -167,10 +167,15 @@ export const installClientOperations = (
 export const selfOperationsFor = (
   operations: ClientOperations,
   composition: CompositionIndex,
-  typeName: string,
+  focus: { readonly kind: "entity" | "trait"; readonly name: string },
 ): ReadonlyMap<string, ClientOperation> => {
-  const owners: OwnerRef[] = [{ kind: "entity", name: typeName }];
-  for (const trait of composition.transitiveTraits(`:${typeName}`)) {
+  const typeName = focus.name;
+  const owners: OwnerRef[] = [{ kind: focus.kind, name: typeName }];
+  for (
+    const trait of focus.kind === "entity"
+      ? composition.transitiveTraits(`:${typeName}`)
+      : []
+  ) {
     owners.push({ kind: "trait", name: trait.startsWith(":") ? trait.slice(1) : trait });
   }
   const methods = new Map<string, ClientOperation>();

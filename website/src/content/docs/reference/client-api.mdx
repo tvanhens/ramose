@@ -4,7 +4,7 @@ description: Reference for creating a client, opening graphs, observing queries,
 ---
 import Next from "../../../components/Next.astro";
 
-`ramose/client` owns authorized browser replicas, graph handles, local query execution, synchronization, the durable outbox, optimistic layers, and receipts.
+`ramose/client` owns authorized browser replicas, graph handles, local query execution, synchronization, the durable outbox, optimistic layers, and receipts. It re-exports `Catalog` and `Policy`, so one import covers authoring and running.
 
 *New here? Start with [Build your first Ramose web app](/getting-started/quickstart/).*
 
@@ -15,12 +15,17 @@ import { createClient } from "ramose/client"
 
 const client = createClient({
   url: "https://data.example.com",
-  token: () => session.accessToken,
+  root: "app",
   catalog: AppCatalog,
+  auth: () => ({ token: session.accessToken, cacheKey: session.user.id }),
 })
 ```
 
-The client is framework-neutral. One instance coordinates all tabs for the same origin and principal. Close it when the signed-in principal changes permanently.
+`root` is the configured public route `/db/:root/*` uses — immutable configuration, not a database identity, and never a mutation receiver.
+
+`auth` returns `{ token, cacheKey }` atomically and may refresh. `cacheKey` selects an account across token renewal; it is hashed with the origin and root, never sent or stored raw, and grants no authority. Only a prior bearer binding or the current authenticated response makes stored data observable.
+
+Construction is inert: nothing opens until the first query is observed. `client.close()` releases network scopes without discarding queued work. `clearLocalData()` is the separate destructive operation, after which that client is terminal.
 
 ## Open the authorized root
 
@@ -28,7 +33,7 @@ The client is framework-neutral. One instance coordinates all tabs for the same 
 const rootDb = client.open()
 ```
 
-The token and server determine the root. Callers cannot choose an internal database or catalog id.
+`open()` takes no arguments and returns one interned root handle. Callers cannot choose an internal database or catalog id.
 
 ## Traverse to a child graph
 
@@ -40,41 +45,51 @@ const projectDb = rootDb.query
   .db()
 ```
 
-`.db()` is available only from an entity that implements a graph trait. Equivalent handles are interned. Creating a handle is cheap and does not activate synchronization; observing a query does.
+`.db()` exists only on an exactly-one terminal whose entity carries the graph trait, statically from the catalog. Equivalent handles are interned; creating one activates nothing, observing does.
+
+A client installs one catalog. A child bound to a different one is unsupported for now: its queries report `update-required` with no data, and its mutations fail before queueing.
 
 ## Observe a query
 
 ```ts
-const unsubscribe = projectDb.observe(
+const tasks = projectDb.observe(
   projectDb.query.from(Task).orderBy(Task.createdAt, "desc"),
-  (state) => { /* render or update a store */ },
 )
+
+const unsubscribe = tasks.subscribe(() => render(tasks.getSnapshot()))
 ```
 
-Query state is a tagged union:
+`observe` returns a subscription — `subscribe(onChange)` plus `getSnapshot()` — React's external-store contract. Identity changes only when the value does.
 
 ```ts
-type QueryState<A> =
-  | { status: "pending" }
-  | { status: "ready"; data: A }
-  | { status: "stale"; data: A }
-  | { status: "error"; error: unknown }
+type QuerySnapshot<A> = {
+  status: "pending" | "ready" | "error"
+  data: A | undefined
+  stale: boolean
+  error: Error | undefined
+}
 ```
 
-`stale` retains a complete local result while catch-up is pending or the network is unavailable. Disposing the last observer stops maintaining that query. The activated graph replica remains available for the session and future offline use.
+`stale` means the local value is not confirmed by the current session: a restored replica, or a reconnect. Disposing the last observer stops maintaining that query; the replica stays readable offline.
 
 ## Entity handles
 
-Querying entities returns handles with separate application data and local state:
+An entity-focused query returns live handles. A projection does not — `select(...)` projects the focus away, and a projection is not an entity:
 
 ```ts
-task.data.title
-task.local.pending
-task.local.receipts
+task.id                            // the opaque EntityId, or a ClientRef
+task.data.title                    // plain, cloneable, no methods
+task.local.pending                 // this client's own outstanding work
 task.mutate.setDone({ done: true })
 ```
 
-`.data` is plain cloneable data. `.local` contains client-only pending and reconciliation metadata. `.mutate` contains operations owned by the entity and its traits.
+A handle is *live* and *interned*: one object per entity per row shape, whose `.data` is replaced as the view changes. Holding it across renders is safe, and an entity created offline keeps the same object when its `EntityId` arrives.
+
+`.data` is plain cloneable data, no methods and no metadata. `.local.pending` stays true while any invocation holds optimistic state, including after its receipt commits and before replication observes it. `.mutate` carries what the entity's type and traits declare.
+
+### Entity ids are opaque
+
+Every id here is an `EntityId`, or a `ClientRef` for something created offline — wherever one appears: a row's `id`, a nested reference cell, `.ids()`, `select({ id: Task.id })`. A local numeric eid is never public: it is meaningless off this device, and a delete/recreate reassigns it.
 
 ## Targetless operations
 
@@ -82,26 +97,40 @@ task.mutate.setDone({ done: true })
 const receipt = projectDb.mutate.createTask({ title: "Ship docs" })
 ```
 
-Targetless operations live on `db.mutate`. Invocation returns immediately with a durable receipt handle. The optimistic projection, when declared, updates local queries before the server acknowledgement.
+Targetless operations live on `db.mutate`, targeted ones on `entity.mutate`. Both return the same durable receipt.
+
+Method presence is static, from the deployed catalog: a method exists exactly when the authored code declares that operation, never based on what this principal may do. A call the server refuses is a rejected receipt, not a missing method.
+
+A declared optimistic projection updates local queries before the acknowledgement.
 
 ## Receipt state
 
 ```ts
-type ReceiptState<Output> =
+await receipt.queued     // this invocation is durable
+await receipt.committed  // the server executed it, exactly once
+
+type ReceiptState =
+  | { status: "pending" }
   | { status: "queued" }
-  | { status: "committed"; output: Output }
-  | { status: "rejected"; error: OperationError }
+  | { status: "committed" }
+  | { status: "rejected"; error: MutationRejectedError }
+  | { status: "failed"; error: Error }
 ```
 
-The invocation id is assigned before the outbox write and survives reload, reconnect, and tab leadership changes. Observe a receipt when the exact outcome matters; use entity `.local.pending` for lightweight feedback.
+A receipt is a subscription too, so it can be observed as well as awaited.
+The two durable transitions are separate. **queued** means the invocation survives a restart and will be submitted; it claims nothing about the server. **committed** means the authoritative receipt, output and mappings are durable.
+
+**rejected** is the server's answer to an invocation that was durable. **failed** is a pre-queue failure that promises *nothing was written*, so a queued invocation can never become one.
+
+Observe a receipt when the outcome matters; use `.local.pending` for lightweight feedback.
 
 ## Synchronization state
 
-`client.observeSync(listener)` reports offline, connecting, catching-up, and live transitions independently of query state. A ready query can remain useful offline; a live connection does not imply every receipt committed.
+`client.sync` and `db.sync` are subscriptions shaped like a query's, reporting idle, connecting, live, stale, offline, authentication-required, update-required and closed. A ready query can be useful offline; a live connection does not imply every receipt committed.
 
 ## Persistence and multi-tab behavior
 
-Each activated graph has a persistent IndexedDB replica. Tabs share durable data and elect one network leader per principal and graph. Followers execute local queries and submit intents through the shared outbox. Closing one tab does not discard queued work.
+Each activated graph has a persistent IndexedDB replica. Tabs share durable data and elect one network leader per principal and graph; closing a tab does not discard queued work.
 
 <Next links={[
   { href: "/reference/query-language/", label: "Query builder", why: "construct typed local and server queries" },

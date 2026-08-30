@@ -232,6 +232,23 @@ describe("entity ids in a lowered projection", () => {
       .toEqual([`handle:${ids.child}`]);
   });
 
+  test("a row's shape is the same through `.one()`, a list, and a page", () => {
+    const list = lowerQueryObject(Query.from(Issue) as never, opaque);
+    const one = lowerQueryObject(Query.from(Issue).one() as never, opaque);
+    const page = lowerQueryObject(
+      Query.from(Issue).orderBy(Issue.title).after(null) as never,
+      opaque,
+    );
+
+    expect(one.rowShape).toBe(list.rowShape);
+    expect(page.rowShape).toBe(list.rowShape);
+    expect(one.shape).not.toBe(list.shape);
+    expect(page.shape).not.toBe(list.shape);
+    expect([list.result, one.result, page.result]).toEqual(["rows", "row", "page"]);
+    expect(lowerQueryObject(Query.from(Issue).ids() as never, opaque).rowShape)
+      .not.toBe(list.rowShape);
+  });
+
   test("a row with no public identity fails the query rather than leaking the number", async () => {
     const lowered = lowerQueryObject(Query.from(Issue).ids() as never, {
       entity: () => {

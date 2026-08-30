@@ -931,7 +931,9 @@ export type QueryLowering = {
 export interface LoweredKernelQuery {
   readonly query: Record<string, unknown>;
   readonly shape: string;
+  readonly rowShape: string;
   readonly finalize: (result: unknown) => unknown;
+  readonly result: "page" | "row" | "rows";
 }
 
 interface FlatCell {
@@ -1883,13 +1885,19 @@ export const lowerQueryObject = (
     ...(offset !== undefined ? { offset } : {}),
   };
 
+  const rowShape = JSON.stringify({
+    projection,
+    root: rootPlan,
+    cells: flats.map((cell) => [cell.path, cell.agg ?? null, cell.plan ?? null]),
+    scalar,
+  });
+
   return {
     query,
+    result: seek !== undefined ? "page" : take !== undefined ? "row" : "rows",
+    rowShape,
     shape: JSON.stringify({
-      projection,
-      root: rootPlan,
-      cells: flats.map((cell) => [cell.path, cell.agg ?? null, cell.plan ?? null]),
-      scalar,
+      row: rowShape,
       take: take ?? null,
       paged: seek !== undefined,
     }),

@@ -30,13 +30,21 @@ import type { IndexedDbReplicaStorage } from "../internal/replication/indexeddb.
 import type { ClientCatalog } from "./catalog.ts";
 import {
   clientQueryFrom,
+  entityFocusOf,
   GraphDatabaseHandle,
   type ClientQuery,
   type ClientValue,
+  type EntityFocused,
+  type EntityResult,
   type GraphAncestor,
   type GraphRegistry,
 } from "./graph.ts";
 import { mutationNamespace, type MutationContext, type MutationNamespace } from "./mutation.ts";
+import {
+  EntityRegistry,
+  rowIdentity,
+  type EntityHandle,
+} from "./entity.ts";
 import { Store, sameResult, type Subscription } from "./subscription.ts";
 import { syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -59,7 +67,12 @@ export type QuerySubscription<Out> = Subscription<QuerySnapshot<Out>>;
 
 export const queryObservationKey = (query: AnyQueryObject): string => {
   const lowered = lowerQueryObject(query);
-  return JSON.stringify([lowered.query, lowered.shape]);
+  const focus = entityFocusOf(query);
+  return JSON.stringify([
+    lowered.query,
+    lowered.shape,
+    focus === undefined ? null : `${focus._tag}:${focus.ns}`,
+  ]);
 };
 
 const PENDING: QuerySnapshot<never> = Object.freeze({
@@ -102,6 +115,12 @@ export const readSessionSnapshot = (
   }
 };
 
+type RetiredObservation = {
+  readonly snapshot: QuerySnapshot<unknown>;
+  readonly plain: unknown;
+};
+
+/** Everything a database handle needs from the client that owns it. */
 export type DatabaseContext = {
   readonly server: string;
   readonly root: string;
@@ -133,12 +152,38 @@ class QueryObserver {
   readonly store: Store<QuerySnapshot<unknown>>;
   private scheduled = -1;
 
+  private plain: unknown;
+
   constructor(
     private readonly lowered: LoweredKernelQuery,
     private readonly release: (self: QueryObserver) => void,
-    prior?: QuerySnapshot<unknown> | undefined,
+    private readonly shape: (rows: unknown) => unknown,
+    retired?: RetiredObservation | undefined,
   ) {
-    this.store = new Store<QuerySnapshot<unknown>>(resumed(prior));
+    this.store = new Store<QuerySnapshot<unknown>>(resumed(retired?.snapshot));
+    this.plain = retired?.plain;
+  }
+
+  rows(): unknown {
+    return this.plain;
+  }
+
+  republish(changed: ReadonlySet<EntityHandle>): void {
+    const prior = this.store.getSnapshot();
+    if (prior.status !== "ready") return;
+    if (!this.publishes(prior.data, changed)) return;
+    this.store.publish(Object.freeze({ ...prior }));
+  }
+
+  private publishes(data: unknown, changed: ReadonlySet<EntityHandle>): boolean {
+    if (changed.size === 0) return false;
+    const rows = Array.isArray(data)
+      ? data
+      : typeof data === "object" && data !== null &&
+          Array.isArray((data as { readonly rows?: unknown }).rows)
+      ? (data as { readonly rows: readonly unknown[] }).rows
+      : [data];
+    return rows.some((row) => changed.has(row as EntityHandle));
   }
 
   subscribe(onChange: () => void): () => void {
@@ -180,23 +225,24 @@ class QueryObserver {
   private publish(
     generation: number,
     status: QuerySnapshot<unknown>["status"],
-    data: unknown,
+    rows: unknown,
     stale: boolean,
     error: Error | undefined,
   ): void {
     if (generation < this.scheduled) return;
     const prior = this.store.getSnapshot();
-    const unchangedData = sameResult(prior.data, data);
+    const unchangedData = sameResult(this.plain, rows);
     if (
       prior.status === status && prior.stale === stale &&
       prior.error === error && unchangedData
     ) return;
-    this.store.publish(Object.freeze({
-      status,
-      data: unchangedData ? prior.data : data,
-      stale,
-      error,
-    }));
+    const data = status !== "ready"
+      ? undefined
+      : unchangedData
+      ? prior.data
+      : this.shape(rows);
+    this.plain = rows;
+    this.store.publish(Object.freeze({ status, data, stale, error }));
   }
 }
 
@@ -211,9 +257,12 @@ export interface ClientDatabase {
   readonly query: {
     readonly from: <N extends AnyComposer>(entity: N) => ClientQuery<N>;
   };
-  readonly observe: <Row, Out>(
-    query: QueryObject<Row, Out>,
-  ) => QuerySubscription<ClientValue<Out>>;
+  readonly observe: {
+    <N extends AnyComposer, Row, Out>(
+      query: EntityFocused<N, Row, Out>,
+    ): QuerySubscription<EntityResult<Row, Out>>;
+    <Row, Out>(query: QueryObject<Row, Out>): QuerySubscription<ClientValue<Out>>;
+  };
   readonly mutate: MutationNamespace;
   readonly sync: Subscription<SyncState>;
 }
@@ -261,7 +310,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private readonly graphChildren = new Map<string, GraphDatabaseHandle>();
 
   private readonly observers = new Map<string, QueryObserver>();
-  private readonly retired = new Map<string, QuerySnapshot<unknown>>();
+  private readonly retired = new Map<string, RetiredObservation>();
   private activation: Promise<void> | undefined;
   private catalog: ClientCatalog | undefined;
   private session: ReplicationSession | undefined;
@@ -276,6 +325,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private handles: ReadonlyMap<string, number> = new Map();
   private reverse: Map<number, string> | undefined;
   private speculative: ReadonlyMap<number, string> = new Map();
+  private registry: EntityRegistry | undefined;
   private viewValue: Db | undefined;
   private viewGeneration = 0;
   private lastSession: ReplicationSessionSnapshot | undefined;
@@ -287,6 +337,10 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
 
   constructor(private readonly context: DatabaseContext) {}
 
+  observe<N extends AnyComposer, Row, Out>(
+    query: EntityFocused<N, Row, Out>,
+  ): QuerySubscription<EntityResult<Row, Out>>;
+  observe<Row, Out>(query: QueryObject<Row, Out>): QuerySubscription<ClientValue<Out>>;
   observe<Row, Out>(
     query: QueryObject<Row, Out>,
   ): QuerySubscription<ClientValue<Out>> {
@@ -298,11 +352,12 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
         typeof id === "string" ? this.localIdOf(id) : undefined,
     });
     const key = queryObservationKey(value);
+    const shape = this.shapeRows(entityFocusOf(query), lowered);
     void this.activate();
     let last: QueryObserver | undefined = this.observers.get(key);
     return Object.freeze({
       subscribe: (onChange: () => void) => {
-        const observer = this.acquire(key, lowered);
+        const observer = this.acquire(key, lowered, shape);
         last = observer;
         return observer.subscribe(onChange);
       },
@@ -310,22 +365,77 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
         if (this.closed) return PENDING as QuerySnapshot<ClientValue<Out>>;
         const observer = this.observers.get(key);
         if (observer !== undefined) last = observer;
-        return (last?.store.getSnapshot() ?? this.retired.get(key) ??
+        return (last?.store.getSnapshot() ?? this.retired.get(key)?.snapshot ??
           PENDING) as QuerySnapshot<ClientValue<Out>>;
       },
     }) as QuerySubscription<ClientValue<Out>>;
   }
 
-  private acquire(key: string, lowered: LoweredKernelQuery): QueryObserver {
+  private shapeRows(
+    focus: AnyComposer | undefined,
+    lowered: LoweredKernelQuery,
+  ): (rows: unknown) => unknown {
+    if (focus === undefined) return (rows) => rows;
+    const wrap = (row: unknown): unknown => {
+      const id = rowIdentity(row);
+      return id === undefined
+        ? row
+        : this.entities().handle(id, focus, lowered.rowShape, row);
+    };
+    switch (lowered.result) {
+      case "page":
+        return (value) => {
+          const page = value as { readonly rows: readonly unknown[] };
+          return { ...page, rows: page.rows.map(wrap) };
+        };
+      case "row":
+        return (value) => (value === null ? null : wrap(value));
+      case "rows":
+        return (value) => (Array.isArray(value) ? value.map(wrap) : value);
+    }
+  }
+
+  private entities(): EntityRegistry {
+    if (this.registry !== undefined) return this.registry;
+    this.registry = new EntityRegistry(
+      this.context.mutations,
+      this,
+      (focus) =>
+        this.context.mutations.selfOperations({
+          kind: focus._tag === "Trait" ? "trait" : "entity",
+          name: focus.ns,
+        }),
+    );
+    const mappings = this.reconciler?.mappings();
+    if (mappings !== undefined) {
+      for (const [ref, id] of mappings) this.registry.alias(ref as never, id);
+    }
+    const pending = this.reconciler?.snapshot().pending;
+    if (pending !== undefined) this.registry.observe(pending);
+    return this.registry;
+  }
+
+  private republishLocal(changed: ReadonlySet<EntityHandle>): void {
+    for (const observer of this.observers.values()) observer.republish(changed);
+  }
+
+  private acquire(
+    key: string,
+    lowered: LoweredKernelQuery,
+    shape: (rows: unknown) => unknown,
+  ): QueryObserver {
     const existing = this.observers.get(key);
     if (existing !== undefined) return existing;
-    const prior = this.retired.get(key);
+    const retired = this.retired.get(key);
     this.retired.delete(key);
     const observer = new QueryObserver(lowered, (self) => {
       if (this.observers.get(key) !== self) return;
       this.observers.delete(key);
-      this.retired.set(key, resumed(self.store.getSnapshot()));
-    }, prior);
+      this.retired.set(key, {
+        snapshot: resumed(self.store.getSnapshot()),
+        plain: self.rows(),
+      });
+    }, shape, retired);
     if (this.closed) return observer;
     this.observers.set(key, observer);
     void observer.run(this.viewGeneration, this.viewValue, this.stale);
@@ -502,6 +612,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.generation++;
     this.committed = undefined;
     this.forgetHandles();
+    this.withdrawEntities();
     this.forgetCredential();
     this.viewValue = undefined;
     this.viewGeneration = this.generation;
@@ -528,6 +639,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.generation++;
     this.committed = undefined;
     this.forgetHandles();
+    this.withdrawEntities();
     this.forgetCredential();
     this.viewValue = undefined;
     this.viewGeneration = this.generation;
@@ -653,6 +765,11 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.speculative = new Map();
   }
 
+  private withdrawEntities(): void {
+    this.registry?.clear();
+    this.registry = undefined;
+  }
+
   private entityId(eid: number): string {
     const handle = this.sealedHandleOf(eid);
     if (handle !== undefined) return handle;
@@ -689,6 +806,14 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
 
   private overlay(state: OptimisticOverlayState): void {
     if (this.closed) return;
+    const moved = this.registry?.observe(state.pending);
+    if (moved !== undefined && moved.size > 0) this.republishLocal(moved);
+    const mappings = this.reconciler?.mappings();
+    if (mappings !== undefined) {
+      for (const [ref, id] of mappings) {
+        this.registry?.alias(ref as never, id);
+      }
+    }
     const required = state.updateRequired.length > 0;
     if (required !== this.updateRequired) {
       this.updateRequired = required;
@@ -720,6 +845,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.reconcilerPending = undefined;
     this.committed = undefined;
     this.forgetHandles();
+    this.withdrawEntities();
     this.forgetCredential();
     this.viewValue = undefined;
     for (const observer of this.observers.values()) {

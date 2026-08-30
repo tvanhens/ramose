@@ -190,6 +190,10 @@ export class OptimisticReconciler {
     };
   }
 
+  mappings(): ReadonlyMap<string, EntityId> {
+    return this.handles;
+  }
+
   activation(): number {
     return this.fence.snapshot().activation;
   }

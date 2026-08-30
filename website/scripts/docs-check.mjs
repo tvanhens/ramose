@@ -60,7 +60,7 @@ const BUDGETS = {
   "best-practices/operations": 750,
   "best-practices/security": 750,
   "reference/schema": 650,
-  "reference/client-api": 700,
+  "reference/client-api": 800,
   "reference/query-language": 600,
   "reference/query-document": 600,
   "reference/operations": 700,

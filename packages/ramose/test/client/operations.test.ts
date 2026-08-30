@@ -86,7 +86,7 @@ describe("the installed client mutation surface", () => {
       await selfOperationsFor(
         operations,
         compositionFromSchema(completeSchema(AppCatalog)),
-        "issue",
+        { kind: "entity", name: "issue" },
       ).get("close")!.version(),
     ).toBe(byName.get("issue.close")!);
   });
@@ -98,12 +98,23 @@ describe("the installed client mutation surface", () => {
     expect([...operations.database.keys()]).toEqual(["createIssue"]);
     expect(operations.database.get("createIssue")?.self).toBe(false);
 
-    const issue = selfOperationsFor(operations, composition, "issue");
+    const issue = selfOperationsFor(operations, composition, {
+      kind: "entity",
+      name: "issue",
+    });
     expect([...issue.keys()].sort()).toEqual(["addTag", "close"]);
     expect(issue.get("addTag")?.owner).toEqual({ kind: "trait", name: "taggable" });
     expect(issue.get("close")?.self).toBe(true);
 
-    expect([...selfOperationsFor(operations, composition, "note").keys()]).toEqual([]);
+    expect([...selfOperationsFor(operations, composition, {
+      kind: "entity",
+      name: "note",
+    }).keys()]).toEqual([]);
+
+    expect([...selfOperationsFor(operations, composition, {
+      kind: "trait",
+      name: "taggable",
+    }).keys()]).toEqual(["addTag"]);
   });
 
   test("carries the inert descriptor the durable queue needs, and no operation body", async () => {

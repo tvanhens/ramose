@@ -15,6 +15,9 @@ import { ReceiptDriver, type Receipt } from "./receipt.ts";
 /** Everything one mutation call needs from the client that owns it. */
 export type MutationContext = {
   readonly databaseOperations: () => ReadonlyMap<string, ClientOperation>;
+  readonly selfOperations: (
+    focus: { readonly kind: "entity" | "trait"; readonly name: string },
+  ) => ReadonlyMap<string, ClientOperation>;
   readonly catalog: () => Promise<ClientCatalog>;
   readonly storage: () => Promise<IndexedDbReplicaStorage>;
   readonly assertLive: (operation: string) => void;

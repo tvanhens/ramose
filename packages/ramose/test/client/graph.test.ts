@@ -218,6 +218,7 @@ describe("the resolved-database registry", () => {
     credential: () => Promise.reject(new Error("not activated")),
     mutations: {
       databaseOperations: () => new Map(),
+      selfOperations: () => new Map(),
       catalog: () => Promise.reject(new Error("not activated")),
       storage: () => Promise.reject(new Error("not activated")),
       assertLive: () => undefined,

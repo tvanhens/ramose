@@ -7,6 +7,7 @@ import {
   type EntityId,
   type MutationRef,
 } from "../db/refs.ts";
+import type { EntityHandle } from "./entity.ts";
 import { NotOne } from "../db/Errors.ts";
 import { Graph } from "../db/Graph.ts";
 import type { EntityRow, FluentQuery, WhereEq } from "../db/query/fluent.ts";
@@ -17,6 +18,8 @@ import {
   from as queryFrom,
   q,
   type AnyQueryObject,
+  type Cursor,
+  type Page,
   type Pipeline,
   type QueryObject,
   type QueryOrderKey,
@@ -70,6 +73,38 @@ export type GraphFocusDb = {
   readonly db: () => ClientDatabase;
 };
 
+declare const EntityFocusBrand: unique symbol;
+
+/**
+ * A query value that still has one entity focus, stated at the type level.
+ *
+ * The runtime marker and this brand say the same thing from two directions: the
+ * chain that keeps the focus carries both, and `select` — which projects the
+ * focus away — carries neither. That is what lets `observe` promise live entity
+ * handles for one and plain rows for the other without inspecting any data.
+ *
+ * Phantom: nothing reads this property, and the value it would hold is the
+ * composer the query started from.
+ */
+export type EntityFocused<N extends AnyComposer, Row, Out> =
+  & QueryObject<Row, Out>
+  & { readonly [EntityFocusBrand]: N };
+
+/**
+ * What an entity-focused observation publishes, in place of its rows.
+ *
+ * The row shape is preserved as the handle's `.data`, so an application reads
+ * `issue.data.title` where it used to read `issue.title` — and the handle
+ * carries the two things a plain row cannot: this client's own pending state,
+ * and the operations the deployed catalog declares for the entity's type.
+ */
+export type EntityResult<Row, Out> = [Out] extends [readonly unknown[]]
+  ? readonly EntityHandle<ClientValue<Row>>[]
+  : [Out] extends [{ readonly rows: readonly unknown[] }]
+    ? Omit<Out, "rows"> & { readonly rows: readonly EntityHandle<ClientValue<Row>>[] }
+    : null extends Out ? EntityHandle<ClientValue<Row>> | null
+      : EntityHandle<ClientValue<Row>>;
+
 /** A `.one()` / `.oneOrFail()` terminal, with `.db()` only where it belongs. */
 export type GraphFocus<
   N extends AnyComposer,
@@ -77,8 +112,8 @@ export type GraphFocus<
   Out,
   Term extends "one" | "oneOrFail",
 > = ComposesGraph<N> extends true
-  ? QueryObject<Row, Out, Term> & GraphFocusDb
-  : QueryObject<Row, Out, Term>;
+  ? QueryObject<Row, Out, Term> & GraphFocusDb & { readonly [EntityFocusBrand]: N }
+  : QueryObject<Row, Out, Term> & { readonly [EntityFocusBrand]: N };
 
 /**
  * The portable fluent chain, re-typed so an entity-focused terminal can name a
@@ -96,6 +131,8 @@ export interface ClientQuery<
   Row = EntityRow<N>,
   Out = readonly Row[],
 > extends FluentQuery<N, Row, Out> {
+  readonly [EntityFocusBrand]: N;
+
   where<const W extends WhereEq<N>>(eq: W): ClientQuery<N, Row, Out>;
   where(
     ...stages: ReadonlyArray<(q: Pipeline<Row, N>) => Pipeline<Row, N>>
@@ -109,6 +146,7 @@ export interface ClientQuery<
 
   limit(n: number): ClientQuery<N, Row, Out>;
   offset(n: number): ClientQuery<N, Row, Out>;
+  after(cursor: Cursor | null): EntityFocused<N, Row, Page<Row>>;
   ids(): ClientQuery<N, IdRow<N>>;
 
   one(): GraphFocus<N, Row, Row | null, "one">;
@@ -186,7 +224,17 @@ const resolvedSegment = (row: unknown): ResolvedSegment | undefined => {
   return { id: handle, name };
 };
 
-const CHAIN = ["where", "orderBy", "limit", "offset", "ids"] as const;
+const CHAIN = ["where", "orderBy", "limit", "offset", "ids", "after"] as const;
+
+/** The entity focus a decorated query still carries, if it has one. */
+export const ENTITY_FOCUS = Symbol.for("ramose/client/entity-focus") as symbol;
+
+/** The focus one query value declares, or `undefined` for a projection. */
+export const entityFocusOf = (query: unknown): AnyComposer | undefined => {
+  if (query === null || typeof query !== "object") return undefined;
+  const focus = (query as Record<symbol, unknown>)[ENTITY_FOCUS];
+  return focus === undefined ? undefined : (focus as AnyComposer);
+};
 
 const decorate = (
   fluent: AnyFluent,
@@ -194,7 +242,8 @@ const decorate = (
   ns: AnyComposer,
   node: GraphAncestor,
 ): AnyFluent => {
-  const wrapped = { ...fluent } as unknown as Record<string, unknown>;
+  const wrapped = { ...fluent } as unknown as Record<string | symbol, unknown>;
+  wrapped[ENTITY_FOCUS] = ns;
   for (const key of CHAIN) {
     const method = (fluent as unknown as Record<string, unknown>)[key];
     if (typeof method !== "function") continue;
@@ -214,8 +263,10 @@ const decorate = (
     wrapped[key] = (): unknown => {
       const taken = (fluent as unknown as Record<string, () => unknown>)[key]!
         .call(fluent);
-      if (!composesGraph(ns)) return taken;
-      return Object.assign({}, taken, {
+      if (!composesGraph(ns)) {
+        return Object.assign({ [ENTITY_FOCUS]: ns }, taken);
+      }
+      return Object.assign({ [ENTITY_FOCUS]: ns }, taken, {
         db: (): ClientDatabase => {
           const canonical = graphResolutionQuery(logic, ns);
           return node.graphChild(queryObservationKey(canonical), canonical);
@@ -446,6 +497,10 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
     return this.mutations;
   }
 
+  observe<N extends AnyComposer, Row, Out>(
+    query: EntityFocused<N, Row, Out>,
+  ): QuerySubscription<EntityResult<Row, Out>>;
+  observe<Row, Out>(query: QueryObject<Row, Out>): QuerySubscription<ClientValue<Out>>;
   observe<Row, Out>(
     query: QueryObject<Row, Out>,
   ): QuerySubscription<ClientValue<Out>> {
@@ -658,7 +713,10 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.resolution = undefined;
     for (const child of this.children.values()) child.close();
     this.children.clear();
-    this.bindingStore.publish(PENDING_BINDING);
+    this.bindingStore.publish({
+      status: "failed",
+      error: terminalPathError("closed") ?? unavailable(),
+    });
     this.syncStore.publish(syncState("closed"));
   }
 }
@@ -718,11 +776,20 @@ const settleOn = <A>(
     if (done) stop();
   });
 
+const PRE_QUEUE_REASON: Partial<
+  Record<GraphPathError["reason"], GraphReceiverError["reason"]>
+> = {
+  ambiguous: "ambiguous",
+  closed: "closed",
+  unauthorized: "unauthorized",
+  "update-required": "update-required",
+};
+
 const preQueueFailure = (error: Error): GraphReceiverError =>
   new GraphReceiverError({
-    reason: error instanceof GraphPathError && error.reason === "ambiguous"
-      ? "ambiguous"
-      : "unresolved",
+    reason: (error instanceof GraphPathError
+      ? PRE_QUEUE_REASON[error.reason]
+      : undefined) ?? "unresolved",
     message: "a graph receiver must resolve to one database before queueing",
     cause: error,
   });

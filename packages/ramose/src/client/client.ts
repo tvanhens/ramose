@@ -9,9 +9,12 @@ import {
 import type { MutationEndpoint } from "../internal/replication/submission.ts";
 import { replicationActivationAddress } from "../internal/replication/transport.ts";
 import { completeSchema } from "../internal/authorization/read-tables.ts";
+import { compositionFromSchema } from "../db/composition.ts";
+import type { CompositionIndex } from "../internal/core/composition.ts";
 import { installClientCatalog, type ClientCatalog } from "./catalog.ts";
 import {
   installClientOperations,
+  selfOperationsFor,
   type ClientOperations,
 } from "./operations.ts";
 import type { MutationContext } from "./mutation.ts";
@@ -81,6 +84,7 @@ class RamoseClient implements Client {
   private storageHandle: Promise<IndexedDbReplicaStorage> | undefined;
   private confirmed: ReplicationIdentity | undefined;
   private operations: ClientOperations | undefined;
+  private compositionIndex: CompositionIndex | undefined;
   private submissionLoop: SubmissionLoop | undefined;
   private terminal: "closed" | "cleared" | "fenced" | undefined;
   private clearing = false;
@@ -126,6 +130,12 @@ class RamoseClient implements Client {
     };
   }
 
+  private composition(): CompositionIndex {
+    this.compositionIndex ??= compositionFromSchema(
+      completeSchema(this.options.catalog),
+    );
+    return this.compositionIndex;
+  }
   private clientOperations(): ClientOperations {
     this.operations ??= installClientOperations(
       this.options.catalog,
@@ -137,6 +147,8 @@ class RamoseClient implements Client {
   private mutationContext(): MutationContext {
     return {
       databaseOperations: () => this.clientOperations().database,
+      selfOperations: (focus) =>
+        selfOperationsFor(this.clientOperations(), this.composition(), focus),
       catalog: () => this.catalog(),
       storage: () => this.storage(),
       assertLive: (operation) => this.assertLive(operation),
