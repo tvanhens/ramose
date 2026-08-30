@@ -2,7 +2,7 @@
   "name": "ramose",
   "version": "0.3.0",
   "type": "module",
-  "description": "Ramose — an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: portable authoring (`ramose/db`), Alchemy resources (`ramose`), the offline-first browser client (`ramose/client`), the peer Worker (`ramose/worker`) and the Better Auth plugin (`ramose/better-auth`).",
+  "description": "Ramose — an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: portable authoring (`ramose/db`), Alchemy resources (`ramose`), the offline-first browser client (`ramose/client`), its React adapter (`ramose/react`), the peer Worker (`ramose/worker`) and the Better Auth plugin (`ramose/better-auth`).",
   "license": "Apache-2.0",
   "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
   "homepage": "https://ramose.ai",
@@ -82,6 +82,10 @@
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/index.js"
     },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    },
     "./worker": {
       "types": "./dist/worker/index.d.ts",
       "default": "./dist/worker/index.js"
@@ -113,10 +117,14 @@
   "peerDependencies": {
     "better-auth": ">=1.6.0",
     "effect": ">=4.0.0-rc.110 <5.0.0",
+    "react": ">=18.0.0 <20.0.0",
     "zod": "^4.3.6"
   },
   "peerDependenciesMeta": {
     "better-auth": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     },
     "zod": {
@@ -124,8 +132,10 @@
     }
   },
   "devDependencies": {
+    "@types/react": "^19.2.0",
     "better-auth": "^1.6.30",
     "effect": ">=4.0.0-rc.110 <5.0.0",
+    "react": "^19.2.0",
     "zod": "^4.3.6"
   }
 }

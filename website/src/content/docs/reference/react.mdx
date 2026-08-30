@@ -8,6 +8,10 @@ import Next from "../../../components/Next.astro";
 
 *New here? Start with [React and offline UX](/guides/react/).*
 
+:::note[Available today]
+`RamoseProvider`, `useDb`, `useQuery`, and `useSyncState` ship now. Entity handles (`.data` / `.local` / `.mutate`), `useReceipt`, and the Suspense-compatible option arrive with the public mutation and receipt surfaces; they are documented here as the shape they will take.
+:::
+
 ```tsx
 import {
   RamoseProvider,
@@ -44,6 +48,8 @@ const tasks = useQuery(
 )
 ```
 
+Pass a database as an optional second argument to read a handle the surrounding tree does not provide.
+
 Subscribes during commit and returns `QueryState<A>`:
 
 ```ts
@@ -70,7 +76,7 @@ Entity results expose `.data`, `.local`, and `.mutate`. Components rerender when
 />
 ```
 
-Use stable entity ids as React keys.
+Use stable entity ids as React keys. Until entity handles land, a row's `id` is a *local* identifier that is not portable across replicas or sessions: key on a unique field instead, and never persist it or put it in a route.
 
 ## useReceipt
 

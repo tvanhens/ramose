@@ -37,6 +37,7 @@
       "ramose": ["./packages/ramose/src/index.ts"],
       "ramose/db": ["./packages/ramose/src/db/index.ts"],
       "ramose/client": ["./packages/ramose/src/client/index.ts"],
+      "ramose/react": ["./packages/ramose/src/react/index.ts"],
       "ramose/worker": ["./packages/ramose/src/worker/index.ts"],
       "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"]
     },
@@ -114,6 +115,7 @@
     "packages/ramose/test/**/*.ts",
     "bench/**/*.ts",
     "test/**/*.ts",
+    "test/**/*.tsx",
     "scripts/check-test-doubles.ts",
     "scripts/check-test-doubles.test.ts",
     "examples/**/*.ts"

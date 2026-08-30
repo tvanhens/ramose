@@ -54,8 +54,12 @@
     "@cloudflare/workers-types": "^4.20250101.0",
     "@effect/tsgo": "0.37.0",
     "@types/bun": "latest",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
     "@vitest/browser-playwright": "4.1.10",
     "playwright": "1.62.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "typescript": "^7.0.2",
     "vitest": "4.1.10"
   },

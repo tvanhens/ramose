@@ -26,6 +26,7 @@ const PUBLIC = [
   "ramose",
   "ramose/db",
   "ramose/client",
+  "ramose/react",
   "ramose/worker",
   "ramose/better-auth",
 ] as const;
@@ -83,6 +84,14 @@ describe("the `ramose` exports map", () => {
       const entry = spec === "ramose" ? "." : `.${spec.slice("ramose".length)}`;
       expect(manifest.exports[entry]?.bun).toBeUndefined();
     }
+  });
+
+  test("react is an optional peer over 18 and 19", () => {
+    // `ramose/react` is the only subpath that imports it, so an application
+    // that never renders with Ramose installs nothing extra.
+    expect(manifest.peerDependencies?.react).toBe(">=18.0.0 <20.0.0");
+    expect(manifest.peerDependenciesMeta?.react?.optional).toBe(true);
+    expect(manifest.dependencies?.react).toBeUndefined();
   });
 
   test("platform-bun/node are gone; zod is an optional peer", () => {

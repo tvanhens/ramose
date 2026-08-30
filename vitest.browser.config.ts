@@ -43,11 +43,11 @@ const replicationFrameFixtures = (root: string): Plugin => ({
 
 export default defineConfig({
   optimizeDeps: {
-    include: ["effect/Data", "effect/Result", "effect/Schema"],
+    include: ["effect/Data", "effect/Result", "effect/Schema", "react", "react-dom/client"],
   },
   plugins: [replicationFrameFixtures(import.meta.dirname)],
   test: {
-    include: ["test/browser/**/*.browser.test.ts"],
+    include: ["test/browser/**/*.browser.test.{ts,tsx}"],
     browser: {
       enabled: true,
       headless: true,
