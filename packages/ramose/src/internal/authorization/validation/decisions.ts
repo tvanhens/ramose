@@ -1,7 +1,3 @@
-/**
- * Decision target uniqueness and rule-focus compatibility.
- */
-
 import * as Result from "effect/Result";
 import type { FieldDescriptor } from "../catalog.ts";
 import type { EntityId, OperationId, RuleId, TraitId } from "../identities.ts";

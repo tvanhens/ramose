@@ -45,8 +45,7 @@ describe("replica lifecycle scope selection", () => {
       principal: opaque("p"),
       database: opaque("d"),
     });
-    // Catalog, read view, compatibility, lineage, and the authenticator all
-    // rotate inside one scope and never select another one.
+
     for (
       const rotated of [
         identity({ catalog: opaque("C") }),
@@ -67,7 +66,7 @@ describe("replica lifecycle scope selection", () => {
     const base = replicaScopeKey(replicaScopeOf(identity()));
     expect(base).not.toBe(replicaScopeKey(replicaScopeOf(identity({ principal: opaque("P") }))));
     expect(base).not.toBe(replicaScopeKey(replicaScopeOf(identity({ server: opaque("S") }))));
-    // A scope key and a database key live in separate families.
+
     expect(base).not.toBe(replicaDatabaseKey(replicaDatabaseScopeOf(identity())));
     expect(replicaDatabaseKey(replicaDatabaseScopeOf(identity())))
       .not.toBe(replicaDatabaseKey(replicaDatabaseScopeOf(identity({ database: opaque("D") }))));
@@ -81,18 +80,18 @@ describe("replica lifecycle scope selection", () => {
     expect(partition.startsWith(scopePrefix)).toBe(true);
     expect(partition.startsWith(databasePrefix)).toBe(true);
     expect(databasePrefix.startsWith(scopePrefix)).toBe(true);
-    // Another read view of the same database still matches both prefixes.
+
     const sibling = replicaPartitionKey(identity({ readView: opaque("V") }));
     expect(sibling).not.toBe(partition);
     expect(sibling.startsWith(databasePrefix)).toBe(true);
-    // Another database, principal, or server matches neither.
+
     expect(replicaPartitionKey(identity({ database: opaque("D") })).startsWith(databasePrefix))
       .toBe(false);
     expect(replicaPartitionKey(identity({ principal: opaque("P") })).startsWith(scopePrefix))
       .toBe(false);
     expect(replicaPartitionKey(identity({ server: opaque("S") })).startsWith(scopePrefix))
       .toBe(false);
-    // Prefixes end on the separator, so no identifier can straddle two realms.
+
     expect(scopePrefix.endsWith(":")).toBe(true);
     expect(databasePrefix.endsWith(":")).toBe(true);
   });
@@ -128,7 +127,7 @@ describe("generation fences", () => {
     expect(replicaFenceDecision(undefined, 7)).toBe("adopt");
     expect(replicaFenceDecision(3, 3)).toBe("match");
     expect(replicaFenceDecision(3, 4)).toBe("fenced");
-    // A generation can only ever move forward, but any disagreement fences.
+
     expect(replicaFenceDecision(4, 3)).toBe("fenced");
   });
 
@@ -142,11 +141,10 @@ describe("generation fences", () => {
     expect(lease.generationOf(scope)).toBe(1);
     lease.observe(scope, 1);
     expect(() => lease.observe(scope, 2)).toThrow(ReplicaFencedError);
-    // The two keys are fenced independently: an eviction of one database must
-    // not disturb a sibling session's scope observation.
+
     expect(() => lease.observe(database, 2)).toThrow(ReplicaFencedError);
     lease.observe(database, 1);
-    // Only the lease that performed the bump may adopt the new generation.
+
     lease.adopt(database, 2);
     lease.observe(database, 2);
     expect(lease.generationOf(database)).toBe(2);

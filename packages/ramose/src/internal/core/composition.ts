@@ -1,12 +1,3 @@
-/**
- * Immutable entity/trait composition used at transaction and lookup
- * boundaries. Idents are composer keywords (`:issue`, `:taggable`).
- *
- * Production callers derive this from a validated deployed catalog unit.
- * Database-resident `:ramose/kind` / `:ramose/composes` / `:ramose/trait`
- * are not a source.
- */
-
 export type CompositionTables = {
   readonly entities: Iterable<string>;
   readonly traits: Iterable<string>;
@@ -53,7 +44,6 @@ const freezeTraitMap = (
   return out;
 };
 
-/** Build a frozen type-to-trait lookup. Composer and trait names may omit `:`. */
 export const makeCompositionIndex = (tables: CompositionTables): CompositionIndex => {
   const entities = freezeIdents(tables.entities);
   const traits = freezeIdents(tables.traits);

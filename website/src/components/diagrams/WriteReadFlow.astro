@@ -1,7 +1,5 @@
 ---
-// How a write becomes a read: your app → the Ramose server → the writer →
-// object storage → read copies → every open tab. Inline SVG; strokes follow
-// the text colour, one orange accent. See blueprint §1.5.
+
 interface Props {
   size?: "small" | "large";
 }
@@ -40,17 +38,16 @@ const accent = "var(--rg-green, #ff6500)";
     </defs>
 
     <g fill="none" stroke="currentColor" stroke-width="1.25">
-      <!-- top row: the write path -->
+
       <rect x="5" y="40" width="165" height="64" rx="8" />
       <rect x="222" y="40" width="165" height="64" rx="8" />
       <rect x="440" y="40" width="165" height="64" rx="8" />
-      <!-- bottom row: storage and the read path -->
+
       <rect x="630" y="196" width="160" height="76" rx="8" />
       <rect x="440" y="196" width="165" height="76" rx="8" />
       <rect x="5" y="196" width="165" height="76" rx="8" />
     </g>
 
-    <!-- box labels -->
     <g text-anchor="middle">
       <text x="87.5" y="66" font-weight="600">your app</text>
       <text x="87.5" y="87" font-size="13" opacity="0.8">browser or Worker</text>
@@ -72,19 +69,17 @@ const accent = "var(--rg-green, #ff6500)";
       <text x="87.5" y="243" font-size="13" opacity="0.8">live queries re-run</text>
     </g>
 
-    <!-- arrows: the write path in the accent, the fan-out in the text colour -->
     <g fill="none" stroke-width="1.75">
       <line x1="170" y1="72" x2="220" y2="72" stroke={accent} marker-end="url(#wrf-arrow-accent)" />
       <line x1="387" y1="72" x2="438" y2="72" stroke={accent} marker-end="url(#wrf-arrow-accent)" />
-      <!-- writer → object storage -->
+
       <path d="M 585 104 L 585 150 L 710 150 L 710 194" stroke="currentColor" marker-end="url(#wrf-arrow)" />
-      <!-- writer → read copies -->
+
       <line x1="475" y1="104" x2="475" y2="194" stroke="currentColor" marker-end="url(#wrf-arrow)" />
-      <!-- read copies → every open tab -->
+
       <line x1="440" y1="228" x2="172" y2="228" stroke="currentColor" marker-end="url(#wrf-arrow)" />
     </g>
 
-    <!-- step numbers -->
     <g opacity="0.85">
       <text x="195" y="62" text-anchor="middle">1</text>
       <text x="412" y="62" text-anchor="middle">2</text>
@@ -93,7 +88,6 @@ const accent = "var(--rg-green, #ff6500)";
       <text x="304" y="220" text-anchor="middle">5</text>
     </g>
 
-    <!-- legend -->
     <g font-size="13" opacity="0.85">
       <text x="5" y="300">1 write (HTTPS) · 2 token and rules checked, committed in order · 3 stored; every version kept</text>
       <text x="5" y="320">4 read copies learn the new version · 5 every open tab told in about a second; live queries re-run</text>
@@ -108,12 +102,11 @@ const accent = "var(--rg-green, #ff6500)";
 </figure>
 
 <style>
-  /* Keeps the 13–14px labels legible when the figure scrolls on a phone;
-     the viewBox is 800 wide, so anything narrower shrinks the type. */
+
   .rg-diagram svg {
     min-width: 38rem;
   }
-  /* Wider than the diagram: nothing is cut, so no fade. */
+
   @container (min-width: 38rem) {
     .rg-diagram-fade {
       display: none;

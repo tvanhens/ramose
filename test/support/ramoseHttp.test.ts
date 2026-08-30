@@ -1,8 +1,3 @@
-/**
- * Ops HTTP harness: transient Cloudflare platform errors retry within the
- * `retryTransientMs` budget; application errors propagate immediately; and
- * the workers.dev HTML placeholder never lands verbatim in a test reporter.
- */
 import { describe, expect, test } from "bun:test";
 import {
   HttpError,
@@ -34,7 +29,7 @@ describe("Peer — Cloudflare platform retries", () => {
     });
     expect((await peer.health()).ok).toBe(true);
     expect(n).toBe(3);
-    // first attempt pools; retries evict the suspect socket
+
     expect(connectionHeaders).toEqual([undefined, "close", "close"]);
   });
 
@@ -154,7 +149,7 @@ describe("Peer — Cloudflare platform retries", () => {
       }) as unknown as typeof fetch,
     });
     await expect(peer.health()).rejects.toBeInstanceOf(HttpError);
-    expect(n).toBeGreaterThan(1); // it did retry
+    expect(n).toBeGreaterThan(1);
   });
 
   test("retries replica 503 no root yet then succeeds", async () => {
@@ -278,10 +273,6 @@ describe("Peer — Cloudflare platform retries", () => {
   });
 });
 
-/**
- * M7 on PR #218 called the envelope method then `toBeGreaterThan(0)`.
- * `queryEnvelope` is the HTTP envelope; `q` unwraps the find scalar.
- */
 const FIND_COUNT = `[:find (count ?e) . :where [?e :user/email]]`;
 
 describe("PeerDb EDN query shapes", () => {

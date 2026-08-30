@@ -1,13 +1,3 @@
-/**
- * Graph-handle construction, canonicalization, and interning (#477 slice 2).
- *
- * Everything here is what `.one().db()` does *before* anything is observed, and
- * that is the whole point: construction is inert, so it is ordinary input-value
- * logic and belongs in the pure lane. No storage, no session, no network —
- * `createClient` opens nothing until a query is observed, so a client is a
- * legitimate pure-test subject right up to that line.
- */
-
 import { describe, expect, test } from "bun:test";
 import { Catalog } from "../../src/Catalog.ts";
 import { compileReadAuthorization } from "../../src/internal/authorization/index.ts";
@@ -54,7 +44,6 @@ const Board = Entity("board", {
   slug: Field.unique(string(), "strict"),
 }, { traits: [Graph(BoardCatalog)] });
 
-/** No `Graph` trait: an ordinary entity is not the root of a database. */
 const Member = Entity("member", { handle: Field.unique(string(), "strict") });
 
 const AppSchema = Schema({ organization: Organization, board: Board, member: Member });
@@ -78,33 +67,30 @@ describe("graph handle construction", () => {
   test("is available only on an exactly-one focus carrying the Graph trait", () => {
     const db = root();
     const org = db.query.from(Organization).where({ slug: "acme" });
-    // Not a terminal: a query that can answer with many rows names no database.
+
     expect("db" in org).toBe(false);
     expect(typeof (org.one() as { db?: unknown }).db).toBe("function");
     expect(typeof (org.oneOrFail() as { db?: unknown }).db).toBe("function");
 
-    // The deployed schema decides, statically: an entity with no `Graph` trait
-    // has no `.db()` at all, at either terminal.
     const member = db.query.from(Member).where({ handle: "ada" });
     expect("db" in member.one()).toBe(false);
     expect("db" in member.oneOrFail()).toBe(false);
 
-    // @ts-expect-error — and the type says so too.
+    // @ts-expect-error
     member.one().db;
   });
 
   test("is inert, synchronous, and interned by parent plus canonical query", () => {
     const db = root();
     const path = () => db.query.from(Organization).where({ slug: "acme" }).one().db();
-    // Constructing the same path twice — the render loop's normal case — is one
-    // handle, so a component that builds it on every render retains nothing new.
+
     expect(path()).toBe(path());
-    // Nothing was activated by any of it.
+
     expect(db.sync.getSnapshot().status).toBe("idle");
 
     const other = db.query.from(Organization).where({ slug: "other" }).one().db();
     expect(other).not.toBe(path());
-    // A different entity at the same name is a different path.
+
     expect(db.query.from(Board).where({ slug: "acme" }).one().db()).not.toBe(path());
   });
 
@@ -114,8 +100,7 @@ describe("graph handle construction", () => {
     const board = (parent: ClientDatabase) =>
       parent.query.from(Board).where({ slug: "roadmap" }).one().db();
     expect(board(org())).toBe(board(org()));
-    // The same child query under a different parent is a different path: a
-    // graph identity is chained, never global.
+
     const elsewhere = db.query.from(Organization).where({ slug: "other" }).one().db();
     expect(board(elsewhere)).not.toBe(board(org()));
   });
@@ -123,7 +108,7 @@ describe("graph handle construction", () => {
   test("canonicalizes away everything that does not decide which entity is named", () => {
     const db = root();
     const canonical = db.query.from(Organization).where({ slug: "acme" }).one().db();
-    // Equality filters are order-independent…
+
     expect(
       db.query
         .from(Organization)
@@ -139,13 +124,10 @@ describe("graph handle construction", () => {
         .one()
         .db(),
     );
-    // …and `one()` / `oneOrFail()` name the same path: both mean one entity,
-    // and the resolution outcomes are the frozen ones either way.
+
     expect(db.query.from(Organization).where({ slug: "acme" }).oneOrFail().db())
       .toBe(canonical);
-    // Ordering and paging shape *how* matches are returned, never *which*
-    // entities match — and resolving two matches by taking the first is exactly
-    // the arbitrary selection the frozen semantics forbid.
+
     expect(
       db.query
         .from(Organization)
@@ -162,11 +144,7 @@ describe("graph handle construction", () => {
 
   test("drops a cursor stage smuggled through where(...)", () => {
     const db = root();
-    // `where` takes arbitrary same-focus stages, so the pipeline is a second
-    // way in for a cursor. `oneOrFail` overrides a stray `limit`, but an
-    // `offset` would survive and hand back the *second* of two matches as
-    // though it were the only one — the arbitrary selection the frozen
-    // semantics forbid, and durable once a mutation is queued against it.
+
     const smuggled = db.query
       .from(Organization)
       .where({ slug: "acme" })
@@ -184,15 +162,14 @@ describe("graph handle construction", () => {
     };
     expect(query.offset).toBeUndefined();
     expect(query.order).toBeUndefined();
-    // And the `oneOrFail` limit still stands, so a second match is witnessed.
+
     expect(query.limit).toBe(2);
   });
 });
 
 describe("the canonical resolution query", () => {
   const logic = () =>
-    // The same value `.db()` canonicalizes from: membership and `where`, and
-    // nothing else.
+
     (client().open().query.from(Organization).where({ slug: "acme" }) as never);
 
   test("asks for exactly one entity, its local id, and its canonical name", () => {
@@ -201,15 +178,12 @@ describe("the canonical resolution query", () => {
       readonly find: readonly unknown[];
       readonly limit?: number;
     };
-    // `oneOrFail` lowering forces `limit 2`, which is what witnesses a second
-    // match without pulling a page — an ambiguity has to be *seen* to be
-    // reported rather than silently resolved.
+
     expect(query.limit).toBe(2);
     const text = JSON.stringify(lowered.query);
     expect(text).toContain(":graph/name");
     expect(text).toContain(":organization/slug");
-    // The path segment activation sends is the current `:graph/name`, so the
-    // resolution has to read it rather than reuse the text of the query.
+
     expect(text).not.toContain("acme-renamed");
   });
 
@@ -230,11 +204,6 @@ describe("the canonical resolution query", () => {
 describe("the resolved-database registry", () => {
   const opaque = (character: string): string => character.repeat(43);
 
-  /**
-   * One database handle over a context nothing in these tests activates: the
-   * subject is which handle the registry hands back and what lineage it hands
-   * it, and neither touches storage, credentials, or a session.
-   */
   const context = (
     graphPath: readonly string[],
     graphLineage: () => readonly string[] | undefined,
@@ -281,32 +250,24 @@ describe("the resolved-database registry", () => {
     authenticator: opaque("a"),
   });
 
-  /** Two paths that resolve to one database are two of these. */
   const path = (): object => ({});
 
   test("reuses one database per stable identity and re-authorizes a rename", () => {
     const stable = "parent-database eid-1000";
     const holder = path();
     const first = registry.acquire(stable, ["acme"], holder);
-    // The same stable identity under the same name is the same activation.
+
     expect(registry.acquire(stable, ["acme"], holder)).toBe(first);
-    // Nothing has confirmed a lineage yet, so nothing is pre-selected and the
-    // session falls back on the durable observation table by itself.
+
     expect(lineages).toEqual([undefined]);
 
     confirmations.get(first)!(confirmed([opaque("1")]));
 
-    // Renamed. The path authorization was for a name that no longer exists, so
-    // a new activation opens — carrying the lineage the previous one confirmed,
-    // which is what selects the very same durable replica and resumes it
-    // instead of taking a fresh snapshot.
     const renamed = registry.acquire(stable, ["acme-renamed"], holder);
     expect(renamed).not.toBe(first);
     expect(lineages[1]).toEqual([opaque("1")]);
     expect(renamed.graphPath()).toEqual(["acme-renamed"]);
 
-    // A different Graph entity — a delete/recreate under the same name — is a
-    // different stable identity, so it inherits nothing.
     const recreated = registry.acquire(
       "parent-database eid-1001",
       ["acme-renamed"],
@@ -315,8 +276,6 @@ describe("the resolved-database registry", () => {
     expect(recreated).not.toBe(renamed);
     expect(lineages[2]).toBeUndefined();
 
-    // A lineage that does not describe every segment of the path it is offered
-    // for cannot select a slot for it, and is withheld rather than guessed.
     const deep = path();
     const deeper = registry.acquire("parent-database eid-1002", ["acme", "board"], deep);
     confirmations.get(deeper)!(confirmed([opaque("1")]));
@@ -331,13 +290,11 @@ describe("the resolved-database registry", () => {
         new ClientDatabaseHandle(context(graphPath, graphLineage)),
       () => changes.push(changes.length),
     );
-    // Two queries that select the same Graph entity are two paths and one
-    // activation. One of them turning ambiguous, or losing its ancestor, must
-    // not take the database out from under the other.
+
     const [one, two] = [path(), path()];
     const database = local.acquire("stable", ["acme"], one);
     expect(local.acquire("stable", ["acme"], two)).toBe(database);
-    // Joining an existing database is not a membership change.
+
     expect(changes).toHaveLength(1);
     local.retire("stable", one);
     expect(local.statuses()).toHaveLength(1);
@@ -347,12 +304,9 @@ describe("the resolved-database registry", () => {
     local.retire("stable", one);
     local.retire("stable", two);
     expect(local.statuses()).toHaveLength(0);
-    // The client's aggregate is over the databases it *has*, and a closing
-    // handle publishes only to its own store — so losing one has to drive the
-    // recomputation itself, or `client.sync` would go on reporting a database
-    // that is gone.
+
     expect(changes).toHaveLength(2);
-    // Retiring what is no longer there is not an error, and is not a change.
+
     local.retire("stable", two);
     expect(changes).toHaveLength(2);
     await local.close();
@@ -377,15 +331,9 @@ describe("the resolved-database registry", () => {
     const first = local.acquire("stable", ["acme"], holder);
     confirm.get(first)!(confirmed([opaque("1")]));
 
-    // A rename keeps the database and its memo: the next activation of the same
-    // stable identity resumes onto the replica this one confirmed.
     local.acquire("stable", ["acme-renamed"], holder);
     expect(seen[1]).toEqual([opaque("1")]);
 
-    // Retiring it takes the lineage with it. A memo that outlives what it
-    // describes would be a pre-flight selection lent to whatever later reaches
-    // this key — including, before the partition-scoped key, a recreated Graph
-    // that collided with its predecessor's id.
     local.retire("stable", holder);
     local.acquire("stable", ["acme-renamed"], path());
     expect(seen[2]).toBeUndefined();
@@ -412,28 +360,19 @@ describe("the stable graph identity", () => {
   test("survives a benign read-view rotation of one database", () => {
     const before = replicaDatabaseScopeOf(view("1"));
     const after = replicaDatabaseScopeOf(view("2"));
-    // The premise: these are the same database, so everything scope-shaped
-    // about them is identical — and the sealed handle is bound to exactly that
-    // scope, excluding the catalog, the read view, and the schema.
+
     expect(replicaDatabaseKey(before)).toBe(replicaDatabaseKey(after));
-    // So a redeploy that rotates the read view without changing which entities
-    // exist keeps the key, and with it the child's resume memo and its durable
-    // replica. Keying on a partition-local id — which PR #574 had to, before
-    // replication carried the handle — lost both on every rotation.
+
     expect(graphStableKey(before, handle("g")))
       .toBe(graphStableKey(after, handle("g")));
   });
 
   test("separates a deleted and recreated Graph, and two databases", () => {
     const scope = replicaDatabaseScopeOf(view("1"));
-    // A recreated Graph is a new entity with a new private eid, and sealing is
-    // injective in the eid within one scope — so the successor cannot reach the
-    // predecessor's key, and the registry cannot hand it the predecessor's
-    // activation or its confirmed lineage.
+
     expect(graphStableKey(scope, handle("g")))
       .not.toBe(graphStableKey(scope, handle("h")));
-    // And one entity's handle under another database is another key: the scope
-    // is half the identity, not decoration.
+
     const elsewhere = replicaDatabaseScopeOf({
       ...view("1"),
       database: opaque("e"),
@@ -445,13 +384,11 @@ describe("the stable graph identity", () => {
 
 describe("an ancestor's terminal state", () => {
   test("becomes the path failure a descendant query surfaces", () => {
-    // A revoked ancestor and a replaced principal are one status here, and one
-    // path failure: the authorization the path needed is invalid either way.
+
     expect(terminalPathError("authentication-required")?.reason).toBe("unauthorized");
     expect(terminalPathError("update-required")?.reason).toBe("update-required");
     expect(terminalPathError("closed")?.reason).toBe("closed");
-    // Everything else is a wait, not a verdict: a path whose ancestor is merely
-    // offline or still connecting has not failed, it has not answered yet.
+
     for (const status of ["idle", "connecting", "live", "stale", "offline"] as const) {
       expect(terminalPathError(status)).toBeUndefined();
     }
@@ -467,16 +404,11 @@ describe("the mutation pre-queue gate", () => {
   });
 
   test("refuses a fenced database before its retained identity can address work", () => {
-    // A session that restored a confirmed replica and was then refused keeps
-    // its prior identity while it fences the rows — deliberately, so a
-    // reconnect recognizes the same partition. Reading it here would durably
-    // queue work against a database the credential no longer opens, and a
-    // queued invocation and its receipts survive restarts.
+
     expect(fencedReceiver("authentication-required")?.reason).toBe("unauthorized");
     expect(fencedReceiver("update-required")?.reason).toBe("update-required");
     expect(fencedReceiver("closed")?.reason).toBe("closed");
-    // Everything else is a wait: an unreachable server is not a refusal, and a
-    // restored replica offline has exactly the identity to queue against.
+
     for (const status of ["idle", "connecting", "live", "stale", "offline"] as const) {
       expect(fencedReceiver(status)).toBeUndefined();
     }

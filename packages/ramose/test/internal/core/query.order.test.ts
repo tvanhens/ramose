@@ -27,7 +27,6 @@ beforeAll(async () => {
   db = conn.db();
 });
 
-/** Wraps a Db so per-entity pull reads (`datomsArray`) can be counted. */
 function countingDb(target: Db): { db: Db; reads: () => number } {
   let n = 0;
   const proxy = new Proxy(target, {
@@ -47,7 +46,7 @@ describe("order / limit / offset", () => {
     expect(asc).toEqual(["Bob", "Dave", "Alice", "Carol"]);
     const desc = await query(db, `[:find [?n ...] :where [?e :person/name ?n] [?e :person/age ?a] :order [?a :desc] [?n :desc]]`);
     expect(desc).toEqual(["Carol", "Alice", "Dave", "Bob"]);
-    // a bare variable defaults to :asc
+
     expect(await query(db, `[:find [?n ...] :where [?e :person/name ?n] :order ?n]`)).toEqual(["Alice", "Bob", "Carol", "Dave"]);
   });
 
@@ -125,7 +124,7 @@ describe("order / limit / offset", () => {
     expect(rows).toEqual([["Oslo", 2], ["Berlin", 2]]);
     const byCity = await query(db, `[:find ?c (max ?a) :where [?e :person/city ?c] [?e :person/age ?a] :order [?a :desc] :limit 1]`);
     expect(byCity).toEqual([["Oslo", 35]]);
-    // a var that survives neither the grouping nor the aggregation
+
     await expect(
       query(db, `[:find ?c (count ?e) :where [?e :person/city ?c] [?e :person/age ?a] :order [?a :asc]]`),
     ).rejects.toBeInstanceOf(QueryError);
@@ -233,11 +232,11 @@ describe(":after keyset cursor", () => {
     });
 
   test("keeps only the rows strictly after the cursor position", async () => {
-    // sorted: Bob(25) Dave(25) Alice(30) Carol(35)
+
     expect(await byAgeName({ after: [25, "Bob"] })).toEqual([["Dave"], ["Alice"], ["Carol"]]);
     expect(await byAgeName({ after: [25, "Dave"] })).toEqual([["Alice"], ["Carol"]]);
     expect(await byAgeName({ after: [35, "Carol"] })).toEqual([]);
-    // a cursor before every row keeps them all
+
     expect((await byAgeName({ after: [0, ""] })).length).toBe(4);
   });
 
@@ -246,7 +245,7 @@ describe(":after keyset cursor", () => {
   });
 
   test("a null cursor value sits where :empty put the missing rows", async () => {
-    // Dave has no :person/score; get-else-style or-join binding grounds null.
+
     const q = (after: unknown[]) =>
       query(db, {
         find: ["?n"],
@@ -259,7 +258,7 @@ describe(":after keyset cursor", () => {
         order: [{ var: "?s", dir: "asc", empty: "last" }, { var: "?n", dir: "asc" }],
         after,
       });
-    // sorted: Carol(0.5) Alice(1.5) Bob(2.5) Dave(null last)
+
     expect(await q([2.5, "Bob"])).toEqual([["Dave"]]);
     expect(await q([null, "Dave"])).toEqual([]);
   });

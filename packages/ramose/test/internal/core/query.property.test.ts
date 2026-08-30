@@ -1,8 +1,3 @@
-/**
- * Property test: datalog results ≡ a naive reference evaluator over the raw
- * current-view datom list, on random data, with novelty both un-indexed and
- * merged into trees (small nodes so trees are deep).
- */
 import { describe, expect, test } from "bun:test";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { Index } from "../../../src/internal/core/datom.ts";
@@ -60,15 +55,14 @@ function naive(facts: Fact[], patterns: Pattern[], findVars: string[]): Set<stri
 }
 
 describe("query ≡ naive reference on random data", () => {
-  // Seeded; isolation is ~2s, but a contended suite has timed out at bun's
-  // 5s default (5246ms). Give the property run room.
+
   test("random conjunctive queries, before and after indexing", async () => {
     const r = rng(2024);
     const conn = await Connection.create({ build: { leafSize: 8, fanout: 4 } });
     await conn.transact(SCHEMA);
     const N = 60;
     const eids: number[] = [];
-    // build entities in several txs; some retracts/updates for history
+
     for (let i = 0; i < N; i++) {
       const rep = await conn.transact([{ ":db/id": "x", ":p/name": pick(r, NAMES), ":p/age": randInt(r, 1, 6), ":p/flag": r() < 0.5 }]);
       eids.push(rep.tempids.x);
@@ -93,12 +87,12 @@ describe("query ≡ naive reference on random data", () => {
         const idx = live.indexOf(e);
         if (idx >= 0) live.splice(idx, 1);
       }
-      if (i === 60) await conn.index(); // half in trees, half in novelty
+      if (i === 60) await conn.index();
     }
 
     const runSuite = async (label: string) => {
       const db = conn.db();
-      // Facts = the whole EAVT current view (attributes as ids, like the engine binds them)
+
       const facts: Fact[] = [];
       for (const d of await db.datomsArray(Index.EAVT, {})) facts.push({ e: d.e, a: d.a, v: datomJsValue(d) });
       expect(facts.length).toBeGreaterThan(50);
@@ -122,7 +116,7 @@ describe("query ≡ naive reference on random data", () => {
               case ":p/flag": V = r() < 0.5; break;
               default: V = pick(r, eids);
             }
-            if (A !== attr && typeof V !== "number") V = "?v"; // avoid typed constants with unknown attribute
+            if (A !== attr && typeof V !== "number") V = "?v";
           }
           patterns.push([E, A, V]);
         }
@@ -130,7 +124,7 @@ describe("query ≡ naive reference on random data", () => {
         for (const p of patterns) for (const t of p) if (typeof t === "string" && t.startsWith("?")) used.add(t);
         if (used.size === 0) continue;
         const findVars = [...used].slice(0, randInt(r, 1, used.size));
-        // attribute variables bind ids in the engine; convert facts to compare
+
         const expected = naive(
           facts,
           patterns.map((p) => [p[0], typeof p[1] === "string" && p[1].startsWith(":") ? db.attr(p[1])!.id : p[1], p[2]] as Pattern),
@@ -147,7 +141,7 @@ describe("query ≡ naive reference on random data", () => {
     await runSuite("half-indexed");
     await conn.index();
     await runSuite("fully-indexed");
-    // as-of at an old basis equals naive over the old snapshot: spot check via count of names
+
     const old = conn.db().asOf(30);
     const n = await query(old, `[:find (count ?e) . :where [?e :p/name]]`);
     expect(n).toBeLessThan(N);

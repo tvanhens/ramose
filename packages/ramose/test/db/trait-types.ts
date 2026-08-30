@@ -1,15 +1,4 @@
-/**
- * Compile-time pin: trait field flattening, create-shape required keys,
- * and flattened-name collisions (issue #316).
- *
- * `bun run typecheck` compiles this file. A mismatch turns `Expect<Equal<…>>`
- * into a type error, or leaves a `@ts-expect-error` unused.
- */
-
 // @effect-diagnostics floatingEffect:off
-// Bare calls below are the fixtures: their *types* are under test (often
-// paired with `@ts-expect-error`), so they are deliberately neither yielded
-// nor assigned. This file is compiled by `bun run typecheck`, never run.
 
 import type {
   CatalogIdent,
@@ -60,7 +49,7 @@ export type _traitRefTarget = Expect<
 declare const traitRefTx: Tx<typeof TraitRefs>;
 declare const plain: Eid<typeof Plain>;
 traitRefTx.put(Link, { target: issue });
-// @ts-expect-error a known non-composer cannot be written to Ref(Taggable)
+// @ts-expect-error
 traitRefTx.put(Link, { target: plain });
 
 export type _tagIdent = Expect<
@@ -91,13 +80,13 @@ tx.put(Note, { title: "n" });
 tx.put(Note, { title: "n", note: "aside", tags: ["a"] });
 tx.set(issue, Issue.tag, "urgent");
 tx.set(issue, ":taggable/tag", "urgent");
-// @ts-expect-error reconstructed composer ident is not a catalog ident
+// @ts-expect-error
 tx.set(issue, ":issue/tag", "urgent");
 
 {
-  // @ts-expect-error create form requires the required trait field
+  // @ts-expect-error
   tx.put(Issue, { title: "Fix login" });
-  // @ts-expect-error tag is string, not number
+  // @ts-expect-error
   tx.put(Issue, { title: "Fix login", tag: 1 });
 }
 
@@ -128,10 +117,10 @@ export type _transitiveTraitRefTarget = Expect<
 >;
 
 const OtherTag = Trait("labeled", { tag: string() });
-// @ts-expect-error conflicting flattened field names
+// @ts-expect-error
 Entity("clash", { title: string() }, { traits: [Taggable, OtherTag] });
 
-// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
+// @ts-expect-error
 Trait("post", { traits: string() });
 const DocFieldTrait = Trait("postDoc", { doc: string() }, { doc: "Trait docs." });
 DocFieldTrait.doc.ident;

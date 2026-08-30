@@ -1,11 +1,3 @@
-/**
- * Explicit non-production Worker assembly for Ramose's real Alchemy tests.
- *
- * The default `ramose/worker` entry never imports this module, the admin
- * router, or the mutable checkpoint implementation.  Even this entry remains
- * inert unless its non-production flag and private test capability agree.
- */
-
 import {
   handleIsolateTestAdmin,
   resetTestHooks,
@@ -70,7 +62,6 @@ const durableObjectTesting: ReplicaTesting & TransactorTesting = Object.freeze({
   handleAdmin: handleIsolateTestAdmin,
 });
 
-/** Build a local-test Worker with real storage/DO forwarding and checkpoints. */
 export const createServer = (options: ServerOptions = {}) => ({
   async fetch(
     request: Request,
@@ -114,7 +105,6 @@ export const createServer = (options: ServerOptions = {}) => ({
   },
 });
 
-/** Build the local-test Transactor class from the same opaque registry. */
 export const createTransactorDO = (operationCatalogs: OperationCatalogs) =>
   createTestingTransactorDO(
     durableObjectTesting,
@@ -122,7 +112,6 @@ export const createTransactorDO = (operationCatalogs: OperationCatalogs) =>
     deployedDatabaseCatalogBindings(operationCatalogs),
   );
 
-/** Empty-catalog test classes used by the general real-stack suites. */
 export const TransactorDO = createTestingTransactorDO(durableObjectTesting);
 export const QueryReplicaDO = createTestingQueryReplicaDO(durableObjectTesting);
 

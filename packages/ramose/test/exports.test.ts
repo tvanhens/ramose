@@ -1,12 +1,3 @@
-/**
- * The published `exports` map, exactly.
- *
- * Wildcard subpaths used to make every file under `src/` a semver-bound
- * entry (`ramose/internal/core`, `ramose/db/internal`, `ramose/query`).
- * The map is now enumerated: a consumer cannot resolve internals or the
- * cut leftover entries. Public barrels still resolve.
- */
-
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -67,9 +58,7 @@ describe("the `ramose` exports map", () => {
       try {
         resolve(spec);
         failed.push(spec);
-      } catch {
-        // expected — package exports do not list these
-      }
+      } catch {}
     }
     expect(failed).toEqual([]);
   });
@@ -87,8 +76,7 @@ describe("the `ramose` exports map", () => {
   });
 
   test("react is an optional peer over 18 and 19", () => {
-    // `ramose/react` is the only subpath that imports it, so an application
-    // that never renders with Ramose installs nothing extra.
+
     expect(manifest.peerDependencies?.react).toBe(">=18.0.0 <20.0.0");
     expect(manifest.peerDependenciesMeta?.react?.optional).toBe(true);
     expect(manifest.dependencies?.react).toBeUndefined();

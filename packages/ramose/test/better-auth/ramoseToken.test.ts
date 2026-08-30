@@ -1,5 +1,3 @@
-/** Pure Better Auth plugin validation and deterministic role mapping. */
-
 import { describe, expect, test } from "bun:test";
 import type { AuthConfig } from "../../src/index.ts";
 import { classOfRole, ramoseToken } from "../../src/better-auth/index.ts";

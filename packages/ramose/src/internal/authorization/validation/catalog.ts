@@ -1,16 +1,3 @@
-/**
- * Prepared catalog lookup view and catalog-dependent invariants.
- *
- * {@link CatalogDescriptor} is structurally decoded by its schema first.
- * This module indexes one descriptor, recomputes trait closure from direct
- * composition, rejects composition cycles, and compares declared
- * `traitComposition.transitive` to that closure. Every direct entity/trait
- * edge must have a compiled composition row. Operation owners must exist.
- * Every field owner and typed ref target must exist.
- * The result is consumed by semantic validation; binding can adopt the same
- * view later without changing this kernel.
- */
-
 import * as Result from "effect/Result";
 import type {
   CatalogDescriptor,

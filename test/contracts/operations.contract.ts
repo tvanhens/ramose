@@ -1,9 +1,3 @@
-/**
- * Public `/op` and minimal `/health` against a real peer.
- *
- * `/db/:name/op` is fail-closed with the rest of the data plane.
- */
-
 import { describe, expect, test } from "bun:test";
 import { json, post, uniqueDb, type LocalUrls } from "../local/fixtures.ts";
 import { OPERATION_IDS } from "../local/ops.ts";

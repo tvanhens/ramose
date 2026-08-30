@@ -46,7 +46,7 @@ describe("datalog basics", () => {
   test("JS form with inputs and predicates", async () => {
     const res = await query(db, { find: ["?n", "?a"], in: ["$", "?min"], where: [["?e", ":person/age", "?a"], [[">", "?a", "?min"]], ["?e", ":person/name", "?n"]] }, [db, 26]);
     expect(sortRows(res)).toEqual(sortRows([["Alice", 30], ["Carol", 35]]));
-    // db can be implied
+
     const res2 = await query(db, `[:find ?n :in $ ?min :where [?e :person/age ?a] [(> ?a ?min)] [?e :person/name ?n]]`, [26]);
     expect(sortRows(res2)).toEqual(sortRows([["Alice"], ["Carol"]]));
   });
@@ -54,16 +54,16 @@ describe("datalog basics", () => {
   test("join through refs (VAET/AVET/EAVT paths)", async () => {
     const res = await query(db, `[:find ?n ?fn :where [?e :person/friends ?f] [?e :person/name ?n] [?f :person/name ?fn]]`);
     expect(sortRows(res)).toEqual(sortRows([["Bob", "Alice"], ["Carol", "Alice"], ["Carol", "Bob"], ["Dave", "Carol"]]));
-    // reverse direction: who has Alice as boss? (v bound, a bound → VAET)
+
     const res2 = await query(db, `[:find ?n :in $ ?boss :where [?e :person/boss ?boss] [?e :person/name ?n]]`, [ids.alice]);
     expect(sortRows(res2)).toEqual(sortRows([["Bob"], ["Carol"]]));
-    // lookup ref / ident constants in entity position
+
     const res3 = await query(db, `[:find ?a . :where [[:person/email "bob@x"] :person/age ?a]]`);
     expect(res3).toBe(25);
-    // constant value with indexed attribute (AVET seek)
+
     const res4 = await query(db, `[:find ?e . :where [?e :person/name "Carol"]]`);
     expect(res4).toBe(ids.carol);
-    // constant value on unindexed attribute (AEVT + filter)
+
     const res5 = await query(db, `[:find [?n ...] :where [?e :person/age 25] [?e :person/name ?n]]`);
     expect(res5.sort()).toEqual(["Bob", "Dave"]);
   });
@@ -79,11 +79,11 @@ describe("datalog basics", () => {
 
   test("aggregates and :with", async () => {
     expect(await query(db, `[:find (count ?e) . :where [?e :person/name]]`)).toBe(4);
-    // Datomic semantics: aggregates run over the *set* of find tuples, so duplicate ages collapse…
+
     expect(await query(db, `[:find (sum ?a) . :where [?e :person/age ?a]]`)).toBe(90);
-    // …unless :with keeps the entity in the tuple
+
     expect(await query(db, `[:find (sum ?a) . :with ?e :where [?e :person/age ?a]]`)).toBe(115);
-    expect(await query(db, `[:find (sum ?a) . :where [_ :person/age ?a]]`)).toBe(90); // set semantics without :with
+    expect(await query(db, `[:find (sum ?a) . :where [_ :person/age ?a]]`)).toBe(90);
     const byCity = await query(db, `[:find ?c (count ?e) (max ?a) :where [?e :person/city ?c] [?e :person/age ?a]]`);
     expect(sortRows(byCity)).toEqual(sortRows([["Berlin", 2, 30], ["Oslo", 1, 35]]));
     expect(await query(db, `[:find (avg ?a) . :with ?e :where [?e :person/age ?a]]`)).toBeCloseTo(28.75);
@@ -93,7 +93,7 @@ describe("datalog basics", () => {
   });
 
   test(":having keeps groups whose cells match", async () => {
-    // Berlin 2, Oslo 1; Dave has no city — no group. n > 1 keeps Berlin.
+
     const byCity = await query(
       db,
       `[:find ?c (as (count ?e) ?n) :with ?e :where [?e :person/city ?c] :having [(> ?n 1)]]`,
@@ -106,7 +106,7 @@ describe("datalog basics", () => {
       having: [[[">", "?n", 1]]],
     });
     expect(sortRows(js)).toEqual(sortRows([["Berlin", 2]]));
-    // a group key is a cell too
+
     const berlin = await query(
       db,
       `[:find ?c (as (count ?e) ?n) :with ?e :where [?e :person/city ?c] :having [(= ?c "Oslo")]]`,
@@ -146,7 +146,7 @@ describe("datalog basics", () => {
   });
 
   test(":having names an aggregate with (as …) when the summarized var is also a cell", async () => {
-    // group by entity id: ?e is the key; count also summarizes ?e
+
     const named = parseQuery({
       find: ["?e", ["as", ["count", "?e"], "?n"]],
       with: ["?e"],
@@ -172,12 +172,12 @@ describe("datalog basics", () => {
     expect(sortRows(rel)).toEqual(sortRows([[1, 2], [3, 4]]));
     const str = await query(db, `[:find ?s . :where [?e :person/name "Bob"] [?e :person/age ?a] [(str "Bob is " ?a) ?s]]`);
     expect(str).toBe("Bob is 25");
-    // get-else and missing?
+
     const ge = await query(db, `[:find ?n ?s :where [?e :person/name ?n] [(get-else $ ?e :person/score -1) ?s]]`);
     expect(ge.find((r: any) => r[0] === "Dave")[1]).toBe(-1);
     const missing = await query(db, `[:find [?n ...] :where [?e :person/name ?n] [(missing? $ ?e :person/score)]]`);
     expect(missing).toEqual(["Dave"]);
-    // custom function
+
     const custom = await query(db, `[:find [?n ...] :where [?e :person/name ?n] [(shout ?n) ?u] [(= ?u "BOB")]]`, [], { functions: { shout: (s: string) => s.toUpperCase() } });
     expect(custom).toEqual(["Bob"]);
   });
@@ -217,8 +217,8 @@ describe("datalog basics", () => {
     ]);
     const txq = await query(db, `[:find ?inst . :where [?e :person/name "Alice" ?tx] [?tx :db/txInstant ?inst]]`);
     expect((txq as Date).getTime()).toBe(1_700_000_000_000);
-    // history: age change appears as retract + assert
-    const c2 = conn; // same conn; add a tx
+
+    const c2 = conn;
     await c2.transact([[":db/add", ids.bob, ":person/age", 26]]);
     const hist = await query(c2.db().history(), `[:find ?a ?op :in $ ?e :where [?e :person/age ?a _ ?op]]`, [ids.bob]);
     expect(sortRows(hist)).toEqual(sortRows([[25, true], [25, false], [26, true]]));
@@ -234,9 +234,7 @@ describe("datalog basics", () => {
   });
 
   test("fn lookup rejects Object.prototype names as unknown function", async () => {
-    // Wire path a subscription's lowered query executes on — not Q.call.
-    // Before the own-property guard, constructor/toString ran; hasOwnProperty
-    // and __proto__ threw raw TypeErrors (500-class), not QueryError.
+
     for (const name of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
       const err = await query(db, `[:find ?x :where [(${name} "T") ?x]]`).then(
         () => {

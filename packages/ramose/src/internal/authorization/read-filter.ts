@@ -1,13 +1,3 @@
-/**
- * Compile a sealed catalog unit into the trusted {@link DatomPredicate}
- * used by {@link import("../core/db.ts").Db.filter}.
- *
- * Candidate canonical type is classified from the predicate's requested
- * immutable `db` (current, asOf, history, or bounded history). Current
- * grants and rule path lookups stay on the closed-over `currentDb`.
- * No Effect or Context per datom.
- */
-
 import * as Result from "effect/Result";
 import type { FieldDescriptor } from "./catalog.ts";
 import type { InstalledCatalogUnitV2 } from "./catalog-unit.ts";
@@ -47,7 +37,6 @@ import type { Db, DatomPredicate } from "../core/db.ts";
 import { toWireDatom, type WireDatom } from "../core/log.ts";
 import { RAMOSE_TYPE } from "../core/schema.ts";
 
-/** Private observations used to bind a durable replay to its policy read-set. */
 export type ReadAuthorizationObservation =
   | {
     readonly _tag: "type";
@@ -71,7 +60,6 @@ export type CompileReadFilterInput = {
   readonly unit: InstalledCatalogUnitV2;
   readonly principal: AuthorizationPrincipal;
   readonly currentDb: Db;
-  /** Internal-only read-set recorder. It never changes the policy decision. */
   readonly observe?: (observation: ReadAuthorizationObservation) => void;
 };
 
@@ -187,11 +175,6 @@ const inTruth = (value: Projected, collection: Projected): Truth => {
 
 const authorized = (truth: Truth): boolean => truth._tag === "True";
 
-/**
- * One protected canonical type name from type datoms of a single requested
- * view. Assert + later retract of the same value is one type. Zero,
- * malformed, or distinct values fail closed.
- */
 export const uniqueCanonicalTypeName = (
   typeDatoms: readonly Datom[],
 ): string | undefined => {
@@ -462,8 +445,6 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
   ): Promise<boolean> => {
     for (const id of decision.deny) {
       const expr = rules.get(id);
-      // Missing or incomplete deny is fail-closed: we cannot prove the
-      // deny does not apply, so the datom stays hidden.
       if (expr === undefined) return false;
       if ((await evalExpr(expr, resourceEid, resourceEntity))._tag !== "False") return false;
     }

@@ -67,12 +67,6 @@ const invoke = async (
   }),
 });
 
-/**
- * Operation-scoped versions (#487) as a *different* deployment computes them.
- * The real lowering pipeline runs here against an artifact hash that is not
- * the deployed Worker's, so any value accepted below is proof that the
- * compatibility digest carries no deployment identity.
- */
 const otherDeploymentVersions = async (): Promise<Map<string, string>> => {
   const lowered = await Effect.runPromise(lowerOwnedOperations(
     CatalogId.make("local-native-operations"),
@@ -85,11 +79,6 @@ const otherDeploymentVersions = async (): Promise<Map<string, string>> => {
   ]));
 };
 
-/**
- * The same `nativeItem/create` contract under an author-declared revision
- * bump — exactly what a semantics-changing redeploy of that one operation
- * produces. At revision 1 it must reproduce the deployed version.
- */
 const createVersionAtRevision = async (revision: number): Promise<string> => {
   const Replica = Entity("nativeItem", { title: string() }, {
     operations: (Operation) => ({
@@ -112,11 +101,6 @@ const createVersionAtRevision = async (revision: number): Promise<string> => {
   return lowered.descriptors[0]!.version as string;
 };
 
-/**
- * The same `nativeItem/create` contract as a *targeted* operation — the shape
- * change that used to make a pinned queued invocation look like an
- * authorization denial rather than a changed operation.
- */
 const targetedCreateVersion = async (): Promise<string> => {
   const Replica = Entity("nativeItem", { title: string() }, {
     operations: (Operation) => ({
@@ -137,7 +121,6 @@ const targetedCreateVersion = async (): Promise<string> => {
   return lowered.descriptors[0]!.version as string;
 };
 
-/** The same `/op` boundary, for bodies this contract shapes itself. */
 const invokeWith = async (
   base: string,
   database: string,
@@ -150,26 +133,14 @@ const invokeWith = async (
   body: JSON.stringify({ ...operationProof, ...body }),
 });
 
-/**
- * A syntactically valid sealed envelope this server cannot read.
- *
- * The preamble is what decides quarantine — byte 0 is the codec version and
- * bytes 1..17 are the key id in *every* envelope version — so a handle can be
- * built here without any key material at all, which is exactly the property
- * that makes the quarantine data-free.
- */
 const unreadableEntityId = (
   kind: "codec-version" | "key-epoch",
-  /**
-   * A future codec's envelope need not be v1's 41 bytes. It must only carry
-   * the frozen `version || keyId` preamble, so this is how a build that cannot
-   * read it still has to quarantine rather than deny (#475 WR-17b).
-   */
+
   bytes = 41,
 ): string => {
   const envelope = new Uint8Array(bytes);
   envelope[0] = kind === "codec-version" ? 2 : 1;
-  // A key id no server ever minted, so the epoch cannot match.
+
   for (let index = 1; index < 17; index++) envelope[index] = 0xa5;
   return base64Url(envelope);
 };
@@ -232,7 +203,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { title: "Created" });
       expect(created.status).toBe(200);
-      // The opaque server-issued handle, never the private eid (#475).
+
       expect(isEntityId(created.body.result.id)).toBe(true);
       const createdEid = await openEntityHandle(
         base,
@@ -248,8 +219,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(Object.hasOwn(created.body, "t")).toBe(false);
       expect(created.res.headers.get("x-ramose-basis-t")).toBeNull();
 
-      // Test-only instrumentation may observe the internal basis to fence the
-      // real Replica read; the public operation response above may not.
       const basis = await testAdmin(base, database, "/basis", { action: "fetch" }, {
         "x-ramose-cache-basis": "0",
       });
@@ -428,8 +397,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         receipt: { version: 2, invocationId, status: "completed" },
       });
 
-      // Prove replay remains exact after a later unrelated writer position and
-      // a new isolate, while the original target remains absent.
       const unrelated = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "create",
@@ -605,8 +572,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         undefined,
         invocationId,
       );
-      // Byte-identical, including the sealed handle: an ordinary token
-      // refresh changes `iat`/`exp`, which the scope deliberately excludes.
+
       expect(replayed.body).toEqual(completed.body);
       const committed = await testAdmin(base, database, "/query", {
         query: '[:find ?e :where [?e :nativeItem/title "Scoped result"]]',
@@ -784,9 +750,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         await waitForCheckpoint(base, database, "transactor", "transactor.commit");
         const untilExpiry = exp * 1_000 - Date.now() + 25;
         if (untilExpiry > 0) await Bun.sleep(untilExpiry);
-        // Releasing lets the expiry fence abort this DO. The admin request may
-        // therefore observe that same abort (500) even though it released the
-        // real checkpoint, so the operation result is the authoritative check.
+
         await testAdmin(base, database, "/checkpoint", {
           scope: "transactor",
           action: "release",
@@ -820,8 +784,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       const base = ctx.urls().nativeOperationsUrl;
       const database = "operations-response-expiry";
       await install(base, database);
-      // Initialize the real Replica before arming module-isolate checkpoint
-      // state. DO constructors intentionally reset stale test hooks.
+
       const warmed = await testAdmin(base, database, "/query", {
         query: "[:find ?e :where [?e :nativeItem/title ?title]]",
       });
@@ -832,8 +795,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         scope: "worker",
         action: "arm-wait",
         name: "operation.response",
-        // The delay starts only once the real Worker boundary is reached, so
-        // this releases the same isolate-local arm after the JWT is exact-expired.
+
         releaseAfterMs: exp * 1_000 - Date.now() + 25,
       });
       expect(armed.status).toBe(200);
@@ -845,9 +807,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       }, { title });
       await waitForCheckpoint(base, database, "worker", "operation.response");
 
-      // Reaching the Worker checkpoint means the real Transactor returned its
-      // acknowledgement. Fence a real Replica read to that committed basis
-      // while the public operation response remains parked.
       const basis = await testAdmin(base, database, "/basis", { action: "fetch" }, {
         "x-ramose-cache-basis": "0",
       });
@@ -1066,8 +1025,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         query: "[:find ?e :where [?e :nativeItem/title ?title]]",
       });
       expect(beforeRefCodec.status).toBe(200);
-      // An entity-reference *input* position still takes the private eid: only
-      // the invocation target and client-visible output are opaque today.
+
       const firstUniqueEid = await openEntityHandle(
         base,
         database,
@@ -1177,8 +1135,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       const versions = await otherDeploymentVersions();
       const createVersion = versions.get("nativeItem/create")!;
       expect(createVersion).toMatch(/^[0-9a-f]{64}$/);
-      // The replica proves the value is a pure function of the operation's own
-      // public contract, independent of the rest of the catalog.
+
       expect(await createVersionAtRevision(1)).toBe(createVersion);
 
       const operation = {
@@ -1203,8 +1160,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         status: "completed",
       });
 
-      // A new isolate plus the other deployment's version must still replay
-      // the original receipt rather than conflict or re-execute.
       const aborted = await testAdmin(base, database, "/abort", {
         target: "transactor",
       });
@@ -1241,8 +1196,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       };
 
-      // A revision bump and another operation's version are both "not this
-      // operation any more"; neither may execute or leave a receipt.
       for (const stale of [bumped, versions.get("nativeItem/rename")!]) {
         const refused = await invoke(
           base,
@@ -1272,8 +1225,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(malformed.status).toBe(400);
 
-      // Unauthorized callers keep the ordinary sealed denial: a stale version
-      // never reveals that the operation exists.
       const reader = await signToken(database, "reader", "user_version_reader");
       const denied = await invoke(
         base,
@@ -1306,10 +1257,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       };
 
-      // The queued request carries the old targeted shape: a target the
-      // deployed targetless operation would refuse outright. Compatibility is
-      // decided before that current-shape check, so an authorized caller
-      // learns the operation moved instead of seeing a 403.
       const refused = await invoke(
         base,
         database,
@@ -1354,8 +1301,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(completed.status).toBe(200);
 
-      // Retrying the same invocation while pinning a version the caller never
-      // consented to must not hand back a result minted under another one.
       const pinned = await invoke(
         base,
         database,
@@ -1372,7 +1317,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         code: "operation_changed",
       });
 
-      // The receipt is untouched: the ordinary retry still replays exactly.
       const replayed = await invoke(
         base,
         database,
@@ -1420,14 +1364,12 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           { clientRef: ref, entityId: expect.any(String) },
         ]);
         const entityId = created.body.mappings[0].entityId as string;
-        // A sealed handle, never a numeric eid, and never the slot name.
+
         expect(isEntityId(entityId)).toBe(true);
         expect(JSON.stringify(created.body.mappings)).not.toContain("item");
-        // One entity is one handle: the mapping and the sealed output position
-        // that named the same allocated entity are byte-identical (#475).
+
         expect(created.body.result.id).toBe(entityId);
-        // And the frozen rule itself, checked against the private eid the real
-        // resolver hands back: no numeric eid crosses the operation boundary.
+
         const allocatedEid = await openEntityHandle(
           base,
           database,
@@ -1437,8 +1379,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(JSON.stringify(created.body)).not.toContain(String(allocatedEid));
 
         const receiptsBefore = await operationReceiptCount(base, database);
-        // The lost-acknowledgement retry: #487's exact replay, extended with
-        // the same mappings and no second commit.
+
         const replayed = await invokeWith(base, database, token, body);
         expect(replayed.status).toBe(200);
         expect(replayed.body).toEqual(created.body);
@@ -1448,9 +1389,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect(rows.body.result.length).toBe(1);
 
-        // Reusing the id while promising the slot to a *different* durable
-        // client identity is the ordinary invocation conflict, not a silent
-        // rebinding of a client ref to a different entity.
         const rebound = await invokeWith(base, database, token, {
           ...body,
           allocations: [{ slot: "item", clientRef: clientRef() }],
@@ -1486,9 +1424,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(renamed.status).toBe(200);
         expect(renamed.body.result.title).toBe("Renamed through a sealed handle");
 
-        // Resolution grants nothing. Once the entity is gone, the same handle
-        // still opens deterministically and ordinary target visibility refuses
-        // exactly as it would for the numeric eid.
         const deleted = await invokeWith(base, database, token, {
           invocationId: "sealed-target-delete-01",
           operation: {
@@ -1507,10 +1442,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect(afterDelete.status).toBe(403);
 
-        // Malformed, tampered, and foreign handles are all the same sealed
-        // denial — a truncated or non-canonical handle must be
-        // indistinguishable from a wrong-scope or unauthorized one, so none of
-        // them may come back as a shape complaint.
         const tampered = `${entityId.slice(0, 30)}${entityId[30] === "A" ? "B" : "A"}${entityId.slice(31)}`;
         for (const [label, target] of [
           ["tampered", tampered],
@@ -1532,9 +1463,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         const base = ctx.urls().nativeOperationsUrl;
         const database = "operations-sealed-hidden";
         await install(base, database);
-        // `nativeOther` is readable by `reader` only, while both operations
-        // below are invocable by `member`: the member mints a handle it can
-        // never target, so resolution succeeding is not visibility.
+
         const token = await signToken(database, "member", "user_sealed_hidden");
         const created = await invokeWith(base, database, token, {
           invocationId: "sealed-hidden-create-01",
@@ -1583,7 +1512,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
             code: "invocation_update_required",
           });
         }
-        // Data-free and effect-free: nothing was claimed, nothing executed.
+
         expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
       });
 
@@ -1593,12 +1522,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         await install(base, database);
         const token = await signToken(database, "member", "user_sealed_cold");
 
-        // The Worker derives the scope from its cached root and the writer
-        // seals from its own; the two caches are independent. Discarding the
-        // Worker's forces a fresh derivation against the same durable root,
-        // which is the seam the epoch rule exists to keep coherent — if the
-        // carried key id and the writer's disagreed, this would quarantine
-        // rather than commit.
         const forget = await testAdmin(base, database, "/server-identity", {
           action: "forget-isolate-cache",
         });
@@ -1614,9 +1537,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         const entityId = created.body.mappings[0].entityId as string;
         expect(isEntityId(entityId)).toBe(true);
 
-        // Cold again, then use the handle the previous (equally cold)
-        // derivation produced: it resolves under the scope this fresh
-        // derivation computes, which is the whole point of binding the two.
         await testAdmin(base, database, "/server-identity", {
           action: "forget-isolate-cache",
         });
@@ -1628,9 +1548,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect(renamed.status).toBe(200);
 
-        // And the exact replay across another cold derivation is byte-identical:
-        // sealing is deterministic in (root, scope, eid), so a restarted isolate
-        // reproduces the same handle rather than minting a second identity.
         await testAdmin(base, database, "/server-identity", {
           action: "forget-isolate-cache",
         });
@@ -1659,10 +1576,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect(created.status).toBe(200);
 
-        // `misallocating` returns `op.self` at its declared slot path. The
-        // entity is real and visible, and the path is a genuine ref position —
-        // it simply is not one this transaction allocated, so the client would
-        // otherwise bind a fresh, immutable ClientRef to a pre-existing row.
         const refused = await invokeWith(base, database, token, {
           invocationId: "allocation-misbound-01",
           operation: {
@@ -1675,7 +1588,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect(refused.status).toBe(409);
         expect(refused.body.tag).toBe("OperationRejected");
-        // Refused before the commit: the write the body attempted is absent.
+
         const rows = await testAdmin(base, database, "/query", {
           query: '[:find ?e :where [?e :nativeItem/title "Should never land"]]',
         });
@@ -1702,10 +1615,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         const entityId = created.body.mappings[0].entityId as string;
         expect(isEntityId(entityId)).toBe(true);
 
-        // The dependent invocation: no target at all, the entity named only by
-        // its sealed handle at the declared `item` ref position — and the same
-        // handle repeated at `note`, which the deployed input shape declares a
-        // plain string.
         const body = {
           invocationId: "sealed-input-retitle-01",
           operation: retitleByRef,
@@ -1717,17 +1626,13 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         };
         const retitled = await invokeWith(base, database, token, body);
         expect(retitled.status).toBe(200);
-        // An undeclared position is data: the handle was never opened, so it
-        // comes back exactly as it was submitted. And the entity that *was*
-        // opened, returned at a declared output reference position, is sealed
-        // back to the identical bytes — one epoch, both directions.
+
         expect(retitled.body.result).toEqual({
           item: entityId,
           title: "Retitled through an input handle",
           note: entityId,
         });
 
-        // It committed against the entity the handle named, and only it.
         const rows = await testAdmin(base, database, "/query", {
           query:
             '[:find ?e :where [?e :nativeItem/title "Retitled through an input handle"]]',
@@ -1738,7 +1643,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect(stale.body.result).toEqual([]);
 
-        // A second entity, so the conflict below names a different one.
         const other = await invokeWith(base, database, token, {
           invocationId: "sealed-input-create-02",
           operation: createItem,
@@ -1747,19 +1651,12 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect(other.status).toBe(200);
 
-        // The lost-acknowledgement retry. The canonical digest covers the
-        // *resolved* eid, and resolution is deterministic, so the identical
-        // sealed input reproduces the digest and consumes #487's exact replay
-        // rather than committing again.
         const receiptsBefore = await operationReceiptCount(base, database);
         const replayed = await invokeWith(base, database, token, body);
         expect(replayed.status).toBe(200);
         expect(replayed.body).toEqual(retitled.body);
         expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
 
-        // Reusing the id with a different entity at the same input position is
-        // a different invocation, and the conflict proves the input ref really
-        // is inside the digest.
         const rebound = await invokeWith(base, database, token, {
           ...body,
           input: { ...body.input, item: other.body.mappings[0].entityId },
@@ -1793,13 +1690,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(created.status).toBe(200);
         const entityId = created.body.mappings[0].entityId as string;
 
-        // The entity this input names is deleted by the very commit that
-        // consumed it, so the replay has nothing left to resolve. It survives
-        // only through the durable fence's consumed-ref exemption, which is
-        // matched against the *decoded* input — and that is exactly why the
-        // handle is opened before the digest rather than after: an opened
-        // handle has to participate as the numeric eid it resolved to, or a
-        // lost acknowledgement would turn into a permanent refusal.
         const body = {
           invocationId: "sealed-input-consumed-01",
           operation: {
@@ -1838,14 +1728,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         const entityId = created.body.mappings[0].entityId as string;
         const receiptsBefore = await operationReceiptCount(base, database);
 
-        // An unreadable codec version or a replaced key epoch is the typed,
-        // data-free quarantine — decided from the envelope preamble, exactly as
-        // it is for a target.
-        // The last case is the one that makes the taxonomy identical rather
-        // than merely similar: a future codec whose envelope is *shorter* than
-        // v1's. The edge decides whether to derive a scope at all before it can
-        // see the deployed input shape, so a v1-length floor there would answer
-        // this with a denial and strand a durable queue after a rollback.
         for (
           const [kind, handle] of [
             ["codec-version", unreadableEntityId("codec-version")],
@@ -1867,7 +1749,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
             error: "request rejected",
             code: "invocation_update_required",
           });
-          // The identical token at the target position answers identically.
+
           const asTarget = await invokeWith(base, database, token, {
             invocationId: `sealed-input-tax-target-${kind}`,
             operation: renameItem,
@@ -1877,9 +1759,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           expect([kind, asTarget.body]).toEqual([kind, quarantined.body]);
         }
 
-        // Everything else collapses into the ordinary sealed denial. A string
-        // no codec could have minted is that same denial, not a shape
-        // complaint and not a quarantine.
         const tampered =
           `${entityId.slice(0, 30)}${entityId[30] === "A" ? "B" : "A"}${entityId.slice(31)}`;
         for (const [label, handle] of [
@@ -1897,10 +1776,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           expect([label, forged.status]).toEqual([label, 403]);
         }
 
-        // Resolution grants nothing, and the ordinary entity-type check reruns
-        // against the resolved eid: a `nativeItem` handle at a position
-        // declared `Ref(nativeOther)` is refused exactly as the numeric eid
-        // would be.
         const mistyped = await invokeWith(base, database, token, {
           invocationId: "sealed-input-tax-mistyped",
           operation: {
@@ -1911,7 +1786,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect(mistyped.status).toBe(400);
 
-        // Effect-free throughout: nothing was claimed and nothing executed.
         expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
         const rows = await testAdmin(base, database, "/query", {
           query: '[:find ?e :where [?e :nativeItem/title "Should never land"]]',
@@ -1938,16 +1812,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       });
     });
 
-    /**
-     * The offline client's own submission path, end to end.
-     *
-     * The record is a real durable outbox row, built by the same canonical
-     * builder the browser queue writes through; the request is the one
-     * `buildMutationRequest` produces; the transport is the real `submitMutation`
-     * over `fetch`; and the answers are the real deployed Worker's. Nothing is
-     * scripted, so the classification table is proven against the responses the
-     * server actually sends rather than against an imagined vocabulary.
-     */
     describe("offline client submission through the real transport", () => {
       const RECEIVER = Object.freeze({
         server: "s".repeat(43),
@@ -1986,14 +1850,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           ...overrides,
         }, "scope", 1);
 
-      /**
-       * The classification, and the raw answer it came from.
-       *
-       * The raw answer is kept so an unexpected classification names the status
-       * and body the server actually sent. A bare "expected Committed, received
-       * Retry" says nothing about which 5xx produced it, and a `/op` answer this
-       * contract did not anticipate is exactly the thing worth seeing.
-       */
       const submitRaw = async (
         record: OutboxRecord,
         endpoint: ReturnType<typeof endpointFor>,
@@ -2016,17 +1872,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         handles: ReadonlyMap<string, EntityId> = new Map(),
       ) => (await submitRaw(record, endpoint, handles)).acknowledgement;
 
-      /**
-       * Submit until the queue reaches an answer it would act on.
-       *
-       * `Retry` is *defined* as non-terminal: the record stays queued and the
-       * driver asks again. A test that demanded a terminal answer from the
-       * first attempt would be asserting something stronger than the contract,
-       * and would fail on any transient the contract already covers — a
-       * momentarily unreachable sealing root, a restarting Durable Object. What
-       * the contract does promise is that the answer eventually reached is
-       * exact and idempotent, which is what the callers below assert.
-       */
       const submitUntilTerminal = async (
         record: OutboxRecord,
         endpoint: ReturnType<typeof endpointFor>,
@@ -2066,10 +1911,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(isEntityId(committed.mappings[0]!.entityId)).toBe(true);
 
         const receiptsBefore = await operationReceiptCount(base, database);
-        // The acknowledgement this client never received: resubmitting the same
-        // durable row consumes #487's exact replay. However many times it takes
-        // to get an answer, the answer is byte-identical and commits nothing
-        // further — that idempotence is the whole contract.
+
         const replayed = await submitUntilTerminal(record, endpoint);
         expect([replayed.seen, replayed.acknowledgement])
           .toEqual([replayed.seen, committed]);
@@ -2079,8 +1921,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect(rows.body.result.length).toBe(1);
 
-        // A dependent record submits the sealed handle in place of the ref,
-        // exactly as the queue would once the mapping is durable.
         const dependent = buildOutboxRecord({
           invocation: invocationId(),
           receiver: RECEIVER,
@@ -2112,18 +1952,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         ]);
       });
 
-
-      /**
-       * Acceptance: an offline create followed by a dependent invocation that
-       * refers to its `ClientRef` at a *declared input position* (#475 WR-17).
-       *
-       * Both records are durable before either is submitted, and the dependent
-       * one holds the client ref itself — no mapping exists yet. Reconnecting
-       * submits the create, the exact mapping unblocks the dependent record,
-       * and the sealed handle the queue substitutes is what the authoritative
-       * edge opens. Each commits exactly once even though both are submitted
-       * twice, and no raw eid appears anywhere.
-       */
       test("a dependent invocation resolves its ClientRef into a sealed input handle", async () => {
         const base = ctx.urls().nativeOperationsUrl;
         const database = "operations-client-input-refs";
@@ -2151,8 +1979,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           inputRefs: [{ path: ["item"], ref }],
           enqueuedAt: 1_700_000_000_010,
         }, "scope", 2);
-        // Blocked while the dependency is unmapped: the queue never submits a
-        // client ref as if it were an entity.
+
         expect(substituteMutationRefs(dependent, new Map())).toBeUndefined();
 
         const first = await submitUntilTerminal(create, endpoint);
@@ -2174,7 +2001,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           },
         ]);
 
-        // Exactly once, both of them, however many acknowledgements were lost.
         const receiptsBefore = await operationReceiptCount(base, database);
         expect((await submitUntilTerminal(create, endpoint)).acknowledgement)
           .toEqual(committed);
@@ -2206,7 +2032,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect((await submitUntilTerminal(record, endpoint)).acknowledgement._tag).toBe("Committed");
 
-        // Same id, a different durable client identity for the slot.
         const rebound = buildOutboxRecord({
           invocation: record.invocation,
           receiver: RECEIVER,
@@ -2221,16 +2046,12 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect((await submitUntilTerminal(rebound, endpoint)).acknowledgement)
           .toEqual({ _tag: "Rejected", code: "invocation_conflict" });
 
-        // A queued invocation pinned to a contract the deployment has moved
-        // past: non-terminal, typed, and never a silent drop.
         const stale = queued(versions.get("nativeItem/create")!, {
           allocations: [{ slot: "item", clientRef: clientRef() }],
         });
         expect((await submitUntilTerminal(stale, endpoint)).acknowledgement)
           .toEqual({ _tag: "UpdateRequired", reason: "operation-changed" });
 
-        // An unreadable sealing epoch reaches the same non-terminal state
-        // through a different code, and still commits nothing.
         const quarantined = buildOutboxRecord({
           invocation: invocationId(),
           receiver: RECEIVER,
@@ -2254,9 +2075,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           reason: "invocation-update-required",
         });
 
-        // A refusal the server bound to a durable receipt is terminal: the
-        // operation body refused, after the claim, so replaying returns the
-        // same answer forever.
         const refused = buildOutboxRecord({
           invocation: invocationId(),
           receiver: RECEIVER,
@@ -2275,16 +2093,12 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect((await submitUntilTerminal(refused, endpoint)).acknowledgement)
           .toEqual({ _tag: "Rejected", code: "operation_rejected" });
 
-        // A refusal the server reached *before* writing any receipt carries
-        // none, and must never remove durable work — the same shape the Worker
-        // answers when a lease expires between the commit and the response.
         const unproven = await submit(queued(version), {
           ...endpoint,
           credential: await signToken(database, "reader", "user_client_reader"),
         });
         expect(unproven._tag).toBe("Retry");
 
-        // And an unreachable peer is the one answer that must be asked again.
         expect(await submit(queued(version), {
           ...endpoint,
           origin: "http://127.0.0.1:1",

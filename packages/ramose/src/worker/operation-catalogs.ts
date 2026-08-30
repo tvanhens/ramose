@@ -1,5 +1,3 @@
-/** Public startup assembly for native deployed operation catalogs. */
-
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -27,19 +25,13 @@ export interface OperationCatalogProof {
   readonly unitHash: string;
 }
 
-/**
- * Opaque runnable registry shared by the Worker and Transactor Durable Object.
- * Construct it once with {@link deployOperationCatalogs} during startup.
- */
 export interface OperationCatalogs {
   readonly [OperationCatalogsTypeId]: typeof OperationCatalogsTypeId;
-  /** Exact catalog proof for requests routed to one deployed database. */
   readonly proof: (database: string) => OperationCatalogProof | undefined;
 }
 
 export interface OperationCatalogDeployment {
   readonly database: string;
-  /** Defaults to the root catalog's permanent key. */
   readonly catalogKey?: string;
 }
 
@@ -48,7 +40,6 @@ export interface DeployOperationCatalogsInput {
   readonly deployments: readonly OperationCatalogDeployment[];
 }
 
-/** One public startup failure instead of leaking authorization implementation types. */
 export class OperationCatalogDeploymentError extends Data.TaggedError(
   "OperationCatalogDeploymentError",
 )<{ readonly message: string }> {}
@@ -108,7 +99,6 @@ const wrapOperationCatalogs = (
   return operationCatalogs;
 };
 
-/** @internal Worker plumbing; not re-exported from `ramose/worker`. */
 export const deployedOperationCatalogs = (
   operationCatalogs: OperationCatalogs,
 ): DeployedCatalogDefinitions => {
@@ -119,7 +109,6 @@ export const deployedOperationCatalogs = (
   return state.deployed;
 };
 
-/** @internal Graph routing plumbing; not re-exported from `ramose/worker`. */
 export const deployedDatabaseCatalogBindings = (
   operationCatalogs: OperationCatalogs,
 ): DatabaseCatalogBindings => {
@@ -130,10 +119,6 @@ export const deployedDatabaseCatalogBindings = (
   return state.bindings;
 };
 
-/**
- * Assemble reachable code definitions and bind them to route databases.
- * Run this Effect once in the Worker module shared with `createTransactorDO`.
- */
 export const deployOperationCatalogsForVersion = Effect.fn(
   "Worker.deployOperationCatalogs",
 )(function* (

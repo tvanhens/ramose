@@ -1,19 +1,3 @@
-/**
- * #474 slice 6 — the durable server identity/sealing root over the real local
- * Ramose stack (real Worker, real Replica Durable Object, real R2).
- *
- * The defect this proves fixed: every replication identity and revision used to
- * be an HMAC of `RAMOSE_INTERNAL_SECRET`, which `peer.ts` re-mints on every
- * owned-server deployment — so an ordinary redeploy rotated every identity and
- * orphaned every persisted revision. Identities now come from a once-generated
- * record in Durable Object state, and the rotating secret stays the Worker→DO
- * capability only.
- *
- * It also covers #475 milestone E0: the sealed `EntityId` codec derives from
- * that same live record, inside workerd, using only WebCrypto (HKDF-SHA-256,
- * AES-256-GCM, HMAC-SHA-256).
- */
-
 import { beforeAll, describe, expect, test } from "bun:test";
 import { CONFORMANCE_DATABASES } from "./conformance-catalog.ts";
 import { loadConformanceProof } from "./conformance-proof.ts";
@@ -46,7 +30,6 @@ const probeIdentityRoot = async (
   return response.body as IdentityProbe;
 };
 
-/** Discard the isolate's cached root: the next derivation is a cold isolate. */
 const coldIsolate = async (base: string, database: string): Promise<void> => {
   const response = await testAdmin(base, database, "/server-identity", {
     action: "forget-isolate-cache",
@@ -124,17 +107,12 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       expect(first.version).toBe(1);
       expect(first.keyId).toMatch(/^[A-Za-z0-9_-]{22}$/);
       expect(Number.isSafeInteger(first.createdAt)).toBe(true);
-      // The two secrets are separate values, asserted without either leaving
-      // the Worker.
+
       expect(first.isInternalSecret).toBe(false);
 
-      // Repeated reads never regenerate, and the object is a fixed name, not a
-      // function of the database, deployment, or region.
       const again = await probeIdentityRoot(base, uniqueDb("identity-root-2"));
       expect(again).toEqual(first);
 
-      // A cold Worker isolate — what an ordinary redeploy produces — re-reads
-      // the same durable record instead of minting a new one.
       await coldIsolate(base, database);
       expect(await probeIdentityRoot(base, database)).toEqual(first);
     });
@@ -154,8 +132,6 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       const identity = start.identity;
       const revision = snapshot.state.committed!.revision;
 
-      // Every isolate-level cache the identity path could hide behind is
-      // dropped: this is the redeploy the old derivation broke.
       await coldIsolate(base, world.database);
       expect((await probeIdentityRoot(base, world.database)).keyId)
         .toBe(root.keyId);
@@ -171,13 +147,10 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         resumed,
       )[Symbol.asyncIterator]();
       try {
-        // Bounded like every other frame read: the only unguarded `next()`
-        // left in `test/local`, and an unguarded one costs the whole 90s
-        // default budget, which takes the shared dev stack down with it.
+
         const frame = (await observed(resumedIterator, "resumed identity ready"))
           .frame;
-        // A rotated identity would have produced a Reset plus a fresh snapshot
-        // under a different authenticator instead.
+
         expect(frame.type).toBe("ResumeReady");
         if (frame.type !== "ResumeReady") throw new Error("expected ResumeReady");
         expect(frame.revision).toBe(revision);
@@ -195,19 +168,14 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         principal: opaqueId(),
         database: opaqueId(),
       };
-      // Beyond 32 bits: the eight-byte big-endian encoding is exercised in the
-      // real runtime, not only in the pure suite.
+
       const eid = 4_294_967_296;
 
       const token = await sealEntityId(base, database, scope, eid);
       expect(token).toMatch(/^[A-Za-z0-9_-]{55}$/);
-      // Deterministic inside the live Worker: handles are cache- and
-      // replay-comparable.
+
       expect(await sealEntityId(base, database, scope, eid)).toBe(token);
 
-      // A cold Worker isolate — what an ordinary redeploy produces — re-reads
-      // the same durable record, reproduces the same handle, and still opens
-      // the one minted before the restart.
       await coldIsolate(base, database);
       expect(await sealEntityId(base, database, scope, eid)).toBe(token);
       expect(await openEntityId(base, database, scope, token)).toEqual({
@@ -227,8 +195,6 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       };
       const token = await sealEntityId(base, database, scope, 12);
 
-      // Another principal or another database gets the ordinary sealed denial,
-      // indistinguishable from not-found.
       for (
         const wrong of [
           { ...scope, principal: opaqueId() },
@@ -245,8 +211,6 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       expect(await openEntityId(base, database, scope, base64Url(tampered)))
         .toEqual({ type: "denied" });
 
-      // A codec version this build cannot read is a data-free quarantine, so a
-      // queued target is reported update-required rather than cleared.
       const versioned = envelopeOf(token);
       versioned[0] = 2;
       expect(await openEntityId(base, database, scope, base64Url(versioned)))
@@ -281,8 +245,6 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       expect(resolved.status).toBe(200);
       expect(resolved.body).toEqual({ found: true, basisT: 7 });
 
-      // Explicit key loss/replacement: the persisted state is unreachable and
-      // stays that way — no basis, and no silent rebinding to the new key.
       const quarantinedRead = await testAdmin(
         base,
         database,
@@ -309,8 +271,6 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(quarantinedWrite.status).toBe(409);
 
-      // The refused write corrupted nothing: the original record is intact
-      // under the original key id.
       const stillThere = await testAdmin(base, database, "/replication-revision", {
         action: "resolve",
         revision,

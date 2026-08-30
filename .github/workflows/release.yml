@@ -1,22 +1,3 @@
-# Publish `ramose` to npm.
-#
-# Trigger: push a tag matching v* (e.g. v0.2.0). The tag is the source of truth —
-# scripts/check-release.ts fails the run if it disagrees with the version in the
-# manifests, so a mistyped tag cannot publish the wrong version.
-#
-# Use `bun run scripts/set-version.ts <version>` to move both manifests (the
-# private workspace root and packages/ramose) together, then commit and tag.
-#
-# Auth: trusted publishing (OIDC) is used once the package is configured for it
-# on npmjs.com, which is why `id-token: write` is set. NPM_TOKEN is the fallback
-# and is what the very first publish has to use — OIDC cannot bootstrap a
-# package that does not exist yet, since the setting only appears on a package's
-# settings page once it is on the registry. After that first release the secret
-# can be deleted and this keeps working.
-#
-# workflow_dispatch runs everything except the publish itself (dry run), which is
-# the safe way to exercise this pipeline without spending a version number —
-# npm never lets a version be reused, even after unpublishing.
 name: Release
 
 on:
@@ -30,8 +11,8 @@ on:
         default: true
 
 permissions:
-  contents: write # create the GitHub Release
-  id-token: write # trusted publishing + provenance attestation
+  contents: write
+  id-token: write
 
 concurrency:
   group: release
@@ -48,8 +29,6 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
-      # npm, not bun, does the publishing: trusted publishing and provenance
-      # both require the npm CLI, and 11.5.1+ specifically for OIDC.
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -68,10 +47,6 @@ jobs:
       - name: Test
         run: bun run test
 
-      # scripts/release.ts is the same sequence used locally (`bun run
-      # release`), so the two cannot drift. Tests ran as their own steps above
-      # for readable logs, hence --skip-tests. Provenance is on here because CI
-      # has an OIDC issuer to attest against; the local scripts turn it off.
       - name: Build, verify and publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

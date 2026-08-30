@@ -1,13 +1,3 @@
-/**
- * Compile the read-authorization language into {@link PolicyTemplateIR} (#406).
- *
- * Pure kernel (`Result.gen`) lowers stamped paths, merges decisions, and
- * decodes through Effect Schema. Semantic compatibility — trait composition,
- * self-ref / ref-target, equality, membership, path reachability — is owned
- * by authoritative installation. The Effect shell restamps rule identities
- * with {@link hashRelativeRule}.
- */
-
 import type { AnySchema } from "../../../db/Schema.ts";
 import { schemaTraits } from "../../../db/Schema.ts";
 import {
@@ -625,10 +615,6 @@ type DecisionBucket = {
   readonly deny: RuleId[];
 };
 
-/**
- * Pure compile kernel. Placeholder rule ids are structurally valid
- * 64-hex digests; the Effect shell restamps them with {@link hashRelativeRule}.
- */
 export const compileReadAuthorizationResult = (
   input: CompileReadAuthorizationInput,
 ): Result.Result<PolicyTemplateIR, InvalidIR> =>
@@ -761,10 +747,6 @@ const remapRuleIds = (
   map: ReadonlyMap<RuleId, RuleId>,
 ): readonly RuleId[] => ids.map((id) => map.get(id) ?? id);
 
-/**
- * Effect shell: compile, restamp every rule id with {@link hashRelativeRule},
- * rewrite decision lists, and decode again so Schema remains the source of truth.
- */
 export const compileReadAuthorization = Effect.fn("Authorization.compileReadAuthorization")(
   function* (
     input: CompileReadAuthorizationInput,

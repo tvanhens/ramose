@@ -1,9 +1,3 @@
-/**
- * M2 bench: sustained write throughput against a running Ramose deployment
- * (Transactor DO with group commit).
- *
- *   RAMOSE_URL=http://localhost:8787 bun run bench/write-do.bench.ts [concurrency=64] [seconds=10]
- */
 import { attrMap, Peer } from "../test/support/ramoseHttp.ts";
 import { fmt, percentile } from "./lib.ts";
 

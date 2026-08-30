@@ -1,12 +1,3 @@
-/**
- * `Query.from(Entity)` — the primary app spelling.
- *
- * Thin wrappers over the existing immutable pipeline AST. Stage functions
- * stay one tier down for the generator/kernel path; this chain is the
- * serializable value `db.query` / `useLive` run. Changing values go in
- * `.where` as literals.
- */
-
 import type { Eid } from "../Eid.ts";
 import { isComposer, type AnyComposer } from "../Composer.ts";
 import type { FocusAttr } from "./focus.ts";
@@ -44,8 +35,6 @@ import {
   type QueryOrderKey,
 } from "./query.ts";
 
-// ── default row ─────────────────────────────────────────────────────────────
-
 type IsMany<A> = A extends { readonly cardinality: "many" } ? true : false;
 type IsRef<A> = A extends { readonly valueType: "ref" } ? true : false;
 type IsOptional<A> = A extends { readonly isOptional: true }
@@ -54,13 +43,8 @@ type IsOptional<A> = A extends { readonly isOptional: true }
     ? true
     : false;
 
-/** Instant is a branded `Date`; the app row is the friendly `Date`. */
 type FriendlyScalar<T> = T extends Date ? Date : T;
 
-/**
- * The entity a `Ref(Issue)` field points at. Self-refs resolve to the
- * enclosing composer. Untargeted refs stay the wide composer type.
- */
 type RefTarget<A, Enclosing extends AnyComposer> = A extends {
   readonly schema: { readonly _target?: infer T };
 }
@@ -99,10 +83,8 @@ export type EntityRow<N extends AnyComposer> = {
   readonly [K in keyof N["fields"]]: FieldRow<N["fields"][K], N>;
 };
 
-/** Expand `N.fields` into the pull shape the default row serializes as. */
 const entityId = (ns: AnyComposer): PathCarrier => ns.id;
 
-/** The entity `Ref(Issue)` was declared against — has `.id` for the nested cell. */
 const refTargetEntity = (
   field: { readonly schema?: unknown },
   source: AnyComposer,
@@ -118,11 +100,6 @@ const refTargetEntity = (
   return source;
 };
 
-/**
- * Expand `N.fields` into the pull shape. Card-one fields are `.optional` at
- * runtime so a missing fact does not drop the row; {@link EntityRow} still
- * types required scalars as required (optimistic about presence).
- */
 export const entityShape = (ns: AnyComposer): Shape => {
   const sourceId = entityId(ns);
   const out: Record<string, unknown> = { id: sourceId };
@@ -144,7 +121,6 @@ export const entityShape = (ns: AnyComposer): Shape => {
   return out as Shape;
 };
 
-/** Insert the default select *before* orderBy/limit/offset so string keys resolve. */
 const withDefaultShape = (pipe: Pipeline): Pipeline => {
   if (pipe.stages.some((s) => s.kind === "select" || s.kind === "ids")) return pipe;
   const idx = pipe.stages.findIndex(
@@ -154,8 +130,6 @@ const withDefaultShape = (pipe: Pipeline): Pipeline => {
   const next = selectStage(entityShape(pipe.ns))(head);
   return idx === -1 ? next : { ...next, stages: [...next.stages, ...pipe.stages.slice(idx)] };
 };
-
-// ── where object ────────────────────────────────────────────────────────────
 
 type EqValue<A> = IsRef<A> extends true
   ? AttrValue<A> | { readonly id: number }
@@ -171,11 +145,6 @@ export type WhereEq<N extends AnyComposer> = {
   readonly id?: Eid<N> | number | { readonly id: number };
 };
 
-/**
- * Equality clauses `applyEq` just appended — used to peel a trailing run of
- * them so chained `.where({ done }).where({ rank })` re-sorts with the new
- * keys. A fragment in between is left in place.
- */
 const EQ_CLAUSE = new WeakMap<object, { readonly key: string; readonly value: unknown }>();
 
 const applyEq = (pipe: Pipeline, ns: AnyComposer, eq: Record<string, unknown>): Pipeline => {
@@ -213,8 +182,6 @@ const applyStages = (
   return next;
 };
 
-// ── the fluent query ────────────────────────────────────────────────────────
-
 /**
  * A closed query that still accepts chain methods. Immutable: each call
  * returns a new value, hoistable at module scope exactly as `Query.q` is.
@@ -224,18 +191,11 @@ export interface FluentQuery<
   Row = unknown,
   Out = readonly Row[],
 > extends QueryObject<Row, Out> {
-  /**
-   * Conjunction of equality filters, keys typechecked from the entity's
-   * fields; or one-or-more stage fragments (`Query.some`, `Query.any`,
-   * `Query.gt`, `Query.matching`, …).
-   */
   where<const W extends WhereEq<N>>(eq: W): FluentQuery<N, Row, Out>;
   where(
     ...stages: ReadonlyArray<(q: Pipeline<Row, N>) => Pipeline<Row, N>>
   ): FluentQuery<N, Row, Out>;
 
-  /** Narrow / reshape the row. Without this, the default is the full entity.
-   * A second argument adds aggregate cells beside the shape. */
   select<const S extends Shape>(
     shape: S & ValidShape<S> & FocusShape<N, S>,
   ): FluentQuery<N, SelectResult<S>>;
@@ -258,10 +218,6 @@ export interface FluentQuery<
 
   offset(n: number): FluentQuery<N, Row, Out>;
 
-  /**
-   * Id-only projection — today's cheap live-subscription workhorse.
-   * Default-full-entity widens invalidation; `.select` / `.ids` are the levers.
-   */
   ids(): FluentQuery<N, IdRow<N>>;
 }
 
@@ -314,7 +270,6 @@ const makeFluent = <N extends AnyComposer, Row>(
   fluent.limit = ((n: number) => next(limitStage(n)(pipe))) as FluentQuery<N, Row>["limit"];
   fluent.offset = ((n: number) => next(offsetStage(n)(pipe))) as FluentQuery<N, Row>["offset"];
   fluent.ids = () => makeFluent(ns, idsStage()(pipe), stripCursor, take, seek, orders, limitN, offsetN);
-  // terminals stay on the same object so `.where(…).one()` typechecks
   const baseOne = qv.one.bind(qv);
   const baseFail = qv.oneOrFail.bind(qv);
   const baseAfter = qv.after.bind(qv);

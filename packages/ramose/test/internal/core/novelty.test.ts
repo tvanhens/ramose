@@ -11,7 +11,6 @@ function sortDedup(index: 0 | 1 | 2 | 3, ds: readonly Datom[]): Datom[] {
   return s.filter((d, i) => i === 0 || cmp(s[i - 1], d) !== 0);
 }
 
-/** Reference current view: for each (e,a,v) keep the datom with max (t, op) if t <= asOf; emit if op. */
 function refCurrent(index: 0 | 1 | 2 | 3, ds: readonly Datom[], asOf?: number): Datom[] {
   const latest = new Map<string, Datom>();
   for (const d of ds) {
@@ -60,7 +59,7 @@ describe("mergeChunks + currentView", () => {
       for (let k = 0; k < 60; k++) {
         const d = union[randInt(r, 0, union.length - 1)];
         const p = index === Index.VAET ? { vt: d.vt, v: d.v } : index === Index.EAVT ? { e: d.e } : k % 2 ? { a: d.a } : {};
-        // merged history
+
         const merged: Datom[] = [];
         for await (const c of mergeChunks(COMPARATORS[index], scan(store, index, root, p), nov.range(p))) {
           for (let i = c.start; i < c.end; i++) merged.push(c.datoms[i]);
@@ -70,7 +69,7 @@ describe("mergeChunks + currentView", () => {
         merged.forEach((x, i) => {
           if (!datomEquals(x, expM[i])) throw new Error(`merge mismatch index ${index} prefix ${JSON.stringify(p)} at ${i}`);
         });
-        // current view (with and without asOf)
+
         for (const asOf of [undefined, 10, 25, 40]) {
           const cur: Datom[] = [];
           for await (const arr of currentView(mergeChunks(COMPARATORS[index], scan(store, index, root, p), nov.range(p)), asOf)) cur.push(...arr);

@@ -1,10 +1,3 @@
-/**
- * Request-boundary error mapping (Effect tagged errors → HTTP).
- *
- * The wire contract is what the Worker parses on the client's behalf: `error`
- * (human message), `code`, and the `retry-after` header on 503. `tag` is on top as a
- * stable discriminator; statuses are unchanged from the pre-Effect handler.
- */
 import { describe, expect, test } from "bun:test";
 import { TxError } from "../../../src/internal/core/index.ts";
 import {
@@ -67,7 +60,7 @@ describe("transactor errors: tag → status/body", () => {
     expect(r.status).toBe(503);
     expect(r.headers.get("retry-after")).toBe("0");
     expect(await body(r)).toEqual({ error: "aborted", tag: "TransactorDead", message: "aborted", retryAfterMs: 0 });
-    // non-zero budgets round up to whole seconds for the header
+
     expect(errorResponse(new TransactorDead({ message: "x", retryAfterMs: 1500 })).headers.get("retry-after")).toBe("2");
   });
 

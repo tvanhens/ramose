@@ -1,5 +1,3 @@
-/** Permanent-key catalog definition assembly (#323). */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";

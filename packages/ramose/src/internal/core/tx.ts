@@ -1,35 +1,3 @@
-/**
- * Transaction processing — pure: (db, txData, t) → datoms.
- *
- * Used both by the in-memory `Connection` (M1) and the Transactor DO (M2);
- * it never touches storage directly, only reads through `Db`.
- *
- * Tx data forms (attribute names are ident strings, e.g. ":user/name"):
- *   [":db/add", e, a, v]
- *   [":db/update", e, a, v]              (never creates; missing subject rejects)
- *   [":db/update", e]                    (existence ping; no write)
- *   [":db/retract", e, a, v?]            (v omitted → retract all values)
- *   [":db/retractEntity", e]             (also retracts refs to e; components recursively)
- *   [":db/cas", e, a, expected, replacement]  (card-one; compare vs db-before)
- *   { ":db/id": e?, ":user/name": "Bob", ":user/friends": [ref, ...], ":user/_friends": [ref] }
- *
- * Entity forms: eid (number) | ident (":..." string) | tempid (other string)
- *   | lookup ref [":attr", value] | nested map (in ref-valued position)
- *   | ":db/tx" (the current transaction entity).
- *
- * Semantics (Datomic-inspired):
- *   - tempids sharing a :db.unique/identity value with an existing entity upsert
- *   - cardinality-one asserts retract the previous value implicitly
- *   - redundant asserts / retracts of absent facts are elided
- *   - :db.unique/value conflicts throw
- *   - :db/cas is cardinality-one only
- *   - CAS subject must exist in db-before (eid or lookup ref; a tempid subject is invalid)
- *   - CAS expected is compared against db-before only (not the within-tx overlay)
- *   - `null` expected asserts that the attribute is absent
- *   - CAS replacement uses ordinary coercion and may be a same-tx tempid
- *   - at most one mutation of a CAS (e, a) pair in the tx
- */
-
 import {
   type Datom,
   type DatomValue,
@@ -75,67 +43,42 @@ export interface TxResult {
 
 type EForm = number | string | unknown[];
 
-/** A tx item after map/reverse-ref expansion, before entity/value resolution. */
 export interface TxOp {
   kind: "add" | "update" | "retract" | "retractEntity" | "cas";
   e: EForm;
   a?: string | number;
   v?: unknown;
-  /** CAS expected; `null` is the encoded absent expectation — not `undefined`. */
   expected?: unknown;
   hasV?: boolean;
-  /** Protected type assertion emitted by the typed transaction builder. */
   engineTypeAssertion?: boolean;
 }
 
-/**
- * One concrete datom the tx will produce, with the provenance a policy check
- * needs: which resolved entity/attribute it lands on and why it exists.
- */
 export interface ExpandedOp {
   readonly kind: "add" | "retract";
   readonly e: number;
   readonly a: number;
   readonly attr: Attribute;
   readonly datom: Datom;
-  /** retract emitted by cardinality-one replacement */
   readonly implicit: boolean;
-  /** retract emitted by a :db/retractEntity closure */
   readonly fromRetractEntity: boolean;
-  /** subject is the explicit root of the current :db/retractEntity op */
   readonly retractEntityRoot: boolean;
-  /** Protected type assertion emitted by the typed transaction builder. */
   readonly engineTypeAssertion: boolean;
 }
 
 export interface TxExpansion extends TxResult {
-  /** entity ids this tx allocates (never seen before), plus the tx entity */
   newEntities: Set<number>;
-  /** the concrete per-datom ops, in emission order (tx-instant excluded) */
   ops: ExpandedOp[];
 }
 
 export interface ExpandOptions {
-  /** max datoms a :db/retractEntity closure may produce before throwing */
   closureCap?: number;
-  /**
-   * Deployed type-to-trait lookup. Required to distinguish entity
-   * namespaces from trait namespaces. Absent only for schema-attribute
-   * work that never creates application entities.
-   */
   composition?: CompositionIndex;
 }
 
-/** Prefix of tempids generated for map forms without an explicit `:db/id`. */
 export const GENERATED_TEMPID_PREFIX = "__ramose.tmp/";
 
 const TX_TEMPID = new Set([":db/tx", "datomic.tx", "db.tx"]);
 
-/**
- * Expand map forms into add ops. Returns the flat op list. Generated tempids
- * are numbered per call, so flattening the same tx data twice yields the same
- * names (the policy pre-check relies on it).
- */
 export function flattenTxData(txData: TxData): TxOp[] {
   const ops: TxOp[] = [];
   let tmpCounter = 0;
@@ -153,7 +96,6 @@ export function flattenTxData(txData: TxData): TxOp[] {
       const slash = k.lastIndexOf("/");
       const name = slash >= 0 ? k.slice(slash + 1) : k.slice(1);
       if (name.startsWith("_")) {
-        // reverse ref: {:user/_friends [x y]} → x :user/friends e
         const attr = slash >= 0 ? k.slice(0, slash + 1) + name.slice(1) : ":" + name.slice(1);
         const vals = Array.isArray(val) ? val : [val];
         for (const x of vals) {
@@ -258,11 +200,6 @@ function isTempid(x: unknown): x is string {
   return typeof x === "string" && x[0] !== ":";
 }
 
-/**
- * Process a transaction against `db`, producing the datoms for tx `t`.
- * `nextEid` is the first free entity id; the returned `nextEid` accounts for
- * allocations. `txInstant` is epoch ms.
- */
 export async function processTx(
   db: Db,
   txData: TxData,
@@ -282,10 +219,6 @@ export async function processTx(
   return res;
 }
 
-/**
- * `processTx` plus the per-datom provenance the policy layer checks against.
- * Same semantics — `processTx` is a projection of this.
- */
 export async function expandTx(
   db: Db,
   txData: TxData,
@@ -297,8 +230,7 @@ export async function expandTx(
   const ops = flattenTxData(txData);
   const txe = txEid(t);
   const tempids = new Map<string, number>();
-  const claims = new Map<string, string>(); // "attr|valueKey" → tempid
-  // (a, valueKey) → e for unique attrs asserted in this tx
+  const claims = new Map<string, string>();
   const uniqueSeen = new Map<string, number>();
   const out: Datom[] = [];
   const expanded: ExpandedOp[] = [];
@@ -331,7 +263,6 @@ export async function expandTx(
     }
   };
 
-  // --- Attribute resolution -------------------------------------------------
   const attrOf = (a: string | number | undefined): Attribute => {
     if (a === undefined) throw new TxError("missing attribute");
     const at = db.attr(a);
@@ -339,13 +270,11 @@ export async function expandTx(
     return at;
   };
 
-  // --- Idents created in this tx (so later ops can reference them) ---------
   const newIdents = new Map<string, EForm>();
   for (const op of ops) {
     if (op.kind === "add" && op.a === ":db/ident" && typeof op.v === "string") newIdents.set(op.v, op.e);
   }
 
-  /** `db.entid` for a lookup ref — wrap unknown/non-unique/uncoercible as TxError (409), never a raw Error (500). */
   const lookupEntid = async (form: [string, unknown]): Promise<number | undefined> => {
     try {
       return await db.entid(form);
@@ -359,7 +288,6 @@ export async function expandTx(
     }
   };
 
-  // --- Entity form → eid ----------------------------------------------------
   const resolveEntity = async (form: unknown, allocate: boolean): Promise<number | undefined> => {
     if (typeof form === "number") {
       if (!Number.isSafeInteger(form) || form < 0) throw new TxError(`bad entity id ${form}`);
@@ -371,12 +299,9 @@ export async function expandTx(
         const id = db.schema.entid(form);
         if (id !== undefined) return id;
         const created = newIdents.get(form);
-        // The ident's backing entity is a subject of the `:db/ident` add —
-        // allocate even when the caller is resolving a ref value.
         if (created !== undefined && created !== form) return resolveEntity(created, true);
         throw new TxError(`unknown ident ${form}`, "tx/unknown-ident");
       }
-      // tempid (possibly aliased to another tempid via a shared unique-identity value)
       const canonical = aliasOf(form);
       const known = tempids.get(canonical);
       if (known !== undefined) {
@@ -403,13 +328,11 @@ export async function expandTx(
     throw new TxError(`bad entity form ${JSON.stringify(form)}`);
   };
 
-  /** Preflight / CAS-pair checks: db-before only. Same-tx lookups do not throw `tx/lookup-ref`. */
   const resolveEntityPreflight = async (form: unknown): Promise<number | undefined> => {
     if (isLookupRef(form)) return lookupEntid(form);
     return resolveEntity(form, false);
   };
 
-  // --- Tempid aliases: two tempids asserting the same unique-identity value are one entity
   const aliases = new Map<string, string>();
   const aliasOf = (tid: string): string => {
     let cur = tid;
@@ -420,7 +343,6 @@ export async function expandTx(
     }
   };
 
-  /** Unique identity asserted earlier in this tx — so `:db/update` lookups see same-tx puts. */
   const resolveLookupInTx = (form: readonly [string, unknown]): number | undefined => {
     let attr: Attribute;
     try {
@@ -447,13 +369,10 @@ export async function expandTx(
     return tempids.get(aliasOf(claimant));
   };
 
-  // --- Upsert pass: tempids that assert a unique-identity value already in the db
   for (const op of ops) {
     if (op.kind !== "add" || !isTempid(op.e) || TX_TEMPID.has(op.e)) continue;
     const attr = attrOf(op.a);
     if (attr.unique !== "identity") continue;
-    // Only ref-typed attributes can carry tempid / lookup-ref / nested-map values;
-    // for scalar types a non-":" string is a plain value, not a tempid.
     if (attr.valueType === ValueTag.Ref && (isTempid(op.v) || isLookupRef(op.v) || isPlainObject(op.v))) continue;
     let tv: TaggedValue;
     try {
@@ -461,7 +380,7 @@ export async function expandTx(
         ? { vt: ValueTag.Ref, v: db.schema.entid(op.v)! }
         : db.coerce(attr, op.v);
     } catch {
-      continue; // will be reported by the main pass
+      continue;
     }
     if (tv.v === undefined) continue;
     const claimKey = attr.id + "|" + valueKey(tv.vt, tv.v);
@@ -477,7 +396,6 @@ export async function expandTx(
     const claimant = claims.get(claimKey);
     if (claimant === undefined) claims.set(claimKey, canonical);
     else if (aliasOf(claimant) !== canonical) {
-      // unify: both tempids denote the same entity
       const target = aliasOf(claimant);
       const a = tempids.get(canonical), b = tempids.get(target);
       if (a !== undefined && b !== undefined && a !== b) {
@@ -488,8 +406,6 @@ export async function expandTx(
     }
   }
 
-  // --- Within-tx state overlay ---------------------------------------------
-  // (e,a) → valueKey → datom (present in the current view + this tx so far)
   const cur = new Map<string, Map<string, Datom>>();
   const current = async (e: number, a: number): Promise<Map<string, Datom>> => {
     const k = e + ":" + a;
@@ -501,7 +417,6 @@ export async function expandTx(
     return m;
   };
 
-  // Same-t facts asserted by :db/cas — retracting them is tx/invalid, not last-wins.
   const casFacts = new Set<string>();
   const casFactKey = (e: number, a: number, vt: ValueTag, v: DatomValue): string =>
     e + ":" + a + ":" + valueKey(vt, v);
@@ -540,7 +455,6 @@ export async function expandTx(
       }
       const other = await db.first(Index.AVET, { a: attr.id, vt: tv.vt, v: tv.v });
       if (other && other.e !== e) {
-        // if `other` retracted it earlier in this tx, allow
         const ov = await current(other.e, attr.id);
         if (ov.has(vk)) {
           throw new TxError(`unique conflict: ${attr.ident} ${String(tv.v)} already belongs to entity ${other.e}`, "tx/unique-conflict");
@@ -577,7 +491,7 @@ export async function expandTx(
     }
     const vk = valueKey(tv.vt, tv.v);
     const d = vals.get(vk);
-    if (!d) return; // absent → elide
+    if (!d) return;
     rejectIfCasFact(e, attr.id, tv.vt, tv.v);
     const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
     out.push(r);
@@ -608,13 +522,11 @@ export async function expandTx(
       await emitRetract(e, attr ?? ({ id: d.a } as Attribute), { vt: d.vt, v: d.v });
       if (attr?.isComponent && d.vt === ValueTag.Ref) await retractEntity(d.v as number);
     }
-    // incoming refs
     const incoming = await db.datomsArray(Index.VAET, { vt: ValueTag.Ref, v: e });
     for (const d of incoming) {
       const attr = db.attr(d.a);
       if (attr) await emitRetract(d.e, attr, { vt: d.vt, v: d.v });
     }
-    // Same-tx overlay refs to e: retract through emitRetract so a CAS assertion cannot be cancelled.
     for (const [k, m] of cur) {
       const [ee, aa] = k.split(":").map(Number);
       const attr = db.attr(aa);
@@ -628,9 +540,6 @@ export async function expandTx(
     }
   };
 
-  // Tempid subjects of add/update — a ref may resolve these. A tempid that
-  // appears only as a ref value is a dangling mint and is rejected. CAS
-  // subjects must already exist and never allocate.
   const subjectTempids = new Set<string>();
   for (const op of ops) {
     if (op.kind !== "add" && op.kind !== "update") continue;
@@ -640,7 +549,6 @@ export async function expandTx(
     }
   }
 
-  // --- Value coercion --------------------------------------------------------
   const valueFor = async (
     attr: Attribute,
     v: unknown,
@@ -675,7 +583,6 @@ export async function expandTx(
     }
   };
 
-  // --- Schema-attribute value validation ------------------------------------
   const validateSchemaValue = (attr: Attribute, tv: TaggedValue): void => {
     if (attr.id === DB_VALUE_TYPE && !(String(tv.v) in VALUE_TYPE_IDENTS)) {
       throw new TxError(`invalid :db/valueType ${String(tv.v)}`, "tx/schema");
@@ -699,7 +606,6 @@ export async function expandTx(
     return slash > 0 ? ident.slice(1, slash) : "";
   };
 
-  /** `:issue/title` → `issue`; composer idents `:issue` / `:taggable` → the name. */
   const nsOfComposer = (ident: string): string => {
     const ns = nsOfIdent(ident);
     if (ns.length > 0) return ns;
@@ -787,11 +693,6 @@ export async function expandTx(
     return typeof first?.v === "string" ? first.v : undefined;
   };
 
-  /**
-   * `preTx`: only namespaces that existed before this tx. Add/set use that so
-   * a same-tx bag can still take a second namespace; put onto a pre-existing
-   * other-namespace row is still `tx/wrong-entity`.
-   */
   const assertWriteTarget = async (
     e: number,
     attr: Attribute,
@@ -825,12 +726,6 @@ export async function expandTx(
     }
   };
 
-  // At most one mutation of a CAS (e, a) pair in this tx. Structural —
-  // tx/invalid, not tx/cas-conflict. retractEntity of a *different*
-  // entity (e.g. an old component) is allowed even if it retracts a
-  // CAS pair as an incoming-ref side effect. retractEntity of the
-  // CAS *replacement* is not — that would emit a same-t retract of
-  // the assertion.
   const resolveCasSubject = async (form: unknown): Promise<number> => {
     if (typeof form === "string" && (TX_TEMPID.has(form) || isTempid(form))) {
       throw new TxError(":db/cas subject must be an existing eid or lookup ref");
@@ -887,7 +782,6 @@ export async function expandTx(
   const casPairs = new Set<string>();
   const casSubjects = new Set<number>();
   const pairKey = (e: number, a: number): string => e + ":" + a;
-  /** Non-CAS mutation of a CAS (e, a) pair — including subjects only resolvable after a same-tx unique add. */
   const rejectIfCasPair = (kind: string, e: number, attr: Attribute): void => {
     if (casPairs.has(pairKey(e, attr.id))) {
       throw new TxError(
@@ -931,11 +825,10 @@ export async function expandTx(
     }
   }
 
-  // --- Main pass ------------------------------------------------------------
   for (const op of ops) {
     if (op.kind === "retractEntity") {
       const e = await resolveEntity(op.e, false);
-      if (e === undefined) continue; // unresolved tempid → nothing to retract
+      if (e === undefined) continue;
       inRetractEntity = true;
       retractEntityRoot = e;
       try {
@@ -1000,8 +893,6 @@ export async function expandTx(
       if (op.expected === null) {
         match = before.size === 0;
       } else {
-        // Expected is a db-before compare key; do not apply write-time
-        // entityPresent binding (same-tx retracts must not hide the stored ref).
         const expectedTv = await valueFor(attr, op.expected, false);
         expectedLabel = String(expectedTv.v);
         match = before.size === 1 && before.has(valueKey(expectedTv.vt, expectedTv.v));
@@ -1115,8 +1006,6 @@ export async function expandTx(
     return undefined;
   };
 
-  // First datom in a new app namespace is a creation in that namespace —
-  // required fields must be present, including on an existing entity (H1/H2).
   const touched = new Set<number>();
   for (const op of expanded) {
     if (op.kind !== "add" || isTxEid(op.e)) continue;
@@ -1134,9 +1023,6 @@ export async function expandTx(
             return typeof value === "string" ? value : undefined;
           })()
         : undefined;
-    // Typed put stamps `:ramose/type` so inferType can see the composer.
-    // Its provenance permits creation and an idempotent same-type upsert;
-    // raw assertions, changes, and retracts remain protected.
     if (
       op.kind === "add" &&
       op.attr.ident === RAMOSE_TYPE_IDENT &&
@@ -1172,9 +1058,6 @@ export async function expandTx(
       const ns = nsOfIdent(ident);
       if (ns.length > 0 && isTraitIdent(`:${ns}`)) traitNss.add(ns);
     }
-    // Trait attributes may only land on a composer that actually composes
-    // that trait. Membership is the protected type plus deployed
-    // composition — never stored `:ramose/trait` stamps.
     if (type === undefined && typeBefore === undefined) {
       if (traitNss.size > 0) {
         throw new TxError(
@@ -1250,7 +1133,6 @@ export async function expandTx(
     );
   }
 
-  // Tx entity instant (first, so tx datoms sort together nicely).
   out.unshift({ e: txe, a: DB_TX_INSTANT, vt: ValueTag.Inst, v: txInstant, t, op: true });
 
   const tempidsOut: Record<string, number> = {};

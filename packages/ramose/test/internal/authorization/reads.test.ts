@@ -1,11 +1,3 @@
-/**
- * #423 — every one-shot read shape runs on the filtered Db from
- * executeAuthorizedRequest. Paired-world: hidden datoms cannot affect
- * query, pull, entity, lookup, refs, graph, aggregation, sort, or limit.
- *
- * Real Connection + schemaTx + transact. Locally signed JWTs. No mocks.
- */
-
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { pipe } from "effect/Function";
 import * as Effect from "effect/Effect";

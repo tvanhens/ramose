@@ -1,12 +1,3 @@
-/**
- * Peer-side segment source and basis fetching.
- *
- * SegmentSource = R2NodeStore(memory LRU → Cache API → R2). One instance per
- * database per isolate (module scope) so warm isolates serve repeat queries
- * with zero R2 reads. R2 keys are namespaced per database (db/<name>/…);
- * the Cache API tier is keyed by content hash and shared.
- */
-
 import { R2NodeStore, cacheApiTier, dbPrefix, prefixedBucket } from "../internal/storage/index.ts";
 import { type RamoseEnv, internalHeaders } from "../internal/transactor/index.ts";
 import type { Basis } from "../internal/replica/index.ts";
@@ -36,14 +27,10 @@ export function segmentSource(env: RamoseEnv, db: string): R2NodeStore {
   return source;
 }
 
-/** Test hook: drop every cached segment source. */
 export function clearSegmentSources(): void {
   sources.clear();
 }
 
-/** Deterministic replica choice: hash(db, region) → one of `shards` replicas per region.
- *  The location hint is part of the id, so switching hints (e.g. wnam → enam) creates a
- *  fresh DO placed near the new hint instead of reusing one placed elsewhere. */
 export function replicaId(env: RamoseEnv, db: string, region: string, shards = 1, hint: string | undefined = hintFor(region)): DurableObjectId {
   const shard = shards > 1 ? fnv1a(`${db}|${region}`) % shards : 0;
   return env.REPLICA.idFromName(hint ? `${db}|${region}|${hint}|${shard}` : `${db}|${region}|${shard}`);
@@ -58,59 +45,32 @@ function fnv1a(s: string): number {
   return h;
 }
 
-/** Nearest region key for a request (Cloudflare colo continent, falls back to "global"). */
 export function regionOf(request: Request): string {
   const cf = (request as any).cf as { continent?: string; colo?: string } | undefined;
   return cf?.continent ?? "global";
 }
 
-// ---- deployment-owned read-path tuning ----
-//
-//   RAMOSE_REPLICA_HINT: wnam|enam|…|auto|continent
-//                                            DO placement (hint is part of the replica id); `auto` = colo→hint
-//                                            (IAD→enam, SJC→wnam, …), `continent` = the old NA→wnam mapping.
-//                                            Default: env RAMOSE_REPLICA_HINT, else `auto` (gate 2026-08-16: same-colo
-//                                            basis misses 12–13 ms vs 68–77 ms; see bench/RESULTS.md).
-//   RAMOSE_CACHE_BASIS: 0|1                   reuse an isolate-cached basis instead of calling the replica.
-//                                            Default: env RAMOSE_CACHE_BASIS, else 1 (gate: 0 ms server p50 on hits).
-//   RAMOSE_CACHE_MODE: ttl|peer               ttl  = entry expires after 5 s (cross-isolate freshness bound = 5 s).
-//                                            peer = no freshness timer; only a write through this isolate or an
-//                                                   an internal minimum basis the entry can't satisfy refetches; a long safety
-//                                                   TTL only bounds memory. Default: env RAMOSE_CACHE_MODE, else ttl
-//                                                   (gate: peer measured identical to ttl on the hit path, and its
-//                                                   cross-isolate staleness without min-t could not be measured).
-// Minimum-basis fences are supplied only by trusted Worker orchestration.
-
 export type CacheMode = "ttl" | "peer";
 
 const HINTS = new Set(["wnam", "enam", "sam", "weur", "eeur", "apac", "oc", "afr", "me"]);
 
-/** Cloudflare colo (IATA) → DO location hint. East-of-the-Mississippi US/CA colos → enam, west → wnam. */
 const COLO_HINT: Record<string, string> = {
-  // enam
   IAD: "enam", EWR: "enam", ATL: "enam", ORD: "enam", MIA: "enam", BOS: "enam", YYZ: "enam", YUL: "enam", DFW: "enam", IAH: "enam", MSP: "enam", DTW: "enam", CLT: "enam", PHL: "enam", PIT: "enam", BNA: "enam", MCI: "enam", STL: "enam", TPA: "enam", RIC: "enam", BUF: "enam", CMH: "enam", IND: "enam", MEM: "enam", JAX: "enam", MCO: "enam", RDU: "enam", CLE: "enam", MKE: "enam", OMA: "enam", OKC: "enam", MSY: "enam", SAT: "enam", AUS: "enam", YOW: "enam", YHZ: "enam",
-  // wnam
   SJC: "wnam", LAX: "wnam", SEA: "wnam", SFO: "wnam", PDX: "wnam", DEN: "wnam", PHX: "wnam", LAS: "wnam", SLC: "wnam", SAN: "wnam", SMF: "wnam", YVR: "wnam", YYC: "wnam", ABQ: "wnam", HNL: "wnam", ANC: "wnam", BOI: "wnam", ELP: "wnam", TUS: "wnam", GEG: "wnam", RNO: "wnam", YEG: "wnam",
 };
 
-/** colo → hint (undefined when unknown). */
 export function coloHint(colo: string | undefined): string | undefined {
   return colo ? COLO_HINT[colo.toUpperCase()] : undefined;
 }
 
-/** Location hint selected from deployment config and trusted Cloudflare colo. */
 export function hintOf(request: Request, env?: Pick<RamoseEnv, "RAMOSE_REPLICA_HINT">): string | undefined {
   const cf = (request as any).cf as { colo?: string } | undefined;
   const pick = env?.RAMOSE_REPLICA_HINT ?? "auto";
   if (pick === "auto") return coloHint(cf?.colo) ?? hintFor(regionOf(request));
   if (pick && HINTS.has(pick)) return pick;
-  return hintFor(regionOf(request)); // "continent" or anything unknown
+  return hintFor(regionOf(request));
 }
 
-/**
- * Colo of the inbound edge request. Worker→DO subrequests carry no `request.cf`,
- * so the DO can only learn its caller's colo if we forward it as a header.
- */
 export function coloOf(request: Request): string {
   return String((request as any).cf?.colo ?? "unknown");
 }
@@ -118,7 +78,6 @@ export function coloHeader(request: Request): Record<string, string> {
   return { "x-ramose-colo": coloOf(request) };
 }
 
-/** Nearest replica stub for a request (deterministic id + location hint). */
 export function nearestReplica(
   env: RamoseEnv,
   db: string,
@@ -130,11 +89,6 @@ export function nearestReplica(
   return env.REPLICA.get(replicaId(env, db, region, 1, hint), { locationHint: hint } as any);
 }
 
-/**
- * One internal WebSocket carries every basis change for a live request. The
- * replica also owns deployment-version probes in separate alarm invocations,
- * closing this socket when the public route no longer selects this Worker.
- */
 export const watchBasisChanges = (
   env: RamoseEnv,
   db: string,
@@ -142,7 +96,6 @@ export const watchBasisChanges = (
 ): {
   readonly changes: Stream.Stream<LiveBasisEvent, Unauthorized>;
   readonly currentBasis: () => Basis | undefined;
-  /** Resolves only when an attached production watch fails or closes. */
   readonly failed: Promise<void>;
 } => {
   let currentBasis: Basis | undefined;
@@ -180,7 +133,6 @@ export const watchBasisChanges = (
         try {
           ws.close(1011, "live watch failed");
         } catch {
-          /* already gone */
         }
       };
       ws.addEventListener("message", (event) => {
@@ -214,7 +166,6 @@ export const watchBasisChanges = (
         try {
           ws.close(1000, "live response closed");
         } catch {
-          /* already gone */
         }
       }));
     }),
@@ -227,15 +178,9 @@ export type ReplicationRevisionRecord = {
   readonly revision: string;
   readonly binding: string;
   readonly basisT: number;
-  /** Key id of the durable identity/sealing root this revision was sealed with. */
   readonly keyId: string;
 };
 
-/**
- * A store that persisted revisions under a different identity/sealing root
- * refuses this one. The durable state stays quarantined: never read back,
- * never overwritten, never silently reused.
- */
 const rejectQuarantined = async (
   response: Response,
   keyId: string,
@@ -252,11 +197,6 @@ const rejectQuarantined = async (
   });
 };
 
-/**
- * Resume history is physically isolated by authenticated binding. A fixed
- * per-object quota therefore cannot make one caller's hidden activity evict
- * another caller, including before that other caller is first seen.
- */
 export const replicationRevisionStoreId = (
   env: Pick<RamoseEnv, "REPLICA">,
   database: string,
@@ -273,7 +213,6 @@ const replicationRevisionStore = (
   replicationRevisionStoreId(env, database, binding),
 );
 
-/** Persist one small opaque-revision → private-basis record in the real Replica DO. */
 export const rememberReplicationRevision = async (
   env: RamoseEnv,
   database: string,
@@ -301,7 +240,6 @@ export const rememberReplicationRevision = async (
   });
 };
 
-/** Resolve only a revision authenticated for the current opaque partition. */
 export const resolveReplicationRevision = async (
   env: RamoseEnv,
   database: string,
@@ -349,19 +287,14 @@ export function cacheModeOf(_request: Request, env?: Pick<RamoseEnv, "RAMOSE_CAC
   return h === "peer" ? "peer" : "ttl";
 }
 
-// ---- isolate basis cache ----
-// Keyed by db|hint. Reused until a write through this Worker (invalidateBasis), the entry
-// ages past the mode's TTL, or trusted orchestration supplies a minimum basis
-// the entry cannot satisfy.
 const basisCache = new Map<string, { basis: Basis; at: number }>();
-export const BASIS_TTL_MS = 5_000; // ttl mode: cross-isolate freshness bound
-export const BASIS_SAFETY_TTL_MS = 10 * 60_000; // peer mode: memory bound only, not a consistency promise
-const MIN_T_RETRIES = 5; // replica /log catch-up can still race; poll briefly for min-t
+export const BASIS_TTL_MS = 5_000;
+export const BASIS_SAFETY_TTL_MS = 10 * 60_000;
+const MIN_T_RETRIES = 5;
 const MIN_T_RETRY_MS = 20;
 
 export type BasisCacheReason = "hit" | "off" | "miss" | "expired" | "min-t";
 
-/** Pure cache lookup decision; infrastructure fetches happen only after this returns a miss reason. */
 export const basisCacheDecision = (
   useCache: boolean,
   mode: CacheMode,
@@ -377,7 +310,6 @@ export const basisCacheDecision = (
   return "hit";
 };
 
-/** A late replica answer must never replace a newer isolate-cached basis. */
 export const shouldReplaceCachedBasis = (
   cachedT: number | undefined,
   fetchedT: number,
@@ -387,35 +319,24 @@ export function invalidateBasis(db: string): void {
   for (const k of basisCache.keys()) if (k.startsWith(`${db}|`)) basisCache.delete(k);
 }
 
-/** Test hook: drop every cached basis. */
 export function clearBasisCache(): void {
   basisCache.clear();
 }
 
 export interface BasisFetch {
   basis: Basis;
-  /** served from the isolate cache without a replica call */
   hit: boolean;
-  /** why the replica was called: "off" (cache disabled), "miss", "expired", "min-t" */
   reason: BasisCacheReason;
-  /** replica calls made (0 on a hit; >1 only when polling for min-t) */
   calls: number;
-  /** min-t requested but the replica never reached it within the retry window */
   behind: boolean;
 }
 
 export interface BasisFetchOptions {
-  /** Ignore request/env cache controls and fetch the replica basis. */
   readonly bypassCache?: boolean;
-  /** Fence the replica read at the transactor's current committed t. */
   readonly authoritativeFence?: boolean;
-  /** Trusted internal minimum basis (never parsed from a public request). */
   readonly minimumBasis?: number | undefined;
-  /** Explicit testing-assembly cache decision. */
   readonly useCache?: boolean | undefined;
-  /** Explicit testing-assembly cache mode. */
   readonly cacheMode?: CacheMode | undefined;
-  /** Explicit testing-assembly replica placement. */
   readonly replicaHint?: string | undefined;
 }
 
@@ -427,7 +348,6 @@ export const basisCacheEnabled = (
   options.bypassCache !== true &&
   (options.useCache ?? wantsBasisCache(request, env));
 
-/** The strongest read fence supplied by the caller and the authoritative writer. */
 export const effectiveBasisMinT = (
   clientMinT: number | undefined,
   transactorT: number | undefined,
@@ -454,7 +374,6 @@ const fetchTransactorT = async (env: RamoseEnv, db: string): Promise<number> => 
   return body.t as number;
 };
 
-/** Fetch a basis for `db`: isolate cache (per knobs) or the nearest replica's GET /basis. */
 export async function fetchBasisWithStats(
   env: RamoseEnv,
   db: string,
@@ -463,9 +382,6 @@ export async function fetchBasisWithStats(
 ): Promise<BasisFetch> {
   const useCache = basisCacheEnabled(request, env, options);
   const mode = options.cacheMode ?? cacheModeOf(request, env);
-  // Cache bypass alone is not a freshness fence: an open replica novelty
-  // socket can have missed a broadcast. Live renewals first read the writer's
-  // committed t, then require /basis to catch up through the transactor log.
   const transactorT = options.authoritativeFence === true
     ? await fetchTransactorT(env, db)
     : undefined;
@@ -492,14 +408,9 @@ export async function fetchBasisWithStats(
       headers: {
         ...coloHeader(request),
         ...internalHeaders(env),
-        // Replica pulls `(basisT, minT]` from the transactor /log when the
-        // novelty WS is open-but-stale. Polling /basis alone cannot recover.
         ...(minT === undefined ? {} : { "x-ramose-min-t": String(minT) }),
       },
     });
-    // Replica 503 "no root yet" must stay 503: wrapping it as Error → Internal
-    // 500 made e2e warmup treat a fresh database as a hard failure (the client
-    // retries 503 / 429, not application 500s).
     if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text() });
     basis = (await res.json()) as Basis;
     if (minT === undefined || basis.t >= minT || calls > MIN_T_RETRIES) break;
@@ -513,7 +424,6 @@ export async function fetchBasisWithStats(
     });
   }
   if (useCache) {
-    // never overwrite a newer entry (a concurrent refetch or a min-t poll may have raced us)
     const cur = basisCache.get(key);
     if (shouldReplaceCachedBasis(cur?.basis.t, basis.t)) {
       basisCache.set(key, { basis, at: Date.now() });
@@ -531,7 +441,6 @@ export async function fetchBasis(
   return (await fetchBasisWithStats(env, db, request, options)).basis;
 }
 
-/** Diagnostic response headers describing how the basis was obtained. */
 export function basisHeaders(
   request: Request,
   env: RamoseEnv,

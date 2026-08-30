@@ -1,12 +1,3 @@
-/**
- * The Worker's HTTP boundary is one Effect per request whose failures are
- * tagged (src/errors.ts). These tests pin the tag → status/body mapping to
- * the deliberately small public observation vocabulary, and check that
- * `Effect.catchTags` dispatches on every internal tag.
- *
- * index.ts itself cannot be imported here (it re-exports the DO classes, which
- * import `cloudflare:workers`), so the pure mapping is tested directly.
- */
 import { describe, expect, test } from "bun:test";
 import {
   QueryBudgetError,

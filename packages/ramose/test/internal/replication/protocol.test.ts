@@ -287,24 +287,21 @@ describe("replication frame codec", () => {
     const chunk = frames[1] as Extract<ReplicationFrame, { type: "SnapshotChunk" }>;
     const entity = chunk.datoms[0]!.entity;
     const handle = sealedHandle(entity);
-    // The binding is required, so a server that stopped emitting it is a
-    // protocol change this decoder refuses rather than silently tolerates.
+
     const { handles: _omitted, ...withoutHandles } = chunk;
     expect(Result.isFailure(decodeReplicationFrame(JSON.stringify(withoutHandles))))
       .toBe(true);
     for (
       const handles of [
-        // A wire identity that is not an opaque identity.
+
         [{ entity: "not-opaque", handle }],
-        // A respelled handle: the final character's padding bits must be zero,
-        // or one entity would have two spellings of one mutation target.
+
         [{ entity, handle: `${handle.slice(0, 54)}B` }],
         [{ entity, handle: handle.slice(0, 54) }],
         [{ entity, handle: `${handle}A` }],
-        // An excess property inside the binding.
+
         [{ entity, handle, eid: 1_000 }],
-        // Twice the datom bound is the ceiling: one subject and one reference
-        // per datom is every entity a frame can name.
+
         Array.from(
           { length: MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK * 2 + 1 },
           () => ({ entity, handle }),

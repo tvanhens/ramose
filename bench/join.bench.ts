@@ -1,9 +1,3 @@
-/**
- * M1 bench: 3-clause join over ~10k intermediate rows on a 1M-datom db.
- * Target: < 50 ms in Bun.
- *
- *   bun run bench/join.bench.ts [people=100000]
- */
 import { type QueryStats, query } from "../packages/ramose/src/internal/core/index.ts";
 import { buildBenchDb, fmt, percentile } from "./lib.ts";
 
@@ -12,21 +6,19 @@ const { conn, datoms, buildMs } = await buildBenchDb(people);
 const db = conn.db();
 console.log(`dataset: ${datoms.length.toLocaleString()} datoms (build ${fmt(buildMs, 0)} ms)`);
 
-// city-3 has people/10 = 10k entities (for 100k people) → clause 1 yields 10k rows,
-// clause 2 expands to ~30k (3 friends each), clause 3 looks up 30k names.
 const Q3 = `[:find ?n ?fn
              :where [?e :person/city "city-3"]
                     [?e :person/friends ?f]
                     [?f :person/name ?fn]
                     [?e :person/name ?n]]`;
-// A pure 3-clause variant (as in the spec): city → friends → friend name
+
 const Q3b = `[:find ?e ?fn
               :where [?e :person/city "city-3"]
                      [?e :person/friends ?f]
                      [?f :person/name ?fn]]`;
-// Aggregate over the same join
+
 const QAgg = `[:find (count ?f) . :where [?e :person/city "city-3"] [?e :person/friends ?f] [?f :person/active true]]`;
-// Input-driven seek join: 10k entity ids in, friend names out
+
 const QIn = `[:find ?e ?fn :in $ [?e ...] :where [?e :person/friends ?f] [?f :person/name ?fn]]`;
 
 async function bench(name: string, q: string, inputs: unknown[] = [], runs = 15) {

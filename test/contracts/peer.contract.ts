@@ -1,18 +1,11 @@
-/**
- * Peer behavioral contract — health stays open; `/db/*` is fail-closed
- * until verified JWT admission, an installed catalog, and a filtered `Db`.
- *
- * The same suite runs against Alchemy local mode and a deployed `RAMOSE_URL`.
- */
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { HttpError, Peer } from "../support/ramoseHttp.ts";
 
-/** Where the contract should run. `url` is read from test bodies. */
 export interface PeerTarget {
   readonly url: () => string;
   readonly token?: () => string | undefined;
   readonly enabled?: boolean;
-  /** Prefix for unique database names. @default `"e2e"` */
+
   readonly prefix?: string;
 }
 

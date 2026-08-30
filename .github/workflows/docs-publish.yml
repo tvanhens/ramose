@@ -1,22 +1,3 @@
-# Production publish of the docs site (website/): deploy the Alchemy `prod`
-# stage (assets-only Worker `ripple-docs`) on every push to master / main.
-#
-# State: the stack runs with ALCHEMY_STATE=local and the `.alchemy/` directory
-# is carried between runs via the Actions cache, so each publish updates the
-# same Worker. The physical name is pinned to `ripple-docs` in
-# website/alchemy.run.ts, so a cache miss still adopts the existing Worker
-# (`--adopt`) instead of minting a new workers.dev hostname.
-#
-# Custom domain: the site serves at https://ramose.ai — the default domain in
-# website/alchemy.run.ts (the zone is onboarded in the Cloudflare account;
-# Alchemy manages the DNS record and certificate). Set RAMOSE_DOCS_DOMAIN as a
-# variable on the Development environment to override the hostname;
-# RIPPLE_DOCS_DOMAIN is still read as a fallback so an already-configured repo
-# variable keeps working. The workers.dev URL
-# (https://ripple-docs.tvanhens.workers.dev) stays up as well.
-#
-# Credentials come from the GitHub Environment "Development" — same as
-# docs-preview.yml and e2e-cloudflare.yml; see CONTRIBUTING.md.
 name: Docs publish
 
 on:
@@ -63,7 +44,7 @@ jobs:
             exit 1
           fi
           bun alchemy deploy website/alchemy.run.ts --stage prod --yes --adopt | tee deploy.log
-          # Prefer the custom-domain URL; fall back to workers.dev.
+
           URL=$(grep -oE 'https://[^" ]+' deploy.log | grep -E 'ramose\.ai' | tail -1)
           if [ -z "$URL" ]; then
             URL=$(grep -oE 'https://[^" ]+' deploy.log | grep -E 'workers\.dev' | tail -1)

@@ -1,5 +1,3 @@
-/** Deterministic pure code-definition reachability for later catalog assembly. */
-
 import {
   resolveCodeDefinition,
   traitDefinitionOf,
@@ -64,11 +62,6 @@ const ownersOf = (entity: AnyEntity): readonly OperationOwner[] => {
   return [entity as OperationOwner, ...traits];
 };
 
-/**
- * Same-database schema closure. Operation write definitions are code
- * dependencies of the enclosing catalog unit, not separately runnable
- * catalogs. Paths are retained so a same-name conflict is deterministic.
- */
 export const collectDefinitionEntities = (
   definition: CodeDefinition,
 ): readonly ReachableEntity[] => {

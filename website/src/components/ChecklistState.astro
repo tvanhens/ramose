@@ -1,14 +1,5 @@
 ---
-// Makes a GFM task list on a docs page an actual checklist: the boxes are
-// clickable, the page says how far you are, and what you ticked survives a
-// reload. Import it on any page that uses `- [ ]` items (today:
-// guides/before-production).
-//
-// Markdown renders the boxes `disabled`, so with JavaScript off the page
-// degrades to exactly what it is now — a styled, unticked list, with no note
-// promising a memory it doesn't have. Storage is best-effort: if localStorage
-// throws (private mode, blocked cookies) the boxes still tick, they just
-// don't persist.
+
 ---
 
 <script>
@@ -27,8 +18,6 @@
       saved = {};
     }
 
-    // Key each box on its section heading plus its index within that section,
-    // so adding an item to one section never shifts another section's state.
     const seen = new Map();
     for (const box of boxes) {
       let node = box.closest("ul, ol");
@@ -36,7 +25,7 @@
       while (node) {
         node = node.previousElementSibling;
         if (!node) break;
-        // Starlight wraps each heading in a .sl-heading-wrapper div.
+
         const h = node.matches("h2, h3")
           ? node
           : node.querySelector(":scope > h2, :scope > h3");
@@ -59,7 +48,6 @@
       if (name) box.setAttribute("aria-label", name);
     }
 
-    // A one-line status, added only now that the boxes really work.
     const note = document.createElement("p");
     note.className = "rg-checklist-note";
     const count = document.createElement("span");
@@ -67,7 +55,7 @@
     reset.type = "button";
     reset.textContent = "Clear";
     note.append(count, document.createTextNode(" · this browser remembers "), reset);
-    // Under "You'll learn" if there is one, else straight above the list.
+
     const learn = scope.querySelector(".rg-learn");
     if (learn) learn.after(note);
     else {
@@ -86,9 +74,7 @@
       for (const box of boxes) if (box.checked) state[box.dataset.key] = true;
       try {
         localStorage.setItem(KEY, JSON.stringify(state));
-      } catch {
-        // no storage available: ticking still works for this visit
-      }
+      } catch {}
       render();
     };
 

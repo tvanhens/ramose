@@ -1,13 +1,3 @@
-# Ephemeral Cloudflare e2e: deploy a unique Alchemy stage, run test/e2e, destroy.
-#
-# Credentials come from the GitHub Environment "Development":
-#   CLOUDFLARE_API_TOKEN    — environment secret
-#   CLOUDFLARE_ACCOUNT_ID   — environment variable (or secret)
-# Optional:
-#   RAMOSE_TOKEN — only if the peer is deployed with bearer auth
-#
-# Same flow as `bun run test:e2e:cf` (scripts/e2e-cloudflare.sh). See
-# CONTRIBUTING.md for credentials and token permission groups.
 name: E2E Cloudflare
 
 on:
@@ -16,9 +6,6 @@ on:
     branches: [master]
   workflow_dispatch:
 
-# Stages already isolate Worker / DO / R2 (`ALCHEMY_STAGE` is unique per run).
-# Cancel in-flight runs only for the same PR/ref so a new push replaces an
-# older attempt without blocking other PRs or master.
 concurrency:
   group: e2e-cf-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -36,14 +23,12 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Deploy, e2e, destroy
         env:
-          # Account id is non-sensitive; prefer vars, fall back to secrets.
+
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          # The GitHub-side secret name is still RIPPLE_TOKEN (a human renames
-          # it in the Development environment); the env var the peer reads is
-          # RAMOSE_TOKEN.
+
           RAMOSE_TOKEN: ${{ secrets.RIPPLE_TOKEN }}
-          # Unique per run so concurrent/cancelled jobs never share state.
+
           ALCHEMY_STAGE: e2e-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then

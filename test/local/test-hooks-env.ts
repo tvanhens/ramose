@@ -1,4 +1,3 @@
-/** Enables the explicit testing Worker entry on local integration peers. */
 export const TEST_CAPABILITY = "ramose-local-test-capability-00000001";
 export const TEST_HOOKS_ENV = {
   RAMOSE_TEST_HOOKS: "1",

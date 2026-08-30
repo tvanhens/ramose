@@ -1,5 +1,3 @@
-/** Canonical unpadded base64url SHA-256 of one local JSON descriptor. */
-
 const utf8 = new TextEncoder();
 
 const base64Url = (bytes: Uint8Array): string => {
@@ -8,10 +6,6 @@ const base64Url = (bytes: Uint8Array): string => {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 };
 
-/**
- * Digest local selector material. Every caller supplies a domain-separated
- * descriptor, so no two local key families can collide.
- */
 export const localDigest = async (material: unknown): Promise<string> => {
   const digest = await crypto.subtle.digest(
     "SHA-256",

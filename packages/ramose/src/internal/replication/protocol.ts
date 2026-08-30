@@ -1,12 +1,3 @@
-/**
- * Versioned database-replication wire contract (#473).
- *
- * The public transport is newline-delimited JSON. Every decoder is strict and
- * bounded, and every data-bearing frame carries the authenticated opaque
- * partition selected by the server. Physical eids, attribute ids, transaction
- * positions, catalog proofs, and rule metadata are intentionally absent.
- */
-
 import * as Data from "effect/Data";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -14,40 +5,17 @@ import { ReadCompatibilityHash } from "../authorization/identities.ts";
 
 export const REPLICATION_PROTOCOL_VERSION = 1 as const;
 
-/**
- * The persisted *manifest* format, and nothing else.
- *
- * Local layers own this independently of the wire; it is never sent. Version 2
- * was the documentation-free replica schema with stable route slots; version 3
- * adds the persisted sealed-`EntityId` binding every replicated entity now
- * arrives with. A manifest stored without the binding cannot produce a mutation
- * target for a row it holds, and inventing one is exactly what the binding
- * exists to prevent, so version 3 resets the stored *values* — manifests,
- * heads, staging, nodes, credential bindings, cache candidates, route slots —
- * in one atomic upgrade transaction.
- *
- * It resets nothing else, and deliberately cannot. Queued invocations,
- * receipts, client refs, optimistic layers, and the durable lifecycle
- * generation records are separate families keyed by a separately versioned
- * `REPLICA_LIFECYCLE_KEY_VERSION`, so a manifest-format change can neither
- * clear them nor re-key them. That separation is load-bearing: a durable outbox
- * row carries the scope key it was written with, so a bump that moved the key
- * space would leave every existing row refusing its own acknowledgement.
- */
 export const REPLICA_STORAGE_VERSION = 3 as const;
 export const INITIAL_REPLICA_BUILD_ID = "ramose-client-v1" as const;
 
 export const MAX_REPLICATION_REQUEST_BYTES = 65_536;
 export const MAX_REPLICATION_FRAME_BYTES = 1_100_000;
 export const MAX_REPLICATION_PATH_SEGMENTS = 1_024;
-/** Maximum text carried by one scalar value or one large-value part. */
 export const MAX_REPLICATION_STRING_BYTES = 131_072;
-/** A non-final raw byte part is divisible by three, so base64 parts concatenate. */
 export const MAX_REPLICATION_RAW_VALUE_PART_BYTES = 98_304;
 export const MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK = 16;
 export const MAX_REPLICATION_DATOMS_PER_CHANGE = 256;
 export const MAX_REPLICATION_CHANGE_BYTES = 1_048_576;
-/** Silence is the v1 transport liveness policy; this pins a future fixed frame. */
 export const REPLICATION_KEEPALIVE_INTERVAL_MS = 15_000;
 
 const utf8 = new TextEncoder();
@@ -93,7 +61,6 @@ const GraphPath = Schema.Array(nonEmptyBoundedString(4_096)).check(
   Schema.isMaxLength(MAX_REPLICATION_PATH_SEGMENTS),
 );
 
-/** The client selects only a root-relative path, scope, and optional revision. */
 export const ActivationRequest = Schema.Struct({
   type: Schema.Literal("Activate"),
   protocol: Schema.Natural,
@@ -104,19 +71,10 @@ export const ActivationRequest = Schema.Struct({
 });
 export type ActivationRequest = typeof ActivationRequest.Type;
 
-/**
- * Ordered, opaque, server-authenticated identity of every authorized Graph
- * segment between the configured root and the target, root-child first. The
- * root activation carries an empty lineage. Values are domain-separated HMACs
- * over already-authorized server state: they expose no eid and no name, and the
- * server emits them only after authorizing the complete path they describe.
- * The client uses them solely to key local storage slots stably across renames.
- */
 const GraphLineage = Schema.Array(OpaqueReplicationId).check(
   Schema.isMaxLength(MAX_REPLICATION_PATH_SEGMENTS),
 );
 
-/** Server-selected cache partition. The authenticator covers the other fields. */
 export const ReplicationIdentity = Schema.Struct({
   version: Schema.Literal(1),
   server: OpaqueReplicationId,
@@ -175,15 +133,6 @@ const positiveNatural = Schema.Natural.check(Schema.makeFilter(
   { expected: "a positive safe integer" },
 ));
 
-/**
- * Canonical unpadded base64url of the 41-byte sealed `EntityId` envelope.
- *
- * Mirrors `SEALED_ENTITY_ID_PATTERN` in the engine's entity-id codec and
- * `ENTITY_ID_PATTERN` in `ramose/db`; a unit test asserts the three never drift
- * apart. The final character's low two bits are padding over 41 bytes, so only
- * the sixteen alphabet positions divisible by four are canonical there —
- * accepting the rest would let one entity's handle be respelled.
- */
 export const SEALED_ENTITY_HANDLE_PATTERN = /^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/;
 
 export const SealedEntityHandle = Schema.String.check(
@@ -191,34 +140,12 @@ export const SealedEntityHandle = Schema.String.check(
 );
 export type SealedEntityHandle = typeof SealedEntityHandle.Type;
 
-/**
- * The sealed cross-view handle for one entity named by a data-bearing frame.
- *
- * `entity` is the same one-way wire identity the frame's datoms use. That
- * identity is scoped by the whole replication authenticator, so it rotates with
- * the catalog, the read view, and the schema, and it is what keeps two
- * partitions of one database unlinkable. `handle` is the reversible sealed
- * `EntityId` bound to the *stable* `{ server, principal, database }` scope: the
- * durable mutation target, and the identity a benign read-view rotation
- * preserves.
- *
- * Both are derived from the same private eid and neither exposes it. The
- * binding is additive and is emitted only inside an authenticated stream the
- * server has already authorized end to end, so it discloses nothing to anyone
- * but the partition owner — who may already mint the same handle by invoking an
- * operation that returns the entity.
- */
 export const EntityHandleBinding = Schema.Struct({
   entity: OpaqueReplicationId,
   handle: SealedEntityHandle,
 });
 export type EntityHandleBinding = typeof EntityHandleBinding.Type;
 
-/**
- * Stored strings and byte arrays are not write-bounded by the database. A
- * snapshot therefore fragments a large logical value across independently
- * bounded frames. `identity` groups the parts without exposing a physical id.
- */
 export const SnapshotStringValuePart = Schema.Struct({
   type: Schema.Literal("string-part"),
   identity: OpaqueReplicationId,
@@ -285,10 +212,6 @@ export const SnapshotStart = Schema.Struct({
 });
 export type SnapshotStart = typeof SnapshotStart.Type;
 
-/**
- * One datom names at most two entities — its subject and, for a reference, its
- * value — so a frame can never bind more handles than twice its datom bound.
- */
 const handleBindings = (datoms: number) =>
   Schema.Array(EntityHandleBinding).check(Schema.isMaxLength(datoms * 2));
 
@@ -301,7 +224,6 @@ export const SnapshotChunk = Schema.Struct({
   datoms: Schema.Array(SnapshotDatom).check(
     Schema.isMaxLength(MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK),
   ),
-  /** One binding per distinct entity this chunk's datoms name. */
   handles: handleBindings(MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK),
 });
 export type SnapshotChunk = typeof SnapshotChunk.Type;
@@ -325,12 +247,10 @@ export const Change = Schema.Struct({
   datoms: Schema.Array(LogicalDatom).check(
     Schema.isMaxLength(MAX_REPLICATION_DATOMS_PER_CHANGE),
   ),
-  /** One binding per distinct entity this change's datoms name. */
   handles: handleBindings(MAX_REPLICATION_DATOMS_PER_CHANGE),
 });
 export type Change = typeof Change.Type;
 
-/** One-shot proof that a supplied committed revision is still current. */
 export const ResumeReady = Schema.Struct({
   type: Schema.Literal("ResumeReady"),
   protocol: Schema.Literal(REPLICATION_PROTOCOL_VERSION),
@@ -339,7 +259,6 @@ export const ResumeReady = Schema.Struct({
 });
 export type ResumeReady = typeof ResumeReady.Type;
 
-/** One opaque reset shape for unavailable bases and partition transitions. */
 export const Reset = Schema.Struct({
   type: Schema.Literal("Reset"),
   protocol: Schema.Literal(REPLICATION_PROTOCOL_VERSION),
@@ -347,7 +266,6 @@ export const Reset = Schema.Struct({
 });
 export type Reset = typeof Reset.Type;
 
-/** Fixed shape, fixed cadence if ever enabled. V1 servers choose silence. */
 export const KeepAlive = Schema.Struct({
   type: Schema.Literal("KeepAlive"),
   protocol: Schema.Literal(REPLICATION_PROTOCOL_VERSION),
@@ -453,7 +371,6 @@ export const encodeActivationRequest = (request: ActivationRequest): string => {
 const encodeReplicationFrameUnchecked = (frame: ReplicationFrame): string =>
   JSON.stringify(Schema.encodeUnknownSync(ReplicationFrame)(frame));
 
-/** Validate a frame and measure its complete JSON envelope against the wire bound. */
 export const replicationFrameFitsBound = (frame: ReplicationFrame): boolean =>
   utf8.encode(encodeReplicationFrameUnchecked(frame)).byteLength <=
     MAX_REPLICATION_FRAME_BYTES;
@@ -482,7 +399,6 @@ export type ReplicaCompatibilityDecision =
   | "read-compatibility-reset"
   | "read-view-reset";
 
-/** The layer that owns an incompatibility is selected before any wire resume. */
 export const decideReplicaCompatibility = (
   stored: ReplicaVersionMetadata,
   current: ReplicaVersionMetadata,

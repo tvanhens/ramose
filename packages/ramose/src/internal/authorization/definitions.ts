@@ -1,5 +1,3 @@
-/** Immutable permanent-key catalog-definition assembly (#323). */
-
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
@@ -79,22 +77,18 @@ export type InstalledCatalogDefinition = {
   readonly unitHash: CatalogUnitHash;
   readonly unit: InstalledCatalogUnitV2;
   readonly composition: CompositionIndex;
-  /** Sealed descriptors paired with private native codecs and executables. */
   readonly operations: readonly DeployedOperationBinding[];
   readonly path: readonly string[];
-  /** Resolve authoritative creation values from assembly's binding snapshot. */
   readonly resolveCreationValues: (
     entityName: string,
     input: Readonly<Record<string, unknown>>,
     context: CreationDefaultContext,
     options?: CompiledCreationOptions,
   ) => Readonly<Record<string, unknown>>;
-  /** Exact private field codec/fixed binding captured from deployed code. */
   readonly requireFieldRuntime: (
     entityName: string,
     fieldIdent: string,
   ) => InstalledFieldRuntime;
-  /** Validate one definition-directed stored value with its deployed codec. */
   readonly validateFieldValue: (
     fieldIdent: string,
     value: unknown,
@@ -119,10 +113,6 @@ export type DeployedCatalogDefinition = {
   readonly definition: InstalledCatalogDefinition;
 };
 
-/**
- * Immutable deployment-owned database -> runnable definition binding. The
- * request may prove the catalog key/hash, but it never selects this pairing.
- */
 export type DeployedCatalogDefinitions = {
   readonly catalogs: DeployedCatalogs;
   readonly requireDatabase: (
@@ -138,7 +128,6 @@ export type CatalogDefinitionBoundRef = {
 
 export type AssembleCatalogDefinitionsInput = {
   readonly root: CatalogDefinition;
-  /** SHA-256 identity of the immutable deployment containing these definitions. */
   readonly artifactHash: DigestHex;
 };
 
@@ -178,7 +167,6 @@ const fromPure = <A>(label: string, evaluate: () => A): Effect.Effect<A, Invalid
     ),
   });
 
-
 const jsonValue = (value: unknown): JsonValue => {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
     return value;
@@ -203,7 +191,6 @@ const jsonValue = (value: unknown): JsonValue => {
   throw new Error("catalog fixed values must encode as finite stored data");
 };
 
-/** Type-explicit encoding prevents Date/bytes from colliding with JSON lookalikes. */
 const creationInputHashValue = (value: unknown): JsonValue => {
   if (value === null) return { _tag: "null" };
   if (typeof value === "string") return { _tag: "string", value };
@@ -232,7 +219,6 @@ const creationInputHashValue = (value: unknown): JsonValue => {
   throw new Error("creation default inputs must encode as supported canonical data");
 };
 
-/** Canonical identity derived from the same copied records as the runtime plan. */
 const creationHashMaterial = (
   artifactHash: DigestHex,
   plans: readonly CompiledCreationPlan[],
@@ -280,7 +266,6 @@ const creationHashMaterial = (
       bindings: plan.bindings,
     })),
 });
-
 
 const normalizeDefinitionSnapshot = (
   reachable: ReachableCodeDefinition,
@@ -350,7 +335,6 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
     ));
     const descriptorWithoutFingerprint = {
       ...tables,
-      // Definition-local seal target. Concrete DatabaseId binding is #459.
       database: DatabaseId.make(`catalog-definition:${snapshot.key}`),
       version,
       fingerprint: SchemaFingerprint.make("pending"),
@@ -478,7 +462,6 @@ const buildRegistry = (
   keys: () => Object.freeze([...byKey.keys()].sort(compareText)),
 });
 
-/** Resolve a definition and require its exact immutable unit hash. */
 export const resolveCatalogDefinition = (
   definitions: CatalogDefinitions,
   ref: CatalogDefinitionBoundRef,
@@ -491,11 +474,6 @@ export const resolveCatalogDefinition = (
   return definition;
 });
 
-/**
- * Startup/orchestration shell. Reachability, closure, lookup, and agreement
- * stay pure; hashing, operation lowering, policy install, and sealing use one
- * Effect boundary.
- */
 export const assembleCatalogDefinitions = Effect.fn(
   "Authorization.assembleCatalogDefinitions",
 )(function* (
@@ -532,11 +510,6 @@ export const assembleCatalogDefinitions = Effect.fn(
   return buildRegistry(CatalogId.make(reachability.root.key), Object.freeze(byKey));
 });
 
-/**
- * Bind assembled runnable definitions to concrete route databases once at
- * deployment startup. This is deliberately not a request or module-global
- * registration API.
- */
 export const deployCatalogDefinitions = (
   definitions: CatalogDefinitions,
   deployments: readonly CatalogDefinitionDeployment[],
@@ -592,7 +565,6 @@ export const deployCatalogDefinitions = (
     return Object.freeze({ catalogs, requireDatabase, databases });
   });
 
-/** Database-first resolution of one exact runnable deployed definition. */
 export const resolveDeployedCatalogDefinition = (
   deployed: DeployedCatalogDefinitions,
   ref: CatalogBoundRef,

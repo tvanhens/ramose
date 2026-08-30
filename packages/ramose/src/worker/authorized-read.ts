@@ -1,9 +1,3 @@
-/**
- * HTTP one-shot read admission: parse the public query/pull/entity shapes
- * and acquire current {@link Db} by the trusted route database. Execution
- * is {@link executeAuthorizedRead} on the filtered request value.
- */
-
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -72,7 +66,6 @@ export const parseCatalogProof = (
   return Result.succeed({ catalogKey: catalogKey.success, unitHash: hash.success });
 };
 
-/** Decode the mutable Graph-name address without interpreting joined strings. */
 export const parseGraphPath = (
   body: Record<string, unknown> | undefined,
   search: URLSearchParams,
@@ -105,7 +98,6 @@ export const parseGraphPath = (
   return Result.succeed(Object.freeze(segments));
 };
 
-/** Nested routes are server-bound and reject caller-supplied child proofs. */
 export const parseCatalogProofForPath = (
   path: readonly string[],
   body: Record<string, unknown> | undefined,
@@ -217,7 +209,6 @@ const entityFromPath = (rest: string): Result.Result<OneShotRead, Unauthorized> 
   return Result.succeed({ kind: "entity", ref: Number(match[1]) });
 };
 
-/** Decode the HTTP body with the established `$inst` / `$bytes` / `$uuid` wire contract. */
 export const readJsonObject = (
   request: Request,
 ): Effect.Effect<Record<string, unknown>, BadRequest> =>
@@ -251,8 +242,6 @@ export const parseOneShotReadRequest = Effect.fn("parseOneShotReadRequest")(func
   return { read, view: viewOf(body, url.searchParams), path, ...proof };
 });
 
-/** Fetch the route-database snapshot. Replica 503 and other storage
- *  failures stay classified; they are not rewritten as Unauthorized. */
 export const acquireCurrentDb = (
   env: RamoseEnv,
   request: Request,
@@ -273,11 +262,6 @@ export const acquireCurrentDb = (
       catch: (cause) => fromThrown(cause),
     });
 
-/**
- * Narrow internal provisioning capability for an already authorized child.
- * The Transactor independently rebuilds the sealed route and installs only
- * its definition-directed physical attribute schema.
- */
 export const provisionResolvedDatabase = (
   env: RamoseEnv,
   route: ResolvedDatabaseRoute,
@@ -306,7 +290,6 @@ export const provisionResolvedDatabase = (
     catch: (cause) => fromThrown(cause),
   });
 
-/** Build repeated live values from the basis carried by the replica watch. */
 export const acquireWatchedDb = (
   env: RamoseEnv,
   currentBasis: () => Basis | undefined,

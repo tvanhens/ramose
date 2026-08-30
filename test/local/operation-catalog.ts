@@ -1,5 +1,3 @@
-/** Public operation definitions shared by the local Worker bundle and tests. */
-
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
@@ -104,12 +102,7 @@ export const Other = Entity("nativeOther", { name: Field.unique(string(), "stric
         return { id: op.create({ name: input.name }) };
       },
     }),
-    /**
-     * `nativeOther` is readable by `reader` only, while this is invocable by
-     * `member` — so a member can mint a sealed handle it cannot then target.
-     * That is the sealed-target admission rerun (#475 WR-9): resolution
-     * succeeds and visibility still refuses.
-     */
+
     createAllocating: Operation({
       self: false,
       allocates: { other: ["id"] },
@@ -146,12 +139,7 @@ export const Item = Entity("nativeItem", {
         return { id: op.create({ title: input.title }) };
       },
     }),
-    /**
-     * The same contract as `create` plus one named client-ref allocation slot
-     * bound to its declared entity-reference output position (#475). It is a
-     * separate operation so `create`'s pinned {@link OperationVersion} — which
-     * several compatibility tests reconstruct independently — does not move.
-     */
+
     createAllocating: Operation({
       self: false,
       allocates: { item: ["id"] },
@@ -161,12 +149,7 @@ export const Item = Entity("nativeItem", {
         return { id: op.create({ title: input.title }) };
       },
     }),
-    /**
-     * Declares a slot but returns its own pre-existing target at the declared
-     * path. The authoritative edge must refuse this before the commit: binding
-     * a fresh, immutable `ClientRef` to an entity this transaction did not
-     * allocate would redirect every later offline write onto that row (#475).
-     */
+
     misallocating: Operation({
       allocates: { item: ["id"] },
       input: EffectSchema.Struct({ title: EffectSchema.String }),
@@ -184,21 +167,7 @@ export const Item = Entity("nativeItem", {
         return { id: op.self, title: input.title };
       },
     }),
-    /**
-     * The shape a dependent offline invocation has: no target at all, the
-     * entity it acts on arriving at a *declared* entity-reference input
-     * position (#475 WR-17).
-     *
-     * `note` is an ordinary string beside it, and the tests put a genuine
-     * sealed handle there: a position the deployed input shape does not
-     * declare as a ref is data, so the handle must come back verbatim rather
-     * than opened.
-     *
-     * It returns the same entity at a declared output reference position, so
-     * one invocation exercises both directions: the handle opened inbound and
-     * the eid sealed outbound must be byte-identical, which they can only be
-     * if both ran under the one epoch this request agreed on.
-     */
+
     retitleByRef: Operation({
       self: false,
       input: EffectSchema.Struct({
@@ -320,7 +289,6 @@ export const Item = Entity("nativeItem", {
   }),
 });
 
-/** Composed by `nativeEncoded` and granted to nobody: its field is unreadable. */
 export const SealedTrait = Trait("nativeSealed", { sealedNote: string() });
 
 const encodedRow = (label: string) => ({
@@ -334,40 +302,21 @@ const encodedRow = (label: string) => ({
   rowScoped: "row-scoped",
 });
 
-/**
- * Field types JSON cannot represent natively, so a transport that forgets the
- * engine's canonical `$inst` / `$uuid` / `$bytes` encoding is caught rather
- * than silently mangling the value.
- */
 export const Encoded = Entity("nativeEncoded", {
   label: string(),
   at: timestamp(),
   blob: bytes(),
   key: uuid(),
-  /** Declared on a readable entity but denied to `member` by policy. */
+
   secret: string(),
-  /** Readable only by a principal whose `tenant` claim is `acme`. */
+
   tenantOnly: string(),
-  /**
-   * Readable only where the row's own `label` matches the caller's `tenant`
-   * claim — decidable per row, never from the principal alone, so the static
-   * layer must defer it to the deployed filter.
-   */
+
   rowScoped: string(),
 }, {
   traits: [SealedTrait],
   operations: (Operation) => ({
-    /**
-     * An `Unknown` output contract proves nothing about its interior, so
-     * whatever it carries has to be withheld.
-     *
-     * The returned number stands in for a storage id: the Transactor refuses
-     * to transport a live entity handle through an undeclared output at all
-     * ("operation output changes during JSON transport"), so an id can only
-     * reach an opaque contract as a plain number like this one. The exact
-     * value is immaterial — the projection is contract-only and never reads
-     * it; the unit tests pin the `{ principalEid: <eid> }` shape directly.
-     */
+
     opaqueOutcome: Operation({
       self: false,
       input: EffectSchema.Struct({ label: EffectSchema.String }),
@@ -385,10 +334,7 @@ export const Encoded = Entity("nativeEncoded", {
         return { id: op.create(encodedRow(input.label)) };
       },
     }),
-    /**
-     * Same reference-shaped output, published under a codec-renamed key. The
-     * declared shape says `id`; the wire says `wire_id`.
-     */
+
     createRenamed: Operation({
       self: false,
       input: EffectSchema.Struct({ label: EffectSchema.String }),
@@ -438,14 +384,11 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     Policy.invoke(Other[OwnedOperations].create).when(Policy.hasClass("member")),
     Policy.read(Encoded).when(Policy.hasClass("member")),
     Policy.read(Encoded.secret).deny(Policy.hasClass("member")),
-    // Decidable from the principal alone: no row is consulted to know whether
-    // this caller's `tenant` claim is `acme`.
+
     Policy.read(Encoded.tenantOnly).when(
       Policy.eq(Policy.claim("tenant"), "acme"),
     ),
-    // Row-dependent: no label in this fixture ever equals a caller's claim,
-    // so the field is hidden on every row while remaining undecidable from
-    // the principal alone.
+
     Policy.read(Encoded.rowScoped).when(
       Policy.eq(Encoded.label, Policy.claim("tenant")),
     ),

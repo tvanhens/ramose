@@ -1,15 +1,9 @@
-/**
- * In-memory `R2Like` for tests and benches (same semantics as the R2 binding
- * as far as Ramose uses it: get/put/head/delete/list with prefix + cursor).
- */
 import type { R2Like } from "./index.ts";
 
-/** In-memory R2Like. */
 export class MemoryBucket implements R2Like {
   readonly objects = new Map<string, { body: Uint8Array; meta?: unknown }>();
   puts = 0;
   gets = 0;
-  /** every key passed to get(), in order (instrumentation) */
   readonly getLog: string[] = [];
   async get(key: string) {
     this.gets++;
@@ -49,4 +43,3 @@ export class MemoryBucket implements R2Like {
     };
   }
 }
-

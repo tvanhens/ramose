@@ -1,11 +1,3 @@
-/**
- * Lower public entity/trait-owned operations into catalog-local data.
- *
- * One synchronous snapshot captures inert descriptor material, compiles
- * authoritative codecs, and retains the original deployed run function before
- * hashing yields. Executable code remains a private in-memory binding.
- */
-
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -92,15 +84,11 @@ export type DeployedOperationDefinition = {
   readonly inputSchemaHash: DigestHex;
   readonly outputSchemaHash: DigestHex;
   readonly doc: string | undefined;
-  /** Build-artifact identity of the executable paired during assembly. */
   readonly implementationHash: DigestHex;
-  /** All deployed entity definitions retained only in deployed memory. */
   readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
-  /** Original function from the deployed application module. Never serialized. */
   readonly run: DeployedOperationRun;
 };
 
-/** One sealed inert descriptor paired with its private deployed capabilities. */
 export type DeployedOperationBinding = {
   readonly descriptor: OperationDescriptorType;
   readonly input: DeployedOperationCodec;
@@ -140,7 +128,6 @@ export type OwnedOperationSnapshot = {
   readonly implementationHashMaterial: JsonValue;
   readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
   readonly revision: number;
-  /** Deployment-free descriptor hashed into the operation-scoped version. */
   readonly versionDescriptor: OperationVersionDescriptor;
 };
 
@@ -165,11 +152,6 @@ const hasCodec = (value: unknown): value is DeployedOperationCodec =>
   typeof (value as { readonly decode?: unknown }).decode === "function" &&
   typeof (value as { readonly encode?: unknown }).encode === "function";
 
-/**
- * Pair private codecs and executables with the exact inert descriptors sealed
- * into a unit. Missing, duplicate, non-executable, or cross-build bindings fail
- * startup.
- */
 export const pairDeployedOperations = (
   descriptors: readonly OperationDescriptorType[],
   definitions: readonly DeployedOperationDefinition[],
@@ -437,7 +419,6 @@ const primitiveShape = (ast: SchemaAST.AST): OperationInputShape | undefined => 
   }
 };
 
-/** Remove Effect struct-key wrappers while retaining their inner ref metadata. */
 const unwrapPropertySchema = (schema: Schema.Top): Schema.Top => {
   let current = schema;
   const seen = new Set<Schema.Top>();
@@ -540,7 +521,6 @@ const schemaContainsRamoseRef = (
   ].some((child) => schemaContainsRamoseRef(child, next));
 };
 
-/** Conservative policy-visible projection of an Effect Schema. */
 export const lowerOperationSchema = (
   catalog: CatalogId,
   schema: Schema.Top,
@@ -591,10 +571,6 @@ export const lowerOperationSchema = (
       items: lowerOperationSchema(catalog, record.value, next),
     };
   }
-  // Effect transformations expose their decoded schema as `to`. Operation
-  // bodies and the authoritative ref filter both work on that decoded value;
-  // the original codec remains responsible for the potentially different
-  // wire representation.
   if (record.to !== undefined && record.to !== schema) {
     return lowerOperationSchema(catalog, record.to, next);
   }
@@ -763,9 +739,6 @@ export const snapshotOwnedOperations = (
         writes,
         composers,
         revision,
-        // Deployment-free by construction: only the semantic identity, the
-        // declared contracts, the public precondition/allocation behavior,
-        // and the author-declared revision reach the version digest.
         versionDescriptor: deepFreeze({
           catalog,
           owner: { ...draft.ownerRef },
@@ -782,9 +755,6 @@ export const snapshotOwnedOperations = (
           },
           composers: composers.map((entity) => entity.name),
           writes: writes.map((entity) => entity.name),
-          // Inert declaration only: slot names and the output paths they bind.
-          // It rotates the version because a queued invocation pins that
-          // version before it can be submitted.
           allocations: operation.allocations ?? [],
         }) as OperationVersionDescriptor,
         inputShape: deepFreeze(inputShape),
@@ -805,13 +775,6 @@ export const snapshotOwnedOperations = (
     return Object.freeze(snapshots);
   });
 
-/**
- * Deterministically lower every operation reachable from one catalog's schema
- * components. Repeated reachability of the same definition is idempotent;
- * owner/local collisions between different definitions fail. `artifactHash`
- * must identify the immutable deployment. All caller-owned values are
- * synchronously normalized before the first hashing effect can yield.
- */
 export const lowerOwnedOperationSnapshots = Effect.fn(
   "Authorization.lowerOwnedOperationSnapshots",
 )(
@@ -843,8 +806,6 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
         bodyHash: implementationHash,
         composers: snapshot.composers,
         writes: snapshot.writes,
-        // Exactly the list already folded into `version`; omitted when empty so
-        // an operation that allocates nothing keeps its previous descriptor.
         ...(snapshot.versionDescriptor.allocations.length === 0 ? {} : {
           allocations: snapshot.versionDescriptor.allocations.map(
             (allocation) => ({ slot: allocation.slot, path: [...allocation.path] }),
@@ -885,7 +846,6 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
   },
 );
 
-/** Convenience boundary for callers that do not need to stage all snapshots. */
 export const lowerOwnedOperations = Effect.fn("Authorization.lowerOwnedOperations")(
   function* (
     catalog: CatalogId,

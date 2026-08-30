@@ -1,9 +1,3 @@
-/**
- * Basis-cache behavior through the real local Worker and Replica Durable
- * Object namespace. `/__test__/basis` invokes the production cache/fetch
- * implementation; it never fabricates a replica response.
- */
-
 import { describe, expect, test } from "bun:test";
 import { attr, testAdmin, uniqueDb, type LocalUrls } from "./fixtures.ts";
 

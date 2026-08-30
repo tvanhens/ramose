@@ -1,37 +1,12 @@
 import type { JsonValue } from "./json.ts";
 
-/**
- * Canonical JSON profile for authorization identities.
- *
- * Versioned contract: `rfc8785-jcs/1`.
- *
- * This is RFC 8785 JSON Canonicalization Scheme (JCS), restricted to
- * `JsonValue` already accepted by the structural codecs: finite numbers
- * only, no holes, no functions, no `undefined`.
- *
- * Members are emitted in RFC 8785 UTF-16 code-unit order. The writer
- * never rebuilds an object, so it does not lose an own `__proto__` key
- * or fall back to JavaScript integer-index enumeration order.
- *
- * Changing this profile after installed policies exist would invalidate
- * persistent `RuleId` / `PolicyHash` identities. Do not vary it in place.
- */
 export const AUTHORIZATION_CANONICAL_JSON_VERSION = "rfc8785-jcs/1" as const;
 
-/**
- * RFC 8785 §3.2.3: lexicographic order of UTF-16 code units, not Unicode
- * code points. Matches ECMAScript `<` on strings.
- */
 export const compareCanonicalKeys = (left: string, right: string): number =>
   left < right ? -1 : left > right ? 1 : 0;
 
 const hex4 = (code: number): string => code.toString(16).padStart(4, "0");
 
-/**
- * RFC 8785 §3.2.2.2: lone surrogates MUST terminate. A trailing unpaired
- * high surrogate is `NaN` from `charCodeAt(i + 1)` — compare with a
- * positive range check, not `next < low || next > high`.
- */
 export const hasLoneSurrogate = (value: string): boolean => {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
@@ -46,12 +21,6 @@ export const hasLoneSurrogate = (value: string): boolean => {
   return false;
 };
 
-/**
- * RFC 8785 §3.2.2.2 / ECMA-262 JSON.stringify string serialization.
- * Predefined controls use `\b \t \n \f \r`; remaining U+0000–U+001F use
- * lowercase `\uhhhh`. `"` and `\` are escaped; every other code unit is
- * copied as-is.
- */
 const escapeRfc8785String = (value: string): string => {
   if (hasLoneSurrogate(value)) {
     throw new TypeError("ramose/authorization: canonicalizeJson rejects lone surrogates");
@@ -92,10 +61,6 @@ const escapeRfc8785String = (value: string): string => {
   return `${out}"`;
 };
 
-/**
- * RFC 8785 §3.2.2.3: ECMAScript NumberToString, with `-0` emitted as `0`.
- * Callers have already rejected non-finite numbers.
- */
 const serializeRfc8785Number = (value: number): string => {
   if (Object.is(value, -0) || value === 0) return "0";
   return String(value);
@@ -132,10 +97,4 @@ const writeRfc8785 = (value: JsonValue): string => {
   return `${out}}`;
 };
 
-/**
- * Emit RFC 8785 JCS text for schema-encoded, validated JSON.
- *
- * Do not pass arbitrary `unknown` values. `JSON.stringify` would drop
- * functions/`undefined`, convert array holes, and invoke getters.
- */
 export const canonicalizeJson = (json: JsonValue): string => writeRfc8785(json);

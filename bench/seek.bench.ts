@@ -1,9 +1,3 @@
-/**
- * M1 bench: single seek latency (warm) on a 1M-datom in-memory database.
- * Target: < 10 µs per seek.
- *
- *   bun run bench/seek.bench.ts [people=100000]
- */
 import { Index, seekOne, ValueTag } from "../packages/ramose/src/internal/core/index.ts";
 import { ATTR, FIRST_PERSON, buildBenchDb, fmt, mulberry32, percentile } from "./lib.ts";
 
@@ -18,13 +12,13 @@ const ITER = 200_000;
 const targets = Array.from({ length: ITER }, () => FIRST_PERSON + Math.floor(r() * people));
 
 async function bench(name: string, fn: (i: number) => Promise<unknown>, iters = ITER) {
-  // warm-up
+
   for (let i = 0; i < 20_000; i++) await fn(i);
   const t0 = performance.now();
   for (let i = 0; i < iters; i++) await fn(i);
   const total = performance.now() - t0;
   const per = (total * 1000) / iters;
-  // sample per-op distribution
+
   const samples: number[] = [];
   for (let i = 0; i < 20_000; i++) {
     const s = performance.now();

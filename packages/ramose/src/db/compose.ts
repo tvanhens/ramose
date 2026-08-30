@@ -1,10 +1,3 @@
-/**
- * Trait composition: flatten, diamonds, cycles, collisions.
- *
- * Structural — Entity and Trait both satisfy {@link ComposerLike}. Kept
- * out of those modules so they do not import each other at runtime.
- */
-
 import { conflictingIdent } from "./IdentName.ts";
 import {
   isBindableTrait,
@@ -18,7 +11,6 @@ export type ComposerLike = {
   readonly traits?: readonly ComposerLike[];
 };
 
-/** Runtime composition list. Not on the Entity type — keeps Entity assignable. */
 export const traitsOf = (composer: unknown): readonly ComposerLike[] => {
   if (
     (typeof composer !== "object" && typeof composer !== "function") ||
@@ -60,7 +52,6 @@ export const entityTraitNameClash = (ns: string): Error =>
     `ramose/schema: ${JSON.stringify(ns)} is both an entity and a trait`,
   );
 
-/** Direct traits, then every reachable trait once (post-order). Cycles throw. */
 export const walkTraits = (
   traits: readonly ComposerLike[] | undefined,
 ): {
@@ -90,10 +81,6 @@ export const walkTraits = (
   return { direct, all };
 };
 
-/**
- * Flatten stamped fields onto a composer. Same field object (a diamond)
- * is idempotent; two different fields on one key throw.
- */
 export const mergeComposerFields = <F>(
   ...maps: ReadonlyArray<Readonly<Record<string, F>>>
 ): Record<string, F> => {
@@ -138,7 +125,6 @@ export const transitiveTraitIdents = (
   return out;
 };
 
-/** Reachable traits from a set of entities, keyed by ns. Duplicate ns clash. */
 export const reachableTraits = (
   entities: Iterable<ComposerLike>,
 ): ReadonlyMap<string, ComposerLike> => {
@@ -159,7 +145,6 @@ export const reachableTraits = (
   return byNs;
 };
 
-/** Same ident on two different field objects is a catalog conflict. */
 export const assertUniqueIdents = (
   entities: Iterable<ComposerLike>,
 ): void => {

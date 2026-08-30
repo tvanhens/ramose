@@ -1,13 +1,3 @@
-/**
- * @internal Everything `db/` declares, flat.
- *
- * Not a package `exports` entry: the public surface is `./index.ts`
- * (`ramose/db`). This module exists so sibling modules and the tests
- * can reach the inferred / internal names — `AnySchema`, `EntityMap`,
- * `lowerQueryObject`, `Expect`/`Equal` — without each of them
- * naming a dozen files.
- */
-
 export * from "./Field.ts";
 export * from "./Binding.ts";
 export * from "./creation.ts";
@@ -81,9 +71,6 @@ export {
 } from "./query/index.ts";
 export * from "./Tx.ts";
 export * from "./allocations.ts";
-// `EntityId` is re-declared by `Operation.ts` alongside its schema value, so
-// it is deliberately absent here: two star exports of one name resolve to
-// neither.
 export {
   clientRef,
   entityIdEnvelope,
@@ -104,7 +91,4 @@ export {
 } from "./refs.ts";
 export * from "./Operation.ts";
 export * from "./valueTypes.ts";
-// Field-returning `Ref` (eager entity / thunk / self) wins over the
-// schema helper of the same name. `Field(Ref(User))` still works because
-// `Field` accepts a Field.
 export { Ref } from "./Field.ts";

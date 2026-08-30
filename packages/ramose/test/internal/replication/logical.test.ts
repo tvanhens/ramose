@@ -29,7 +29,7 @@ const sealing: ServerSealingKey = {
 };
 
 const opaque = (character: string): string => character.repeat(43);
-/** The stable scope every sealed handle in this stream is bound to. */
+
 const scope = {
   server: opaque("A"),
   principal: opaque("B"),
@@ -193,34 +193,22 @@ describe("large logical replication values", () => {
   });
 });
 
-/**
- * The carriage itself, against the real codecs: no fixture handle appears here,
- * because the claim is that the handle replication emits is the one the sealing
- * root actually mints for that eid in that scope.
- */
 describe("the sealed EntityId logical replication carries", () => {
   test("is the real seal of the private eid, opened by the real resolver", async () => {
     const encoder = makeLogicalIdentityEncoder(sealing, opaque("Z"), scope);
     const minted = await encoder.entity(1_042);
 
-    // The wire identity and the handle are different derivations of one eid,
-    // and neither is the other.
     expect(minted.identity).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(isEntityId(minted.handle)).toBe(true);
     expect(minted.handle).not.toBe(minted.identity);
 
-    // The handle opens — to exactly the eid, under exactly this scope.
     expect(await openEntityId(sealing, scope, minted.handle))
       .toEqual({ type: "resolved", eid: 1_042, scope });
 
-    // Deterministic per (root, scope, eid): the same entity in a second stream
-    // is the same handle, which is what makes it a durable mutation target.
     const second = makeLogicalIdentityEncoder(sealing, opaque("Y"), scope);
     const again = await second.entity(1_042);
     expect(again.handle).toBe(minted.handle);
-    // …while the wire identity is scoped by the whole authenticator, so a
-    // second partition of the same database names the entity differently. That
-    // is the unlinkability the handle is deliberately additive to.
+
     expect(again.identity).not.toBe(minted.identity);
   });
 
@@ -231,11 +219,9 @@ describe("the sealed EntityId logical replication carries", () => {
       principal: opaque("X"),
     });
     const minted = await mine.entity(1_042);
-    // A different principal reading the same row is handed a different handle,
-    // and the one it was handed is not the one this principal holds.
+
     expect((await theirs.entity(1_042)).handle).not.toBe(minted.handle);
-    // And the handle this principal holds is a payload-free denial there —
-    // indistinguishable from not-found, exactly as the seal requires.
+
     expect(await openEntityId(sealing, { ...scope, principal: opaque("X") }, minted.handle))
       .toEqual({ type: "denied" });
   });
@@ -257,8 +243,7 @@ describe("the sealed EntityId logical replication carries", () => {
         { entity: referenced.identity, handle: referenced.handle },
       ],
     };
-    // Both ends of a reference, and a repeated entity contributes once: a frame
-    // binds a set, not a list per datom.
+
     expect(entryHandles([entry, entry])).toEqual([
       { entity: subject.identity, handle: subject.handle },
       { entity: referenced.identity, handle: referenced.handle },

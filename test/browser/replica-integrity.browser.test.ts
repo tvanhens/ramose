@@ -1,13 +1,3 @@
-/**
- * Real-Chromium integrity and corruption-recovery coverage (#474 slice 9).
- *
- * Every corruption below is inflicted on the actual IndexedDB records the
- * production adapter wrote — a flipped byte in a real gzipped node body, a real
- * deleted node record, a real edited manifest — through the browser's own
- * `indexedDB`. Nothing here fakes storage, and nothing observes the replica
- * except through the ordinary restore paths.
- */
-
 import { expect } from "vitest";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import { Index } from "../../packages/ramose/src/internal/core/datom.ts";
@@ -93,7 +83,6 @@ const deleteDatabase = (name: string): Promise<void> =>
     request.addEventListener("error", () => reject(request.error), { once: true });
   });
 
-/** Every record of every store, as a comparable value. */
 const dump = async (name: string): Promise<Record<string, unknown[]>> => {
   const database = await openNative(name);
   const stores = [...database.objectStoreNames];
@@ -111,7 +100,6 @@ const bytes = (value: unknown): string =>
   JSON.stringify(value, (_key, entry) =>
     entry instanceof Uint8Array ? [...entry] : entry as unknown);
 
-/** Records of one store whose primary key begins with a partition string. */
 const partitioned = (records: unknown[], partition: string): unknown[] =>
   records.filter((record) => (record as { partition?: unknown }).partition === partition);
 
@@ -142,7 +130,6 @@ const committedOf = async (name: string, partition: string): Promise<Record<stri
   return record;
 };
 
-/** Rewrite one real stored record through the browser's own IndexedDB. */
 const writeRecord = async (name: string, store: string, record: unknown): Promise<void> => {
   const database = await openNative(name);
   const transaction = database.transaction(store, "readwrite");
@@ -159,7 +146,6 @@ const deleteNode = async (name: string, partition: string, hash: string): Promis
   database.close();
 };
 
-/** Flip one bit of a stored node body, leaving it filed under the same address. */
 const flipNodeByte = async (
   name: string,
   partition: string,
@@ -173,7 +159,6 @@ const flipNodeByte = async (
   await writeRecord(name, NODES, { partition, hash, body });
 };
 
-/** Wait until an armed `wait` checkpoint has actually been reached. */
 const reachedCheckpoint = async (name: string): Promise<void> => {
   for (let attempt = 0; attempt < 1000; attempt++) {
     if (checkpointStatus()[name]?.pending === true) return;
@@ -199,8 +184,7 @@ const installSnapshot = async (
   await storage.startSnapshot({
     type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
   });
-  // The wire protocol caps one chunk at 16 datoms, so a larger replica really
-  // is staged as many real transactions, exactly as a session would stage it.
+
   let index = 0;
   for (let offset = 0; offset < datoms.length; offset += 16) {
     await storage.stageSnapshotChunk(snapshotChunk({
@@ -266,7 +250,6 @@ browserTest(
       const generationsBefore = bytes(before[GENERATIONS]);
       const routesBefore = bytes(before[ROUTE_SLOTS]);
 
-      // Corrupt the real body of a real stored node under its own address.
       const roots = (await committedOf(name, partition)).roots as Record<string, { hash: string }>;
       storage.close();
       await flipNodeByte(name, partition, roots.eavt.hash);
@@ -278,28 +261,22 @@ browserTest(
         partition,
         reason: "node-hash",
       });
-      // Nothing observable was produced, not even over the datoms the walk did
-      // manage to read before it reached the damaged node.
+
       expect(outcome).not.toHaveProperty("replica");
       expect(await storage.restore(corrupt, attributes, READ_COMPATIBILITY)).toBeUndefined();
 
       const after = await dump(name);
-      // Exactly one partition lost its manifest, its head, and the selectors
-      // that would nominate it again — nothing can restore or resume it.
+
       expect(partitioned(after[COMMITTED], partition)).toEqual([]);
       expect(partitioned(after[COMMITTED_HEADS], partition)).toEqual([]);
-      // Its content nodes are deliberately left to slice 11's reachability GC:
-      // no manifest references them, and deleting them would break a `Db`
-      // another session had already published over the same nodes.
+
       expect(partitioned(after[NODES], partition).length).toBeGreaterThan(0);
       expect(after[CREDENTIAL_BINDINGS]).toHaveLength(2);
       expect(after[CACHE_CANDIDATES]).toHaveLength(2);
-      // Its scope is still confirmed and was never fenced: quarantine is not a
-      // clear, and the user can still clear their own data afterwards.
+
       expect(bytes(after[GENERATIONS])).toBe(generationsBefore);
       expect(bytes(after[ROUTE_SLOTS])).toBe(routesBefore);
-      // A sibling database in the same scope and another principal are intact
-      // byte for byte, and still restore.
+
       expect(bytes(partitioned(after[NODES], siblingPartition))).toBe(siblingBefore);
       expect(bytes(partitioned(after[NODES], otherPartition))).toBe(otherBefore);
       expect(await names((await storage.restore(sibling, attributes, READ_COMPATIBILITY))!.db))
@@ -307,7 +284,6 @@ browserTest(
       expect(await names((await storage.restore(other, attributes, READ_COMPATIBILITY))!.db))
         .toEqual(["other-principal"]);
 
-      // Recovery is an ordinary fresh snapshot into the very same scope.
       await installOne(storage, corrupt, opaque("4"), "replaced");
       const recovered = await storage.restoreOutcome(corrupt, attributes, READ_COMPATIBILITY);
       expect(recovered._tag).toBe("restored");
@@ -328,8 +304,7 @@ browserTest(
     const partition = replicaPartitionKey(selected);
     let storage = await IndexedDbReplicaStorage.open(name);
     try {
-      // Enough datoms that the default 3000-datom leaf splits: the eavt tree is
-      // a directory over two leaves, so a leaf is only reachable by descending.
+
       const datoms = Array.from(
         { length: 3200 },
         (_unused, index) =>
@@ -372,8 +347,6 @@ browserTest("counts that no tree could produce are refused", async ({ browser })
     const roots = record.roots as Record<string, { hash: string; kind: number; count: number }>;
     storage.close();
 
-    // Only eavt's count moves: the two full indexes can never disagree, so the
-    // manifest contradicts itself and no node is ever read.
     await writeRecord(name, COMMITTED, {
       ...record,
       roots: { ...roots, eavt: { ...roots.eavt, count: roots.eavt.count + 5 } },
@@ -382,8 +355,6 @@ browserTest("counts that no tree could produce are refused", async ({ browser })
     expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
       .toMatchObject({ _tag: "replacement-required", reason: "manifest-invariant" });
 
-    // Both counts move together, so the manifest is self-consistent and only
-    // the node itself can settle it.
     await installOne(storage, selected, opaque("2"), "counted again");
     const reinstalled = await committedOf(name, partition);
     const rebuilt = reinstalled.roots as Record<string, { count: number }>;
@@ -413,9 +384,7 @@ browserTest(
     const partition = replicaPartitionKey(selected);
     let storage = await IndexedDbReplicaStorage.open(name);
     try {
-      // Two committed values with the same datom count. Nothing collects the
-      // superseded nodes yet (#474 slice 11 owns reachability GC), so the older
-      // value's roots are still perfectly loadable.
+
       await installOne(storage, selected, opaque("1"), "before");
       const stale = (await committedOf(name, partition)).roots as Record<
         string,
@@ -428,8 +397,6 @@ browserTest(
       expect(stale.eavt.hash).not.toBe(roots.eavt.hash);
       storage.close();
 
-      // Every count still agrees and every node still hashes to its address;
-      // only entity-ordered and attribute-ordered reads would disagree.
       await writeRecord(name, COMMITTED, {
         ...current,
         roots: { ...roots, aevt: stale.aevt },
@@ -438,8 +405,6 @@ browserTest(
       expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
         .toMatchObject({ _tag: "replacement-required", reason: "manifest-invariant" });
 
-      // The basis is the manifest's own claim, and it becomes the restored
-      // value's `basisT`: lowering it would filter intact facts out of reads.
       await installOne(storage, selected, opaque("3"), "rebuilt");
       const rebuilt = await committedOf(name, partition);
       expect(rebuilt.roots).toMatchObject({ t: expect.any(Number) });
@@ -469,21 +434,17 @@ browserTest(
     try {
       await installOne(reader, selected, opaque("1"), "published");
       await confirm(reader, selected, "published");
-      // One session already holds a published value over this partition.
+
       const live = (await reader.restore(selected, attributes, READ_COMPATIBILITY))!;
       expect(await names(live.db)).toEqual(["published"]);
 
-      // Damage appears, and a second restore refuses and quarantines.
       const roots = (await committedOf(name, partition)).roots as Record<string, { hash: string }>;
       await flipNodeByte(name, partition, roots.vaet.hash);
       expect(await other.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
         .toMatchObject({ _tag: "replacement-required", reason: "node-hash" });
 
-      // The already-published value still reads: quarantine withdraws the
-      // manifest and the selectors, and a constructed `Db` holds its own roots
-      // and node store. Deleting the nodes would have made this query throw.
       expect(await names(live.db)).toEqual(["published"]);
-      // And nothing can select the partition again.
+
       expect(await other.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
         .toEqual({ _tag: "absent" });
       expect(
@@ -510,17 +471,12 @@ browserTest(
       const roots = (await committedOf(name, partition)).roots as Record<string, { hash: string }>;
       await flipNodeByte(name, partition, roots.eavt.hash);
 
-      // Park the refusal after it decides and before it removes anything.
       armCheckpoint("replica.refused", "wait");
       const refusing = reader.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
-      // Another session commits a complete replacement in that window and may
-      // already have published a Db over the nodes a quarantine would take.
+
       await installOne(writer, selected, opaque("2"), "replacement");
       releaseCheckpoint("replica.refused");
 
-      // Nothing was removed, and the refusal described nothing that is stored,
-      // so the restore reads the record again and returns the replacement
-      // rather than reporting an absence over an intact partition.
       const outcome = await refusing;
       expect(outcome._tag).toBe("restored");
       expect(outcome._tag === "restored" ? outcome.replica.revision : undefined)
@@ -554,18 +510,12 @@ browserTest(
 
       armCheckpoint("replica.refused", "wait");
       const refusing = reader.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
-      // The repair case: another session re-installs the *same* revision, which
-      // rebuilds byte-identical roots and rewrites the damaged node under its
-      // own address. Only the install identifier separates this manifest from
-      // the one the walk refused; everything the record says about its value is
-      // identical.
+
       await installOne(writer, selected, opaque("1"), "repaired");
       const repaired = (await committedOf(name, partition)) as { roots: typeof roots };
       expect(repaired.roots.eavt.hash).toBe(roots.eavt.hash);
       releaseCheckpoint("replica.refused");
 
-      // The healthy manifest survives, and the restore reads the repaired
-      // record again rather than reporting an absence over it.
       const outcome = await refusing;
       expect(outcome._tag).toBe("restored");
       expect(await names((outcome as { replica: { db: Db } }).replica.db))
@@ -593,21 +543,13 @@ browserTest(
       await installOne(reader, selected, opaque("1"), "cleared");
       await confirm(reader, selected, "cleared");
 
-      // A restore has validated the whole partition and is about to publish it.
-      // Nothing is pinned or enrolled yet — the caller registers only once it
-      // holds a value — so maintenance cannot see it, and the walk has to carry
-      // its own fence.
       armCheckpoint("replica.validated", "wait");
       const walking = reader.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
-      // Park until the walk has genuinely finished and adopted its generation,
-      // so the clear lands in the window this fence exists for rather than
-      // somewhere earlier that other checks already cover.
+
       await reachedCheckpoint("replica.validated");
       await maintainer.clearScope({ server: SERVER, principal: LEFT });
       releaseCheckpoint("replica.validated");
 
-      // The walk loses the generation it adopted, so the ordinary typed fence
-      // error surfaces rather than a `Db` over nodes the clear just removed.
       await expect(walking).rejects.toMatchObject({ _tag: "ReplicaFencedError" });
       expect((await dump(name))[COMMITTED]).toEqual([]);
       expect((await dump(name))[NODES]).toEqual([]);
@@ -631,8 +573,7 @@ browserTest(
       await installOne(storage, selected, opaque("1"), "decodable");
       const record = await committedOf(name, partition);
       storage.close();
-      // `atob` throws on this, and a raw throw would skip the typed outcome and
-      // the quarantine, so every later restore would fail identically.
+
       await writeRecord(name, COMMITTED, {
         ...record,
         datoms: [{
@@ -646,7 +587,7 @@ browserTest(
       storage = await IndexedDbReplicaStorage.open(name);
       expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
         .toMatchObject({ _tag: "replacement-required", reason: "manifest-undecodable" });
-      // And the next restore finds nothing rather than failing the same way.
+
       expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
         .toEqual({ _tag: "absent" });
     } finally {
@@ -665,24 +606,18 @@ browserTest(
     const storage = await IndexedDbReplicaStorage.open(name);
     try {
       await installOne(storage, selected, opaque("1"), "base");
-      // A snapshot begins against that committed value and is interrupted.
+
       const snapshot = opaque("q");
       const revision = opaque("2");
       await storage.startSnapshot({
         type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
       });
 
-      // The committed value it was staged against turns out to be corrupt and
-      // is withdrawn, leaving the staging record based on a revision that is
-      // now gone.
       const roots = (await committedOf(name, partition)).roots as Record<string, { hash: string }>;
       await flipNodeByte(name, partition, roots.eavt.hash);
       expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
         .toMatchObject({ _tag: "replacement-required" });
 
-      // A snapshot identity is derived from the identity and revision, so the
-      // reconnect restarts this very snapshot. Resuming it in place would keep
-      // the stale base and `commitSnapshot` could never satisfy it again.
       await storage.startSnapshot({
         type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
       });
@@ -776,15 +711,11 @@ browserTest(
     try {
       await installOne(storage, selected, opaque("1"), "installed");
       await confirm(storage, selected, "installed");
-      // A stale selector still names the identity that was stored, but the
-      // client's catalog now confirms a different read compatibility. Nothing
-      // under the old one may be interpreted, and the partition is withdrawn.
+
       expect(await storage.restoreOutcome(selected, attributes, OTHER_COMPATIBILITY))
         .toMatchObject({ _tag: "update-required", reason: "read-compatibility" });
       expect(partitioned((await dump(name))[COMMITTED], partition)).toEqual([]);
 
-      // The same client, disagreeing about the schema behind a hash it does
-      // confirm, is the other update-required case.
       await installOne(storage, selected, opaque("2"), "reinstalled");
       expect(
         await storage.restoreOutcome(selected, [
@@ -792,7 +723,7 @@ browserTest(
         ], READ_COMPATIBILITY),
       ).toMatchObject({ _tag: "update-required", reason: "schema-metadata" });
       expect(partitioned((await dump(name))[COMMITTED], partition)).toEqual([]);
-      // Neither refusal touched the durable confirmation of the scope.
+
       expect((await dump(name))[GENERATIONS]).toHaveLength(2);
     } finally {
       storage.close();
@@ -807,9 +738,7 @@ browserTest(
     const name = `ramose-integrity-cut-${browser.uniqueId}`;
     const selected = identity();
     const partition = replicaPartitionKey(selected);
-    // The repository's inert runtime boundary, armed only for this test. The
-    // real IndexedDB transaction runs unchanged; the armed checkpoint only
-    // decides when the boundary before its commit fails.
+
     let storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
     try {
       await installOne(storage, selected, opaque("1"), "cut");
@@ -827,11 +756,9 @@ browserTest(
       } finally {
         resetTestHooks();
       }
-      // Every deletion the transaction had issued rolled back; a crash cut
-      // never leaves a half-quarantined partition.
+
       expect(bytes(await dump(name))).toBe(corrupted);
 
-      // Retrying completes the quarantine, and still publishes nothing.
       expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
         .toMatchObject({ _tag: "replacement-required", reason: "node-hash" });
       expect(partitioned((await dump(name))[COMMITTED], partition)).toEqual([]);

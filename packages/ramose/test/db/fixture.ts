@@ -1,5 +1,3 @@
-/** Shared fixture catalog for the schema tests / compile-time fixtures. */
-
 import * as Schema from "effect/Schema";
 import {
   Field,

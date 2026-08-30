@@ -1,24 +1,12 @@
-/**
- * Tagged errors + HTTP mapping for the QueryReplica's request boundary.
- *
- * Same contract as before the refactor: the query budget guard answers 413
- * with { error, code, clause, cells, limit, spentBy }, client-shaped query errors
- * answer 400, everything else 500. A stable `tag` is added alongside.
- */
-
 import * as Data from "effect/Data";
 import { QueryBudgetError } from "../core/index.ts";
 
-/** Intermediate relation would blow the memory budget → 413. */
 export class QueryBudget extends Data.TaggedError("QueryBudget")<{ message: string; code: string; clause: string; cells: number; limit: number; spentBy?: "caller" }> {}
-/** Malformed query / unknown attribute / unbound variable → 400. */
 export class BadRequest extends Data.TaggedError("BadRequest")<{ message: string }> {}
-/** Anything else → 500. */
 export class Internal extends Data.TaggedError("Internal")<{ message: string }> {}
 
 export type ReplicaHttpError = QueryBudget | BadRequest | Internal;
 
-/** The client-error shape the Worker also applies, so forwarded reads keep their status codes. */
 const CLIENT_ERROR = /unknown attribute|not bound|insufficient|parse|EDN|QueryError/i;
 
 export function toReplicaError(err: unknown): ReplicaHttpError {

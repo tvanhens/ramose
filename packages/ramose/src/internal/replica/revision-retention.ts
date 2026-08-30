@@ -1,5 +1,3 @@
-/** Pure bounded retention policy for one binding-addressed revision store. */
-
 export const MAX_REPLICATION_REVISIONS_PER_BINDING = 8;
 
 export type ReplicationRevisionRetentionRecord = {
@@ -14,11 +12,6 @@ export type ReplicationRevisionRetentionDecision =
   | { readonly type: "insert"; readonly evictCount: number }
   | { readonly type: "reject" };
 
-/**
- * The caller routes each authenticated binding to its own Durable Object, so
- * this transition sees only that partition's fixed quota. The binding check
- * rejects a cryptographic revision collision instead of crossing partitions.
- */
 export const decideReplicationRevisionRetention = (input: {
   readonly existingBinding?: string;
   readonly candidateBinding: string;
@@ -39,7 +32,6 @@ export const decideReplicationRevisionRetention = (input: {
   };
 };
 
-/** Reference transition used by pure cap/noninterference tests. */
 export const retainReplicationRevision = (
   records: readonly ReplicationRevisionRetentionRecord[],
   candidate: Omit<ReplicationRevisionRetentionRecord, "touched">,

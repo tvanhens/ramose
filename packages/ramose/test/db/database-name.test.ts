@@ -1,12 +1,3 @@
-/**
- * The database-name rule, public on `ramose/db` (issue #37).
- *
- * The regex is the peer Worker's `validDbName`; `isDatabaseName` is the
- * function form an app calls before letting a user-minted name reach the
- * peer. Both edges pinned: 64 chars is the last valid length, and the first
- * character must be alphanumeric.
- */
-
 import { describe, expect, test } from "bun:test";
 import { DATABASE_NAME_RE, isDatabaseName } from "../../src/db/index.ts";
 

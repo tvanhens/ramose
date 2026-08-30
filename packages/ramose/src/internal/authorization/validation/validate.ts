@@ -1,12 +1,3 @@
-/**
- * Semantic validation orchestration.
- *
- * Consumes {@link BoundAuthorizationIR} and one authoritative
- * {@link CatalogDescriptor}. Catalog-dependent rules live in the sibling
- * modules; this file only prepares the catalog, applies schema-local
- * vocabularies, and walks rules/decisions.
- */
-
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { hashCanonicalRule } from "../decode.ts";
@@ -116,22 +107,11 @@ const validateBoundAuthorizationWithLimits = (
     });
   });
 
-/**
- * Pure semantic kernel. Recomputes derived flags. Does not hash, derive
- * access plans, or assemble {@link import("../ir.ts").InstalledAuthorizationIR}.
- * Unhashed validated output is not runtime-acceptable installed IR.
- * Production entry: hard validation limits only. The Effect shell compares
- * rule IDs to domain-separated hashes of the canonical rule material.
- */
 export const validateBoundAuthorizationResult = (
   input: AuthorizationValidationInput,
 ): Result.Result<ValidatedAuthorizationIRType, ValidateFailure> =>
   validateBoundAuthorizationWithLimits(input, defaultValidationLimits);
 
-/**
- * Test-only path. Overrides must be finite natural numbers and are clamped
- * at the hard constants so callers can only tighten restrictions.
- */
 export const validateBoundAuthorizationResultForTest = (
   input: AuthorizationValidationInput,
   limits: Partial<ValidationLimits>,

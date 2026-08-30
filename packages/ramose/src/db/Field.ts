@@ -1,5 +1,3 @@
-/** Typed field: value Schema, cardinality, and options. */
-
 import type * as SchemaNS from "effect/Schema";
 import * as Schema from "effect/Schema";
 import { normalizeDoc } from "./documentation.ts";
@@ -148,7 +146,6 @@ export const creationDefault = <
   return declared;
 };
 
-/** @internal Immutable identity retained on a declared default. */
 export const creationDefaultIdentityOf = (
   get: CreationDefault<unknown>,
 ): CreationDefaultIdentity | undefined =>
@@ -165,22 +162,7 @@ export const creationDefaultIdentityOf = (
 export interface FieldOptions<A = unknown> {
   readonly index?: boolean;
   readonly doc?: string;
-  /**
-   * Omitted at create; `| undefined` on the default row. Card-many is
-   * already trivially satisfiable (empty set) and is never a required key.
-   *
-   * This is one of two sources of {@link Field.isOptional}. The other is
-   * the Effect schema AST: `Field(Schema.UndefinedOr(Schema.String))` is
-   * silently optional even when this flag is absent. Say `optional: true`
-   * explicitly if you mean it — a schema refactor that admits `undefined`
-   * flips requiredness without touching this bag. Fail-closed rejection of
-   * that inference is #185's doctrine and is not applied here.
-   */
   readonly optional?: boolean;
-  /**
-   * Pure creation-time default. It is resolved only by the authoritative
-   * creation boundary; update and the existing branch of an upsert ignore it.
-   */
   readonly default?: CreationDefault<A>;
 }
 
@@ -190,7 +172,6 @@ type FieldFlags = {
   readonly owned?: boolean;
 };
 
-/** True when `O` names the key (even if the value is `false` / `undefined`). */
 type Named<O, K extends string> = [O] extends [{ readonly [P in K]: unknown }]
   ? true
   : false;
@@ -201,7 +182,6 @@ type OptionalOf<O> = [O] extends [{ readonly optional: infer B }]
     : false
   : false;
 
-/** Composition may set `optional` (`false` → `true`); absence keeps the inner field. */
 type MergeOptional<Opt extends boolean, O> = Named<O, "optional"> extends true
   ? OptionalOf<O>
   : Opt;
@@ -237,12 +217,6 @@ type ValidManyConversion<
       }
     : unknown;
 
-/**
- * Fail-closed argument for `Field(schema)` when inference cannot name
- * `:db.type/*`. The brand key is the instruction — wrap with
- * {@link import("./valueTypes.ts").stored}, or use {@link Enum} for a
- * string-literal set. The demand is at this call, not at `install()`.
- */
 type InferableSchema<S extends SchemaNS.Top> = InferDbValueType<S> extends DbValueType
   ? S
   : S & {
@@ -266,16 +240,7 @@ export interface Field<
   readonly owned: Owned;
   readonly doc: string | undefined;
   readonly valueType: VT;
-  /**
-   * Presence flag for required-at-transact. True when `{ optional: true }`
-   * **or** the Effect schema AST admits `undefined` (see
-   * {@link FieldOptions.optional}). Not named `optional` — that getter is
-   * the pull-shaping method on a stamped field. A sixth type parameter so
-   * `string({ optional: true })` survives `Entity` stamping the way
-   * `owned` / `cardinality` do.
-   */
   readonly isOptional: Opt;
-  /** Present when declared in the field options. */
   readonly default: Def extends true
     ? CreationDefault<FieldDefaultValue<S, Card>>
     : undefined;
@@ -292,7 +257,6 @@ export type AnyField = Field<
 >;
 
 export declare namespace Field {
-  /** Any field — the bound for field-generic helpers. */
   export type Any = AnyField;
 }
 
@@ -359,7 +323,6 @@ const schemaAllowsUndefined = (schema: { readonly ast?: { readonly _tag?: unknow
   return false;
 };
 
-/** Required-at-transact: card-many is never a required key. */
 export const isOptionalField = (field: AnyField): boolean =>
   field.cardinality === "many" || field.isOptional === true;
 
@@ -474,28 +437,6 @@ type FieldOwned = {
   ): Field<S, C, U, VT, true, MergeOptional<Opt, O>, MergeDefault<Def, O>>;
 };
 
-/**
- * Declare a field. File it under an entity key to stamp `:entity/name`.
- *
- * Prefer the value shorthands (`string()`, `boolean()`, `Ref(User)`, …)
- * for app schemas. `Field(schema)` is the advanced form: a raw Effect
- * Schema. When inference cannot name `:db.type/*`, wrap the schema with
- * {@link import("./valueTypes.ts").stored} — `stored(Schema.Literals(["on", "off"]), "string")`.
- *
- * Cardinality, uniqueness and ownership are the function:
- * `Field.many(schema)`, `Field.unique(schema, "upsert" | "strict")`,
- * `Field.owned(schema)`. They compose with a shorthand or a raw Schema.
- * `"upsert"` unifies with the existing row on a colliding write;
- * `"strict"` rejects the write. Composition cannot change `valueType` —
- * brand the schema with {@link import("./valueTypes.ts").stored}.
- *
- * Runtime `isOptional` has a second source: an Effect schema AST that
- * admits `undefined`. `{ optional: true }` is the documented flag;
- * `Field(Schema.UndefinedOr(Schema.String))` is also optional. The
- * inference is not fail-closed here (#185).
- * `Field.unique` always indexes; `Field.unique(string({ index: false }), "upsert")`
- * discards `index: false` (unique implies index).
- */
 export const Field: {
   <S extends SchemaNS.Top>(
     schema: InferableSchema<S>,

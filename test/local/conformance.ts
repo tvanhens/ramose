@@ -1,15 +1,3 @@
-/**
- * #422 — black-box noninterference through the real Alchemy/workerd stack.
- *
- * This suite owns the broad one-shot/live paired-world cases. The same
- * required gate also retains the narrower cases instead of copying them:
- *
- * - `graph-paths.ts`: derived traits, trait/field rules and nested Graph paths
- * - `native-operations.ts`: trusted native bodies and authoritative writes
- * - `auth.contract.ts`: JWT/JWKS admission and opaque authentication failures
- * - `operations.contract.ts`: minimal public health/metadata surface
- */
-
 import { beforeAll, describe, expect, test } from "bun:test";
 import { Query } from "ramose/db";
 import { lowerQueryObject, schemaTx } from "../../packages/ramose/src/db/internal.ts";
@@ -102,10 +90,7 @@ export const invoke = (
 ) => json(base, `/db/${database}/op`, {
   method: "POST",
   token,
-  // #551: these invocations are also issued behind parked live/replication
-  // reads, so they can land on a socket the local runtime closed at its
-  // unadvertised 5000ms idle bound. `invocationId` is fixed per call, so a
-  // re-issue replays the durable receipt rather than invoking again.
+
   retryPreResponse: true,
   headers: { "content-type": "application/json", ...originHeaders },
   body: JSON.stringify({
@@ -204,9 +189,7 @@ export const create = async (
     localName: "create",
   }, input);
   expect(response.status).toBe(200);
-  // An opaque server-issued handle, never a raw eid (#475). It is the same
-  // handle an allocation mapping and logical replication carry for this entity
-  // in this scope.
+
   const handle = response.body.result.id as unknown;
   expect(typeof handle).toBe("string");
   expect(isEntityId(handle)).toBe(true);
@@ -318,7 +301,6 @@ export const seedWorld = async (
   };
 };
 
-/** Complete application-controlled public header vocabulary from #419. */
 const PUBLIC_HEADERS = [
   "content-type",
   "cache-control",
@@ -651,9 +633,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(completed.status).toBe(200);
       expect(completed.body).toEqual({
-        // The opaque handle, not the eid: every entity-reference position of
-        // client-visible output is sealed (#475). A replay reproduces these
-        // exact bytes, which is asserted below.
+
         result: {
           id: await entityHandle(base, database, member, issue),
           title: "Original invocation",
@@ -756,8 +736,6 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(absentReplay.status).toBe(200);
       expect(absentReplay.body).toEqual(completed.body);
 
-      // An unrelated real commit and a new isolate do not invalidate the
-      // durable lost-ack result.
       await create(
         base,
         database,
@@ -780,8 +758,6 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(afterUnrelated.status).toBe(200);
       expect(afterUnrelated.body).toEqual(completed.body);
 
-      // The target is still absent, but a fact on the exact membership path
-      // that admitted it has changed. The receipt must not cache access.
       const revoked = await invoke(base, database, admin, {
         owner: { kind: "entity", name: ConformanceUser.ns },
         localName: "setAccess",

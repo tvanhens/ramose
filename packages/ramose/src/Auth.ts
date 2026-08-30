@@ -1,18 +1,3 @@
-/**
- * The verifier/minter contract, declared once on the deploy side.
- *
- * Ramose verifies JWTs and never issues them — but the *shape* it verifies
- * (https://ramose.ai/guides/sign-in/) is a contract with two consumers: the peer's env
- * (`Server({ auth: { jwt } })` pins `RAMOSE_JWT_ISS` / `RAMOSE_JWT_AUD` /
- * `RAMOSE_JWT_MAX_TTL`) and the app's mint route (which signs the payload).
- * `AuthConfig` is that contract as one value; {@link claims} builds the
- * payload from it, so the minted lifetime equals the verifier's cap by
- * construction and a claim set the peer would reject fails at mint instead.
- *
- * `claims` is pure — no signing, no I/O. The app signs the payload with
- * whatever it has (Better Auth's `auth.api.signJWT`, `jose`, …).
- */
-
 import { InvalidRequest } from "./db/Errors.ts";
 export interface Claims {
   readonly iss?: string;
@@ -31,32 +16,17 @@ export interface Claims {
 /** Cap on a token's lifetime when `RAMOSE_JWT_MAX_TTL` is unset, in seconds. */
 export const DEFAULT_JWT_MAX_TTL = 900;
 
-/**
- * The pinned verifier/minter contract. Declare once; hand it to
- * `Server({ auth: { jwt } })` and to {@link claims}.
- */
 export interface AuthConfig {
-  /** The `iss` every token carries and the peer pins (`RAMOSE_JWT_ISS`). */
   readonly issuer: string;
-  /** The `aud` every token carries and the peer pins (`RAMOSE_JWT_AUD`). */
   readonly audience: string;
-  /**
-   * Token lifetime, in whole seconds (JWT NumericDate). Server pins
-   * `RAMOSE_JWT_MAX_TTL` to it; `claims` sets `exp = iat + ttl` — so the cap
-   * holds by construction.
-   */
   readonly ttl: number;
 }
 
 /** The subject-and-class half of a claim set; {@link AuthConfig} is the rest. */
 export interface ClaimsInput {
-  /** The principal — resolved by the policy's `principal` attribute. */
   readonly sub: string;
-  /** The policy class this token selects (`ramose.class`). */
   readonly class: string;
-  /** App claims (`ramose.attrs`), decoded by the policy's `claims` struct. */
   readonly attrs?: Readonly<Record<string, unknown>> | undefined;
-  /** The mint instant; `iat` is this in whole seconds. @default new Date() */
   readonly now?: Date | undefined;
 }
 
@@ -93,8 +63,6 @@ export function claims<P extends ClaimsPolicy | undefined = undefined>(
       : ClaimsInput,
   policy?: P,
 ): Claims {
-  // JWT NumericDate is whole seconds, so a fractional ttl would mint a
-  // fractional `exp` — reject it rather than round it.
   if (!Number.isInteger(auth.ttl) || auth.ttl <= 0) {
     throw new InvalidRequest({
       message: `ramose: auth.ttl must be a positive whole number of seconds, got ${auth.ttl}`,

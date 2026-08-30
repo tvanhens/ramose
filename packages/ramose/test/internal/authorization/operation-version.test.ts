@@ -1,5 +1,3 @@
-/** Operation-scoped compatibility versions (#487). */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -41,7 +39,6 @@ const Taggable = () =>
     }),
   });
 
-/** Baseline catalog. Every variant below changes exactly one thing. */
 const baseCatalog = () => {
   const taggable = Taggable();
   const Issue = Entity("issue", { title: string() }, {
@@ -79,7 +76,6 @@ const documentedCatalog = () => {
   return CatalogSchema({ issue: Issue, note: Note });
 };
 
-/** Only JSON Schema documentation annotations differ from the baseline. */
 const annotatedSchemaCatalog = () => {
   const taggable = Taggable();
   const Issue = Entity("issue", { title: string() }, {
@@ -105,7 +101,6 @@ const annotatedSchemaCatalog = () => {
   return CatalogSchema({ issue: Issue, note: Note });
 };
 
-/** Only the shared schema's `identifier` alias differs from the baseline. */
 const aliasedSchemaCatalog = (alias: string) => () => {
   const taggable = Taggable();
   const Shared = Schema.Struct({ note: Schema.String }).annotate({
@@ -127,7 +122,6 @@ const aliasedSchemaCatalog = (alias: string) => () => {
   return CatalogSchema({ issue: Issue, note: Note });
 };
 
-/** An unrelated entity, field, and operation added to the same catalog. */
 const unrelatedCatalog = () => {
   const taggable = Taggable();
   const Issue = Entity("issue", { title: string() }, {
@@ -251,7 +245,6 @@ const writingCatalog = () => {
   return CatalogSchema({ issue: Issue, note: Note, audit: Audit });
 };
 
-/** `note` now composes the trait, so the trait operation admits one more type. */
 const extraComposerCatalog = () => {
   const taggable = Taggable();
   const Issue = Entity("issue", { title: string() }, {
@@ -318,7 +311,7 @@ describe("canonical operation version descriptor", () => {
         input: { representation: { type: "object" }, shape: { _tag: "opaque" } },
         output: { representation: { type: "object" }, shape: { _tag: "opaque" } },
       },
-      // Deduplicated and sorted: authoring or discovery order never rotates.
+
       behavior: {
         composers: ["issue", "note"],
         writes: ["audit", "note"],
@@ -353,8 +346,7 @@ describe("canonical operation version descriptor", () => {
         title: "Close input",
         description: "documentation",
         properties: {
-          // A property literally named `description` is data, not an
-          // annotation, and must survive with its own contract intact.
+
           description: { type: "string", description: "documented" },
           items: { type: "array", items: { type: "number", title: "n" } },
           choice: {
@@ -378,10 +370,10 @@ describe("canonical operation version descriptor", () => {
         },
         required: ["description"],
       },
-      // Unreferenced definitions still land in a deterministic slot.
+
       definitions: { d0: { type: "string" } },
     });
-    // An unrecognized document shape is hashed verbatim rather than guessed at.
+
     expect(normalizeContractRepresentation({ description: "not a document" }))
       .toEqual({ description: "not a document" });
   });
@@ -392,15 +384,14 @@ describe("canonical operation version descriptor", () => {
       schema: {
         type: "object",
         properties: {
-          // Sorted-key traversal, so `a` is reached before `b` whatever order
-          // the projection happened to emit.
+
           b: { $ref: `#/$defs/${second}` },
           a: { $ref: `#/$defs/${first}` },
         },
       },
       definitions: {
         [second]: { type: "number" },
-        // Self-recursive: the rename must terminate and stay consistent.
+
         [first]: {
           type: "object",
           properties: { next: { $ref: `#/$defs/${first}` } },
@@ -425,7 +416,7 @@ describe("canonical operation version descriptor", () => {
       .toEqual(canonical);
     expect(normalizeContractRepresentation(document("Renamed", "Other")))
       .toEqual(canonical);
-    // A reference that names nothing in the map is left exactly as it is.
+
     expect(normalizeContractRepresentation({
       schema: { $ref: "https://example.test/other#/$defs/Alpha" },
       definitions: { Alpha: { type: "string" } },
@@ -466,9 +457,7 @@ describe("canonical operation version descriptor", () => {
       }),
       descriptorFixture({ composers: ["note"] }),
       descriptorFixture({ writes: ["audit"] }),
-      // An offline client pins this version before it can submit, so moving a
-      // slot's output path must rotate it or a queued invocation would bind
-      // its client ref to a different output entity.
+
       descriptorFixture({ allocations: [{ slot: "issue", path: ["issue"] }] }),
       descriptorFixture({ allocations: [{ slot: "issue", path: ["other"] }] }),
       descriptorFixture({ allocations: [{ slot: "renamed", path: ["issue"] }] }),
@@ -489,7 +478,7 @@ describe("deployed operation versions", () => {
     expect(redeployed.descriptors.map((entry) => entry.version)).toEqual(
       first.descriptors.map((entry) => entry.version),
     );
-    // The deployment fences did rotate — that is what makes this meaningful.
+
     expect(redeployed.descriptors.map((entry) => entry.bodyHash)).not.toEqual(
       first.descriptors.map((entry) => entry.bodyHash),
     );
@@ -509,9 +498,9 @@ describe("deployed operation versions", () => {
     const annotated = await versions(annotatedSchemaCatalog);
     const unrelated = await versions(unrelatedCatalog);
     expect(documented).toEqual(base);
-    // Schema `title`/`description` annotations are documentation too.
+
     expect(annotated).toEqual(base);
-    // And an `identifier` rename is a wire alias, not a contract change.
+
     expect(await versions(aliasedSchemaCatalog("Shared"))).toEqual(
       await versions(aliasedSchemaCatalog("SharedRenamed")),
     );
@@ -533,7 +522,7 @@ describe("deployed operation versions", () => {
       expect(`${label}:${changed["issue.close"]}`).not.toBe(
         `${label}:${base["issue.close"]}`,
       );
-      // The unrelated trait operation in the same catalog stays compatible.
+
       expect(changed["taggable.addTag"]).toBe(base["taggable.addTag"]!);
     }
   });

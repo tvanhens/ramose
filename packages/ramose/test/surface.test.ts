@@ -1,36 +1,26 @@
-/**
- * The `ramose` barrel, exactly.
- *
- * Everything on `ramose/db` (asserted name-by-name in
- * `db-portable.test.ts`) plus the deploy-time half: two resources, one
- * provider collection, catalog definitions, claims, and peer compatibility.
- * Nothing else is public.
- */
-
 import { describe, expect, test } from "bun:test";
 
 const ADDS = [
-  // resources
+
   "Server",
   "Database",
   "Catalog",
   "Policy",
-  // peer
+
   "PEER_COMPAT",
-  // the stack
+
   "providers",
   "Providers",
   "DEFAULT_JWT_MAX_TTL",
-  // the verifier/minter contract
+
   "claims",
-  // app-Worker HTTP mapping (not on `ramose/db`)
+
   "errorToHttp",
   "errorResponse",
   "statusOf",
   "toDbError",
 ];
 
-/** Names the kill-list retired: internal, deleted, or renamed. */
 const KILLED = [
   "System",
   "SystemProps",

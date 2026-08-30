@@ -1,7 +1,3 @@
-/**
- * Installed catalog-unit assembly, seal, hash, and fail-closed checks.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -444,7 +440,7 @@ describe("sealInstalledCatalogUnit", () => {
     const decoded = decodeInstalledCatalogUnitResult(encoded);
     expect(Result.isSuccess(decoded)).toBe(true);
     if (!Result.isSuccess(decoded)) return;
-    // @ts-expect-error — structural decode is not verified catalog unit v2
+    // @ts-expect-error
     requireSealed(decoded.success);
     const verified = await Effect.runPromise(verifyInstalledCatalogUnit(decoded.success));
     requireSealed(verified);
@@ -458,7 +454,7 @@ describe("sealInstalledCatalogUnit", () => {
     const decoded = decodeInstalledCatalogUnitResult(encodeInstalledCatalogUnit(unit));
     expect(Result.isSuccess(decoded)).toBe(true);
     if (!Result.isSuccess(decoded)) return;
-    // @ts-expect-error — structural decode is not verified catalog unit v2
+    // @ts-expect-error
     requireSealed(decoded.success);
     const structural: InstalledCatalogUnit = decoded.success;
     expect(structural._tag).toBe("InstalledCatalogUnit");
@@ -545,9 +541,9 @@ describe("sealInstalledCatalogUnit", () => {
   test("cannot construct a publishable partial unit", async () => {
     const descriptor = catalogDescriptor();
     const policy = await install(descriptor);
-    // @ts-expect-error — policy is required; schema-only is not publishable
+    // @ts-expect-error
     void sealInstalledCatalogUnit(descriptor);
-    // @ts-expect-error — descriptor is required; policy-only is not publishable
+    // @ts-expect-error
     void sealInstalledCatalogUnit(undefined, policy);
     const auth = await import("../../../src/internal/authorization/index.ts");
     expect("sealPolicyOnly" in auth).toBe(false);
@@ -557,7 +553,7 @@ describe("sealInstalledCatalogUnit", () => {
     if (!Result.isSuccess(assembled)) return;
     expect("_tag" in assembled.success).toBe(false);
     expect("unitHash" in assembled.success).toBe(false);
-    // @ts-expect-error — unhashed tables are not a sealed catalog unit
+    // @ts-expect-error
     requireSealed(assembled.success);
   });
 });

@@ -1,7 +1,3 @@
-/**
- * Property test: Db.seekMany (batched cursor seek, tree + novelty, current view)
- * ≡ datomsArray per prefix — including duplicate prefixes in one batch.
- */
 import { expect, test } from "bun:test";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { Index, type Prefix } from "../../../src/internal/core/datom.ts";

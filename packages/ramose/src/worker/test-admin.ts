@@ -1,12 +1,3 @@
-/**
- * Test-only admin routes under `/__test__/*` (issue #390).
- *
- * Reachable only from the explicit source-only testing assembly, then absent
- * or 404 unless its non-production flag and private capability agree. Every
- * path forwards to the real R2 bucket, Transactor DO, or Replica DO. Nothing
- * here invents a successful transact, query, or socket frame.
- */
-
 import * as Effect from "effect/Effect";
 import {
   makeEntityIdScope,
@@ -180,7 +171,6 @@ const forwardTransactorSubscription = (
     },
   );
 
-/** Replica catch-up fence. Only forwarded when the caller set it. */
 const minTHeader = (request: Request): Record<string, string> => {
   const minT = request.headers.get("x-ramose-min-t");
   return minT === null || minT.length === 0 ? {} : { "x-ramose-min-t": minT };
@@ -253,8 +243,6 @@ const forward = async (
             headers,
             body,
           });
-    // transact/query must surface the real DO status (409 cas-conflict, 400
-    // tx/invalid, 503 TransactorDead). checkpoint/abort stay fail-closed.
     if (!res.ok && opts.passThrough !== true) {
       throw new UpstreamError({ status: res.status, body: await res.text() });
     }
@@ -263,9 +251,6 @@ const forward = async (
       headers: { "content-type": "application/json" },
     });
   } catch (err) {
-    // `ctx.abort` discards the isolate; the stub fetch rejects instead of
-    // returning the ack. The instance is gone — that is the success path
-    // for abort only. transact/query after `die()` must not invent 200.
     if (path === "/admin/test/abort") {
       return json({ ok: true, aborted: true });
     }
@@ -290,16 +275,6 @@ const entityIdScopeOfBody = (value: unknown): EntityIdScope => {
   return { server, principal, database };
 };
 
-/**
- * Real durable identity/sealing root, read through the same internal boundary
- * production uses. Key material never crosses this route: only the public key
- * id, and one boolean proving the root is not the rotating Worker→DO
- * capability.
- *
- * The `seal-entity-id` / `open-entity-id` actions run the real #475 E0 codec
- * against that live record inside workerd — no key, eid, or scope is invented
- * here.
- */
 const handleServerIdentity = async (
   request: Request,
   env: RamoseEnv,
@@ -329,11 +304,6 @@ const handleServerIdentity = async (
   }
   const root = await serverIdentityRoot(env);
   if (body.action === "invocation-entity-id-scope") {
-    // The exact scope the `/op` boundary derives, computed by the same code
-    // from the same three inputs: the request origin, the *really verified*
-    // caller behind this bearer, and this database. Nothing is invented — the
-    // real JWT verifier runs, and a scope that disagreed with the one an
-    // invocation was sealed under simply fails to open its handles.
     if (typeof body.bearer !== "string" || body.bearer.length === 0) {
       throw new BadRequest({
         message: "invocation-entity-id-scope needs a bearer",
@@ -390,12 +360,10 @@ const handleServerIdentity = async (
     keyId: root.keyId,
     createdAt: root.createdAt,
     objectId: serverIdentityRootId(env).toString(),
-    // Separation of the two roles, asserted without revealing either secret.
     isInternalSecret: root.key === env.RAMOSE_INTERNAL_SECRET,
   });
 };
 
-/** Direct access to one real replication-revision store, by explicit key id. */
 const handleReplicationRevision = async (
   request: Request,
   env: RamoseEnv,
@@ -430,7 +398,6 @@ const handleReplicationRevision = async (
   });
 };
 
-/** Worker entry for `/__test__/db/:name/...`. Caller already checked the env gate. */
 export const handleTestAdmin = async (
   request: Request,
   env: RamoseEnv,

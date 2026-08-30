@@ -1,13 +1,3 @@
-/**
- * Allowlist, validation, and failure sealing for the v1 expression standard
- * library (#507).
- *
- * The registry is the public boundary: only manifest names resolve, arity and
- * declared argument types are enforced before anything runs, contexts are
- * honoured, and what comes back on failure carries names, declared types,
- * value kinds and counts — never a value and never an internal name.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
 import {
@@ -85,8 +75,7 @@ describe("the allowlist is explicit", () => {
   });
 
   test("an internal-style alias is rejected the same way an unknown name is", () => {
-    // Clojure/JavaScript spellings and engine symbols are not public names,
-    // and the answer never confirms that some other name exists internally.
+
     for (const name of [
       "clojure.string/lower-case",
       "str",
@@ -365,7 +354,7 @@ describe("failures are value-sealed", () => {
       for (const key of Object.keys(failure)) {
         expect(admitted.has(key)).toBe(true);
       }
-      // Sealed failures are plain JSON, ready for the public error path.
+
       expect(JSON.parse(JSON.stringify(failure))).toEqual(failure);
     }
   });
@@ -408,7 +397,7 @@ describe("failures are value-sealed", () => {
       violation: "malformedText",
     });
     expect(JSON.stringify(sealedFailure)).not.toContain(secret);
-    // Neither does it say *where* inside the argument the violation was.
+
     expect(JSON.stringify(sealedFailure)).not.toContain("path");
   });
 });

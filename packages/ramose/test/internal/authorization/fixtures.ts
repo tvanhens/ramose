@@ -1,12 +1,3 @@
-/**
- * Hand-written canonical JSON for structural decode / serialize tests.
- * Not compiler output. Semantic binding is out of scope.
- *
- * `RuleId` / `PolicyHash` are digest-shaped (64 lowercase hex). These
- * placeholders are structurally valid, not computed hashes.
- */
-
-/** Repeat one byte as a 64-character lowercase hex digest. */
 export const digestHex = (byte: number): string => byte.toString(16).padStart(2, "0").repeat(32);
 
 export const RULE_OWNS_ISSUE = digestHex(0x11);

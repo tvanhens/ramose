@@ -272,7 +272,6 @@ const verifiedPrincipal = (
     return Object.freeze({ token, kid, iat, exp, principal });
   });
 
-/** Adapt jose's exact fetch inputs to a Cloudflare service binding. */
 export const serviceBindingFetch = (
   binding: JwksServiceBinding,
 ): FetchImplementation =>
@@ -386,12 +385,10 @@ const makeVerifier = (env: JwtVerifierEnv): JwtVerifierClient => {
 
 const verifierCache = new Map<string, JwtVerifierClient>();
 
-/** Forget isolate-scoped verifier instances. Test hook only. */
 export const resetJwtVerifier = (): void => {
   verifierCache.clear();
 };
 
-/** Build or reuse the isolate-scoped jose resolver for this auth config. */
 export const fromEnv = (env: JwtVerifierEnv): JwtVerifierClient => {
   const key = JSON.stringify([
     env.RAMOSE_JWKS_URL,

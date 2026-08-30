@@ -51,14 +51,12 @@ describe("workspace slugs", () => {
   });
 
   test("slugs that would shadow a deployed path are reserved", () => {
-    // A workspace lives at `/<slug>`; on the deployed demo `/db/*` is routed
-    // to the Ramose peer and `/api/*` to the auth Worker, so a board at either
-    // could never open an issue. Both are otherwise valid slugs.
+
     for (const reserved of ["db", "api"]) {
       expect(SLUG_RE_SHAPE.test(reserved)).toBe(true);
       expect(isWorkspaceSlug(reserved)).toBe(false);
     }
-    // The guard is exact, not a prefix match — these stay usable.
+
     expect(isWorkspaceSlug("database")).toBe(true);
     expect(isWorkspaceSlug("api-team")).toBe(true);
   });

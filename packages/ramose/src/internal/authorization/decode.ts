@@ -1,17 +1,3 @@
-/**
- * Trust-boundary decoding and canonical serialization.
- *
- * Effect Schema models from this module remain the single source of truth.
- * This file applies those codecs: JSON-only validation, strict decode to
- * plain frozen data, RFC 8785 canonical encode, and SHA-256 identities.
- *
- * Decode, encode, and canonicalization are pure. Cryptographic hashing
- * lives in the Effect orchestration shell via the Web Crypto API
- * (`crypto.subtle.digest`), matching #337. Structural success is not
- * runtime acceptance — template binding is #384; installed decode is
- * not {@link InstalledAuthorizationIRV2}. Revalidation is #368.
- */
-
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -92,7 +78,6 @@ export const decodePolicyTemplateResult = (
     input,
   );
 
-/** Structural document only. Not {@link InstalledAuthorizationIRV2}. */
 export const decodeInstalledAuthorizationResult = (
   input: unknown,
 ): Result.Result<InstalledAuthorizationIRType, InvalidIR> =>
@@ -102,7 +87,6 @@ export const decodeInstalledAuthorizationResult = (
     input,
   );
 
-/** Decode the persisted v1 shape so upgrades fail with a migration diagnostic. */
 export const decodeLegacyInstalledCatalogUnitV1Result = (
   input: unknown,
 ): Result.Result<LegacyInstalledCatalogUnitV1Type, InvalidIR> =>
@@ -112,7 +96,6 @@ export const decodeLegacyInstalledCatalogUnitV1Result = (
     input,
   );
 
-/** Structural v2 document only. Not {@link InstalledCatalogUnitV2}. */
 export const decodeInstalledCatalogUnitResult = (
   input: unknown,
 ): Result.Result<InstalledCatalogUnitType, InvalidIR> => {
@@ -165,10 +148,6 @@ export const encodeInstalledCatalogUnit = (
   document: InstalledCatalogUnitType,
 ): InstalledCatalogUnitEncoded => Schema.encodeUnknownSync(InstalledCatalogUnit)(document);
 
-// Hoisted for the same reason as the two above: a `Schema.*Sync` call sitting
-// inside an `Effect.fn` generator turns an encode failure into a defect rather
-// than a typed failure. Encoding a value that is already the schema's `Type`
-// cannot fail, so the sync form is right — it just belongs out here.
 const encodeRelativeRule = (
   rule: RelativeAuthorizationRuleType,
 ): RelativeAuthorizationRuleEncoded => Schema.encodeUnknownSync(RelativeAuthorizationRule)(rule);
@@ -201,7 +180,6 @@ const digestFailure = (cause: unknown): InvalidIR =>
     message: `canonical hash failed: ${cause instanceof Error ? cause.message : String(cause)}`,
   });
 
-/** JCS text, or {@link InvalidIR} for lone surrogates and other JCS violations. */
 const canonicalizeJsonResult = (json: JsonValue): Result.Result<string, InvalidIR> => {
   try {
     return Result.succeed(canonicalizeJson(json));
@@ -210,11 +188,6 @@ const canonicalizeJsonResult = (json: JsonValue): Result.Result<string, InvalidI
   }
 };
 
-/**
- * SHA-256 of RFC 8785 JCS text via Web Crypto. Consumes only
- * schema-encoded JSON — not arbitrary `unknown`. Unprefixed; rule and
- * policy identities use {@link hashDomainSeparatedCanonicalJson}.
- */
 export const hashCanonicalJson = Effect.fn("Authorization.hashCanonicalJson")(function* (
   json: JsonValue,
 ) {
@@ -224,10 +197,6 @@ export const hashCanonicalJson = Effect.fn("Authorization.hashCanonicalJson")(fu
   });
 });
 
-/**
- * SHA-256 of `domain || RFC 8785 JCS` via Web Crypto. The domain prefix
- * separates rule/policy identities by authorization language version.
- */
 export const hashDomainSeparatedCanonicalText = Effect.fn(
   "Authorization.hashDomainSeparatedCanonicalText",
 )(function* (domain: string, canonicalText: string) {
@@ -274,14 +243,6 @@ export const hashInstalledCatalogUnit = Effect.fn("Authorization.hashInstalledCa
   },
 );
 
-/**
- * SHA-256 of the normalized catalog schema tables. Material is RFC 8785
- * JCS of `entities` / `traits` / `fields` / `operations` /
- * `traitComposition` after the same normalize pass assemble uses.
- * Identity fields (`id`, `database`, `version`, `fingerprint`) and
- * policy / `unitHash` are excluded so unused field flags participate
- * in {@link SchemaFingerprint} without a live catalog.
- */
 export const hashCatalogSchemaFingerprint = Effect.fn(
   "Authorization.hashCatalogSchemaFingerprint",
 )(function* (
@@ -335,26 +296,14 @@ export const hashCanonicalRule = Effect.fn("Authorization.hashCanonicalRule")(fu
   return RuleId.make(digest);
 });
 
-/**
- * Canonical rule body for {@link RuleId}: schema-encoded JSON minus `id`.
- * The semantic kernel produces this material; the Effect shell hashes it.
- */
 export const canonicalAuthorizationRuleJson = (
   rule: CanonicalAuthorizationRuleType,
 ): JsonValue => omitKey(encodedJson(encodeCanonicalRule(rule)), "id");
 
-/**
- * RFC 8785 JCS of the canonical rule body. JCS-invalid strings (lone
- * surrogates) become {@link InvalidIR} instead of throwing.
- */
 export const canonicalAuthorizationRuleMaterial = (
   rule: CanonicalAuthorizationRuleType,
 ): Result.Result<string, InvalidIR> => canonicalizeJsonResult(canonicalAuthorizationRuleJson(rule));
 
-/**
- * Schema-encoded IR is JSON by construction. This is the only cast from
- * encode output into {@link JsonValue}; callers must not hash `unknown`.
- */
 const encodedJson = (encoded: unknown): JsonValue => encoded as JsonValue;
 
 const decodeDocument = <A>(
@@ -499,9 +448,6 @@ const operationDescriptorCollisions = (
 ): InvalidIR | undefined =>
   internByIdentity(
     operations.map((operation) => {
-      // Both persisted v1 rows and current rows have already crossed a strict
-      // schema decode, so canonicalize the decoded row without forcing the v2
-      // operation codec onto the legacy shape.
       const encoded = encodedJson(operation);
       return {
         id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(OperationId)(operation.id))),
@@ -615,19 +561,12 @@ type WalkFrame = {
   readonly depth: number;
 };
 
-/**
- * Iterative JSON-only inspect. Reads property descriptors so accessors and
- * deep hostile trees fail as `InvalidIR` before Schema walks the input.
- * Parsed JSON is a tree: a repeated object identity is either a cycle or a
- * DAG alias, and both fail closed. Optional safe alias support is deferred.
- */
 const inspectRawJson = (input: unknown): string | undefined => {
   const work: Work = { nodes: 0, bytes: 0 };
   const root = jsonLeafViolation(input, work);
   if (root !== undefined) return root;
   if (typeof input !== "object" || input === null) return undefined;
 
-  // `false` = on the current path (a cycle). `true` = already validated (an alias).
   const seen = new WeakMap<object, boolean>();
   const stack: WalkFrame[] = [];
   const opened = enterObject(input, 0, seen, stack, work);

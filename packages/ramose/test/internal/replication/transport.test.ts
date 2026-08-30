@@ -91,7 +91,7 @@ test("credential fingerprints are full, exact, and route-slot-bound", async () =
     .not.toBe(first);
   expect(await replicationCredentialFingerprint("exact-token", activation, await rootReplicaRouteSlot()))
     .not.toBe(first);
-  // Path text is not fingerprint material; only the slot and server scope are.
+
   expect(await replicationCredentialFingerprint("exact-token", replicationActivationAddress({
     server: "https://data.example",
     root: "root",
@@ -190,8 +190,7 @@ test("HTTP 409 yields only one identity-free agreement or version terminal", asy
 });
 
 test("a refused credential is distinguishable from an unreachable server", async () => {
-  // The server's own answer. A caller that read it as unreachable would leave a
-  // revoked or expired principal reading the partition that credential opened.
+
   for (const status of [401, 403]) {
     await expect(collect(readReplicationFrames(
       new Response(null, {
@@ -200,7 +199,7 @@ test("a refused credential is distinguishable from an unreachable server", async
       }),
     ))).rejects.toBeInstanceOf(ReplicationUnauthorizedError);
   }
-  // Every other unsuccessful status stays an ordinary transport failure.
+
   const other = collect(readReplicationFrames(
     new Response(null, {
       status: 503,

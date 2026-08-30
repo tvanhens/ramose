@@ -1,11 +1,3 @@
-/**
- * Session log walk. General replication remains fail-closed after #415;
- * authorized live queries use the separate leased `/live` path.
- *
- * The replica stays unfiltered internally. Nothing is emitted to a
- * client: silence does not leak `t` (LIVE-3, NI-1).
- */
-
 import type { Datom, Db, WireDatom } from "../internal/core/index.ts";
 import type { Principal } from "./auth.ts";
 
@@ -27,10 +19,6 @@ export interface SessionLog {
   readonly entries: readonly SessionLogEntry[];
 }
 
-/**
- * One committed entry, judged for an application consumer.
- * General replication is deferred to #442, so every entry is silence.
- */
 export async function decideSessionTx(_opts: {
   datoms: readonly Datom[];
   principal?: Principal;

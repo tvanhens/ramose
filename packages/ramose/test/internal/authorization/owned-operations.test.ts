@@ -1,5 +1,3 @@
-/** Entity/trait operation authoring and inert deterministic lowering (#317). */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";

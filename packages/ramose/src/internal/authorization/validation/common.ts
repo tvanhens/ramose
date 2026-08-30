@@ -1,7 +1,3 @@
-/**
- * Shared failure constructors, identity keys, and hard validation limits.
- */
-
 import * as Result from "effect/Result";
 import { DEFAULT_AUTHORIZATION_BUDGET, MAX_TRAVERSAL_DEPTH } from "../bounds.ts";
 import { CatalogMismatch, InvalidIR } from "../failures.ts";
@@ -14,7 +10,6 @@ export type ValidationLimits = {
   readonly maxStaticWork: number;
 };
 
-/** Hard production ceilings. Callers cannot widen these. */
 export const defaultValidationLimits: ValidationLimits = {
   maxTraversalDepth: MAX_TRAVERSAL_DEPTH,
   maxStaticWork: DEFAULT_AUTHORIZATION_BUDGET,
@@ -23,11 +18,6 @@ export const defaultValidationLimits: ValidationLimits = {
 const isFiniteNatural = (value: number): boolean =>
   Number.isFinite(value) && Number.isInteger(value) && value >= 0;
 
-/**
- * Test-only tightening. Each override must be a finite natural number and
- * is clamped at the corresponding hard constant so Infinity/NaN cannot
- * disable traversal or work restrictions.
- */
 export const tightenValidationLimits = (
   overrides: Partial<ValidationLimits> | undefined,
 ): Result.Result<ValidationLimits, ValidateFailure> => {

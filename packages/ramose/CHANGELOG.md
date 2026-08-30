@@ -573,7 +573,7 @@ shorthands wrap (the advanced-form vocabulary).
 `connect` / `Client` / `ClientOptions` stay on `ramose/db`. Hatch types
 (`layer`, `Databases`, `DatabasesShape`, `EffectToken`,
 `EffectClientOptions`) live only on `ramose/db/effect`. The client `.d.ts`
-gate scans `connect.d.ts` with no allowlist exemption.
+surface test scans `connect.d.ts` with no allowlist exemption.
 
 ### Public vocabulary (part of #204, tracker #205)
 
@@ -604,7 +604,7 @@ attribute-level narrowing.
 Rule clauses ride the caller's query budget. `QueryBudgetExceeded` now
 carries `spentBy: "caller" | "policy"` so a policy regression is not
 billed as an app bug. Equivalence (pushdown ≡ filtered-only) is the
-merge gate.
+required behavior.
 
 ### Policy rules are query fragments (#153)
 

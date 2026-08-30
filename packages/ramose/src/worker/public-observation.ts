@@ -1,11 +1,3 @@
-/**
- * The complete public HTTP observation allowlist.
- *
- * Route code may return application results, but framework metadata, error
- * fields, and response headers must be selected here.  Rich diagnostics stay
- * in logs and on internal Durable Object responses.
- */
-
 import { INVOCATION_RECEIPT_VERSION } from "../internal/authorization/invocation-receipts.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 
@@ -71,7 +63,6 @@ const publicReceipt = (value: unknown): Record<string, unknown> | undefined => {
   };
 };
 
-/** Defense-in-depth field selection for every framework-generated error. */
 export const publicErrorBody = (
   body: Record<string, unknown>,
 ): Record<string, unknown> => {
@@ -109,7 +100,6 @@ const configuredOrigins = (env: Pick<RamoseEnv, "RAMOSE_ALLOWED_ORIGINS">): read
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0);
 
-/** CORS metadata selected only from the server-owned origin allowlist. */
 export const publicCorsHeaders = (
   request?: Request,
   env?: Pick<RamoseEnv, "RAMOSE_ALLOWED_ORIGINS">,

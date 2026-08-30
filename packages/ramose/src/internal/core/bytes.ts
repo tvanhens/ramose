@@ -1,8 +1,3 @@
-/**
- * Small growable byte writer / reader with LEB128 varints. Shared by the
- * segment and directory-node codecs. Pure TS.
- */
-
 const ENC = new TextEncoder();
 const DEC = new TextDecoder();
 
@@ -37,7 +32,6 @@ export class ByteWriter {
     this.pos += 4;
   }
 
-  /** unsigned LEB128; supports safe integers (up to 2^53). */
   uvar(x: number): void {
     if (x < 0 || !Number.isSafeInteger(x)) throw new RangeError(`uvar: bad value ${x}`);
     this.ensure(10);
@@ -48,16 +42,10 @@ export class ByteWriter {
     this.buf[this.pos++] = x;
   }
 
-  /**
-   * zig-zag signed varint over the full safe-integer range.
-   * Wire format is identical to LEB128 of zigzag(x) = 2|x| - neg, but computed
-   * without ever materialising 2|x| (which overflows 2^53 for |x| > 2^52):
-   * first byte carries the sign bit + 6 magnitude bits, remainder is uvar.
-   */
   svar(x: number): void {
     if (!Number.isSafeInteger(x)) throw new RangeError(`svar: bad value ${x}`);
     const neg = x < 0 ? 1 : 0;
-    const m = neg ? -x - 1 : x; // zigzag = 2m + neg
+    const m = neg ? -x - 1 : x;
     const rest = Math.floor(m / 64);
     const low = ((m % 64) << 1) | neg;
     this.ensure(1);
@@ -81,7 +69,6 @@ export class ByteWriter {
     this.pos += b.length;
   }
 
-  /** length-prefixed bytes */
   lbytes(b: Uint8Array): void {
     this.uvar(b.length);
     this.bytes(b);
@@ -91,7 +78,6 @@ export class ByteWriter {
     this.lbytes(ENC.encode(s));
   }
 
-  /** Reserve `n` bytes at the current position; returns offset for later patch. */
   reserve(n: number): number {
     this.ensure(n);
     const off = this.pos;
@@ -139,7 +125,6 @@ export class ByteReader {
     }
   }
   svar(): number {
-    // Inverse of ByteWriter.svar: decode without materialising 2|x|.
     const b = this.u8();
     const neg = b & 1;
     let m = (b >> 1) & 0x3f;
@@ -195,24 +180,19 @@ export function fromHex(h: string): Uint8Array {
   return out;
 }
 
-/** SHA-256 hex digest via WebCrypto (available in Bun, Node ≥ 19, Workers). */
 export async function sha256Hex(data: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", data as BufferSource);
   return toHex(new Uint8Array(digest));
 }
 
-/** gzip via the standard CompressionStream (Bun, Node ≥ 18, Workers). */
 export async function gzip(data: Uint8Array): Promise<Uint8Array> {
   return pipeThrough(new CompressionStream("gzip"), data);
 }
-/** Rejects (never crashes) on truncated / corrupt input. */
 export async function gunzip(data: Uint8Array): Promise<Uint8Array> {
   return pipeThrough(new DecompressionStream("gzip"), data);
 }
 async function pipeThrough(ts: { readable: ReadableStream<Uint8Array>; writable: WritableStream<BufferSource> }, data: Uint8Array): Promise<Uint8Array> {
   const w = ts.writable.getWriter();
-  // Both halves are awaited together so a failure on either side surfaces
-  // as this promise's rejection instead of an unhandled rejection.
   const written = w.write(data as BufferSource).then(() => w.close());
   const [buf] = await Promise.all([new Response(ts.readable).arrayBuffer(), written]);
   return new Uint8Array(buf);

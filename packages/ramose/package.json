@@ -28,37 +28,6 @@
     "alchemy",
     "realtime"
   ],
-  "//dependencies": [
-    "Ramose owns its whole runtime graph on purpose: `bun add ramose` has to be",
-    "enough for the portable and deploy paths.",
-    "",
-    "`effect` is a required peer because operation declarations accept public",
-    "Effect Schema values. That makes the import legal under pnpm and Yarn PnP",
-    "and guarantees one version supplies both Ramose and application codecs.",
-    "",
-    "`alchemy` is a real dependency, not a peer: it carries the `alchemy` CLI",
-    "the quickstart runs. Its types sit in the public deploy signatures, and",
-    "the 2.x line is still beta (no semver signal). The range is pinned to the",
-    "tested beta and bumped per release — not `>=x <3`, which would admit",
-    "every future 2.x beta. The workspace root pins the same tested version",
-    "(exact) so `bun update alchemy` cannot split two copies.",
-    "",
-    "`better-auth` and `zod` are optional peers that only `ramose/better-auth`",
-    "touches. Apps using that subpath need both peers installed. The zod peer",
-    "is naming hygiene, not a smaller install: `better-auth` already depends",
-    "on zod, so it stays in the tree of any app that uses `ramose/better-auth`."
-  ],
-  "//sideEffects": [
-    "The `./src/**` globs are load-bearing in this workspace, not leftovers.",
-    "The root tsconfig `paths` point `ramose/worker` at `src/`, so the peer",
-    "Worker is bundled from source here even though only `dist` ships. Alchemy",
-    "re-exports `default` from a generated entry, so the Durable Object classes",
-    "reach the bundle only as re-exports — drop these globs and esbuild treats",
-    "the modules as side-effect-free and tree-shakes `TransactorDO` /",
-    "`QueryReplicaDO` away. Cloudflare then rejects the upload: \"New version of",
-    "script does not export class 'QueryReplicaDO'\". The `./dist/**` globs are",
-    "the same statement for a consumer bundling the published package."
-  ],
   "sideEffects": [
     "./src/worker/**",
     "./src/internal/transactor/**",

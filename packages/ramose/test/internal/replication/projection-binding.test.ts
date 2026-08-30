@@ -1,14 +1,3 @@
-/**
- * Native projection binding and the projection-identity decision table
- * (#476 slice 1).
- *
- * The whole decision is a lookup by the operation's permanent semantic name
- * plus two declared numbers. Nothing here reads a callback: the revision is
- * author-declared and the build is bundle-declared, and both are inert data.
- * The durable half — the stored identity on a layer row, and quarantine on a
- * codec or key-epoch incompatibility — belongs to slice 2.
- */
-
 import { describe, expect, test } from "bun:test";
 import type { AnyOptimisticProjection } from "../../../src/db/Projection.ts";
 import type { CatalogId, OwnerRef } from "../../../src/internal/authorization/identities.ts";
@@ -119,8 +108,7 @@ describe("the decision table", () => {
   test("a record queued without a projection reconstructs none", () => {
     expect(resolveProjectionBinding(installed, { operation: move, projection: null }))
       .toEqual({ type: "none" });
-    // Even when the installed bundle has since added one: the invocation never
-    // had a layer, so showing none is exactly the view it was queued with.
+
     expect(
       resolveProjectionBinding(installed, { operation: archive, projection: null }),
     ).toEqual({ type: "none" });
@@ -169,8 +157,7 @@ describe("the decision table", () => {
   });
 
   test("build drift alone rebinds, because a redeploy is not drift", () => {
-    // Quarantining here would strand every queued layer on every client
-    // deploy — the opposite of what #475's stable handles are for.
+
     const binding = resolveProjectionBinding(installed, {
       operation: move,
       projection: projectionIdentity("app@1", 2),

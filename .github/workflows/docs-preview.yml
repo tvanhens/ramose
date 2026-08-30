@@ -1,20 +1,3 @@
-# Per-PR preview of the docs site (website/): deploy an isolated Alchemy stage
-# `pr-<number>` on PRs that touch website/, post/update a PR comment with the
-# preview URL, and destroy the stage when the PR closes (merged or not).
-#
-# State: the stack runs with ALCHEMY_STATE=local and the `.alchemy/` directory
-# is carried between runs via the Actions cache, so re-pushes update the same
-# Worker (stable URL) and the teardown run can destroy what the deploy run
-# created. Cloudflare-hosted state (`Cloudflare.state()`) would avoid the
-# cache, but its state store needs Secrets Store + edge-preview token scopes
-# beyond the minimal CI token documented in CONTRIBUTING.md.
-#
-# Teardown is belt-and-suspenders: `alchemy destroy` against the cached state,
-# then — in case the cache was evicted — the Worker named in the PR's preview
-# comment is deleted directly via the Cloudflare API.
-#
-# Credentials come from the GitHub Environment "Development" — same as
-# e2e-cloudflare.yml; see CONTRIBUTING.md.
 name: Docs preview
 
 on:
@@ -28,7 +11,6 @@ permissions:
   contents: read
   pull-requests: write
 
-# Serialize per PR: a deploy and a teardown must never race on stack state.
 concurrency:
   group: docs-preview-${{ github.event.pull_request.number }}
   cancel-in-progress: false
@@ -36,7 +18,7 @@ concurrency:
 jobs:
   deploy:
     name: deploy-preview
-    # Forks have no access to the Development environment secrets; skip cleanly.
+
     if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     environment: Development
@@ -74,8 +56,7 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "### Docs preview" >> "$GITHUB_STEP_SUMMARY"
           echo "$URL" >> "$GITHUB_STEP_SUMMARY"
-      # Save even when the deploy failed partway: the state still names
-      # whatever was created, and teardown needs it to clean up.
+
       - name: Save stack state
         if: always()
         uses: actions/cache/save@v4
@@ -88,8 +69,7 @@ jobs:
           PREVIEW_URL: ${{ steps.deploy.outputs.url }}
         with:
           script: |
-            // Post the ramose marker; still recognise the pre-rebrand one so
-            // preview comments on open PRs keep being updated in place.
+
             const marker = "<!-- ramose-docs-preview -->";
             const legacyMarker = "<!-- ripple-docs-preview -->";
             const body = [
@@ -153,9 +133,7 @@ jobs:
         run: |
           bun alchemy destroy website/alchemy.run.ts \
             --stage "pr-${{ github.event.pull_request.number }}" --yes
-      # Fallback for an evicted cache: the preview comment names the Worker
-      # (first label of the workers.dev URL); delete it directly if it is
-      # somehow still there. A no-op when `alchemy destroy` already ran.
+
       - name: Delete any leftover preview Worker by name
         env:
           GH_TOKEN: ${{ github.token }}
@@ -173,7 +151,7 @@ jobs:
           STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
             -X DELETE "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$NAME?force=true" \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
-          # 200 = deleted now (cache must have been evicted), 404 = already gone.
+
           echo "DELETE $NAME -> $STATUS"
           if [ "$STATUS" != "200" ] && [ "$STATUS" != "404" ]; then
             echo "::error::Unexpected status $STATUS deleting leftover preview Worker $NAME."

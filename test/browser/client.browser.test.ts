@@ -1,23 +1,3 @@
-/**
- * The public client, end to end in a real browser (#477 slice 1).
- *
- * Nothing here is simulated. Real Chromium IndexedDB with its real transaction
- * semantics, the real replica installer, the real credential binding and cache
- * selector over WebCrypto, the real `ReplicationSession`, the real query
- * engine — reached only through `createClient`, exactly as an application does.
- *
- * Two lanes:
- *
- * 1. **Offline.** A replica installed and bound in a previous "session", then
- *    read back through the public API against an origin that refuses every
- *    connection. That is the whole offline contract: an exact bearer binding
- *    renders its compatible replica stale, and a rotated one renders nothing.
- * 2. **Live.** One activation against the *recorded* real-Worker frame fixture
- *    (`test/browser/frames/PROVENANCE.md`), served as inert bytes over the real
- *    HTTP path, so the committed value arrives through the real session and
- *    enters a query that was already being observed.
- */
-
 import { expect } from "vitest";
 import { compileReadAuthorization } from "../../packages/ramose/src/internal/authorization/index.ts";
 import { Catalog } from "../../packages/ramose/src/Catalog.ts";
@@ -54,20 +34,17 @@ import recorded from "./frames/optimistic-fence.client.json";
 import { browserTest } from "./fixtures.ts";
 import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
-// ── the application's catalog ───────────────────────────────────────────────
-
 const Note = Entity("note", {
   title: Field.unique(string(), "strict"),
   rank: string(),
 });
 const Notes = Schema({ note: Note });
-/** The policy is never run on a client; it stays the unevaluated authored value. */
+
 const NotesCatalog = Catalog("client-notes", {
   schema: Notes,
   policy: compileReadAuthorization({ schema: Notes, rules: [] }),
 });
 
-/** An origin that refuses every connection, so every read has to be local. */
 const OFFLINE = "http://127.0.0.1:1";
 const ROOT = "app";
 const TOKEN = "bearer-a";
@@ -107,10 +84,6 @@ const waitFor = <A>(
 
 type SeededNote = { readonly entity: string; readonly title: string; readonly rank: string };
 
-/**
- * Install and bind one replica exactly as a prior authenticated session would
- * have left it, then let go of the storage handle.
- */
 const seed = async (
   name: string,
   notes: readonly SeededNote[],
@@ -182,8 +155,6 @@ const offlineClient = (name: string, credential = { token: TOKEN, cacheKey: CACH
 const titles = (db: ClientDatabase) =>
   db.observe(db.query.from(Note).orderBy(Note.rank).select({ title: Note.title }));
 
-// ── offline lane ───────────────────────────────────────────────────────────
-
 browserTest("renders an exact bearer binding's replica offline and closes deterministically", async ({ browser }) => {
   const name = `ramose-client-exact-${browser.uniqueId}`;
   await seed(name, [
@@ -191,37 +162,32 @@ browserTest("renders an exact bearer binding's replica offline and closes determ
     { entity: opaque("f"), title: "first", rank: "a" },
   ]);
   const client = offlineClient(name);
-  /** Kept past `close()`, to read what a held subscription answers after it. */
+
   let closed!: ReturnType<typeof titles>;
   try {
     const db = client.open();
-    // Observing is what activates; opening the handle did nothing.
+
     expect(client.sync.getSnapshot().status).toBe("idle");
 
     const notes = titles(db);
     expect(notes.getSnapshot().status).toBe("pending");
-    // Held for the rest of the test: an observation lives exactly as long as
-    // its listeners, so interning is only meaningful while one is attached.
+
     const held = notes.subscribe(() => undefined);
 
     const ready = await waitFor(notes, (snapshot) => snapshot.status === "ready");
     expect(ready.data).toEqual([{ title: "first" }, { title: "second" }]);
-    // Restored, never confirmed by the current session.
+
     expect(ready.stale).toBe(true);
-    // Stable: reading again returns the very same snapshot object.
+
     expect(notes.getSnapshot()).toBe(ready);
 
-    // An equal query is one interned observation, and its snapshot is the same.
     expect(titles(db).getSnapshot()).toBe(ready);
 
     const offline = await waitFor(client.sync, (state) => state.status === "offline");
     expect(offline.status).toBe("offline");
-    // The local value stays readable while the server is unreachable.
+
     expect(notes.getSnapshot().data).toEqual([{ title: "first" }, { title: "second" }]);
 
-    // The last listener releases the observation, but a release is not a
-    // change: what it was showing is still the answer, and reading it again
-    // returns the very same snapshot rather than flashing back to pending.
     held();
     expect(titles(db).getSnapshot()).toBe(ready);
     closed = notes;
@@ -231,13 +197,10 @@ browserTest("renders an exact bearer binding's replica offline and closes determ
 
   expect(client.sync.getSnapshot().status).toBe("closed");
   expect(() => client.open()).toThrow();
-  // A closed client maintains nothing, so a subscription still held by an
-  // application stops answering with a value nothing is keeping current.
+
   expect(closed.getSnapshot().status).toBe("pending");
   expect(closed.getSnapshot().data).toBeUndefined();
 
-  // `close()` released the session, never the durable work: a fresh handle
-  // still restores exactly the same committed replica.
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
     const address = replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] });
@@ -261,10 +224,7 @@ browserTest("retains no observation until something subscribes", async ({ browse
   const client = offlineClient(name);
   try {
     const db = client.open();
-    // Observing activates the database — but a render that is then abandoned
-    // must leave nothing behind: an observation is released only through an
-    // unsubscribe, so one installed without a subscription would be rerun by
-    // every later replica and overlay change, forever.
+
     const notes = titles(db);
     await waitFor(client.sync, (state) => state.status === "offline");
     expect(notes.getSnapshot().status).toBe("pending");
@@ -298,7 +258,7 @@ browserTest("a withdrawn binding stops selecting the replica it named", async ({
     );
     expect(bound).toBeDefined();
     bound!.release();
-    // What the session does when the server refuses this exact credential.
+
     await storage.unbindCredential(fingerprint);
     expect(await storage.restoreBound(
       fingerprint,
@@ -309,8 +269,6 @@ browserTest("a withdrawn binding stops selecting the replica it named", async ({
     storage.close();
   }
 
-  // End to end: the same credential now renders nothing offline, so a restart
-  // after a refusal cannot walk around the authentication fence.
   const client = offlineClient(name);
   try {
     const notes = titles(client.open());
@@ -336,24 +294,18 @@ browserTest("reattaches a subscription that is resubscribed after its last liste
       .toEqual([{ title: "kept" }]);
 
     const before = notes.getSnapshot();
-    // The last listener leaves, which releases the observation.
+
     first();
-    // The same subscription value is subscribed again — the unmount/remount a
-    // framework performs. It must reattach to a live observation, not go on
-    // reading a detached one that no replica or overlay change will ever touch,
-    // and it must not flash: a remount that rendered data → pending → data
-    // would contradict the snapshot contract on every mount.
+
     const seen: string[] = [];
     const second = notes.subscribe(() => seen.push(notes.getSnapshot().status));
     expect(notes.getSnapshot()).toBe(before);
     const reattached = await waitFor(notes, (snapshot) => snapshot.status === "ready");
     expect(reattached.data).toEqual([{ title: "kept" }]);
     expect(seen).not.toContain("pending");
-    // Reattached to *the* observation for this query, not to a private copy.
+
     expect(titles(db).getSnapshot()).toBe(notes.getSnapshot());
 
-    // Cleanup is idempotent, as the subscription contract promises: calling the
-    // first one again must not evict the observation the second one is using.
     first();
     expect(titles(db).getSnapshot()).toBe(notes.getSnapshot());
     second();
@@ -374,9 +326,7 @@ browserTest("reports a oneOrFail miss as an error rather than as rows", async ({
     const db = client.open();
     const only = db.observe(db.query.from(Note).select({ title: Note.title }).oneOrFail());
     const held = only.subscribe(() => undefined);
-    // The query language reports a miss by returning its error, so a snapshot
-    // that took it for data would hand an application an error where its row
-    // belongs.
+
     const failed = await waitFor(only, (snapshot) => snapshot.status !== "pending");
     expect(failed.status).toBe("error");
     expect(failed.data).toBeUndefined();
@@ -401,8 +351,7 @@ browserTest("renders nothing offline for a rotated bearer, with or without the c
       const db = client.open();
       const notes = titles(db);
       await waitFor(client.sync, (state) => state.status === "offline");
-      // The candidate the cache key nominates is never published: only the
-      // current authenticated response could confirm it, and there is none.
+
       expect(notes.getSnapshot().status).toBe("pending");
       expect(notes.getSnapshot().data).toBeUndefined();
     } finally {
@@ -417,7 +366,7 @@ browserTest("activates nothing until a query is observed", async ({ browser }) =
   const client = offlineClient(name);
   try {
     const db = client.open();
-    // Constructing the client, the handle, and a query value opens no storage.
+
     const query = db.query.from(Note).where({ title: "offline" });
     expect(client.sync.getSnapshot().status).toBe("idle");
     expect((await indexedDB.databases()).some((entry) => entry.name === name)).toBe(false);
@@ -437,8 +386,7 @@ browserTest("quarantines a layer this build cannot replay, without hiding the co
   const receiver = replicaDatabaseScopeOf(identity);
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-    // A durable layer left by some *other* build: this slice installs no
-    // projection, so nothing here can replay it.
+
     await storage.outbox().enqueue({
       invocation: invocationId(),
       receiver,
@@ -467,9 +415,7 @@ browserTest("quarantines a layer this build cannot replay, without hiding the co
     const notes = titles(db);
     const held = notes.subscribe(() => undefined);
     const ready = await waitFor(notes, (snapshot) => snapshot.status === "ready");
-    // The durable rows are kept and no layer is presented; the committed
-    // replica is untouched and still readable, which is the half of
-    // `update-required` that keeps answering.
+
     expect(ready.data).toEqual([{ title: "committed" }]);
     expect(await waitFor(client.sync, (state) => state.status === "update-required"))
       .toBeDefined();
@@ -484,8 +430,6 @@ browserTest("clearLocalData deletes only a confirmed scope and is terminal", asy
   const name = `ramose-client-clear-${browser.uniqueId}`;
   await seed(name, [{ entity: opaque("e"), title: "erased", rank: "a" }]);
 
-  // A client whose bearer was never bound has no scope it may name, so it
-  // deletes nothing and the replica is still there afterwards.
   const stranger = offlineClient(name, { token: "bearer-stranger", cacheKey: "account-z" });
   await expect(stranger.clearLocalData()).rejects.toMatchObject({
     reason: "no-confirmed-scope",
@@ -499,7 +443,7 @@ browserTest("clearLocalData deletes only a confirmed scope and is terminal", asy
 
   await client.clearLocalData();
   expect(client.sync.getSnapshot().status).toBe("closed");
-  // Terminal: this instance can never repopulate what it just deleted.
+
   expect(() => client.open()).toThrow();
   await expect(client.clearLocalData()).rejects.toThrow();
 
@@ -521,8 +465,7 @@ browserTest("clearLocalData deletes only a confirmed scope and is terminal", asy
 browserTest("a clear by one client leaves the other terminal rather than silently dead", async ({ browser }) => {
   const name = `ramose-client-shared-${browser.uniqueId}`;
   await seed(name, [{ entity: opaque("e"), title: "shared", rank: "a" }]);
-  // Two clients over one durable store, as two components of one application
-  // would be. One of them clears the principal.
+
   const clearing = offlineClient(name);
   const other = offlineClient(name);
   try {
@@ -534,8 +477,6 @@ browserTest("a clear by one client leaves the other terminal rather than silentl
 
     await clearing.clearLocalData();
 
-    // The other client's session was closed under it by the clear. Nothing can
-    // reactivate it, so it says so instead of sitting at a healthy status.
     expect((await waitFor(other.sync, (state) => state.status === "closed")).status)
       .toBe("closed");
     expect(() => other.open()).toThrow();
@@ -548,18 +489,6 @@ browserTest("a clear by one client leaves the other terminal rather than silentl
   }
 });
 
-// ── live lane, over the recorded real-Worker frames ────────────────────────
-
-/**
- * The recording's catalog, as an application would author it.
- *
- * Duplicated rather than imported because the conformance catalog is a
- * deploy-time module: it imports `ramose`, which no browser bundle may. The
- * duplication is checked, not assumed — the first assertion below compares the
- * hash this catalog derives against the one the real Worker minted, so a schema
- * change that this copy misses fails loudly instead of quietly weakening the
- * suite. When it does, copy the declarations across and re-record.
- */
 const ConformanceUser = Entity("conformanceUser", {
   sub: Field.unique(string(), "strict"),
   access: string({ default: () => "enabled" }),
@@ -590,7 +519,7 @@ browserTest("a committed value enters a query already being observed", async ({ 
   const name = `ramose-client-live-${browser.uniqueId}`;
   const client = createClient({
     url: globalThis.location.origin,
-    // The recorded fixture is served at `/db/optimistic-fence/replicate`.
+
     root: "optimistic-fence",
     catalog: ConformanceCatalog,
     auth: () => Promise.resolve({ token: "session-credential", cacheKey: "recorded" }),
@@ -600,9 +529,7 @@ browserTest("a committed value enters a query already being observed", async ({ 
     const db = client.open();
     const seen: string[] = [];
     client.sync.subscribe(() => seen.push(client.sync.getSnapshot().status));
-    // Observed before anything is stored: the first value this query ever sees
-    // arrives as a committed replica over the real session, with no server
-    // query request of its own.
+
     const issues = db.observe(
       db.query.from(ConformanceIssue).select({ title: ConformanceIssue.title }),
     );
@@ -611,12 +538,10 @@ browserTest("a committed value enters a query already being observed", async ({ 
     const ready = await waitFor(issues, (snapshot) => snapshot.status === "ready");
     expect(ready.data).toBeInstanceOf(Array);
     expect((ready.data as readonly unknown[]).length).toBeGreaterThan(0);
-    // Confirmed by the response that delivered it, so it is not stale.
+
     expect(ready.stale).toBe(false);
     expect(issues.getSnapshot()).toBe(ready);
-    // The recording is one finite file, so the stream ends where a real one
-    // would stay open; the client reports `live` while it is being read and
-    // `offline` once the response is over, with the confirmed value intact.
+
     expect(seen).toContain("live");
     expect(await waitFor(client.sync, (state) => state.status === "offline")).toBeDefined();
     expect(issues.getSnapshot()).toBe(ready);
@@ -629,9 +554,7 @@ browserTest("a committed value enters a query already being observed", async ({ 
 browserTest("fences a replaced principal before any of its data can be read", async ({ browser }) => {
   const name = `ramose-client-transition-${browser.uniqueId}`;
   const installed = await installClientCatalog(ConformanceCatalog);
-  // A complete, compatible replica for a *different* principal, bound to the
-  // exact bearer this client presents. It is entitled to render stale offline —
-  // and it must stop being readable the moment the server names another one.
+
   const prior: ReplicationIdentity = {
     ...(recorded.identity as unknown as ReplicationIdentity),
     principal: opaque("x"),
@@ -691,16 +614,11 @@ browserTest("fences a replaced principal before any of its data can be read", as
       (snapshot) => snapshot.status === "ready" && snapshot.stale === false,
     );
     const shown = settled.data as readonly { readonly title: string }[];
-    // Not vacuous: only a *replacement* publishes this, and a replacement can
-    // only happen once the prior identity was adopted — which is exactly the
-    // restore an exact bearer binding is entitled to.
+
     expect(statuses).toContain("authentication-required");
-    // The replaced principal's row is gone from the settled answer.
+
     expect(shown.some((row) => row.title === "prior-principal")).toBe(false);
-    // And from every snapshot published after the fence reset the observers.
-    // Whether the prior partition's rows ever reached a snapshot before the
-    // response arrived is a race with the network; that they never survive the
-    // fence is not.
+
     const fenced = seen.slice(seen.lastIndexOf(undefined) + 1);
     expect(fenced.length).toBeGreaterThan(0);
     for (const data of fenced) {

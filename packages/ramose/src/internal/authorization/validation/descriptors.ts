@@ -1,11 +1,3 @@
-/**
- * Local structural validation of claim and operation-input descriptors.
- *
- * Canonical schemas are the source of truth. This module only applies those
- * codecs and maps failures onto {@link InvalidIR}. Catalog-dependent typing
- * stays in the semantic walker.
- */
-
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { OperationInputShape } from "../catalog.ts";

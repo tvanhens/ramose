@@ -1,5 +1,3 @@
-/** Compile-time contract for the built-in Graph trait. */
-
 // @effect-diagnostics floatingEffect:off
 
 import * as EffectSchema from "effect/Schema";
@@ -28,9 +26,9 @@ const Workspace = Entity("graphTypesWorkspace", {}, {
       run(op, input) {
         const graph = op.create(input);
         graph.set(Graph.name, input.name);
-        // @ts-expect-error the catalog key is fixed by Graph(Child)
+        // @ts-expect-error
         graph.set(Graph.catalog, "forged");
-        // @ts-expect-error the catalog key is absent from create input
+        // @ts-expect-error
         op.create({ name: input.name, catalog: "forged" });
         return { id: graph };
       },
@@ -48,9 +46,9 @@ const tx = txBuilder(App);
 tx.put(Workspace, { name: "acme" });
 tx.put(Project, { name: "project", doc: "Project graph" });
 tx.update(Workspace, 1, { name: "renamed" });
-// @ts-expect-error fixed Graph catalog is absent from create input
+// @ts-expect-error
 tx.put(Workspace, { name: "bad", catalog: "forged" });
-// @ts-expect-error fixed Graph catalog is absent from update input
+// @ts-expect-error
 tx.update(Project, 1, { catalog: "forged" });
 
 Ref(Graph);

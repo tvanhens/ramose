@@ -1,14 +1,3 @@
-/**
- * Node stores. `MemStore` is the pure in-memory, content-addressed store used
- * by tests, benches and the in-memory `Connection`. It performs the same
- * encode → compress → sha256 pipeline the R2 store uses, so hashes are
- * identical across backends and structural-sharing tests can count objects.
- *
- * `Codec` abstracts compression (gzip via CompressionStream by default;
- * `identity` for speed in tests). Open decision §8: gzip vs zstd — gzip is
- * built in everywhere; zstd can be slotted in as another Codec later.
- */
-
 import { gunzip, gzip, sha256Hex } from "./bytes.ts";
 import type { IndexId } from "./datom.ts";
 import { type NodeKind, type NodeRef, type NodeSource, type NodeStore, type TreeNode, decodeNode, encodeNode } from "./tree.ts";
@@ -31,7 +20,6 @@ export const gzipCodec: Codec = {
   decompress: gunzip,
 };
 
-/** Object key prefix per node kind (R2 layout: seg/<hash>, n/<hash>). */
 export function objectKey(kind: NodeKind, hash: string): string {
   return (kind === 0 ? "seg/" : "n/") + hash;
 }
@@ -43,7 +31,6 @@ function countOf(node: TreeNode): number {
   return n;
 }
 
-/** Encode + compress + hash a node. Shared by every store implementation. */
 export async function serializeNode(
   index: IndexId,
   node: TreeNode,
@@ -62,7 +49,6 @@ export async function deserializeNode(body: Uint8Array, codec: Codec): Promise<T
 
 export interface MemStoreStats {
   puts: number;
-  /** distinct objects actually stored (dedup by hash) */
   objects: number;
   loads: number;
   bytes: number;
@@ -102,12 +88,10 @@ export class MemStore implements NodeStore {
     return ref;
   }
 
-  /** Forget decoded nodes (forces `load` on next access — for cold-path tests). */
   evictDecoded(): void {
     this.nodes.clear();
   }
 
-  /** Delete every object not in `keep` (GC sweep). Returns number deleted. */
   sweep(keep: Set<string>): number {
     let n = 0;
     for (const h of [...this.bodies.keys()]) {
@@ -122,11 +106,6 @@ export class MemStore implements NodeStore {
   }
 }
 
-/**
- * A NodeSource that layers a memory cache in front of another source
- * (peer-side: mem → Cache API → R2). LRU by insertion order, bounded by node
- * count. `NodeStore` puts pass through to the backing store.
- */
 export class CachingSource implements NodeStore {
   private readonly cache = new Map<string, TreeNode>();
   hits = 0;
@@ -141,7 +120,6 @@ export class CachingSource implements NodeStore {
     const n = this.cache.get(hash);
     if (n !== undefined) {
       this.hits++;
-      // refresh LRU position
       this.cache.delete(hash);
       this.cache.set(hash, n);
       return n;

@@ -1,16 +1,3 @@
-/**
- * The React-shaped reading of one framework-neutral {@link QuerySnapshot}.
- *
- * `ramose/client` publishes a flat record — `status`, `data`, `stale`, `error`
- * — because it has to describe every combination those four can be in. React
- * renders branches, so the adapter narrows the same value into a discriminated
- * union that a component can switch on without ever asking whether `data` is
- * present.
- *
- * The mapping is total, pure, and the whole of what this module owns. There is
- * no state machine here: every input is a value the client already published.
- */
-
 import type { QuerySnapshot } from "../client/database.ts";
 
 /**
@@ -41,24 +28,10 @@ export type QueryState<A> =
   | { readonly status: "stale"; readonly data: A }
   | { readonly status: "error"; readonly error: Error };
 
-/**
- * The one `pending` value.
- *
- * A frozen singleton so `getSnapshot()` can return it without allocating, and
- * so a component that stayed pending across a re-render is handed the very same
- * object React compared last time.
- */
 export const PENDING: QueryState<never> = Object.freeze({
   status: "pending" as const,
 });
 
-/**
- * A query the client reported as failed without naming a cause.
- *
- * The neutral layer always sets `error` alongside `status: "error"`, so this is
- * unreachable through `ramose/client`. It exists because the alternative is
- * handing a component `undefined` where its `Error` is declared to be.
- */
 const unnamedFailure = (): Error =>
   new Error("ramose/react: the query failed without a reported cause");
 
@@ -100,8 +73,6 @@ export const toQueryState = <A>(
     }
     case "ready": {
       const status = snapshot.stale ? ("stale" as const) : ("ready" as const);
-      // `data` identity is the client's, never rebuilt here: it is what makes
-      // `React.memo` and `useMemo` over a row set survive a reconnect.
       const data = snapshot.data as A;
       return previous !== undefined && previous.status === status &&
           previous.data === data

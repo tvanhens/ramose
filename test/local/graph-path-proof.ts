@@ -1,5 +1,3 @@
-/** Configured-root proof only; nested requests deliberately cannot supply it. */
-
 import type { OperationCatalogProof } from "ramose/worker";
 import { catalogProof } from "./fixtures.ts";
 import { GRAPH_PATH_ROOT_DATABASE } from "./graph-path-catalog.ts";

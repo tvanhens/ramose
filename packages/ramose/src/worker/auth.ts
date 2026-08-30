@@ -1,8 +1,3 @@
-/**
- * Request-scoped caller metadata on the session/transactor wire.
- * Not an authorization decision.
- */
-
 import type * as Redacted from "effect/Redacted";
 
 export type PrincipalClaimScalar = string | number | boolean;
@@ -24,10 +19,6 @@ export interface Principal {
   };
 }
 
-/**
- * Authentication result kept inside the Worker. The redacted token is
- * deliberately separate from the wire principal.
- */
 export interface VerifiedPrincipal {
   readonly token: Redacted.Redacted<string>;
   readonly kid: string;

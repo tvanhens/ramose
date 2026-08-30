@@ -1,5 +1,3 @@
-/** Reusable field group. Fields keep the trait namespace when composed. */
-
 import {
   makeBindableTrait,
   type BindableTrait,
@@ -66,14 +64,8 @@ export type Trait<
 > = {
   readonly _tag: "Trait";
   readonly ns: Name;
-  /**
-   * Iteration map. Use `Taggable.tag` at call sites; this property exists
-   * so schema / install can walk keys without listing them.
-   */
   readonly fields: StampedMap<Name, Fields>;
-  /** Direct composed traits, in author order. */
   readonly traits: readonly { readonly ns: string }[];
-  /** Pseudo-field `:db/id`, usable in trait-root select shapes. */
   readonly id: AttrNav<
     AnyField & {
       readonly schema: { readonly Type: number };
@@ -84,7 +76,6 @@ export type Trait<
       readonly _ns?: Trait<Name, Fields>;
     } & PathCarrier
   >;
-  /** Symbol-keyed operations canonically owned by this trait. */
   readonly [OwnedOperations]: BoundOwnerOperations<Trait<Name, Fields, Ops>, Ops>;
 } & StampedMap<Name, Fields>;
 
@@ -113,7 +104,6 @@ export type AnyTrait = {
 };
 
 export declare namespace Trait {
-  /** Any trait — the bound for trait-generic helpers. */
   export type Any = AnyTrait;
 }
 

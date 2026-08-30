@@ -1,19 +1,4 @@
 {
-  "//": [
-    "Compiler options for producing the publishable output in packages/ramose/dist.",
-    "",
-    "The source uses explicit `.ts` extensions in relative imports (`./datom.ts`),",
-    "which Bun resolves natively but Node, esbuild and `tsc` in a consumer's",
-    "project do not. `rewriteRelativeImportExtensions` (TS 5.7+) rewrites those to",
-    "`.js` in both the emitted JS and the emitted `.d.ts`, which is what makes",
-    "`allowImportingTsExtensions` legal here without `noEmit`.",
-    "",
-    "Emit is unbundled: the module graph and file layout are preserved so the",
-    "enumerated subpath exports (`ramose/db`, `ramose/worker`, ...) keep",
-    "resolving after the build. packages/ramose/tsconfig.build.json extends this",
-    "and sets rootDir/outDir; it is kept separate so the build config and the",
-    "repo-wide typecheck config (tsconfig.json) cannot drift into each other."
-  ],
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],

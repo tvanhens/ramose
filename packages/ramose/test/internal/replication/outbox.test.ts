@@ -1,13 +1,3 @@
-/**
- * The durable queue model as ordinary values (#475 slice 1).
- *
- * Everything here is a pure decision: identity formats, strict decoding,
- * per-receiver FIFO order, dependency blocking, and the data-free quarantine.
- * The sealed handles are minted by the real codec against a real identity
- * root — the only thing that proves the client's envelope reader and the
- * server's envelope writer agree.
- */
-
 import { describe, expect, test } from "bun:test";
 import {
   allocationSlots,
@@ -113,8 +103,7 @@ describe("durable client identities", () => {
     expect(isInvocationId(one)).toBe(false);
     expect(isClientRef(invocation)).toBe(false);
     expect(isInvocationId(invocation)).toBe(true);
-    // Version 7 and the RFC 9562 variant, so the value is a real UUIDv7 and
-    // not a v4 with a relabelled prefix.
+
     expect(one.slice(4).split("-")[2]![0]).toBe("7");
     expect("89ab").toContain(one.slice(4).split("-")[3]![0]!);
   });
@@ -129,11 +118,7 @@ describe("durable client identities", () => {
   test("only a canonical spelling of the envelope is a handle", async () => {
     const handle = await sealEntityId(sealing, idScope, 3);
     expect(isEntityId(handle)).toBe(true);
-    // 41 bytes are 328 bits and 55 base64url characters carry 330, so the
-    // final character's low two bits are padding. Flipping them respells the
-    // very same entity, and the authoritative decoder — which re-encodes
-    // before it trusts anything — would refuse the result. Persisting it would
-    // queue an invocation whose target can never resolve.
+
     const alphabet =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     const tail = alphabet.indexOf(handle[54]!);
@@ -148,11 +133,7 @@ describe("durable client identities", () => {
 
   test("the public wire pattern is the engine's sealed envelope pattern", () => {
     expect(ENTITY_ID_PATTERN.source).toBe(SEALED_ENTITY_ID_PATTERN.source);
-    // Three copies now: the portable one an application's handles are checked
-    // against, the engine codec's own, and the replication frame's binding
-    // (#477). One entity is one string everywhere it travels, so a copy that
-    // drifted would make a handle legal on one boundary and unspellable on the
-    // next — and only against the same durable target.
+
     expect(SEALED_ENTITY_HANDLE_PATTERN.source).toBe(SEALED_ENTITY_ID_PATTERN.source);
     expect(ENTITY_ID_CODEC).toBe(ENTITY_ID_CODEC_VERSION);
   });
@@ -207,15 +188,13 @@ describe("allocation slots", () => {
     expect(readAllocationPath(output, ["issues", 1, "id"])).toBe(5);
     expect(readAllocationPath(output, ["issues", 9, "id"])).toBeUndefined();
     expect(readAllocationPath(output, ["issues", "id"])).toBeUndefined();
-    // Inherited is not present: an output does not carry what its prototype
-    // happens to have.
+
     expect(readAllocationPath(output, ["constructor"])).toBeUndefined();
     expect(readAllocationPath({ a: [1] }, ["a", "length"])).toBeUndefined();
   });
 
   test("a path key distinguishes positions a delimiter would merge", () => {
-    // A property literally named "a.b" is not the nested pair a → b, and a
-    // numeric index is not the string that spells it.
+
     expect(allocationPathKey(["a.b"])).not.toBe(allocationPathKey(["a", "b"]));
     expect(allocationPathKey([0])).not.toBe(allocationPathKey(["0"]));
     expect(allocationSlots({ flat: ["a.b"], nested: ["a", "b"] })).toEqual([
@@ -225,7 +204,6 @@ describe("allocation slots", () => {
   });
 });
 
-/** Durable mappings as `decideOutboxEntry` reads them: per partition, with epoch. */
 const mappings = (
   entries: readonly (readonly [ReplicaDatabaseScope, string, { codecVersion: number; keyId: string }])[],
 ): ReadonlyMap<string, { codecVersion: number; keyId: string }> =>
@@ -239,7 +217,6 @@ const mappings = (
 const currentEpoch = { codecVersion: 1, keyId: root.keyId };
 const staleEpoch = { codecVersion: 1, keyId: otherRoot.keyId };
 
-/** `Data.TaggedError` carries its detail in `reason`, not in `message`. */
 const rejection = (run: () => unknown): string => {
   try {
     run();
@@ -283,9 +260,7 @@ describe("building one durable queue record", () => {
   });
 
   test("an inherited value never satisfies a declared position", () => {
-    // A dependency installing a plausible value on `Object.prototype` must
-    // not be able to satisfy a path the snapshot does not contain: the row
-    // would be unreadable on the next restart.
+
     const ref = clientRef();
     Object.defineProperty(Object.prototype, "ramoseInheritedRef", {
       value: ref,
@@ -305,9 +280,7 @@ describe("building one durable queue record", () => {
   });
 
   test("persists the value it validated, not the object it was handed", () => {
-    // An enumerable accessor that answers differently on its second read.
-    // Structured clone would read it again after validation, so the stored
-    // input could disagree with the declared reference it was checked against.
+
     const ref = clientRef();
     let reads = 0;
     const shifty = {
@@ -322,12 +295,12 @@ describe("building one durable queue record", () => {
       1,
     );
     expect(record.input).toEqual({ author: ref });
-    // The snapshot is plain data, so it survives its own decoder.
+
     expect(decodeOutboxRecord(JSON.parse(JSON.stringify(record)))).toEqual(record);
   });
 
   test("keeps an own __proto__ field instead of losing it to the setter", () => {
-    // `JSON.parse('{"__proto__": ...}')` produces exactly this shape.
+
     const ref = clientRef();
     const input = JSON.parse(`{"__proto__":{"author":${JSON.stringify(ref)}}}`) as never;
     const record = buildOutboxRecord(
@@ -341,8 +314,7 @@ describe("building one durable queue record", () => {
   });
 
   test("rejects a string the canonical digest cannot encode", () => {
-    // RFC 8785 terminates on a lone surrogate, so such a value could never
-    // enter the invocation digest — and would make an identical retry throw.
+
     for (
       const input of [
         { title: "\ud800" },
@@ -356,7 +328,7 @@ describe("building one durable queue record", () => {
     expect(rejection(() =>
       buildOutboxRecord(draft({ input: { "\ud800": "ok" } }), scopeKey, 1)
     )).toMatch(/lone surrogate in a key/);
-    // A well-formed astral pair is ordinary text.
+
     expect(
       buildOutboxRecord(draft({ input: { title: "ok \ud83d\ude00" } }), scopeKey, 1).input,
     ).toEqual({ title: "ok \ud83d\ude00" });
@@ -409,7 +381,7 @@ describe("building one durable queue record", () => {
         )
       )).toMatch(/is not a slot name/);
     }
-    // And the decoder refuses the same names in a stored row.
+
     const stored = JSON.parse(JSON.stringify(
       buildOutboxRecord(
         draft({ allocations: [{ slot: "issue", clientRef: ref }] }),
@@ -438,9 +410,9 @@ describe("building one durable queue record", () => {
     expect(decodeOutboxRecord(stored)).toBeDefined();
     for (
       const ambiguous of [
-        // One slot, two entities.
+
         [{ slot: "issue", clientRef: one }, { slot: "issue", clientRef: two }],
-        // One entity, two slots.
+
         [{ slot: "issue", clientRef: one }, { slot: "note", clientRef: one }],
       ]
     ) {
@@ -450,8 +422,7 @@ describe("building one durable queue record", () => {
 
   test("a declared position must be a path the decoder can read back", () => {
     const ref = clientRef();
-    // An empty property name is not addressable. Accepting it here would
-    // commit a row the decoder then refuses, holding an innocent partition.
+
     expect(rejection(() =>
       buildOutboxRecord(
         draft({ input: { "": ref }, inputRefs: [{ path: [""], ref }] }),
@@ -525,8 +496,7 @@ describe("building one durable queue record", () => {
       )
     )).toMatch(/sealed entity handle/);
     expect(rejection(() => buildOutboxRecord(draft(), scopeKey, 0))).toMatch(/sequence/);
-    // A stamp the decoder would refuse must not be allowed to commit: the row
-    // would become unreadable on the next restart and hold its partition.
+
     for (const enqueuedAt of [Number.NaN, Number.POSITIVE_INFINITY, 1.5, -1]) {
       expect(rejection(() => buildOutboxRecord(draft({ enqueuedAt }), scopeKey, 1)))
         .toMatch(/enqueue timestamp/);
@@ -639,8 +609,7 @@ describe("dependencies and blocking", () => {
   });
 
   test("an invocation may not depend on a ref it allocates", () => {
-    // Circular: the mapping only exists once this invocation's authoritative
-    // result arrives, which is after its target and inputs had to resolve.
+
     const own = clientRef();
     expect(rejection(() =>
       buildOutboxRecord(
@@ -707,7 +676,7 @@ describe("sealing-epoch quarantine", () => {
       keyId: otherRoot.keyId,
     });
     expect(state).toEqual({ type: "update-required", reason: "key-epoch" });
-    // Data-free: the state names the reason and nothing about the entity.
+
     expect(JSON.stringify(state)).not.toContain(record.target.type === "entity"
       ? record.target.entityId
       : "");
@@ -782,8 +751,7 @@ describe("per-receiver FIFO planning", () => {
     const held = plans.find((plan) => plan.receiver.database === DATABASE)!;
     const free = plans.find((plan) => plan.receiver.database === OTHER_DATABASE)!;
     expect(held.head).toEqual({ type: "blocked", record: blocked, missing: [missing] });
-    // The record behind the blocked head is itself ready, but FIFO means the
-    // queue does not skip it forward.
+
     expect(held.entries[1]!.state).toEqual({ type: "ready" });
     expect(free.head).toEqual({ type: "ready", record: elsewhere });
   });
@@ -821,12 +789,11 @@ describe("per-receiver FIFO planning", () => {
       { mapped: mappings([]) },
     );
     const held = plans.find((plan) => plan.partition === partition)!;
-    // The readable record behind it is ready, and is still not the head: a row
-    // this build cannot interpret is never skipped over.
+
     expect(held.entries[0]!.state).toEqual({ type: "ready" });
     expect(held.head).toEqual({ type: "unreadable", sequence: 1 });
     expect(held.unreadable).toEqual([{ partition, sequence: 1 }]);
-    // And it holds only its own database.
+
     expect(
       plans.find((plan) => plan.receiver.database === OTHER_DATABASE)!.head.type,
     ).toBe("ready");
@@ -861,8 +828,7 @@ describe("repeated intent", () => {
   });
 
   test("object property order is not part of the intent", () => {
-    // The authoritative invocation digest canonicalizes JSON object keys, so a
-    // caller that rebuilt its input in another order is retrying, not reusing.
+
     const base = draft({ input: { title: "one", done: false, tags: ["a", "b"] } });
     expect(sameOutboxIntent(
       buildOutboxRecord(base, scopeKey, 1),
@@ -872,7 +838,7 @@ describe("repeated intent", () => {
         1,
       ),
     )).toBe(true);
-    // Array order still is: it is the declared sequence, not a key set.
+
     expect(sameOutboxIntent(
       buildOutboxRecord(base, scopeKey, 1),
       buildOutboxRecord(
@@ -898,7 +864,7 @@ describe("repeated intent", () => {
     ) {
       expect(sameOutboxIntent(base, buildOutboxRecord(other, scopeKey, 1))).toBe(false);
     }
-    // A different FIFO position is a different record, never a silent match.
+
     expect(sameOutboxIntent(base, buildOutboxRecord(one, scopeKey, 2))).toBe(false);
   });
 });
@@ -941,7 +907,7 @@ describe("strict decoding of a stored record", () => {
         { ...base, allocations: [{ slot: "a", clientRef: "nope" }] },
         { ...base, inputRefs: [{ path: ["a"], ref: "nope" }] },
         { ...base, input: undefined },
-        // Filed under one database while naming another.
+
         { ...base, receiver: { ...(base.receiver as object), database: OTHER_DATABASE } },
         { ...base, enqueuedAt: 1.5 },
         "not a record",
@@ -950,9 +916,7 @@ describe("strict decoding of a stored record", () => {
     ) {
       expect(decodeOutboxRecord(broken)).toBeUndefined();
     }
-    // A declared input reference must still be at its declared position: a row
-    // that drifted would be reported ready on a mapped ref while its input
-    // carried a different, unresolved one.
+
     const ref = clientRef();
     const withRef = JSON.parse(JSON.stringify(
       buildOutboxRecord(
@@ -976,7 +940,6 @@ describe("strict decoding of a stored record", () => {
       expect(decodeOutboxRecord(drifted)).toBeUndefined();
     }
 
-    // A rewritten sealing epoch is not believed: the row's own handles decide.
     const sealedBase = JSON.parse(JSON.stringify(
       buildOutboxRecord(
         draft({
@@ -992,18 +955,17 @@ describe("strict decoding of a stored record", () => {
     expect(decodeOutboxRecord(sealedBase)).toBeDefined();
     for (
       const forged of [
-        // Claiming no sealed handle at all would skip the quarantine.
+
         { ...sealedBase, sealing: null },
-        // Claiming a different epoch would make an obsolete handle look current.
+
         { ...sealedBase, sealing: { codecVersion: 1, keyId: otherRoot.keyId } },
-        // Claiming an epoch on a record that embeds no handle at all.
+
         { ...base, sealing: { codecVersion: 1, keyId: root.keyId } },
       ]
     ) {
       expect(decodeOutboxRecord(forged)).toBeUndefined();
     }
 
-    // A sealed target survives the round trip; only malformed ones do not.
     const sealedRecord = buildOutboxRecord(
       draft({
         target: {
@@ -1037,7 +999,7 @@ describe("strict decoding of a stored mapping", () => {
     const record = await mapping(52);
     for (
       const forged of [
-        // The classic bypass: an old handle relabelled with the current epoch.
+
         { ...record, sealing: { codecVersion: 1, keyId: otherRoot.keyId } },
         { ...record, sealing: { codecVersion: 2, keyId: root.keyId } },
         { ...record, sealing: null },

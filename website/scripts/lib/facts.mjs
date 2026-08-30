@@ -1,7 +1,3 @@
-// Code facts the docs state as numbers or tables. The source files are the
-// source of truth; a drifted count or a listed export that no longer exists
-// is an error.
-
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { REPO } from "./snippets.mjs";
@@ -10,7 +6,6 @@ const read = (rel) => readFileSync(join(REPO, rel), "utf8");
 
 const skipType = (part) => /^\s*type\s/.test(part.trim());
 
-/** Runtime names of `export { … }` / `export const` / `export * as`. */
 export const runtimeExports = (src) => {
   const names = new Set();
   for (const m of src.matchAll(
@@ -78,11 +73,9 @@ export const ramoseRootRuntime = () => {
   return { all: new Set([...db, ...root]), added, db };
 };
 
-/** Backticked identifiers in a table cell / prose list. */
 export const tickNames = (text) =>
   [...text.matchAll(/`([A-Za-z_][A-Za-z0-9]*)`/g)].map((m) => m[1]);
 
-/** Export names the page claims in frontmatter `description:`. */
 export const listedFromFrontmatter = (fm) => {
   const desc = fm.match(/^description:\s*(.+)$/m)?.[1] ?? "";
   return tickNames(desc);

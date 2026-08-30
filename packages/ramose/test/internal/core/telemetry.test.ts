@@ -15,7 +15,7 @@ describe("telemetry", () => {
     setTelemetrySink((e) => got.push(e));
     setTelemetryClock(() => 123);
     const log = componentLogger("transactor", { db: "x" });
-    log.debug("tx.commit", { batch: 3 }); // below default level
+    log.debug("tx.commit", { batch: 3 });
     log.info("boot", { t: 1 });
     log.warn("tx.rejected", { code: "tx/invalid" });
     expect(got).toEqual([
@@ -25,7 +25,7 @@ describe("telemetry", () => {
     setTelemetryLevel("debug");
     log.debug("tx.commit", { batch: 3 });
     expect(got.at(-1)!.event).toBe("tx.commit");
-    // a throwing sink does not propagate
+
     setTelemetrySink(() => {
       throw new Error("sink down");
     });
@@ -43,7 +43,7 @@ describe("telemetry", () => {
     const r = new RateMeter(1000);
     for (let t = 0; t < 1000; t += 100) r.mark(10, t);
     expect(r.rate(999)).toBeCloseTo(100, 0);
-    expect(r.rate(1900)).toBeCloseTo(10, 0); // only the mark at t=900 remains in the window
+    expect(r.rate(1900)).toBeCloseTo(10, 0);
     expect(r.rate(5000)).toBe(0);
     expect(r.total).toBe(100);
   });

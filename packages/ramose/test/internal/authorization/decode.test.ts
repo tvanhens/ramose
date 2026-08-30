@@ -55,7 +55,6 @@ import {
 
 const hashOf = <A>(effect: Effect.Effect<A, InvalidIR>) => Effect.runPromise(effect);
 
-/** JSON-tree clone. Parsed JSON has no shared object identity. */
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 const expectInvalid = (result: Result.Result<unknown, InvalidIR>, pattern: RegExp) => {
@@ -67,7 +66,6 @@ const expectInvalid = (result: Result.Result<unknown, InvalidIR>, pattern: RegEx
   }
 };
 
-/** Rows of `leaf` totaling `leaves` values. Node count is 1 + rows + leaves. */
 const leafRows = (leaf: unknown, leaves: number): unknown[] => {
   const rows: unknown[] = [];
   let left = leaves;
@@ -79,7 +77,6 @@ const leafRows = (leaf: unknown, leaves: number): unknown[] => {
   return rows;
 };
 
-/** Array of objects whose keys are `leaf`. Node count is 1 + objects + 2 * objects * keys. */
 const leafObjects = (leaf: unknown, objects: number, keys: number): unknown[] =>
   Array.from({ length: objects }, (_, i) =>
     Object.fromEntries(Array.from({ length: keys }, (_, j) => [`k${i}_${j}`, leaf])),
@@ -346,7 +343,7 @@ describe("JSON-only rejections", () => {
   test.each([true, false, null] as const)(
     "charges a broad array of %s leaves at the exact node limit and one over",
     (leaf) => {
-      // 4 inner arrays + 4091 leaves + 1 outer array = 4096 nodes.
+
       const exact = leafRows(leaf, 4091);
       expectInvalid(decodePolicyTemplateResult(exact), /PolicyTemplateIR|_tag|Expected|JSON/);
       const over = leafRows(leaf, 4092);
@@ -357,7 +354,7 @@ describe("JSON-only rejections", () => {
   test.each([true, false, null] as const)(
     "charges a broad object of %s leaves at the exact node limit and one over",
     (leaf) => {
-      // 1 outer array + 5 objects + 5×409 keys + 5×409 leaves = 4096 nodes.
+
       const exact = leafObjects(leaf, 5, 409);
       expectInvalid(decodePolicyTemplateResult(exact), /PolicyTemplateIR|_tag|Expected|JSON/);
       exact.push(leaf);

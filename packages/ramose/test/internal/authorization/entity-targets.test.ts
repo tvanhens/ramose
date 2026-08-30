@@ -139,17 +139,13 @@ describe("sealing-root epoch coherence", () => {
       sealing,
       scope,
     });
-    // Same key id, different material is not a case that can arise from the
-    // durable root — the id names the material — but the comparison is over
-    // the id because that is what every participant can carry.
+
     expect(decideEpoch(bound, { ...sealing, keyId: sealing.keyId })._tag)
       .toBe("Agreed");
   });
 
   test("a moved epoch is a quarantine, never a denial", () => {
-    // The rule the whole class rests on: the caller is authorized and its
-    // handles are genuine, so telling it to update is the only answer that
-    // lets a durable client mint fresh identities instead of retrying forever.
+
     expect(decideEpoch(bound, rotatedSealing)).toEqual({ _tag: "UpdateRequired" });
   });
 
@@ -167,9 +163,7 @@ describe("sealing-root epoch coherence", () => {
   });
 
   test("a scope from one epoch and a key from another seal nothing openable", async () => {
-    // Why the comparison exists, demonstrated rather than asserted: the scope
-    // is the additional data, so a handle sealed under a disagreeing pair
-    // authenticates against material the other key cannot reproduce.
+
     const underRotated = await sealEntityId(rotatedSealing, scope, 4242);
     expect(await resolveSealedTarget(sealing, scope, underRotated))
       .toEqual({ _tag: "UpdateRequired" });
@@ -195,8 +189,7 @@ describe("isEntityRefPath", () => {
   test("only an entity-reference position is addressable", () => {
     expect(isEntityRefPath(outputShape, ["id"])).toBe(true);
     expect(isEntityRefPath(outputShape, ["rows", 0])).toBe(true);
-    // The decoded value is a number either way; the shape is what makes the
-    // declaration real.
+
     expect(isEntityRefPath(outputShape, ["count"])).toBe(false);
     expect(isEntityRefPath(outputShape, ["absent"])).toBe(false);
     expect(isEntityRefPath(outputShape, ["rows", "0"])).toBe(false);
@@ -206,7 +199,7 @@ describe("isEntityRefPath", () => {
 
 describe("extractAllocations", () => {
   const output = { id: 42, count: 7, rows: [11, 12] };
-  /** Exactly what this transaction allocated. `7` deliberately is not here. */
+
   const allocated = allocatedEids({ "__ramose.operation/1": 42, item: 11, other: 12 });
 
   test("reads only the slots the caller bound, at the declared ref path", () => {
@@ -243,11 +236,7 @@ describe("extractAllocations", () => {
   });
 
   test("a slot naming an entity this transaction did not allocate never binds", () => {
-    // The shape is right and the value is a live eid — it is simply not one
-    // this commit created. Binding a fresh, immutable ClientRef to it would
-    // redirect every later offline write onto a pre-existing row, which is
-    // exactly what `allocates` promises cannot happen. Returning `op.self` is
-    // the ordinary way an operation could do this by accident.
+
     expect(extractAllocations(declared, outputShape, output, [
       { slot: "item", clientRef: ref() },
     ], allocatedEids({}))).toEqual({ _tag: "Unallocated", slot: "item" });
@@ -257,8 +246,7 @@ describe("extractAllocations", () => {
   });
 
   test("an upsert that resolved a tempid to an existing row still allocates", () => {
-    // The operation's own declaration named it, and the tempid is how it did
-    // so, so the client is addressing exactly the entity it asked for.
+
     expect(extractAllocations(declared, outputShape, output, [
       { slot: "item", clientRef: ref() },
     ], allocatedEids({ upserted: 42 }))).toEqual({
@@ -301,31 +289,20 @@ describe("resolveSealedTarget", () => {
 
   test("the boundary between denial and quarantine is the preamble, not the shape", async () => {
     const token = await sealEntityId(sealing, scope, 4242);
-    // Not canonical base64url at all: there is no preamble to read.
+
     for (const junk of ["!".repeat(55), `${token}=`, "a".repeat(41)]) {
       expect([junk, await resolveSealedTarget(sealing, scope, junk)])
         .toEqual([junk, { _tag: "Denied" }]);
     }
-    // A truncated v1 handle *does* have a readable preamble, and it says v1 —
-    // so the length check that follows denies it, exactly as a tampered or
-    // wrong-scope handle is denied.
+
     expect(await resolveSealedTarget(sealing, scope, token.slice(0, 40)))
       .toEqual({ _tag: "Denied" });
-    // Anything whose preamble names a version this build does not have is
-    // update-required instead, deliberately: that is the one signal that lets
-    // a client holding newer handles learn to update rather than be told its
-    // durable work is forbidden. It is a statement about the caller's own
-    // bytes and discloses nothing about any entity.
+
     const future = new Uint8Array(41);
     future[0] = ENTITY_ID_CODEC_VERSION + 1;
     expect(await resolveSealedTarget(sealing, scope, base64Url(future)))
       .toEqual({ _tag: "UpdateRequired" });
-    // The deliberate cost of that rule: any canonical base64url whose first
-    // byte is not this codec's version reads as a newer codec, including a
-    // client ref someone put in a target position by mistake. It is harmless —
-    // both answers are effect-free and neither names an entity — and a durable
-    // queue cannot produce one, because `buildOutboxRecord` only ever stores a
-    // well-formed sealed handle as an entity target.
+
     expect(await resolveSealedTarget(sealing, scope, clientRef()))
       .toEqual({ _tag: "UpdateRequired" });
   });
@@ -337,11 +314,7 @@ describe("resolveSealedTarget", () => {
   });
 
   test("a newer codec quarantines even when its envelope is a different size", async () => {
-    // The frozen forward-compatibility contract: byte 0 is the codec version in
-    // *every* envelope version, and it is read before any length is enforced,
-    // so a rolled-back server tells a client holding newer handles to update
-    // rather than denying work it can never recover. A v1-shaped pre-check here
-    // would collapse all of these into a sealed denial.
+
     for (const size of [41, 48, 64]) {
       const envelope = new Uint8Array(size);
       envelope[0] = ENTITY_ID_CODEC_VERSION + 1;
@@ -351,8 +324,7 @@ describe("resolveSealedTarget", () => {
   });
 
   test("an absurdly long target is denied without being decoded", async () => {
-    // A sanity cap only — far above any plausible envelope, so it can never
-    // participate in the version decision.
+
     expect(await resolveSealedTarget(sealing, scope, "A".repeat(100_000)))
       .toEqual({ _tag: "Denied" });
     expect(await resolveSealedTarget(sealing, scope, "")).toEqual({ _tag: "Denied" });
@@ -396,9 +368,7 @@ describe("entity references in client-visible output", () => {
   const output = { id: 4242, count: 7, rows: [11, 12] };
 
   test("the deployed shape decides which positions hold a reference", () => {
-    // `count` is a number in exactly the same way `id` is. Only the shape can
-    // tell them apart, which is why a walk over the value alone would seal
-    // counts and identifiers into handles.
+
     expect(outputEntityRefPaths(outputShape, output)).toEqual([
       ["id"],
       ["rows", 0],
@@ -409,8 +379,7 @@ describe("entity references in client-visible output", () => {
   });
 
   test("a position the shape declares but the value does not fill is not sealed", () => {
-    // Only reachable if a stored output and a deployed shape drifted apart; it
-    // is a guard, not a case with a meaning of its own.
+
     expect(outputEntityRefPaths(outputShape, { id: "already-sealed", rows: [] }))
       .toEqual([]);
     expect(outputEntityRefPaths(outputShape, { id: null, rows: [null] })).toEqual([]);
@@ -425,18 +394,16 @@ describe("entity references in client-visible output", () => {
     };
     expect(isEntityId(sealed.id)).toBe(true);
     expect(sealed.id).toBe(await sealEntityId(sealing, scope, 4242));
-    // The same entity in the same scope is the same bytes, whether it arrives
-    // through an allocation mapping, through logical replication, or here.
+
     expect(sealed.id).toBe(
       (await sealAllocationMappings(sealing, scope, [{ slot: "item", eid: 4242 }], [
         { slot: "item", clientRef: ref() },
       ]))[0]!.entityId,
     );
     expect(sealed.rows.every(isEntityId)).toBe(true);
-    // Nothing that is not a reference is touched.
+
     expect(sealed.count).toBe(7);
-    // And the caller's value — the one the durable receipt holds — is
-    // untouched, because the receipt is the replay.
+
     expect(output).toEqual({ id: 4242, count: 7, rows: [11, 12] });
     expect(JSON.stringify(sealed)).not.toContain("4242");
     expect(JSON.stringify(sealed)).not.toContain("11");
@@ -458,7 +425,7 @@ describe("entity references in client-visible output", () => {
   });
 
   test("a path the value cannot follow is a defect, never a silent skip", async () => {
-    // Skipping one would publish the raw eid it names.
+
     await expect(
       sealOutputEntityRefs(sealing, scope, output, [["absent"]]),
     ).rejects.toThrow(/entity-reference position/);
@@ -489,13 +456,11 @@ describe("sealed handles at declared input entity-ref positions", () => {
     expect(inputEntityRefHandles(inputShape, {
       count: 7,
       item: handle,
-      // The same handle at a position the shape declares a string. It is data:
-      // never opened, never even looked at.
+
       note: handle,
       rows: [handle, await handleFor(11)],
     })).toEqual([["item"], ["rows", 0], ["rows", 1]]);
-    // A declared ref holding a number is the pre-existing numeric path, so it
-    // is left out and digests exactly as it always did.
+
     expect(inputEntityRefHandles(inputShape, {
       count: 7,
       item: 4242,
@@ -524,15 +489,14 @@ describe("sealed handles at declared input entity-ref positions", () => {
     const resolved = await resolveSealedInputRefs(sealing, scope, input, paths);
     expect(resolved._tag).toBe("Resolved");
     if (resolved._tag !== "Resolved") throw new Error("expected Resolved");
-    // Exactly the input a numeric caller would have submitted — which is why
-    // the two are one invocation to the canonical digest, not a conflict.
+
     expect(resolved.input).toEqual({
       count: 7,
       item: 4242,
       note: input.note,
       rows: [11, 12],
     });
-    // The caller's value is never mutated.
+
     expect(input.item).toBe(await handleFor(4242));
   });
 
@@ -558,8 +522,7 @@ describe("sealed handles at declared input entity-ref positions", () => {
       .toEqual({ _tag: "UpdateRequired" });
 
     const handle = await handleFor(4242);
-    // Wrong scope, wrong root, tampered, truncated, and plainly not an
-    // envelope all collapse into the one sealed denial.
+
     expect(await withItem(await sealEntityId(sealing, otherScope, 4242)))
       .toEqual({ _tag: "Denied" });
     expect(await withItem(await sealEntityId(otherSealing, scope, 4242)))
@@ -570,23 +533,16 @@ describe("sealed handles at declared input entity-ref positions", () => {
 
   test("the provisioning predicate over-approximates and never under-approximates", async () => {
     const handle = await handleFor(4242);
-    // Anything a codec could have minted has to be recognized, wherever it
-    // sits, or the scope the writer needs would never be derived.
+
     expect(mayCarrySealedEntityId({ item: handle })).toBe(true);
     expect(mayCarrySealedEntityId([[{ deep: handle }]])).toBe(true);
-    // Including an envelope no build here can read: a shape gate on v1's length
-    // would turn the one recoverable answer into a permanent denial.
+
     expect(mayCarrySealedEntityId({ item: `${handle}extra` })).toBe(true);
-    // Over-approximation is the point, so a long base64url-shaped string that
-    // is not a handle answers yes. It costs one cached root read and decides
-    // nothing: `inputEntityRefHandles` makes every real decision.
+
     expect(mayCarrySealedEntityId({ digest: "a".repeat(64) })).toBe(true);
-    // A future codec whose envelope is *shorter* than v1's still has to be
-    // recognized, down to the frozen preamble — this is the exact case that
-    // would otherwise strand a durable queue after a rollback.
+
     expect(mayCarrySealedEntityId({ item: handle.slice(0, 24) })).toBe(true);
-    // Nothing shorter than the frozen preamble, nothing outside the alphabet,
-    // and no non-string can be an envelope of any version.
+
     expect(mayCarrySealedEntityId({ title: "a short title" })).toBe(false);
     expect(mayCarrySealedEntityId({ title: "a".repeat(22) })).toBe(false);
     expect(mayCarrySealedEntityId({ title: `${"a".repeat(54)}!` })).toBe(false);
@@ -595,11 +551,7 @@ describe("sealed handles at declared input entity-ref positions", () => {
   });
 
   test("what the predicate refuses, the resolver would have denied anyway", async () => {
-    // The property the whole design rests on: a string the Worker declines to
-    // derive a scope for reaches the writer with none, where it is the sealed
-    // denial — and that is only the *right* answer if the resolver itself
-    // would never have quarantined it. The two bounds are the same constant,
-    // and this asserts they agree rather than trusting that they do.
+
     const versioned = (length: number) => {
       const envelope = new Uint8Array(length);
       envelope[0] = ENTITY_ID_CODEC_VERSION + 1;
@@ -615,14 +567,11 @@ describe("sealed handles at declared input entity-ref positions", () => {
   });
 
   test("a cyclic or deeply nested input terminates rather than exhausting the stack", async () => {
-    // Request bodies are parsed JSON and acyclic, but this walk is reached from
-    // the public edge and must not depend on that.
+
     const cyclic: Record<string, unknown> = { title: "x" };
     cyclic.self = cyclic;
     expect(mayCarrySealedEntityId(cyclic)).toBe(false);
 
-    // Depth is caller-chosen at the public edge, so the walk carries its own
-    // stack rather than the interpreter's.
     let deep: unknown = await handleFor(4242);
     for (let level = 0; level < 200_000; level++) deep = [deep];
     expect(mayCarrySealedEntityId(deep)).toBe(true);

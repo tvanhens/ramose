@@ -1,5 +1,3 @@
-/** Shared configuration for the separately deployed local auth Workers. */
-
 import { BetterAuth } from "@alchemy.run/better-auth";
 import { CloudflareD1 } from "@alchemy.run/better-auth/CloudflareD1";
 import * as Cloudflare from "alchemy/Cloudflare";

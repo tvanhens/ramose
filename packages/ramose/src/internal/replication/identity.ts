@@ -1,5 +1,3 @@
-/** Opaque, server-authenticated replication identities and revisions. */
-
 import * as Effect from "effect/Effect";
 import type { AuthenticatedCaller } from "../authorization/request.ts";
 import type { GraphPathLeaseIdentity } from "../authorization/graph-path.ts";
@@ -26,15 +24,7 @@ const utf8 = new TextEncoder();
 const keys = new Map<string, Promise<CryptoKey>>();
 const MAX_CACHED_KEYS = 4;
 
-/**
- * Key material comes from the durable server identity/sealing root, never from
- * the rotating `RAMOSE_INTERNAL_SECRET` Worker→DO capability — an ordinary
- * redeploy must not rotate a single identity or revision.
- */
 const keyFor = (sealing: ServerSealingKey): Promise<CryptoKey> => {
-  // Cached by material, never by key id: an HMAC depends only on the material,
-  // and a cache keyed by the public name would let a mislabelled key id serve
-  // the wrong CryptoKey.
   let key = keys.get(sealing.material);
   if (key !== undefined) return key;
   if (keys.size >= MAX_CACHED_KEYS) keys.delete(keys.keys().next().value!);
@@ -82,21 +72,12 @@ const callerMaterial = (caller: AuthenticatedCaller): JsonValue => ({
   classes: [...caller.classes].sort(),
 });
 
-/**
- * Seal the ordered Graph entity lineage of one authorized path. Each element
- * chains its parent element, so the same entity reached through a different
- * parent is a different value and no element leaks a raw eid or a path name.
- * The lineage is emitted only inside an identity the server has already
- * authorized end to end, so it discloses nothing new to the client.
- */
 const graphLineage = async (
   sealing: ServerSealingKey,
   path: GraphPathLeaseIdentity,
 ): Promise<readonly OpaqueReplicationId[]> => {
   if (path.dependencies.length === 0) return Object.freeze([]);
   const lineage: OpaqueReplicationId[] = [];
-  // Seal the root first so every chained `parent` is one opaque value and a
-  // configured root name can never collide with a sealed lineage element.
   let parent = await opaqueHmac(
     sealing,
     "ramose:replication:graph-lineage-root:v1",
@@ -132,7 +113,6 @@ export type ReplicationReadRouteIdentity = {
   readonly readPolicy: string;
 };
 
-/** Read-only route material deliberately excludes the deployment/unit hash. */
 export const replicationReadRouteIdentities = async (
   routes: readonly ResolvedDatabaseRoute[],
 ): Promise<readonly ReplicationReadRouteIdentity[]> => Promise.all(routes.map(async (route) => ({
@@ -147,21 +127,12 @@ export type EntityIdScopeInput = {
   readonly database: DatabaseId;
 };
 
-/** An {@link EntityIdScope} whose components keep their opaque brand. */
 export type ReplicationEntityIdScope = EntityIdScope & {
   readonly server: OpaqueReplicationId;
   readonly principal: OpaqueReplicationId;
   readonly database: OpaqueReplicationId;
 };
 
-/**
- * The stable server/principal/database scope a sealed `EntityId` is bound to.
- *
- * These are exactly the three replication-identity components that survive a
- * catalog, read-view, schema, or deployment change, derived under the same
- * domains — so a handle minted at the operation boundary and one carried by
- * logical replication name the same scope.
- */
 export const makeEntityIdScope = async (
   sealing: ServerSealingKey,
   input: EntityIdScopeInput,
@@ -178,7 +149,6 @@ export const makeEntityIdScope = async (
   return Object.freeze({ server, principal, database });
 };
 
-/** The same scope, read off an identity that already carries its components. */
 export const entityIdScopeOf = (
   identity: ReplicationIdentity,
 ): ReplicationEntityIdScope =>
@@ -188,11 +158,6 @@ export const entityIdScopeOf = (
     database: identity.database,
   });
 
-/**
- * Derive the five partition dimensions solely from authenticated server
- * state. JWT expiry/issued-at are absent, so ordinary refresh is stable;
- * subject, declared claim values, or classes change the principal partition.
- */
 export const makeReplicationIdentity = async (
   input: ReplicationIdentityInput,
 ): Promise<ReplicationIdentity> => {

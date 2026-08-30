@@ -27,15 +27,15 @@ describe("stable local replica route slots", () => {
     expect(slot).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(slot).not.toBe(await rootReplicaRouteSlot());
     expect(await stableReplicaRouteSlot([board, roadmap])).toBe(slot);
-    // A rename keeps the lineage, so the same slot is selected.
+
     expect(await replicaRouteSlotFor({
       graphPath: ["renamed", "also-renamed"],
       lineage: [board, roadmap],
     })).toBe(slot);
-    // Delete/recreate replaces an entity, so the slot changes.
+
     expect(await stableReplicaRouteSlot([board, opaque("3")])).not.toBe(slot);
     expect(await stableReplicaRouteSlot([opaque("3"), roadmap])).not.toBe(slot);
-    // Chaining: order matters and a prefix is a different slot.
+
     expect(await stableReplicaRouteSlot([roadmap, board])).not.toBe(slot);
     expect(await stableReplicaRouteSlot([board])).not.toBe(slot);
   });

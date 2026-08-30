@@ -1,9 +1,3 @@
-/**
- * compileReadFilter — deployed read rules as a Db.filter predicate.
- *
- * Real Connection + schemaTx + transact. No mocks or fabricated stores.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import {
@@ -511,9 +505,8 @@ describe("compileReadFilter lattice and fail-closed", () => {
     });
     const owner = await datomOf(currentDb, i1, ":issue/owner");
 
-    // The stored User target is readable but is not a Taggable composer.
     expect(await pred(currentDb, owner)).toBe(false);
-    // A readable Issue target composes Taggable under the deployed unit.
+
     expect(await pred(currentDb, { ...owner, v: i2 })).toBe(true);
   });
 

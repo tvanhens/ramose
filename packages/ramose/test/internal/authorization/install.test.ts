@@ -1,10 +1,3 @@
-/**
- * Core-v1 access-plan derivation and installed-IR assembly.
- *
- * The only production path is Effectful bind → validate → assemble.
- * Pure bind/validate results stay non-executable.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -878,7 +871,7 @@ describe("installAuthorization", () => {
     const decoded = decodeInstalledAuthorizationResult(encoded);
     expect(Result.isSuccess(decoded)).toBe(true);
     if (!Result.isSuccess(decoded)) return;
-    // @ts-expect-error — structural decode is not verified installed v1
+    // @ts-expect-error
     requireInstalled(decoded.success);
     expect(canonicalizeInstalledAuthorization(decoded.success)).toBe(
       canonicalizeInstalledAuthorization(installed),
@@ -940,9 +933,9 @@ describe("installAuthorization", () => {
     const validated = Result.getOrThrow(
       validateBoundAuthorizationResult({ bound, descriptor: catalogDescriptor() }),
     );
-    // @ts-expect-error — bound IR is not installed
+    // @ts-expect-error
     requireInstalled(bound);
-    // @ts-expect-error — validated IR is not installed
+    // @ts-expect-error
     requireInstalled(validated);
     expect("policyHash" in bound).toBe(false);
     expect("accessPlans" in validated).toBe(false);

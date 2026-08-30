@@ -1,5 +1,3 @@
-/** Authoritative deployed operation boundary. Real Connection; no doubles. */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -257,8 +255,7 @@ const Item = Entity("item", {
       input: EffectSchema.Struct({ id: Ref(Hidden).schema }),
       output: EffectSchema.Struct({}),
       run(op, input) {
-        // `writes` is authoring metadata, not a runtime capability. Trusted
-        // application code can intentionally reach another deployed entity.
+
         (op as any).delete(Hidden, input.id);
         return {};
       },
@@ -1478,8 +1475,6 @@ describe("deployed operation runtime", () => {
     expect(hiddenTarget?.referenceEid).toBe(world.replacement);
     expect(hiddenTarget?.postCommit.kind).toBe("hidden");
 
-    // The replacement now holding the lookup is not readable by this caller,
-    // while the original target remains independently admissible by eid.
     await expect(authorizeCatalogOperation(
       world.conn,
       runtime,
@@ -1493,8 +1488,6 @@ describe("deployed operation runtime", () => {
       target: { eid: world.target, type: "replayTarget" },
     });
 
-    // Exact replay follows the stored post-commit resolution only as a fence;
-    // admission remains anchored to the originally authorized target eid.
     await expect(authorizeCatalogOperationReplay(
       world.conn,
       runtime,

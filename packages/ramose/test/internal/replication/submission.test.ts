@@ -30,7 +30,6 @@ const receiver: ReplicaDatabaseScope = Object.freeze({
 
 const version = "b".repeat(64) as OperationVersion;
 
-/** A real sealed envelope shape: 55 canonical base64url characters. */
 const handle = (character: string): EntityId =>
   `${character.repeat(54)}A` as EntityId;
 
@@ -86,7 +85,7 @@ describe("substituteMutationRefs", () => {
       target: mapped,
       input: { assignee: mapped, title: "offline" },
     });
-    // The durable row is untouched: the substitution is a projection of it.
+
     expect(queued.input).toEqual({ assignee: ref, title: "offline" });
     expect(queued.target).toEqual({ type: "client-ref", clientRef: ref });
   });
@@ -112,7 +111,7 @@ describe("substituteMutationRefs", () => {
       target: { type: "client-ref", clientRef: ref },
     });
     expect(substituteMutationRefs(queued, new Map())).toBeUndefined();
-    // A mapping for the same ref in *another* database releases nothing.
+
     expect(
       substituteMutationRefs(
         queued,
@@ -149,7 +148,7 @@ describe("buildMutationRequest", () => {
       allocations: [{ slot: "item", clientRef: ref }],
       input: { title: "offline" },
     });
-    // Nothing executable, and no deployment identity the queue never held.
+
     expect(JSON.stringify(request.body)).not.toMatch(/run|source|bytecode/);
   });
 
@@ -195,9 +194,7 @@ describe("classifyMutationResponse", () => {
   });
 
   test("a 200 without the durable completed receipt is not a commit", () => {
-    // An incompatible server mid-rollout, a proxy, a captive portal. The row
-    // must stay queued: acknowledging removes it irreversibly, and for an
-    // allocating invocation it is the only chance to get the mappings.
+
     const mappings = [{ clientRef: ref, entityId: handle("E") }];
     for (const receipt of [
       undefined,
@@ -213,8 +210,7 @@ describe("classifyMutationResponse", () => {
   });
 
   test("a commit that does not map every declared slot is never a commit", () => {
-    // Leaving a registered client ref permanently unresolvable is worse than
-    // asking again, so the record stays queued.
+
     for (const mappings of [
       undefined,
       [],
@@ -237,13 +233,11 @@ describe("classifyMutationResponse", () => {
   });
 
   test("a 200 whose result is absent is not a commit", () => {
-    // Absence is not a spelling of `null`. Recording `null` as the
-    // authoritative output and then removing the only durable copy of the
-    // request would corrupt the result with nothing left to replay for.
+
     expect(classifyMutationResponse(plain, response(200, {
       receipt: completedReceipt(plain.invocation),
     }))).toEqual({ _tag: "Retry", reason: "malformed" });
-    // An explicit null is a real result and commits.
+
     expect(classifyMutationResponse(plain, response(200, {
       result: null,
       receipt: completedReceipt(plain.invocation),
@@ -289,13 +283,12 @@ describe("classifyMutationResponse", () => {
       message: "domain refused",
       receipt: rejectedReceipt(plain.invocation),
     }))).toEqual({ _tag: "Rejected", code: "operation_rejected" });
-    // A durable `failed` receipt replays the same answer forever.
+
     expect(classifyMutationResponse(plain, response(500, {
       code: "invocation_failed",
       receipt: { version: 2, invocationId: plain.invocation, status: "failed" },
     }))).toEqual({ _tag: "Rejected", code: "invocation_failed" });
-    // The one terminal refusal that legitimately carries no receipt: a
-    // *different* receipt already owns this invocation id.
+
     expect(classifyMutationResponse(
       plain,
       response(409, { code: "invocation_conflict" }),
@@ -303,38 +296,32 @@ describe("classifyMutationResponse", () => {
   });
 
   test("a refusal with no receipt of its own never removes durable work", () => {
-    // The Worker answers a bare 403 when the caller's lease expires between
-    // the authoritative commit and the response: the invocation *did* commit,
-    // and deleting the row would lose the mappings the replay would return.
+
     for (const status of [400, 401, 403] as const) {
       expect(classifyMutationResponse(plain, response(status, { error: "no" })))
         .toEqual({ _tag: "Retry", reason: "malformed" });
     }
-    // A receipt-free 409 is a refusal decided before the claim. Still
-    // non-terminal — nothing durable is removed — but reported as itself so
-    // the loop it produces is visible rather than silent.
+
     expect(classifyMutationResponse(plain, response(409, { error: "no" })))
       .toEqual({ _tag: "Refused", code: undefined });
-    // A receipt for some *other* invocation is not this one's proof.
+
     expect(classifyMutationResponse(plain, response(403, {
       error: "unauthorized",
       receipt: rejectedReceipt("iv1_00000000-0000-7000-8000-000000000000"),
     }))).toEqual({ _tag: "Retry", reason: "malformed" });
-    // Nor is a non-terminal receipt status.
+
     expect(classifyMutationResponse(plain, response(409, {
       receipt: { version: 2, invocationId: plain.invocation, status: "completed" },
     }))).toEqual({ _tag: "Retry", reason: "malformed" });
   });
 
   test("a 409 code this build does not know stays queued", () => {
-    // A newer server may name a compatibility or indeterminate outcome this
-    // client has never heard of; an older client must not answer that by
-    // destroying the user's durable work.
+
     expect(classifyMutationResponse(
       plain,
       response(409, { error: "request rejected", code: "invocation_paused" }),
     )).toEqual({ _tag: "Refused", code: "invocation_paused" });
-    // Unless the newer server also bound it to a terminal receipt.
+
     expect(classifyMutationResponse(plain, response(409, {
       code: "invocation_paused",
       receipt: rejectedReceipt(plain.invocation),

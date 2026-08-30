@@ -1,13 +1,3 @@
-/**
- * Provider-algorithm tests: plan → apply → attributes, with an in-memory
- * state store and a local HTTP server standing in for the peer.
- *
- * This file tests the Alchemy provider, not the Ramose topology. Owned
- * Server catalog seeding against real workerd is `test/local` (`registerCatalogSeed`).
- * `Test.make({ dev: true, sidecar: false })` below is the in-process
- * local-provider path — not the default integration environment.
- */
-
 import { afterAll, beforeEach, describe, expect } from "bun:test";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -27,7 +17,6 @@ interface Transaction {
   readonly tx: readonly any[];
 }
 
-/** A peer that is up, counting its health probes and recording its writes. */
 let probes = 0;
 let transactions: Transaction[] = [];
 let t = 0;
@@ -53,8 +42,7 @@ const peer = Bun.serve({
       t += 1;
       return Response.json({ t, txEid: 13194139533319 + t, tempids: {}, datoms: body.tx.length });
     }
-    // install() reads the installed catalog before the upsert. An empty
-    // result is a fresh name — no user attributes, check passes.
+
     if (/^\/db\/[^/]+\/query$/.test(pathname)) {
       return Response.json({ t, result: [] });
     }
@@ -63,17 +51,6 @@ const peer = Bun.serve({
 });
 const peerUrl = `http://127.0.0.1:${peer.port}`;
 
-/**
- * A peer that accepts every connection and answers nothing — the state
- * `alchemy dev` leaves behind when the peer Worker's bundle never lands. Its
- * proxy port is bound and reports `ready`, so this is *not* a connection
- * refusal: the handshake completes and the request then waits forever. The
- * whole bug this file guards against is that "forever" used to be literal.
- *
- * A raw socket server, not `Bun.serve`, precisely because it must never
- * answer: an HTTP server whose handler never settles cannot be shut down, and
- * the sockets have to be destroyable from the teardown hook.
- */
 const silentSockets = new Set<net.Socket>();
 const silentPeer = net.createServer((socket) => {
   silentSockets.add(socket);
@@ -92,7 +69,6 @@ beforeEach(() => {
   transactions = [];
 });
 
-/** The planned action per resource, in FQN order. */
 const actions = (plan: { resources: Record<string, { action: string }> }) =>
   Object.keys(plan.resources)
     .sort()
@@ -114,14 +90,14 @@ describe("Ramose.Server", () => {
 
       expect(server.url).toBe(peerUrl);
       expect(server.workerName).toBe("");
-      // a server is the peer, not a database: no name, no /db/:name prefix
+
       const attributes = Object.keys(server);
       expect(attributes).toContain("url");
       expect(attributes).not.toContain("seeded");
       expect(attributes).not.toContain("name");
       expect(attributes).not.toContain("databaseUrl");
       expect(attributes).not.toContain("token");
-      // the live provider proved the peer was up before anything bound to it
+
       expect(probes).toBeGreaterThan(before);
 
       yield* stack.destroy();
@@ -238,7 +214,7 @@ describe("Ramose.Server", () => {
       const result = yield* Effect.result(
         stack.deploy(
           Server("Ramose", {
-            // loopback port 1: nothing listens, so connect() refuses immediately
+
             worker: "http://127.0.0.1:1",
             probe: { attempts: 2, delayMs: 1 },
           }),
@@ -249,13 +225,6 @@ describe("Ramose.Server", () => {
     }),
   );
 
-  /**
-   * The regression. A refused connection was already caught above; a socket
-   * that *accepts* and never answers was not, because `fetch` has no deadline
-   * of its own. The probe now bounds each attempt and the ladder as a whole,
-   * so the deploy fails with the URL in the message instead of never
-   * returning.
-   */
   test.provider("a peer that accepts and never answers fails, rather than hanging", (stack) =>
     Effect.gen(function* () {
       const started = Date.now();
@@ -275,22 +244,13 @@ describe("Ramose.Server", () => {
 
 });
 
-/**
- * The same two facts under `alchemy dev`, where they actually bit.
- *
- * The local provider used to skip the probe outright, on the reasoning that a
- * Worker the engine already ordered us after must be serving. `alchemy dev`
- * binds the Worker's proxy port before the first bundle lands, so it need not
- * be — and skipping the probe handed a silent URL straight to
- * `Ramose.Database`.
- */
 describe("under `alchemy dev`", () => {
   const { test: devTest } = Test.make({
     providers: providers(),
     state: Alchemy.inMemoryState(),
     stage: "test",
     dev: true,
-    // In-process: this exercises the local provider itself, not the sidecar.
+
     sidecar: false,
   });
 
@@ -380,22 +340,13 @@ describe("Ramose.Database", () => {
     }),
   );
 
-  /**
-   * The other half of the regression. `Ramose.Server` now refuses to hand on a
-   * URL that answers nothing, but its probe speaks for `/health` — not for
-   * `/db/:name/transact`. An install that cannot finish has to end in a
-   * message a reader can act on, and it used to end in nothing at all: the
-   * resource sat in `creating` for as long as the process lived, and whatever
-   * killed it wrote `fail` with a teardown error in its place.
-   */
   test.provider("an install against a silent peer fails, rather than hanging", (stack) =>
     Effect.gen(function* () {
       const started = Date.now();
       const result = yield* Effect.result(
         stack.deploy(
           Database("movies", {
-            // `probe: false` isolates the install: this is the Database's own
-            // deadline, not the Server's.
+
             server: Server("Ramose", { worker: silentPeerUrl, probe: false }),
             schema: Movies,
             timeoutMs: 500,

@@ -1,13 +1,3 @@
-/**
- * The installed client catalog (#477 slice 1).
- *
- * The claim that matters here is agreement: the hash a browser sends on every
- * activation has to be the one the server derives from the deployed unit, or
- * every activation terminates `update-required` and no cache is ever reusable.
- * So both sides are computed here from the same authored definition and
- * compared — the server's through the real deployment assembly.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -51,7 +41,6 @@ const catalogFor = async (schema: AnySchema, key = "client-notes") =>
     policy: await Effect.runPromise(compileReadAuthorization({ schema, rules: [] })),
   });
 
-/** The hash the deployed unit carries, through the real assembly path. */
 const deployedHash = async (definition: Awaited<ReturnType<typeof catalogFor>>) => {
   const definitions = await Effect.runPromise(assembleCatalogDefinitions({
     root: definition,
@@ -67,7 +56,7 @@ describe("installClientCatalog", () => {
     const installed = await installClientCatalog(definition);
 
     expect(installed.readCompatibilityHash).toBe(await deployedHash(definition));
-    // Full untruncated SHA-256 as unpadded base64url.
+
     expect(installed.readCompatibilityHash).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 
@@ -122,9 +111,9 @@ describe("installClientCatalog", () => {
     });
     expect(byIdent.get(":note/owner")?.valueType).toBe(":db.type/ref");
     expect(byIdent.get(":note/body")?.optional).toBe(true);
-    // Composed trait fields are the entity's own local attributes.
+
     expect(byIdent.get(":timestamped/createdAt")?.valueType).toBe(":db.type/instant");
-    // Documentation is not part of a replica, and no spec may carry one.
+
     expect(installed.attributes.some((spec) => "doc" in spec)).toBe(false);
   });
 

@@ -1,10 +1,3 @@
-/**
- * Type-level fixtures for the read-authorization authoring language.
- *
- * `bun run typecheck` compiles this file. A mismatch turns `Expect<Equal<…>>`
- * into a type error.
- */
-
 import type { Equal, Expect, Extends } from "../../../src/db/equal.ts";
 import type { PolicyTemplateIR } from "../../../src/internal/authorization/index.ts";
 import {

@@ -1,7 +1,3 @@
-/**
- * Pure basis-cache policy. Replica fetches, invalidation, min-T retries, and
- * hint-selected Durable Object behavior are exercised by `test/local`.
- */
 import { describe, expect, test } from "bun:test";
 import {
   BASIS_SAFETY_TTL_MS,

@@ -1,5 +1,3 @@
-/** Composition of entities; the typed client's type parameter. */
-
 import {
   assertEntityTraitNames,
   assertUniqueIdents,
@@ -24,7 +22,6 @@ export interface Schema<Es extends EntityMap = EntityMap> {
   readonly entities: Es;
 }
 
-/** @internal The public spelling is {@link Schema.Any}. */
 export type AnySchema = Schema<EntityMap>;
 
 const isEntity = (value: unknown): value is AnyEntity =>
@@ -94,11 +91,9 @@ export function Schema(
 }
 
 export declare namespace Schema {
-  /** Any schema — the bound for schema-generic helpers. */
   export type Any = Schema<EntityMap>;
 }
 
-/** Concatenate schemas. Overlapping entity names are rejected. */
 export const merge = <const A extends EntityMap, const B extends EntityMap>(
   left: Schema<A>,
   right: Schema<ValidMerge<A, B>>,
@@ -116,7 +111,6 @@ export type EntityOf<
   K extends keyof C["entities"],
 > = C["entities"][K];
 
-/** Reachable traits of `schema`, keyed by trait name. */
 export const schemaTraits = (
   schema: AnySchema,
 ): ReadonlyMap<string, AnyTrait> =>

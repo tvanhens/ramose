@@ -1,11 +1,3 @@
-/**
- * Forwarding HTTP / WebSocket recorders for issue #390.
- *
- * Every call is handed to the real `fetch` or `WebSocket`. The wrapper
- * only records what went over the wire. It must never invent a status,
- * body, or frame.
- */
-
 export interface RecordedHttpCall {
   readonly url: string;
   readonly method: string;
@@ -68,7 +60,6 @@ const parseFrame = (data: unknown): unknown => {
   }
 };
 
-/** Wrap `inner` so every request is recorded, then forwarded. */
 export const recordingFetch = (inner: typeof fetch = fetch.bind(globalThis)): RecordingFetch => {
   const calls: RecordedHttpCall[] = [];
   const wrapped = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -89,16 +80,12 @@ export const recordingFetch = (inner: typeof fetch = fetch.bind(globalThis)): Re
   return { fetch: wrapped, calls };
 };
 
-/** Wrap `Inner` so every socket and frame is recorded, then forwarded. */
 export const recordingWebSocket = (
   Inner: typeof WebSocket = WebSocket,
 ): RecordingWebSocket => {
   const sockets: RecordedSocket[] = [];
   const frames: RecordedFrame[] = [];
 
-  // Constructible factory: `new webSocket(url)` must produce a real socket.
-  // Returning the inner instance from the constructor avoids subclass typing
-  // fights with DOM `WebSocket.send` overloads.
   function Wrapped(this: unknown, url: string | URL, protocols?: string | string[]) {
     const socket = new Inner(url, protocols);
     const socketUrl = String(url);
@@ -143,7 +130,6 @@ export const recordingWebSocket = (
   };
 };
 
-/** One recorder for both transports. Always forwards. */
 export const recordingTransport = (options?: {
   readonly fetch?: typeof fetch;
   readonly webSocket?: typeof WebSocket;

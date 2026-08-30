@@ -1,11 +1,3 @@
-/**
- * Pure normalization of authoritative installed v1 tables.
- *
- * Deterministically orders catalog descriptors, composition, rules,
- * decisions, and access-plan lookups. Rejects duplicates, contradictory
- * composition, conflicting decisions, and missing plans. No Effect.
- */
-
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { compareCanonicalKeys, canonicalizeJson } from "../canonical-json.ts";

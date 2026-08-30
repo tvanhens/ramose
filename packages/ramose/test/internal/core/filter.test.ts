@@ -1,7 +1,3 @@
-/**
- * Engine `Db.filter` — immutable composed datom predicates (#411).
- * Query and pull inherit visibility because they only read through datoms.
- */
 import { beforeAll, describe, expect, test } from "bun:test";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { Index, ValueTag } from "../../../src/internal/core/datom.ts";
@@ -30,7 +26,6 @@ let visibleEid: number;
 
 const sortRows = (rows: unknown[][]) => rows.map((r) => JSON.stringify(r)).sort();
 
-/** Hide an entity's own datoms and ref datoms that point at it. */
 const hideEid =
   (eid: number): DatomPredicate =>
   (_u, d) =>
@@ -436,11 +431,11 @@ describe("plain entity-ident resolution honors the filtered view", () => {
     const filtered = db.filter((_u, d) => !(d.a === DB_IDENT && d.v === ":x/hidden"));
     const qHidden = `[:find ?e :where [?e :x/hidden ?v]]`;
     const qMissing = `[:find ?e :where [?e :x/does-not-exist ?v]]`;
-    expect(await query(db, qHidden)).toEqual([]); // ident exists, no attr datoms
+    expect(await query(db, qHidden)).toEqual([]);
     await expect(query(filtered, qHidden)).rejects.toThrow(/unknown attribute/);
     await expect(query(filtered, qMissing)).rejects.toThrow(/unknown attribute/);
     await expect(query(db, qMissing)).rejects.toThrow(/unknown attribute/);
-    // still a real attribute
+
     expect((await query(filtered, `[:find [?n ...] :where [?e :person/name ?n]]`) as string[]).sort()).toEqual([
       "Alice", "Bob", "Carol", "Dave", "Eve",
     ]);

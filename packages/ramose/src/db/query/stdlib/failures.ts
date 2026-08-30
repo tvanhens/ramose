@@ -1,20 +1,3 @@
-/**
- * Structured, value-sealed failures for the v1 expression standard library
- * (#507).
- *
- * Sealing rule: a failure may carry the caller's own public function name,
- * the caller's own context, declared parameter names, declared types, the
- * *kind* a runtime value had, and counts. It may never carry a field value,
- * a row, an internal implementation name, an engine symbol, a plan, or any
- * storage detail. {@link sealStdlibFailure} is the projection the public
- * error path uses, and its output is checked by tests to contain nothing but
- * those admitted pieces.
- *
- * Unknown and internal-only names are indistinguishable on purpose: this
- * registry knows public names only, so anything else is `UnknownQueryFunction`
- * and the response never confirms that some other name exists internally.
- */
-
 import * as Data from "effect/Data";
 import type {
   DomainViolation,
@@ -23,22 +6,18 @@ import type {
   ValueTypeName,
 } from "./types.ts";
 
-/** The name is not in the public v1 allowlist. */
 export class UnknownQueryFunction extends Data.TaggedError(
   "UnknownQueryFunction",
 )<{
-  /** The caller's own requested name, echoed back verbatim. */
   readonly name: string;
 }> {}
 
-/** The call supplied the wrong number of arguments. */
 export class QueryFunctionArity extends Data.TaggedError("QueryFunctionArity")<{
   readonly name: string;
   readonly expected: number;
   readonly received: number;
 }> {}
 
-/** An argument's runtime kind does not satisfy the declared parameter type. */
 export class QueryFunctionArgumentType extends Data.TaggedError(
   "QueryFunctionArgumentType",
 )<{
@@ -46,17 +25,9 @@ export class QueryFunctionArgumentType extends Data.TaggedError(
   readonly index: number;
   readonly parameter: string;
   readonly expected: ValueType;
-  /** The kind the value had. Never the value. */
   readonly received: ValueTypeName;
 }> {}
 
-/**
- * An argument is the right kind but is not a value of the domain: it carries
- * ill-formed text, or it nests deeper than the domain allows.
- *
- * Reports the reason only. Neither the offending value nor its position
- * inside the argument is a public fact.
- */
 export class QueryFunctionArgumentDomain extends Data.TaggedError(
   "QueryFunctionArgumentDomain",
 )<{
@@ -66,7 +37,6 @@ export class QueryFunctionArgumentDomain extends Data.TaggedError(
   readonly violation: DomainViolation;
 }> {}
 
-/** The function is not admitted in the expression context that called it. */
 export class QueryFunctionContext extends Data.TaggedError(
   "QueryFunctionContext",
 )<{
@@ -75,14 +45,6 @@ export class QueryFunctionContext extends Data.TaggedError(
   readonly allowed: readonly ExpressionContext[];
 }> {}
 
-/**
- * The call would have produced more text than one call may produce.
- *
- * Carries the limit but never the requested size: a size derived from a field
- * value is still a fact about that value, and this contract does not leak
- * one. Milestone 2's runtime budget accounting owns richer reporting under
- * the sealed `query_budget_exceeded` contract.
- */
 export class QueryFunctionOutputSize extends Data.TaggedError(
   "QueryFunctionOutputSize",
 )<{
@@ -98,7 +60,6 @@ export type StdlibFailure =
   | QueryFunctionContext
   | QueryFunctionOutputSize;
 
-/** Stable machine-readable codes for the public error path. */
 export type StdlibFailureCode =
   | "query_function_unknown"
   | "query_function_arity"
@@ -107,7 +68,6 @@ export type StdlibFailureCode =
   | "query_function_context"
   | "query_function_output_size";
 
-/** A sealed failure: only names, declared types, kinds, and counts. */
 export type SealedStdlibFailure =
   | {
       readonly code: "query_function_unknown";
@@ -146,10 +106,6 @@ export type SealedStdlibFailure =
       readonly limit: number;
     };
 
-/**
- * Project a failure onto the public wire shape. The output is plain JSON and
- * contains no argument value, no field value, and no internal name.
- */
 export const sealStdlibFailure = (failure: StdlibFailure): SealedStdlibFailure => {
   switch (failure._tag) {
     case "UnknownQueryFunction":

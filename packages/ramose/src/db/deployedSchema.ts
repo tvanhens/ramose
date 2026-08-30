@@ -1,21 +1,13 @@
-/** Code-first runtime schema bindings paired with inert public projections. */
-
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 
-/** Serializable metadata for identity, discovery, and public wire projection. */
 export type InertSchemaProjection = Schema.Json;
 
-/** Authoritative runtime behavior compiled from the original deployed schema. */
 export type DeployedSchemaCodec = {
   readonly decode: (value: unknown) => unknown;
   readonly encode: (value: unknown) => unknown;
 };
 
-/**
- * One assembly-time pair. The projection is inert and the codec is private;
- * neither is reconstructed from the other.
- */
 export type DeployedSchemaBinding = {
   readonly projection: InertSchemaProjection;
   readonly codec: DeployedSchemaCodec;
@@ -112,10 +104,6 @@ const compileSchemaCodec = (schema: Schema.Top): DeployedSchemaCodec => {
   }
 };
 
-/**
- * Capture metadata and compile runtime behavior synchronously from the same
- * deployed schema. The projection is never revived into an executable codec.
- */
 export const bindDeployedSchema = (
   schema: Schema.Top,
 ): DeployedSchemaBinding => Object.freeze({

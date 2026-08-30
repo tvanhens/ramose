@@ -1,12 +1,3 @@
-/**
- * JSON-only values admitted in IR literals and claim maps.
- * The trust-boundary decoder rejects functions, symbols, prototypes,
- * cycles, bigint, `NaN`, infinities, and other non-JSON values.
- *
- * The recursive `JsonValue` type exists only to break the inference cycle.
- * `Schema.Codec<JsonValue>` preserves the encoded representation.
- */
-
 import * as Schema from "effect/Schema";
 
 export const JsonScalar = Schema.Union([

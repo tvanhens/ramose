@@ -1,14 +1,3 @@
-/**
- * Pure core-v1 access-plan derivation.
- *
- * Walks a semantically validated rule and emits exactly one complete
- * {@link RuleAccessPlan}: field facts, entity/trait membership, card-one
- * hops, terminal membership (`index` for indexed many-scalars,
- * `refIndex` for many-refs), and principal-row resolution.
- * Database-wide `exists` lookups are not representable. Effect and
- * service lookup do not occur here.
- */
-
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { canonicalizeJson } from "../canonical-json.ts";
@@ -261,8 +250,6 @@ export const deriveRuleAccessPlan = (
     const me = yield* meEntity(index, principal);
 
     if (rule.focus._tag === "operation") {
-      // Operation grants are principal-only. Their expression walk may add
-      // claim/class/subject work, but never a resource membership lookup.
     } else if (rule.usesResource) {
       yield* addFocusMembership(index, rule, builder);
     } else if (rule.focus._tag === "field") {

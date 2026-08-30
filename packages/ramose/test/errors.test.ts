@@ -1,9 +1,3 @@
-/**
- * Error classification: every status / `tag` combination the peer Worker, the
- * Transactor and the QueryReplica can produce must land on exactly one tagged
- * failure — that is the whole point of the capability's error channel.
- */
-
 import { describe, expect, test } from "bun:test";
 import {
   InvalidRequest,
@@ -178,7 +172,7 @@ describe("fromResponse — DO errors passed through (tagged)", () => {
   });
 
   test("the tag wins over the status code", () => {
-    // A DO answered 500 but tagged the failure InvalidRequest: trust the tag.
+
     expect(fromResponse(500, { error: "x", tag: "BadRequest" })._tag).toBe(
       "InvalidRequest",
     );

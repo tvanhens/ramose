@@ -1,28 +1,9 @@
-/**
- * Minimal EDN reader for query strings and pull patterns.
- *
- * Mapping to JS (the same shapes the JS-form query API accepts):
- *   keyword  :foo/bar   → string ":foo/bar"
- *   symbol   ?x  _  +   → string "?x" / "_" / "+"
- *   string   "abc"      → string "abc"  (auto-wrapped as {const} if it looks like a symbol/keyword)
- *   number              → number
- *   true/false/nil      → boolean / null
- *   [ ... ]             → Array
- *   ( ... )             → EdnList
- *   { k v ... }         → plain object (keys stringified)
- *   #{ ... }            → Set
- *   #inst "..."         → Date
- *   #uuid "..."         → { vt: 6, v: "..." } (TaggedValue)
- *   #bytes "base64"     → Uint8Array
- */
-
 import { ValueTag } from "../datom.ts";
 
 export class EdnList {
   constructor(readonly items: unknown[]) {}
 }
 
-/** Explicit constant wrapper (escapes symbol/keyword-looking strings). */
 export class EdnConst {
   constructor(readonly value: unknown) {}
 }
@@ -47,7 +28,6 @@ export function readEdn(src: string): unknown {
   return v;
 }
 
-/** Read all top-level forms. */
 export function readEdnAll(src: string): unknown[] {
   const r = new Reader(src);
   const out: unknown[] = [];
@@ -102,7 +82,7 @@ class Reader {
         }
         if (this.s[this.pos + 1] === "_") {
           this.pos += 2;
-          this.read(); // discard
+          this.read();
           return this.read();
         }
         this.pos++;
@@ -111,7 +91,6 @@ class Reader {
         return this.tagged(tag, val);
       }
       case "\\": {
-        // character literal → 1-char string
         this.pos++;
         const tok = this.readToken();
         const map: Record<string, string> = { newline: "\n", space: " ", tab: "\t", return: "\r" };
@@ -170,7 +149,7 @@ class Reader {
   }
 
   private readString(): unknown {
-    this.pos++; // opening quote
+    this.pos++;
     let out = "";
     for (;;) {
       if (this.eof()) throw new SyntaxError("EDN: unterminated string");
@@ -193,7 +172,6 @@ class Reader {
         }
       } else out += c;
     }
-    // A string literal that looks like a symbol/keyword must stay a constant.
     return looksLikeSymbol(out) ? new EdnConst(out) : out;
   }
 
@@ -216,12 +194,10 @@ class Reader {
       const n = Number(tok.replace(/[MN]$/, ""));
       return n;
     }
-    // keyword or symbol → string
     return tok;
   }
 }
 
-/** Serialize a JS/EDN-ish value back to EDN text (for error messages / logging). */
 export function printEdn(v: unknown): string {
   if (v === null || v === undefined) return "nil";
   if (typeof v === "string") return looksLikeSymbol(v) ? v : JSON.stringify(v);

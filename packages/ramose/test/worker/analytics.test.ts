@@ -1,9 +1,3 @@
-/**
- * Analytics Engine service (src/analytics.ts): the per-request http point's
- * column layout, route labels, binding detection, delivery-error
- * classification, and the missing-binding no-op. Delivery claims require a
- * real platform boundary and do not belong in this pure suite.
- */
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { bindingOf, classifyDatasetError, fromBinding, httpPoint, routeOf } from "../../src/worker/analytics.ts";

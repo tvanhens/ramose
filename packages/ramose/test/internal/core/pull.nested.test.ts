@@ -21,11 +21,9 @@ const SCHEMA = [
 let db: Db;
 let ids: Record<string, number>;
 
-/** The `:todo/title`s of a pulled nested collection, in the order pulled. */
 const titles = (r: Record<string, unknown> | null, key: string): string[] =>
   ((r?.[key] as Record<string, unknown>[] | undefined) ?? []).map((t) => t[":todo/title"] as string);
 
-/** An already-lowered AST spec, as the alchemy client sends it over the wire. */
 const spec = (s: Partial<Omit<PullAttrSpec, "sub">> & { attr: string; sub?: unknown[] }): PullAttrSpec =>
   parsePullPattern([{ kind: "attr", reverse: false, ...s }])[0] as PullAttrSpec;
 
@@ -38,15 +36,15 @@ beforeAll(async () => {
     { ":db/id": "cy", ":user/name": "Cy" },
     { ":db/id": "work", ":project/name": "Work" },
     { ":db/id": "home", ":project/name": "Home" },
-    // Ada: a mix of done/open, ranks deliberately out of index order
+
     { ":db/id": "t1", ":todo/title": "a-open", ":todo/done": false, ":todo/rank": 5, ":todo/owner": "ada", ":todo/project": "work" },
     { ":db/id": "t2", ":todo/title": "b-done", ":todo/done": true, ":todo/rank": 1, ":todo/owner": "ada", ":todo/project": "home" },
     { ":db/id": "t3", ":todo/title": "c-open", ":todo/done": false, ":todo/rank": 3, ":todo/owner": "ada", ":todo/project": "home" },
-    { ":db/id": "t4", ":todo/title": "d-open", ":todo/done": false, ":todo/owner": "ada", ":todo/project": "work" }, // no rank
+    { ":db/id": "t4", ":todo/title": "d-open", ":todo/done": false, ":todo/owner": "ada", ":todo/project": "work" },
     { ":db/id": "t5", ":todo/title": "e-open", ":todo/done": false, ":todo/rank": 2, ":todo/owner": "ada", ":todo/project": "work" },
-    // Bob: everything done
+
     { ":db/id": "t6", ":todo/title": "f-done", ":todo/done": true, ":todo/rank": 9, ":todo/owner": "bob", ":todo/project": "work" },
-    // Cy: one open todo
+
     { ":db/id": "t7", ":todo/title": "g-open", ":todo/done": false, ":todo/rank": 4, ":todo/owner": "cy", ":todo/project": "home" },
   ]);
   ids = rep.tempids;
@@ -88,7 +86,7 @@ describe("nested pull: where", () => {
   });
 
   test("multi-hop path, reverse hop and :db/id", async () => {
-    // element → :todo/project → :project/name
+
     const hop = await pull(db, ids.ada, [
       spec({
         attr: ":todo/owner",
@@ -99,7 +97,6 @@ describe("nested pull: where", () => {
     ]);
     expect(titles(hop, ":todo/_owner").sort()).toEqual(["a-open", "d-open", "e-open"]);
 
-    // element → its project → back through :todo/project → some sibling is done
     const rev = await pull(db, ids.ada, [
       spec({
         attr: ":todo/owner",
@@ -108,7 +105,7 @@ describe("nested pull: where", () => {
         where: [{ path: [":todo/project", ":todo/project", ":todo/done"], reverse: [false, true, false], op: "=", value: true }],
       }),
     ]);
-    // Work has a done todo (f-done, Bob's); Home has b-done → every Ada todo qualifies
+
     expect(titles(rev, ":todo/_owner").length).toBe(5);
 
     const byId = await pull(db, ids.ada, [
@@ -197,8 +194,7 @@ describe("nested pull: where", () => {
 
 describe("nested pull: every / some quantifiers", () => {
   test("every: no reached element fails, and nothing fails when nothing is reached", async () => {
-    // Ada's todos, kept when every value of the element's `:todo/title` starts
-    // with its own first letter — trivially all of them
+
     const all = await pull(db, ids.ada, [
       spec({
         attr: ":todo/owner",
@@ -207,14 +203,12 @@ describe("nested pull: every / some quantifiers", () => {
         where: [{ every: { path: [":todo/rank"], pred: { path: [], op: ">=", value: 3 } } }],
       }),
     ]);
-    // ranks: a-open 5, b-done 1, c-open 3, d-open none, e-open 2
-    // d-open reaches no rank at all → vacuously true, so it is kept
+
     expect(titles(all, ":todo/_owner").sort()).toEqual(["a-open", "c-open", "d-open"]);
   });
 
   test("every over a scalar collection is the value itself", async () => {
-    // Ada's tags are zeta / alpha / mid / beta: the owner's tags, walked from
-    // the element. Not all of them start with "a", so `every` keeps nothing…
+
     const none = await pull(db, ids.ada, [
       ":user/name",
       spec({
@@ -233,13 +227,12 @@ describe("nested pull: every / some quantifiers", () => {
         where: [{ some: { path: [":todo/owner", ":user/tags"], pred: { path: [], op: "starts-with?", value: "a" } } }],
       }),
     ]);
-    // …while `some` keeps every todo of Ada's, because "alpha" does
+
     expect(titles(some, ":todo/_owner").length).toBe(5);
   });
 
   test("a negation underneath a `some` — `∃x ¬P`, which no plain path can say", async () => {
-    // Ada's todos that share a project with a todo that is *not* done.
-    // Work: a-open, d-open, e-open (all open) + f-done. Home: b-done, c-open, g-open.
+
     const r = await pull(db, ids.ada, [
       spec({
         attr: ":todo/owner",
@@ -258,7 +251,6 @@ describe("nested pull: every / some quantifiers", () => {
     ]);
     expect(titles(r, ":todo/_owner").sort()).toEqual(["a-open", "b-done", "c-open", "d-open", "e-open"]);
 
-    // `none` is the negation of that same `some`: no sibling is open
     const noneOpen = await pull(db, ids.ada, [
       ":user/name",
       spec({
@@ -306,7 +298,7 @@ describe("nested pull: order / offset / limit", () => {
     const asc = await pull(db, ids.ada, [
       spec({ attr: ":todo/owner", reverse: true, sub: [":todo/title"], order: [{ path: [":todo/rank"], dir: "asc" }] }),
     ]);
-    // d-open has no :todo/rank → empty defaults to "last" in both directions
+
     expect(titles(asc, ":todo/_owner")).toEqual(["b-done", "e-open", "c-open", "a-open", "d-open"]);
 
     const desc = await pull(db, ids.ada, [
@@ -351,9 +343,9 @@ describe("nested pull: order / offset / limit", () => {
         limit: 2,
       }),
     ]);
-    // filtered: a-open(5) c-open(3) e-open(2) d-open(none) → desc → a-open, c-open
+
     expect(titles(r, ":todo/_owner")).toEqual(["a-open", "c-open"]);
-    // the plain-limit path is still index order (no order key given)
+
     const plain = await pull(db, ids.ada, [spec({ attr: ":todo/owner", reverse: true, sub: [":todo/title"], limit: 2 })]);
     expect(titles(plain, ":todo/_owner")).toEqual(["a-open", "b-done"]);
   });
@@ -414,7 +406,7 @@ describe("nested pull: parse + wire", () => {
     expect(parsed[0].order).toEqual([{ path: [":todo/rank"], dir: "desc", empty: "first" }]);
     expect(parsed[0].offset).toBe(1);
     expect(parsed[0].limit).toBe(2);
-    // JSON round-trip (the wire) keeps them
+
     const wire = JSON.parse(JSON.stringify(parsed));
     expect((parsePullPattern(wire) as PullAttrSpec[])[0].where).toEqual(parsed[0].where);
   });
@@ -462,7 +454,7 @@ describe("nested pull inside a query", () => {
       order: [["?n", "asc"]],
       limit: 2,
     });
-    // 3 users, limit 2 → Ada and Bob; Bob's todos all filtered out, but Bob stays
+
     expect(rows.length).toBe(2);
     expect(rows.map((r: any) => r[0][":user/name"])).toEqual(["Ada", "Bob"]);
     expect(rows[0][0].open.map((t: any) => t[":todo/title"])).toEqual(["e-open", "c-open", "a-open", "d-open"]);

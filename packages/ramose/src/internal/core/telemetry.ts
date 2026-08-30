@@ -1,19 +1,3 @@
-/**
- * Structured logs / metrics for every Ramose component.
- *
- * One JSON object per line on the default sink (`console.log`), which is what
- * Workers/DO observability ingests, so `wrangler tail`, Logpush or the local
- * `alchemy dev` console all show queryable events. Nothing here is a
- * dashboard: it is the minimum needed to see tx/s, batch sizes, index run
- * durations, novelty sizes and query aborts.
- *
- *   { ts, level, component, event, db?, ...fields }
- *
- * `setTelemetrySink` swaps the sink (tests capture events; a Worker can fan
- * out to Analytics Engine); `setTelemetryLevel` filters. Both are process-wide
- * by design — one isolate, one stream.
- */
-
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type Component = "transactor" | "indexer" | "replica" | "peer" | "core";
 
@@ -47,17 +31,14 @@ export function telemetryLevel(): LogLevel {
   return minLevel;
 }
 
-/** Emit one event (dropped if below the configured level). */
 export function logEvent(component: Component, event: string, fields: Record<string, unknown> = {}, level: LogLevel = "info"): void {
   if (LEVELS[level] < LEVELS[minLevel]) return;
   try {
     sink({ ts: now(), level, component, event, ...fields });
   } catch {
-    // telemetry must never take the data path down
   }
 }
 
-/** Convenience: a component-bound logger with an optional fixed `db` field. */
 export function componentLogger(component: Component, base: Record<string, unknown> | (() => Record<string, unknown>) = {}) {
   const b = () => (typeof base === "function" ? base() : base);
   return {
@@ -69,10 +50,6 @@ export function componentLogger(component: Component, base: Record<string, unkno
 }
 export type Logger = ReturnType<typeof componentLogger>;
 
-/**
- * Small fixed-bucket histogram for latencies / batch sizes: cheap to update,
- * summarised into p50/p95/p99/max for `/info` snapshots.
- */
 export class Histogram {
   private readonly buckets: number[];
   private readonly counts: number[];
@@ -91,7 +68,6 @@ export class Histogram {
     while (i < this.buckets.length && x > this.buckets[i]) i++;
     this.counts[i]++;
   }
-  /** Upper bound of the bucket holding the p-th percentile (Infinity for the overflow bucket). */
   percentile(p: number): number {
     if (this.count === 0) return 0;
     const target = Math.ceil((p / 100) * this.count);
@@ -107,7 +83,6 @@ export class Histogram {
   }
 }
 
-/** Events-per-second meter over a sliding window (for tx/s, queries/s in /info). */
 export class RateMeter {
   private readonly at: number[] = [];
   private readonly n: number[] = [];
@@ -128,7 +103,6 @@ export class RateMeter {
     this.total += n;
     this.prune(at);
   }
-  /** events per second over the window ending at `at` */
   rate(at: number = now()): number {
     this.prune(at);
     let sum = 0;

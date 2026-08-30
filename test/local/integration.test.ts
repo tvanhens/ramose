@@ -1,9 +1,3 @@
-/**
- * Alchemy local-mode integration suite.
- *
- * One stack deploy (see `fixtures.ts`), then every public contract against
- * the owned peer topology.
- */
 import { setDefaultTimeout } from "bun:test";
 import { registerAuthContract } from "../contracts/auth.contract.ts";
 import { registerOperationsContract } from "../contracts/operations.contract.ts";

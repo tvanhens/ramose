@@ -1,10 +1,3 @@
-/**
- * Value and reference compatibility for catalog-aware terms.
- *
- * Ref.self resolution, collection-element typing, and trait/entity
- * compatibility stay here — they need the prepared catalog, not Schema.
- */
-
 import * as Result from "effect/Result";
 import type { FieldCardinality, FieldRefTarget, ScalarValueType } from "../catalog.ts";
 import type { EntityId, OwnerRef } from "../identities.ts";

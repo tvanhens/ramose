@@ -1,10 +1,3 @@
-/**
- * `read(target).when` / `.deny` builder for the read-authorization language (#406).
- *
- * The optional callback is a compile-time macro: it receives a proxied
- * schema (`$()`), never a `Db` or Effect environment.
- */
-
 import { $, seededPath } from "./path.ts";
 import {
   isAuthPath,

@@ -5,7 +5,6 @@ import {
 } from "../../../src/internal/authorization/index.ts";
 import { digestHex } from "./fixtures.ts";
 
-/** Complete inert metadata for hand-authored authorization fixtures. */
 export const operationMetadata = (
   composers: readonly EntityId[] = [],
 ): Omit<CatalogDescriptor["operations"][number], "id" | "input"> => ({

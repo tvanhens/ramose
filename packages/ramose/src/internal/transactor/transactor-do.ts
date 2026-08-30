@@ -1,15 +1,3 @@
-/**
- * Transactor Durable Object — exactly one per logical database.
- *
- * Thin shell: adapts the DO runtime (SQLite storage, hibernating WebSockets,
- * alarms, R2 binding) to `TransactorHost` and forwards everything to the
- * runtime-agnostic `Transactor` (transactor.ts). All logic lives there and is
- * tested under Bun; this file only maps APIs.
- *
- *   GET /subscribe?from=<t>  (WebSocket upgrade) → hello / tx / root / gap frames
- *   everything else → Transactor.handleRequest
- */
-
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -96,7 +84,6 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       abort: (reason) => ctx.abort(reason),
       now: () => Date.now(),
       config: configFromEnv(env),
-      // bound in alchemy.run.ts as ANALYTICS; undefined = metrics disabled
       ...(env.ANALYTICS !== undefined && { analytics: env.ANALYTICS }),
     };
     this.core = new Transactor(
@@ -110,16 +97,12 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
             : { bindings: databaseCatalogBindings }),
           environment: env,
           now: () => host.now(),
-          // The same isolate-cached durable root the Worker derives replication
-          // identities from, so a handle minted here and one carried by logical
-          // replication name the same entity in the same scope (#475).
           sealing: () => serverSealingKey(env),
         },
       testing?.boundaries,
     );
   }
 
-  /** Bind this object to a database name (idempotent; persisted). */
   private assign(db: string): void {
     if (this.dbName === db) return;
     if (this.dbName !== undefined) throw new Error(`transactor already bound to database ${this.dbName}`);
@@ -143,7 +126,6 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
   }
 
   override async fetch(request: Request): Promise<Response> {
-    // reachable only from the peer Worker (and the replicas), /subscribe included
     const gate = internalGate(this.env, request);
     if (gate) return gate;
     const url = new URL(request.url);
@@ -268,7 +250,6 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
   }
 }
 
-/** Build the deployed Transactor class from the same immutable registry as the Worker. */
 export const createTransactorDO = (
   operationCatalogs: DeployedCatalogDefinitions,
   databaseCatalogBindings?: DatabaseCatalogBindings,
@@ -281,7 +262,6 @@ export const createTransactorDO = (
   }
 };
 
-/** @internal Explicit non-production assembly; not re-exported by `ramose/worker`. */
 export const createTestingTransactorDO = (
   testing: TransactorTesting,
   operationCatalogs?: DeployedCatalogDefinitions,
@@ -295,7 +275,6 @@ export const createTestingTransactorDO = (
   }
 };
 
-/** Default fail-closed class for peers with no runnable catalog definitions. */
 export class TransactorDO extends TransactorDOBase {
   constructor(ctx: DurableObjectState, env: RamoseEnv) {
     super(ctx, env);

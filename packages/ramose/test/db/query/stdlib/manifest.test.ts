@@ -1,13 +1,3 @@
-/**
- * Manifest integrity for the v1 expression standard library (#507).
- *
- * The manifest is the single source of truth, so these tests are the proof
- * that it actually is one: every entry has an implementation and vice versa,
- * every published example really evaluates to the result it publishes, names
- * are stable and namespaced, and the whole manifest projects to JSON so a
- * capability card can be derived mechanically rather than hand-written.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
 import {
@@ -26,10 +16,6 @@ import {
 
 const cards: readonly FunctionCard[] = standardLibraryV1.functions;
 
-/**
- * The published v1 inventory. This list is a contract: an entry may be added
- * below, but renaming or removing one is a query-language break, not a patch.
- */
 const EXPECTED_NAMES: readonly string[] = [
   "collection.at",
   "collection.concat",
@@ -121,9 +107,7 @@ describe("standard library manifest", () => {
   });
 
   test("a card taking a nestable argument is never constant cost", () => {
-    // Validating a `collection` or `any` argument is a full pass over it —
-    // well-formed text and nesting depth — so a constant claim would be a
-    // budget the call cannot honour.
+
     for (const card of cards) {
       const nests = card.signature.parameters.some(
         (parameter) => parameter.type === "collection" || parameter.type === "any",
@@ -137,9 +121,7 @@ describe("standard library manifest", () => {
   });
 
   test("superlinear is declared exactly where the work is superlinear", () => {
-    // `collection.distinct` canonicalizes object elements by sorting their
-    // keys, which is k log k in the element's key count. Every other v1
-    // function is constant or linear.
+
     const superlinear = cards
       .filter((card) => card.cost === "superlinear")
       .map((card) => card.name);
@@ -167,9 +149,7 @@ describe("standard library manifest", () => {
   });
 
   test("only a totally ordered result type is admitted as a sort key", () => {
-    // `collection` has no total order, and `any` cannot statically exclude a
-    // collection — `logic.coalesce(null, [])` returns one — so neither may
-    // reach `orderBy`.
+
     const orderable = new Set(["boolean", "number", "timestamp", "text"]);
     for (const card of cards) {
       if (orderable.has(card.signature.result)) continue;
@@ -272,8 +252,7 @@ describe("nothing nondeterministic or ambient is reachable", () => {
     ["dynamic evaluation", /\beval\s*\(|new\s+Function\b/],
     ["a caller-constructed regex", /new\s+RegExp\b/],
     ["module lookup", /\brequire\s*\(|\bimport\s*\(/],
-    // Host Unicode tables move with the engine's Unicode version, so the
-    // library pins its own case mapping and whitespace set instead.
+
     ["a host case table", /\.to(?:Lower|Upper)Case\s*\(/],
     ["a host locale routine", /toLocale|localeCompare|\bIntl\b/],
     ["host normalization", /\.normalize\s*\(/],

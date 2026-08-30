@@ -100,11 +100,7 @@ const invoke = (
 ) => json(base, `/db/${GRAPH_PATH_ROOT_DATABASE}/op`, {
   method: "POST",
   token,
-  // #551: this is the call site that loses a pooled socket to the local
-  // runtime's unadvertised 5000ms keep-alive close, because it is issued
-  // right after a parked replication read that takes about that long. The
-  // `invocationId` below is fixed for the life of this call, so a re-issue
-  // replays the durable receipt instead of invoking again.
+
   retryPreResponse: true,
   headers: { "content-type": "application/json" },
   body: JSON.stringify({
@@ -251,9 +247,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
       expect(visible.status).toBe(200);
       expect(empty.status).toBe(200);
       expect(plain.status).toBe(200);
-      // Operation output carries the opaque handle now (#475); these
-      // filtered-read cases still need the private eid, and opening one
-      // through the real resolver is the only way to get it.
+
       const open = (response: { body: { result: { id: unknown } } }) =>
         openEntityHandle(base, root, member, response.body.result.id as string);
       const visibleId = await open(visible);
@@ -289,8 +283,6 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         hidden.body.result.id as string,
       );
 
-      // Adding a hidden composer cannot change the visible trait-root rows,
-      // count, or wire metadata in the paired absent/hidden worlds.
       const afterHidden = await rootQuery<readonly { readonly id: number }[]>(
         base,
         member,
@@ -345,8 +337,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         localName: "retag",
       }, { label: "retagged" }, { target: visibleId });
       expect(retagged.status).toBe(200);
-      // Output carries the opaque handle for the same entity the numeric
-      // target named — one entity, one public identity (#475).
+
       expect(retagged.body.result).toEqual({
         id: await entityHandle(base, root, member, visibleId),
         label: "retagged",
@@ -440,9 +431,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { name: "acme" });
       expect(workspace.status).toBe(200);
-      // Each handle opens under the scope of the database its invocation ran
-      // in, which for a nested operation is the child's own DatabaseId — so
-      // the chain of derivations is also the chain of scopes.
+
       const workspaceId = await openEntityHandle(
         base,
         root,
@@ -468,9 +457,6 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         deriveDynamicChildDatabaseId(DatabaseId.make(root), secondWorkspaceId),
       );
 
-      // Resolving `acme` authorizes its ordinary filtered Graph row, then the
-      // internal provisioner creates the child storage/schema before this
-      // dynamic operation reaches the child's real Transactor.
       const project = await invoke(base, member, {
         owner: { kind: "entity", name: "localProject" },
         localName: "create",

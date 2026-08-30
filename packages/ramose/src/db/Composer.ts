@@ -1,7 +1,6 @@
 import type { AnyEntity } from "./Entity.ts";
 import type { AnyTrait } from "./Trait.ts";
 
-/** Type/runtime witness of the transitive traits composed by an entity. */
 export const COMPOSED_TRAITS: unique symbol = Symbol.for(
   "ramose/composed-traits",
 );

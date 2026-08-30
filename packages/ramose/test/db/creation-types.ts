@@ -1,5 +1,3 @@
-/** Compile-time contract for creation defaults and fixed binding values. */
-
 // @effect-diagnostics floatingEffect:off
 
 import {
@@ -34,23 +32,23 @@ tx.put(Node, { title: "ok" });
 tx.put(Node, { title: "ok", label: "explicit", compositionLabel: "explicit" });
 tx.update(Node, 1, { title: "changed" });
 
-// @ts-expect-error fixed binding values are absent from create input
+// @ts-expect-error
 tx.put(Node, { title: "no", catalog: "forged" });
-// @ts-expect-error fixed binding values are absent from update input
+// @ts-expect-error
 tx.update(Node, 1, { catalog: "forged" });
-// @ts-expect-error fixed binding values cannot be mutated through field writes
+// @ts-expect-error
 tx.set(1, Node.catalog, "forged");
-// @ts-expect-error raw fixed idents cannot bypass the field marker
+// @ts-expect-error
 tx.set(1, ":typedBound/catalog", "forged");
-// @ts-expect-error field defaults must return the field value type
+// @ts-expect-error
 string({ default: () => 42 });
 Trait("badFixed", { value: string() }, {
-  // @ts-expect-error fixed binding values must match their field type
+  // @ts-expect-error
   bind: () => ({ values: { value: 42 } }),
 });
 
 const defaultedScalar = string({ default: () => "scalar" });
-// @ts-expect-error changing cardinality requires replacing the scalar default
+// @ts-expect-error
 Field.many(defaultedScalar);
 Field.many(defaultedScalar, { default: () => ["many"] });
 
@@ -64,8 +62,8 @@ const Widened = Trait("widenedBinding", annotatedFields, { bind: widenedBind });
 const WidenedEntity = Entity("widenedEntity", {}, { traits: [Widened(child)] });
 const WidenedSchema = Schema({ widenedEntity: WidenedEntity });
 const widenedTx = txBuilder(WidenedSchema);
-// A widened annotation conservatively retains every potentially fixed key.
-// @ts-expect-error catalog remains engine-owned under a widened binding spec
+
+// @ts-expect-error
 widenedTx.put(WidenedEntity, { catalog: "forged" });
-// @ts-expect-error label may be fixed under the widened binding spec
+// @ts-expect-error
 widenedTx.update(WidenedEntity, 1, { label: "forged" });

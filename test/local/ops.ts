@@ -1,10 +1,3 @@
-/**
- * Operations registered on the local open / policy peers.
- *
- * Combines the e2e registry (session + reef board), the todos writes, and
- * the movie/user fixtures the operations contract drives.
- */
-
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 import {

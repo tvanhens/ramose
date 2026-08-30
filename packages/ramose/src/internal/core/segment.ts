@@ -1,19 +1,3 @@
-/**
- * Segment (leaf) codec.
- *
- * A segment is a run of datoms sorted in one index's order. On disk it is:
- *
- *   magic "RSG1" | u8 index | u32 count | columns…
- *   columns: e (zigzag deltas) | a (uvar) | vt (u8) + v payload | t (zigzag deltas) | op (bit-packed)
- *
- * The bytes returned by `encodeSegment` are *uncompressed*; storage layers
- * apply gzip (see `bytes.ts#gzip`) or another codec — see `compress.ts`. The
- * content hash that names a segment (`seg/<sha256>`) is computed over the
- * compressed object body, so identical segments always dedupe.
- *
- * Target size ~3k datoms per leaf (see `tree.ts` builder options).
- */
-
 import { ByteReader, ByteWriter } from "./bytes.ts";
 import {
   type Datom,
@@ -24,7 +8,7 @@ import {
   uuidToBytes,
 } from "./datom.ts";
 
-const MAGIC = 0x52534731; // "RSG1"
+const MAGIC = 0x52534731;
 
 export function writeValue(w: ByteWriter, vt: ValueTag, v: DatomValue): void {
   w.u8(vt);
@@ -79,7 +63,6 @@ export function readValue(r: ByteReader): { vt: ValueTag; v: DatomValue } {
   }
 }
 
-/** Row-encode one datom (used for directory keys). */
 export function writeDatom(w: ByteWriter, d: Datom): void {
   w.uvar(d.e);
   w.uvar(d.a);
@@ -102,25 +85,20 @@ export function encodeSegment(index: IndexId, datoms: readonly Datom[]): Uint8Ar
   w.u32(MAGIC);
   w.u8(index);
   w.u32(n);
-  // e column (deltas)
   let prev = 0;
   for (let i = 0; i < n; i++) {
     const e = datoms[i].e;
     w.svar(e - prev);
     prev = e;
   }
-  // a column
   for (let i = 0; i < n; i++) w.uvar(datoms[i].a);
-  // v column
   for (let i = 0; i < n; i++) writeValue(w, datoms[i].vt, datoms[i].v);
-  // t column (deltas)
   prev = 0;
   for (let i = 0; i < n; i++) {
     const t = datoms[i].t;
     w.svar(t - prev);
     prev = t;
   }
-  // op column (bit-packed)
   for (let i = 0; i < n; i += 8) {
     let b = 0;
     for (let j = 0; j < 8 && i + j < n; j++) if (datoms[i + j].op) b |= 1 << j;

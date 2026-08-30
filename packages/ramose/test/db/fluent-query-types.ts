@@ -1,11 +1,3 @@
-/**
- * Compile-time fixtures for `Query.from`. `bun run typecheck` compiles this file.
- *
- * Pins the fluent app spelling: header example (row is
- * `{ id: Eid<Comment>, text: string, at: Date, issue: { id: Eid<Issue> } }`),
- * and object-literal `where` with inline values.
- */
-
 import type {
   Eid,
   EntityRow,
@@ -53,8 +45,6 @@ export type _traitRef = Expect<
 declare const taggedIssueId: Eid<typeof TaggedIssue>;
 Query.from(TagLink).where({ target: taggedIssueId });
 
-// ── header example (inline values) ─────────────────────────────────────────
-
 declare const issueId: Eid<typeof Issue>;
 const commentsQuery = Query.from(Comment)
   .where({ issue: issueId })
@@ -80,23 +70,17 @@ export type _selectRow = Expect<
   Equal<Row<typeof commentTitles>, { readonly id: Eid<typeof Comment>; readonly text: string }>
 >;
 
-// ── object-literal where is typechecked ────────────────────────────────────
-
 Query.from(Comment).where({ text: "ok" });
 Query.from(Comment).where({ issue: issueId, text: "ok" });
 
-// @ts-expect-error unknown field is not a where key
+// @ts-expect-error
 Query.from(Comment).where({ nope: true });
 
-// @ts-expect-error text is a string, not a number
+// @ts-expect-error
 Query.from(Comment).where({ text: 42 });
-
-// ── .ids() is today's { id } row ───────────────────────────────────────────
 
 const onlyIds = Query.from(Comment).ids();
 export type _ids = Expect<Equal<Row<typeof onlyIds>, { readonly id: Eid<typeof Comment> }>>;
-
-// ── select-less pipe `.ids()` / `follow` keep the focus namespace ───────────
 
 const pipeIds = Query.q(() => pipe(Query.entities(Comment), Query.ids()));
 export type _pipeIds = Expect<
@@ -114,8 +98,6 @@ export type _idsThenSelect = Expect<Equal<Row<typeof idsThenSelect>, { readonly 
 const selectThenIds = Query.from(Comment).select({ text: Comment.text }).ids();
 export type _selectThenIds = Expect<Equal<Row<typeof selectThenIds>, { readonly id: Eid<typeof Comment> }>>;
 
-// ── optional fields only are `| undefined` ─────────────────────────────────
-
 const Note = Entity("note", {
   body: Field(Schema.String),
   subtitle: Field(stored(Schema.optional(Schema.String), "string")),
@@ -128,30 +110,26 @@ export type _noteSub = Expect<Equal<NoteRow["subtitle"], string | undefined>>;
 export type _noteNick = Expect<Equal<NoteRow["nickname"], string | undefined>>;
 export type _noteAuthor = Expect<Equal<NoteRow["author"], { readonly id: Eid<typeof User> }>>;
 
-// ── .orderBy keys are typechecked like .where ──────────────────────────────
-
 Query.from(Comment).orderBy(Comment.at, "asc");
 Query.from(Comment).orderBy("at", "asc");
-// @ts-expect-error unknown field is not an orderBy key
+// @ts-expect-error
 Query.from(Comment).orderBy("nope", "asc");
 Query.from(Comment).select(commentShape).orderBy("text", "asc");
-// @ts-expect-error a column that was not selected is not an orderBy string key
+// @ts-expect-error
 Query.from(Comment).select(commentShape).orderBy("at", "asc");
-
-// ── cross-entity stages / shapes / sort keys are type errors (#176) ────────
 
 Query.from(Issue).where(Query.is(Issue.title, "Ship"));
 Query.from(Issue).select({ title: Issue.title });
 Query.from(Issue).orderBy(Issue.title);
 Query.from(Issue).orderBy("title", "asc");
 
-// @ts-expect-error User.name is not a field of Issue
+// @ts-expect-error
 Query.from(Issue).where(Query.is(User.name, "Ada"));
 
-// @ts-expect-error Issue.title is not a field of User
+// @ts-expect-error
 Query.from(User).select({ title: Issue.title });
 
-// @ts-expect-error User.name is not a field of Issue
+// @ts-expect-error
 Query.from(Issue).orderBy(User.name);
 
 pipe(Query.entities(Issue), Query.is(Issue.title, "Ship"), Query.select({ title: Issue.title }));
@@ -159,16 +137,16 @@ pipe(Query.entities(User), Query.select({ name: User.name }));
 pipe(Query.entities(Issue), Query.orderBy(Issue.title));
 pipe(Query.entities(Issue), Query.select({ title: Issue.title }), Query.orderBy("title"));
 
-// @ts-expect-error User.name is not a field of Issue
+// @ts-expect-error
 pipe(Query.entities(Issue), Query.is(User.name, "Ada"), Query.select({ title: Issue.title }));
 
-// @ts-expect-error Issue.title is not a field of User
+// @ts-expect-error
 pipe(Query.entities(User), Query.select({ title: Issue.title }));
 
-// @ts-expect-error User.name is not a field of Issue
+// @ts-expect-error
 pipe(Query.entities(Issue), Query.orderBy(User.name));
 
-// @ts-expect-error "title" is not a key of the select-less id row
+// @ts-expect-error
 pipe(Query.entities(Issue), Query.orderBy("title"));
 
 const afterFollow = Query.q(() =>
@@ -178,13 +156,11 @@ export type _followNs = Expect<
   Equal<Row<typeof afterFollow>, { readonly id: Eid<typeof Issue> }>
 >;
 pipe(Query.entities(Comment), Query.follow(Comment.issue), Query.select({ title: Issue.title }));
-// @ts-expect-error Comment.text is not a field of Issue after follow
+// @ts-expect-error
 pipe(Query.entities(Comment), Query.follow(Comment.issue), Query.select({ text: Comment.text }));
 
-// @ts-expect-error User.friends is a self-ref on User, not a backlink to Issue
+// @ts-expect-error
 pipe(Query.entities(Issue), Query.backlink(User.friends));
-
-// ── #189: Query.q cursor stages, Q.value, fluent aggregate select ───────────
 
 const topByDone = Query.q(function* () {
   const issue = yield* Query.entities(Issue);
@@ -246,12 +222,10 @@ void openCount.logic();
 declare const issueVar: Var<Eid<typeof Issue>>;
 Q.pull(issueVar, { title: Issue.title });
 Q.fact(issueVar, Issue.title);
-// @ts-expect-error User.name is not a field of the Issue-branded var
+// @ts-expect-error
 Q.pull(issueVar, { name: User.name });
-// @ts-expect-error User.name is not a field of the Issue-branded var
+// @ts-expect-error
 Q.fact(issueVar, User.name);
-
-// ── #192: any / not / attr comparators are namespace-constrained ────────────
 
 Query.from(Issue).where(Query.any(Query.gt(Issue.rank, 3), Query.startsWith(Issue.title, "ship")));
 Query.from(Issue).where(Query.not(Query.any(Query.includes(Issue.title, "flake"))));
@@ -259,19 +233,19 @@ Query.from(Issue).where(Query.gte(Issue.rank, 1), Query.lt(Issue.rank, 10));
 Query.from(Issue).where(Query.lte(Issue.rank, 3));
 Query.from(Comment).where(Query.startsWith(Comment.text, "on", { ignoreCase: true }));
 
-// @ts-expect-error User.name is not a field of Issue
+// @ts-expect-error
 Query.from(Issue).where(Query.any(Query.is(User.name, "Ada")));
 
-// @ts-expect-error User.age is not a field of Issue
+// @ts-expect-error
 Query.from(Issue).where(Query.gt(User.age, 3));
 
-// @ts-expect-error User.name is not a field of Issue
+// @ts-expect-error
 Query.from(Issue).where(Query.not(Query.is(User.name, "Ada")));
 
-// @ts-expect-error rank is a long, not a string
+// @ts-expect-error
 Query.startsWith(Issue.rank, "x");
 
-// @ts-expect-error rank is a long, not a string
+// @ts-expect-error
 Query.includes(Issue.rank, "x");
 
 declare const pagedCursor: import("../../src/db/query/query.ts").Cursor;

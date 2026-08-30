@@ -44,7 +44,7 @@ describe("integer / double encodings", () => {
       return { v, b };
     });
     for (const x of enc) for (const y of enc) expect(Math.sign(compareBytes(x.b, y.b))).toBe(Math.sign(x.v - y.v));
-    // bigint extremes
+
     const b = new Uint8Array(8);
     encodeI64((1n << 63n) - 1n, b, 0);
     expect(decodeI64(b, 0)).toBe((1n << 63n) - 1n);
@@ -61,7 +61,7 @@ describe("integer / double encodings", () => {
       return { v, b };
     });
     for (let i = 0; i < enc.length; i++) for (let j = 0; j < enc.length; j++) expect(Math.sign(compareBytes(enc[i].b, enc[j].b))).toBe(Math.sign(i - j));
-    // -0 normalizes to +0
+
     const a = new Uint8Array(8), c = new Uint8Array(8);
     encodeF64(-0, a, 0);
     encodeF64(0, c, 0);
@@ -150,7 +150,7 @@ describe("index comparators", () => {
         const full = { e: d.e, a: d.a, vt: d.vt, v: d.v, t: d.t };
         expect(prefixDepth(idx, full)).toBe(4);
         expect(comparePrefix(idx, d, full)).toBe(0);
-        // every datom before d in sorted order compares <= 0, after >= 0 (ignoring op)
+
         for (const x of sorted) {
           const c = comparePrefix(idx, x, full);
           const f = cmp(x, d);
@@ -158,12 +158,12 @@ describe("index comparators", () => {
           if (f > 0) expect(c).toBeGreaterThanOrEqual(0);
         }
       }
-      // one-component prefixes
+
       for (const d of ds.slice(0, 20)) {
         const p = idx === Index.VAET ? { vt: d.vt, v: d.v } : idx === Index.EAVT ? { e: d.e } : { a: d.a };
         expect(prefixDepth(idx, p)).toBe(1);
         const matches = sorted.filter((x) => comparePrefix(idx, x, p) === 0);
-        // must be contiguous
+
         const first = sorted.findIndex((x) => comparePrefix(idx, x, p) === 0);
         for (let i = 0; i < matches.length; i++) expect(sorted[first + i]).toBe(matches[i]);
       }

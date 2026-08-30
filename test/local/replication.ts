@@ -1,5 +1,3 @@
-/** #473 — versioned opaque replication over the real local Ramose stack. */
-
 import { beforeAll, describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
@@ -107,7 +105,6 @@ const titlesOf = (state: ClientReplicationState): string[] =>
     .map((datom) => datom.value.value as string)
     .sort();
 
-/** Read one frame, bounded. Every frame read in these suites goes through this. */
 export const observed = async (
   iterator: AsyncIterator<ObservedReplicationFrame>,
   label: string,
@@ -219,9 +216,7 @@ const observeFirstSeenRetention = async (
 ): Promise<RetentionObservation> => {
   const world = await seedWorld(base, database, false);
   if (pressure) {
-    // Reproduce the rejected global allocator exactly: 64 authenticated
-    // full-view partitions establish one revision each before member A has
-    // ever opened replication. No database commit is needed between them.
+
     for (let index = 0; index < 64; index++) {
       const pressureToken = await signToken(
         world.database,
@@ -243,7 +238,6 @@ const observeFirstSeenRetention = async (
     }
   }
 
-  // A is genuinely first seen only here, after all B-side pressure.
   const firstResponse = await openReplication(
     base,
     world.database,
@@ -376,8 +370,6 @@ const observeBackpressuredBurst = async (
   try {
     const snapshot = await collectCommittedSnapshot(iterator);
 
-    // Every world reaches the same fixed cycle, including the zero-activity
-    // world. Park it before the optional hidden burst.
     await armCheckpoint(base, world.database, "replication.cycle");
     const visibleFrame = iterator.next();
     await Bun.sleep(750);
@@ -386,8 +378,6 @@ const observeBackpressuredBurst = async (
     await waitForCheckpoint(base, world.database, "replication.cycle");
     checkpoints.push("cycle");
 
-    // The callback queue can retain only the newest notification while the
-    // production cycle is parked.
     for (let index = 0; index < hiddenCount; index++) {
       await create(base, world.database, world.admin, ConformanceIssue.ns, {
         key: `parked-hidden-${index}`,
@@ -403,8 +393,6 @@ const observeBackpressuredBurst = async (
     checkpoints.push("silent");
     await releaseCheckpoint(base, world.database, "replication.silent");
 
-    // Both worlds then wait for exactly the next activity-independent cycle.
-    // A hidden wake backlog would create an extra cycle before this point.
     await armCheckpoint(base, world.database, "replication.cycle");
     await waitForCheckpoint(base, world.database, "replication.cycle");
     checkpoints.push("cycle");
@@ -477,9 +465,6 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(unauthenticated.status).toBe(401);
 
-      // Through `json` rather than a raw `fetch`: the local Alchemy dev proxy
-      // intermittently answers 502 before the Worker sees the request, and
-      // `json` is the established retry-past-a-proxy-blip path.
       const unresolved = await json(
         base,
         `/db/${encodeURIComponent(world.database)}/replicate`,
@@ -600,27 +585,20 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       };
 
       const mine = await bindings(world.member);
-      // Complete: the client refuses a value it could not address, so reaching a
-      // committed state at all is already half the claim — this states the other
-      // half, that the binding covers exactly the entities the value names.
+
       expect(mine.entities.size).toBeGreaterThan(0);
       expect(new Set(mine.handles.keys())).toEqual(mine.entities);
       const handles = [...mine.handles.values()];
-      // Sealed envelopes, canonically spelled, one per entity.
+
       for (const handle of handles) expect(isEntityId(handle)).toBe(true);
       expect(new Set(handles).size).toBe(handles.length);
-      // The wire identity and the handle are different derivations of one eid.
+
       for (const [entity, handle] of mine.handles) {
         expect(handle).not.toBe(entity);
       }
-      // Deterministic per (root, scope, eid), so a second activation of the same
-      // partition names every entity identically — which is what lets a handle
-      // survive in a durable queue across a reconnect.
+
       expect((await bindings(world.member)).handles).toEqual(mine.handles);
 
-      // …and bound to the principal. Another principal reading the same
-      // database is handed handles from its own scope, so nothing this stream
-      // disclosed is a handle that stream holds.
       const theirs = await bindings(world.admin);
       expect([...theirs.handles.values()].length).toBeGreaterThan(0);
       for (const handle of theirs.handles.values()) {

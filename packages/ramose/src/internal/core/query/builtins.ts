@@ -1,13 +1,7 @@
-/**
- * Built-in predicates, functions and aggregates for datalog queries.
- * Values are plain JS (numbers, strings, booleans, Dates, Uint8Array).
- */
-
 import { compareStrings } from "../datom.ts";
 
 export type QueryFn = (...args: any[]) => unknown;
 
-/** Stable key for hashing values in joins/sets. */
 export function vkey(v: unknown): string {
   switch (typeof v) {
     case "number":
@@ -29,7 +23,7 @@ export function vkey(v: unknown): string {
         return s;
       }
       const o = v as any;
-      if ("vt" in o && "v" in o) return vkey(o.v); // TaggedValue → payload key
+      if ("vt" in o && "v" in o) return vkey(o.v);
       if (Array.isArray(v)) return "[" + v.map(vkey).join(",") + "]";
       return "o" + JSON.stringify(v);
     }
@@ -38,7 +32,6 @@ export function vkey(v: unknown): string {
   }
 }
 
-/** Total-ish order over JS values (numbers, strings, Dates, booleans). */
 export function compareJs(a: unknown, b: unknown): number {
   if (a === b) return 0;
   const ta = rank(a), tb = rank(b);
@@ -80,14 +73,12 @@ function rank(v: unknown): number {
   }
 }
 
-/** A resolved sort key: which column, which direction, where empties go. */
 export interface SortKey {
   col: number;
   dir: 1 | -1;
   emptyLast: boolean;
 }
 
-/** Resolve order specs into {@link SortKey}s; `col` names each spec's column. */
 export function sortKeys<T extends { dir: "asc" | "desc"; empty?: "first" | "last" }>(
   order: readonly T[],
   col: (o: T) => number,
@@ -95,25 +86,12 @@ export function sortKeys<T extends { dir: "asc" | "desc"; empty?: "first" | "las
   return order.map((o) => ({ col: col(o), dir: o.dir === "desc" ? -1 : 1, emptyLast: o.empty !== "first" }));
 }
 
-/**
- * One sort key's verdict on two cells: direction applied, null/undefined
- * placed by `empty` in *both* directions. This is the comparison
- * {@link sortRows} sorts by, and the one `:after` seeks with — the cursor
- * boundary has to sit exactly where the sort put the row.
- */
 export function compareCells(x: unknown, y: unknown, k: SortKey): number {
   const ex = x === null || x === undefined;
   const ey = y === null || y === undefined;
   return ex || ey ? (ex && ey ? 0 : (ex ? 1 : -1) * (k.emptyLast ? 1 : -1)) : compareJs(x, y) * k.dir;
 }
 
-/**
- * Stable in-place sort. Mixed types get a deterministic total order (numbers
- * before strings before booleans before instants before the rest — see
- * {@link compareJs}); null/undefined are placed by `empty` in *both*
- * directions, so `:desc` does not float missing values to the top. Ties fall
- * through to the remaining keys and then to the incoming row order.
- */
 export function sortRows(rows: unknown[][], keys: readonly SortKey[]): void {
   rows.sort((a, b) => {
     for (const k of keys) {

@@ -1,13 +1,5 @@
 ---
-/**
- * Primary lockup: the rounded diamond mark + the wordmark from the supplied
- * brand reference — "ramose." in warm white and "ai" in orange.
- *
- * The mark lives in `src/assets/ramose-mark.svg`; Astro turns an imported SVG
- * into a component, so it inlines (and can be sized) rather than loading an
- * extra request. The outer diamond uses `currentColor`; the inset diamond
- * carries the orange gradient inside the SVG.
- */
+
 import RamoseMark from "../assets/ramose-mark.svg";
 ---
 
@@ -25,13 +17,12 @@ import RamoseMark from "../assets/ramose-mark.svg";
     color: var(--sl-color-white);
     min-width: 0;
   }
-  /* The mark renders as a child component, so reach it with :global —
-     scoped styles do not cross the component boundary. */
+
   .rg-mark {
     display: flex;
     flex-shrink: 0;
   }
-  /* Pin both axes so the square mark keeps its optical balance in the nav. */
+
   .rg-mark :global(svg) {
     display: block;
     width: 1.75rem;

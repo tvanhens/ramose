@@ -1,10 +1,3 @@
-/**
- * Read-authorization expression constructors (#406).
- *
- * `all` / `any` / `not` / `eq` / `contains` / `hasClass` / `allow` / `deny`
- * produce authoring values. Compile lowers them into {@link import("../expr.ts").RelativeAuthorizationExpr}.
- */
-
 import {
   isAuthPath,
   isJsonScalar,

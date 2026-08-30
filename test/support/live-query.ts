@@ -1,9 +1,3 @@
-/**
- * Thin live-query consumer for tests. Reads NDJSON `{ added, retracted }`
- * frames from a real Response body. Not a production frontend and not a
- * transport peer.
- */
-
 import { parseJson, stringifyJson } from "../../packages/ramose/src/internal/core/json.ts";
 
 export type LiveQueryDiff = {
@@ -11,23 +5,12 @@ export type LiveQueryDiff = {
   readonly retracted: readonly unknown[];
 };
 
-/**
- * A live-query response, plus the one escape hatch a stalled read needs.
- *
- * Abandoning `iterator.next()` is not enough to unstick a stalled stream: the
- * read stays pending inside the generator, so a later `iterator.return()`
- * queues behind it and cleanup hangs. Cancelling the body reader settles the
- * pending read, which lets the generator's own `finally` run and the queued
- * `return()` resolve. `closeObservedStream` in `../support/stream.ts` is the
- * consumer of this.
- */
 export type ObservedLiveStream =
   & AsyncGenerator<LiveQueryDiff, void, undefined>
   & { readonly cancelTransport: () => Promise<void> };
 
 export function readLiveNdjson(response: Response): ObservedLiveStream {
-  // Assigned once the generator body starts; until the first read there is
-  // nothing pending that could need settling.
+
   let cancelReader: () => Promise<void> = async () => {};
   const diffs = (async function* (): AsyncGenerator<
     LiveQueryDiff,
@@ -40,9 +23,7 @@ export function readLiveNdjson(response: Response): ObservedLiveStream {
     cancelReader = async () => {
       try {
         await reader.cancel();
-      } catch {
-        // A stalled or already-errored reader needs no further cancellation.
-      }
+      } catch {}
     };
     const decoder = new TextDecoder();
     let buffer = "";

@@ -1,13 +1,4 @@
 /**
- * The synchronization state one client (or one of its databases) is in.
- *
- * Deliberately coarse and deliberately opaque: it says what an application can
- * do right now, never how the protocol got there. Revisions, coverage,
- * transport frames, and physical database names are not public API, so nothing
- * here can carry one.
- */
-
-/**
  * - `idle` — nothing has been observed yet, so nothing synchronizes. This is
  *   what a freshly constructed client reports; constructing handles is inert.
  * - `connecting` — an activation is in flight and no local value is readable.
@@ -39,12 +30,6 @@ export type SyncStatus =
   | "authentication-required"
   | "closed";
 
-/**
- * One published synchronization state.
- *
- * A frozen singleton per status, so `getSnapshot()` identity changes exactly
- * when the status does and an adapter can compare with `===`.
- */
 export type SyncState = {
   readonly status: SyncStatus;
 };
@@ -64,16 +49,6 @@ const STATES: Readonly<Record<SyncStatus, SyncState>> = Object.freeze({
 
 export const syncState = (status: SyncStatus): SyncState => STATES[status];
 
-/**
- * Severity order for the per-client aggregate, most severe first.
- *
- * A client is only as synchronized as its least synchronized activated
- * database: one database that cannot be read at all is the fact an application
- * has to react to, and a `live` sibling does not soften it. `closed` leads
- * because a database whose session was closed under it is terminal — nothing
- * reactivates it, so reporting the client as healthy would be a lie. `idle` is
- * absent because it describes the *absence* of activations rather than one.
- */
 const SEVERITY: readonly SyncStatus[] = Object.freeze([
   "closed",
   "update-required",
@@ -84,7 +59,6 @@ const SEVERITY: readonly SyncStatus[] = Object.freeze([
   "live",
 ]);
 
-/** The aggregate of every activated database, or `idle` when there are none. */
 export const aggregateSyncStatus = (
   statuses: Iterable<SyncStatus>,
 ): SyncStatus => {

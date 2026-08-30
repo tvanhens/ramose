@@ -1,17 +1,3 @@
-/**
- * The catalog descriptor tables an authorized *read* is derived from.
- *
- * Extracted from the deployment assembly so both sides of the read-compatibility
- * agreement can produce them from one implementation: the server folds them into
- * the installed catalog unit, and #477's browser client derives its activation
- * `readCompatibilityHash` from the very same walk over the very same authored
- * `Schema`. A second copy on the client would be a hash that drifts silently and
- * fails every activation with `update-required`.
- *
- * These tables carry no deployment, policy, or operation identity: operations
- * are supplied by the caller, and {@link catalogReadTables} passes none.
- */
-
 import { traitDefinitionOf, type TraitLike } from "../../db/Binding.ts";
 import type { AnyEntity } from "../../db/Entity.ts";
 import { documentationOf } from "../../db/documentation.ts";
@@ -26,7 +12,6 @@ import type { CatalogDescriptor, FieldRefTarget } from "./catalog.ts";
 import { InvalidIR } from "./failures.ts";
 import { CatalogId, EntityId, FieldId, type OwnerRef, TraitId } from "./identities.ts";
 
-/** Everything one catalog's authorized read is derived from. */
 export type CatalogReadTables = Omit<
   CatalogDescriptor,
   "database" | "version" | "fingerprint"
@@ -111,11 +96,6 @@ const ownFields = (
   return fields;
 };
 
-/**
- * Every entity one definition reaches, including the ones only its operations
- * name. Assembly and the client must walk the same closure or their tables
- * would describe different catalogs.
- */
 export const completeSchema = (definition: CatalogDefinition): AnySchema => {
   const entities: Record<string, AnyEntity> = {};
   for (const reachable of collectDefinitionEntities(definition)) {
@@ -179,12 +159,6 @@ export const descriptorTables = (
   };
 };
 
-/**
- * The read tables of one authored catalog definition, with no operations.
- *
- * Read compatibility deliberately excludes operations, so the client never has
- * to lower them to agree with the server on the hash.
- */
 export const catalogReadTables = (
   definition: CatalogDefinition,
 ): CatalogReadTables =>

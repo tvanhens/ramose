@@ -1,8 +1,3 @@
-/**
- * Traits: descriptor composition, deployed type-to-trait membership, and
- * required-field validation (issue #460).
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -92,7 +87,7 @@ describe("Trait() / Entity() composition", () => {
         "documentedOverride",
         { label: string({ doc: "Entity override." }) },
         {
-          // @ts-expect-error composed fields cannot be overridden by an entity
+          // @ts-expect-error
           traits: [Documented],
         },
       )
@@ -139,7 +134,7 @@ describe("Trait() / Entity() composition", () => {
     const Other = Trait("labeled", { tag: string() });
     expect(() =>
       Entity("clash", { title: string() }, {
-        // @ts-expect-error conflicting flattened field names
+        // @ts-expect-error
         traits: [Taggable, Other],
       }),
     ).toThrow(/conflicting field "tag" — :taggable\/tag vs :labeled\/tag/);

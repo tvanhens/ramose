@@ -1,11 +1,3 @@
-/**
- * Owned Ramose peers for the local integration stack.
- *
- * Each Server has its own storage and Worker logical ids so they do not
- * collide. Auth peers share the checked-in JWKS; every data plane is
- * fail-closed until verified JWT (#412) + catalog + filtered `Db` (#421/#423).
- */
-
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Ramose from "ramose";
 import { AUD, ISS, JWKS } from "./auth-keys.ts";
@@ -28,7 +20,6 @@ const jwtAuth = () =>
     aud: AUD,
   }) satisfies Ramose.ServerAuth;
 
-/** Empty registry — `GET /health` lists `[]`. */
 export const Empty = Ramose.Server("Empty", {
   peer: "EmptyPeer",
   storage: "EmptyStore",
@@ -36,7 +27,6 @@ export const Empty = Ramose.Server("Empty", {
   env: TEST_HOOKS_ENV,
 });
 
-/** Extra peer — no seed-token credential. */
 export const Token = Ramose.Server("Token", {
   peer: "TokenPeer",
   storage: "TokenStore",
@@ -44,7 +34,6 @@ export const Token = Ramose.Server("Token", {
   env: TEST_HOOKS_ENV,
 });
 
-/** Real-stack transactor/indexer fixture with small, deterministic bounds. */
 export const TransactorTest = Ramose.Server("TransactorTest", {
   peer: "TransactorTestPeer",
   storage: "TransactorTestStore",
@@ -60,7 +49,6 @@ export const TransactorTest = Ramose.Server("TransactorTest", {
   },
 });
 
-/** JWT verifier bindings reserved for #412. Data plane is still 401. */
 export const Policy = Ramose.Server("Policy", {
   peer: "PolicyPeer",
   storage: "PolicyStore",
@@ -72,7 +60,6 @@ export const Policy = Ramose.Server("Policy", {
   env: TEST_HOOKS_ENV,
 });
 
-/** Same fail-closed data plane, no anonymous class leftover. */
 export const PolicyClosed = Ramose.Server("PolicyClosed", {
   peer: "PolicyClosedPeer",
   storage: "PolicyClosedStore",
@@ -81,7 +68,6 @@ export const PolicyClosed = Ramose.Server("PolicyClosed", {
   env: TEST_HOOKS_ENV,
 });
 
-/** Same fail-closed data plane as Policy. */
 export const PolicySchema = Ramose.Server("PolicySchema", {
   peer: "PolicySchemaPeer",
   storage: "PolicySchemaStore",
@@ -90,7 +76,6 @@ export const PolicySchema = Ramose.Server("PolicySchema", {
   env: TEST_HOOKS_ENV,
 });
 
-/** Exact deployed-catalog native operation boundary (#417). */
 export const NativeOperations = Ramose.Server("NativeOperations", {
   peer: "NativeOperationsPeer",
   storage: "NativeOperationsStore",
@@ -99,16 +84,6 @@ export const NativeOperations = Ramose.Server("NativeOperations", {
   env: TEST_HOOKS_ENV,
 });
 
-/**
- * Same operation catalog under a query budget of one cell.
- *
- * The MCP kernel keeps a field the caller can never read off the budgeted
- * query path entirely, and after empty projections collapse to the sealed
- * answer the *only* remaining way to observe that is the failure mode: a
- * visible field aborts on budget while a hidden or unknown one still answers
- * with the sealed empty. That needs its own peer, since the budget is per
- * Worker and every other suite here expects the default.
- */
 export const McpBudget = Ramose.Server("McpBudget", {
   peer: "McpBudgetPeer",
   storage: "McpBudgetStore",
@@ -117,7 +92,6 @@ export const McpBudget = Ramose.Server("McpBudget", {
   env: { ...TEST_HOOKS_ENV, RAMOSE_QUERY_MAX_CELLS: "1" },
 });
 
-/** Authenticated two-level Graph routing and dynamic provisioning (#325). */
 export const GraphPaths = Ramose.Server("GraphPaths", {
   peer: "GraphPathsPeer",
   storage: "GraphPathsStore",
@@ -126,7 +100,6 @@ export const GraphPaths = Ramose.Server("GraphPaths", {
   env: TEST_HOOKS_ENV,
 });
 
-/** Required black-box filtered-Db conformance gate (#422). */
 export const Conformance = Ramose.Server("Conformance", {
   peer: "ConformancePeer",
   storage: "ConformanceStore",
@@ -135,7 +108,6 @@ export const Conformance = Ramose.Server("Conformance", {
   env: TEST_HOOKS_ENV,
 });
 
-/** Catalog seed is closed until authorized catalog publication. */
 export const Seeded = Ramose.Server("Seeded", {
   peer: "SeededPeer",
   storage: "SeededStore",
@@ -143,15 +115,10 @@ export const Seeded = Ramose.Server("Seeded", {
   env: TEST_HOOKS_ENV,
 });
 
-/** Issuer Worker the JWKS service binding dispatches through. */
 export const Jwks = Cloudflare.Worker("Jwks", {
   main: import.meta.resolve("./jwks.ts"),
 });
 
-/**
- * Peer whose keys come from a sibling Worker. `jwksUrl` is a dummy
- * host — without the binding a local `fetch` of it 401s.
- */
 export const JwksBound = Ramose.Server("JwksBound", {
   peer: "JwksBoundPeer",
   storage: "JwksBoundStore",
@@ -165,7 +132,6 @@ export const JwksBound = Ramose.Server("JwksBound", {
   env: { JWKS: Jwks, ...TEST_HOOKS_ENV },
 });
 
-/** Same dummy JWKS URL, no service binding — tokens 401. */
 export const JwksUrlOnly = Ramose.Server("JwksUrlOnly", {
   peer: "JwksUrlOnlyPeer",
   storage: "JwksUrlOnlyStore",

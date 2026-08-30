@@ -144,19 +144,18 @@ describe("opaque replication identities", () => {
     }
     expect(new Set(baseline.graphLineage).size).toBe(2);
 
-    // Path text never reaches the lineage; the entities do.
     expect((await make({
       path: { ...nested(), path: ["organizations", "renamed", "boards", "renamed"] },
     })).graphLineage).toEqual(baseline.graphLineage);
     const recreated = await make({ path: nested(42, 99) });
     expect(recreated.graphLineage[0]).toBe(baseline.graphLineage[0]);
     expect(recreated.graphLineage[1]).not.toBe(baseline.graphLineage[1]);
-    // Chaining means the same leaf entity under another parent is another value.
+
     expect((await make({ path: nested(98, 43) })).graphLineage[1])
       .not.toBe(baseline.graphLineage[1]);
     expect((await make({ path: nested(98, 43) })).graphLineage[0])
       .not.toBe(baseline.graphLineage[0]);
-    // A different sealing root produces unrelated lineage values.
+
     expect((await makeReplicationIdentity({
       sealing: {
         keyId: "bbbbbbbbbbbbbbbbbbbbbb",
@@ -182,8 +181,7 @@ describe("opaque replication identities", () => {
         database: DatabaseId.make("child-db"),
       }),
     );
-    // The #475 contract: a compatible read-view, catalog, deployment, or token
-    // refresh preserves a queued target; a different database does not.
+
     const token = await sealEntityId(sealing, entityIdScopeOf(identity), 42);
     const redeployed = await make({
       caller: caller(2_100_000_000),

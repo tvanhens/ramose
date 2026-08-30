@@ -5,7 +5,6 @@ export interface BrowserFixture {
   readonly uniqueId: string;
 }
 
-/** Ordinary per-test browser setup shared by later real-browser suites. */
 export const browserTest = baseTest.extend<{ browser: BrowserFixture }>({
   browser: async ({}, use) => {
     const root = document.createElement("div");

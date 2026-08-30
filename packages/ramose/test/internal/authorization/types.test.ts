@@ -1,15 +1,4 @@
-/**
- * Type-level fixtures for the authorization identity / IR vocabulary.
- *
- * `bun run typecheck` compiles this file. A mismatch turns `Expect<Equal<…>>`
- * into a type error, or leaves a `@ts-expect-error` unused.
- */
-
 // @effect-diagnostics unnecessaryTypeofType:off
-// `Expect<Equal<X, typeof X.Type>>` is the assertion: it pins the
-// hand-written branded type to the one the schema derives. Rewriting
-// `typeof X.Type` to `X` as the rule suggests would collapse each of
-// these to `Equal<X, X>` — vacuously true, and testing nothing.
 
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
@@ -101,13 +90,13 @@ import {
 } from "./fixtures.ts";
 import { operationMetadata } from "./operation-support.ts";
 
-// @ts-expect-error — not a public package export yet
+// @ts-expect-error
 import type { PolicyTemplateIR as _PublicTemplate } from "ramose";
-// @ts-expect-error — not a public package export yet
+// @ts-expect-error
 import type { InstalledAuthorizationIR as _PublicInstalled } from "ramose/db";
-// @ts-expect-error — not a public package export yet
+// @ts-expect-error
 import type { InstalledCatalogUnit as _PublicCatalogUnit } from "ramose";
-// @ts-expect-error — not a public package export yet
+// @ts-expect-error
 import type { InstalledCatalogUnit as _PublicCatalogUnitDb } from "ramose/db";
 
 type PublicKeys = keyof typeof import("ramose");
@@ -846,7 +835,7 @@ const _operationFixtures = () => {
     target: "required",
   });
 
-  // @ts-expect-error — owner cannot be omitted
+  // @ts-expect-error
   const noOwner: OperationIdType = {
     _tag: "OperationId",
     catalog,
@@ -854,7 +843,7 @@ const _operationFixtures = () => {
     target: "none",
   };
 
-  // @ts-expect-error — target cannot be omitted or inferred from owner
+  // @ts-expect-error
   const noTarget: OperationIdType = {
     _tag: "OperationId",
     catalog,
@@ -862,16 +851,16 @@ const _operationFixtures = () => {
     localName: "create",
   };
 
-  // @ts-expect-error — a template is not installed IR
+  // @ts-expect-error
   const asInstalled: InstalledAuthorizationIR = templateFixture;
 
-  // @ts-expect-error — structural document is not verified installed v1
+  // @ts-expect-error
   const structuralAsVerified: InstalledAuthorizationIRV2 = installedFixture;
 
-  // @ts-expect-error — structural catalog unit is not verified installed catalog unit v2
+  // @ts-expect-error
   const structuralUnitAsVerified: InstalledCatalogUnitV2 = catalogUnitFixture;
 
-  // @ts-expect-error — installed IR is not a template
+  // @ts-expect-error
   const asTemplate: PolicyTemplateIR = installedFixture;
 
   const boundFixture = {
@@ -895,13 +884,13 @@ const _operationFixtures = () => {
     version: VALIDATED_AUTHORIZATION_IR_VERSION,
   } satisfies ValidatedAuthorizationIR;
 
-  // @ts-expect-error — a bound intermediate is not installed IR
+  // @ts-expect-error
   const boundAsInstalled: InstalledAuthorizationIR = boundFixture;
 
-  // @ts-expect-error — a validated intermediate is not installed IR
+  // @ts-expect-error
   const validatedAsInstalled: InstalledAuthorizationIR = validatedFixture;
 
-  // @ts-expect-error — a validated intermediate is not installed v1 IR
+  // @ts-expect-error
   const validatedAsInstalledV2: InstalledAuthorizationIRV2 = validatedFixture;
 
   const unhashedTables: UnhashedInstalledTables = {
@@ -914,20 +903,20 @@ const _operationFixtures = () => {
     decisions: { entities: [], traits: [], fields: [], operations: [] },
     accessPlans: [],
   };
-  // @ts-expect-error — unhashed tables are not runtime-acceptable installed IR
+  // @ts-expect-error
   const unhashedAsInstalled: InstalledAuthorizationIRV2 = unhashedTables;
 
-  // @ts-expect-error — a bound intermediate is not validated IR
+  // @ts-expect-error
   const boundAsValidated: ValidatedAuthorizationIR = boundFixture;
 
-  // @ts-expect-error — a template is not a bound intermediate
+  // @ts-expect-error
   const templateAsBound: BoundAuthorizationIR = templateFixture;
 
   const partialBound: Pick<BoundAuthorizationIR, "rules" | "decisions"> = {
     rules: [],
     decisions: { entities: [], traits: [], fields: [], operations: [] },
   };
-  // @ts-expect-error — a partial bound result is not installed IR
+  // @ts-expect-error
   const partialAsInstalled: InstalledAuthorizationIR = partialBound;
 
   const ownerHop: FieldDescriptor = {
@@ -940,7 +929,7 @@ const _operationFixtures = () => {
     owned: false,
   };
 
-  // @ts-expect-error — ref fields must name the referenced entity/trait
+  // @ts-expect-error
   const ownerWithoutTarget: FieldDescriptor = {
     id: FieldId.make({ catalog, owner: issueOwner, localName: "owner" }),
     valueType: "ref",
@@ -957,7 +946,7 @@ const _operationFixtures = () => {
     optional: false as const,
     owned: false as const,
   };
-  // @ts-expect-error — index is distinct from uniqueness and is required
+  // @ts-expect-error
   const missingIndex: FieldDescriptor = unindexed;
 
   const nestedLabels: OperationInputFieldDescriptor = {
@@ -984,10 +973,10 @@ const _operationFixtures = () => {
     cardinality: "many",
     optional: false,
   };
-  // @ts-expect-error — nested input is not a single storage scalar
+  // @ts-expect-error
   const flattenedAsInput: OperationInputFieldDescriptor = flattenedLabels;
 
-  // @ts-expect-error — Present cannot hold undefined
+  // @ts-expect-error
   const presentUndefined = Present(undefined);
 
   const presentInstant: PresentType<Date> = Present(new Date(0));
@@ -1001,18 +990,18 @@ const _operationFixtures = () => {
   const fieldsOnlyInput = {
     fields: [] as const,
   };
-  // @ts-expect-error — top-level input is a shape, not a bare field map
+  // @ts-expect-error
   const asTopLevel: OperationInputShape = fieldsOnlyInput;
 
   const claimKeys = ["teams"] as const;
-  // @ts-expect-error — claim vocabulary stores shapes, not bare keys
+  // @ts-expect-error
   const asClaims: ClaimVocabulary = claimKeys;
 
   const bindWithoutDb = {
     descriptor: catalogDescriptor,
     template: templateFixture,
   };
-  // @ts-expect-error — binding names the target database
+  // @ts-expect-error
   const asBind: CatalogBindingInput = bindWithoutDb;
 
   return {
@@ -1089,7 +1078,7 @@ test("authorization type fixtures compile", () => {
     new AuthorizationBudgetExceeded({ message: "over", spent: 2, limit: 1 })._tag,
   ).toBe("AuthorizationBudgetExceeded");
   expect(new AuthorizationDenied()._tag).toBe("AuthorizationDenied");
-  // @ts-expect-error — denial carries no diagnostic payload
+  // @ts-expect-error
   new AuthorizationDenied({ message: "exists" });
   expect(Object.getPrototypeOf(templateFixture)).toBe(Object.prototype);
   expect(Object.getPrototypeOf(installedFixture)).toBe(Object.prototype);

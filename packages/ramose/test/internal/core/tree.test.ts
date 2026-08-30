@@ -41,7 +41,7 @@ function randomPrefix(r: () => number, index: IndexId, ds: readonly Datom[]): Pr
       p.v = d.v;
     } else p[k] = (d as any)[k];
   }
-  // sometimes perturb so the prefix matches nothing
+
   if (r() < 0.2 && depth > 0) {
     if (p.e !== undefined) p.e = 10_000 + randInt(r, 0, 10);
     else if (p.a !== undefined) p.a = 999;
@@ -72,7 +72,7 @@ describe("tree build + scan", () => {
         if (expected.length) expect(datomEquals(first!, expected[0])).toBe(true);
         else expect(first).toBeUndefined();
         const est = await estimateCount(store, index, root, p);
-        expect(est).toBe(expected.length); // exact when all leaves are resident
+        expect(est).toBe(expected.length);
       }
     }
   });
@@ -109,7 +109,7 @@ describe("tree build + scan", () => {
     const expected = sorted.filter((d) => d.e === sorted[500].e);
     expect(got.length).toBe(expected.length);
     got.forEach((d, i) => expect(datomEquals(d, expected[i])).toBe(true));
-    // number of loads ≤ depth + touched leaves
+
     const depth = await treeDepth(store, root);
     expect(store.stats.loads - before).toBeLessThanOrEqual(depth + Math.ceil(expected.length / 100) + depth);
   });
@@ -123,7 +123,7 @@ describe("tree merge (structural sharing)", () => {
       const store = new MemStore();
       const root = await buildTree(store, index, base, { leafSize: 32, fanout: 8 });
       const objectsBefore = store.stats.objects;
-      // small novelty touching few leaves: pick one entity range
+
       const nov = sortDedup(index, randDatoms(r, 20, { maxE: 300, maxA: 6, maxT: 20 }).map((d) => ({ ...d, t: 21 + randInt(r, 0, 5) })));
       const newRoot = await mergeTree(store, index, root, nov, { leafSize: 32, fanout: 8 });
       const expected = sortDedup(index, base.concat(nov));
@@ -133,16 +133,16 @@ describe("tree merge (structural sharing)", () => {
         if (!datomEquals(d, expected[i])) throw new Error(`mismatch at ${i} in index ${index}`);
       });
       expect(newRoot.count).toBe(expected.length);
-      // old root still intact
+
       const old = await collect(store, index, root, {});
       expect(old.length).toBe(base.length);
-      // structural sharing: new objects ≈ touched leaves × depth, far fewer than a rebuild
+
       const written = store.stats.objects - objectsBefore;
       const depth = await treeDepth(store, newRoot);
       expect(written).toBeLessThanOrEqual(nov.length * depth + depth);
       const total = (await reachable(store, newRoot)).size;
       expect(written).toBeLessThan(total / 2);
-      // exact count: touched leaves + their ancestor dirs (no leaf splits at this novelty size)
+
       const shared = [...(await reachable(store, root))].filter((h) => (store.peek(h) !== undefined)).length;
       expect(shared).toBeGreaterThan(0);
     }
@@ -175,7 +175,7 @@ describe("tree merge (structural sharing)", () => {
     expect(got.length).toBe(all.length);
     got.forEach((d, i) => expect(datomEquals(d, all[i])).toBe(true));
     expect(await treeDepth(store, root)).toBeGreaterThanOrEqual(3);
-    // point lookups after many merges
+
     for (let k = 0; k < 100; k++) {
       const d = all[randInt(r, 0, all.length - 1)];
       const got = await collect(store, Index.EAVT, root, { e: d.e, a: d.a });
@@ -190,14 +190,14 @@ describe("tree merge (structural sharing)", () => {
     const store = new MemStore();
     const root = await buildTree(store, Index.EAVT, base, { leafSize: 200, fanout: 16 });
     const before = store.stats.objects;
-    // delta: 5 datoms for one entity → 1 leaf + ancestors
+
     const e = base[20_000].e;
     const nov = sortDedup(Index.EAVT, [1, 2, 3, 4, 5].map((i) => ({ e, a: 20 + i, vt: ValueTag.Long, v: i, t: 101, op: true } as Datom)));
     const newRoot = await mergeTree(store, Index.EAVT, root, nov, { leafSize: 200, fanout: 16 });
     const depth = await treeDepth(store, newRoot);
     const written = store.stats.objects - before;
     expect(written).toBeGreaterThan(0);
-    expect(written).toBeLessThanOrEqual(2 * depth); // one or two adjacent leaves + their ancestors
+    expect(written).toBeLessThanOrEqual(2 * depth);
     expect(newRoot.count).toBe(base.length + 5);
   });
 
