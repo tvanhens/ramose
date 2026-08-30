@@ -21,8 +21,6 @@ export type MutationEndpoint = {
   readonly database: string;
   readonly graphPath: readonly string[];
   readonly credential: string;
-  readonly catalog: string;
-  readonly unitHash: string;
 };
 
 export type MutationEndpointResolver = (
@@ -105,11 +103,9 @@ export const buildMutationRequest = (
 ): MutationRequest => Object.freeze({
   endpoint,
   body: Object.freeze({
-    catalog: endpoint.catalog,
-    unitHash: endpoint.unitHash,
     ...(endpoint.graphPath.length === 0
       ? {}
-      : { path: [...endpoint.graphPath] }),
+      : { at: [...endpoint.graphPath] }),
     invocationId: record.invocation,
     operationVersion: record.operationVersion,
     operation: {

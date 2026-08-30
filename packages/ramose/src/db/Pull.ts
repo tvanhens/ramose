@@ -988,6 +988,62 @@ export const pullReshapeIdentity = (pattern: unknown): unknown => {
   });
 };
 
+const mapWildcardEntityIds = (
+  value: unknown,
+  map: (eid: number) => unknown,
+): unknown => {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => mapWildcardEntityIds(item, map));
+  }
+  const row = value as Record<string, unknown>;
+  let out: Record<string, unknown> | undefined;
+  for (const [key, cell] of Object.entries(row)) {
+    const mapped = key === ":db/id" && typeof cell === "number"
+      ? map(cell)
+      : mapWildcardEntityIds(cell, map);
+    if (mapped === cell) continue;
+    out ??= { ...row };
+    out[key] = mapped;
+  }
+  return out ?? row;
+};
+
+export const mapPullEntityIds = (
+  pattern: unknown,
+  result: unknown,
+  map: (eid: number) => unknown,
+): unknown => {
+  if (result === null || result === undefined) return result;
+  if (Array.isArray(result)) {
+    return result.map((item) => mapPullEntityIds(pattern, item, map));
+  }
+  if (typeof result !== "object") return result;
+  if (isAllShape(pattern) || Array.isArray(pattern) || isAgain(pattern)) {
+    return mapWildcardEntityIds(result, map);
+  }
+  const row = result as Record<string, unknown>;
+  let out: Record<string, unknown> | undefined;
+  const write = (key: string, value: unknown): void => {
+    out ??= { ...row };
+    out[key] = value;
+  };
+  const idKey = idKeyOf(pattern);
+  if (idKey !== undefined && typeof row[idKey] === "number") {
+    write(idKey, map(row[idKey] as number));
+  }
+  for (const [key, field] of Object.entries(fieldsOf(pattern))) {
+    if (key === idKey || !Object.hasOwn(row, key)) continue;
+    const nested = inspectPullField(field).nestedPattern;
+    const child = isAgain(nested) ? pattern : nested;
+    const mapped = child === undefined
+      ? mapWildcardEntityIds(row[key], map)
+      : mapPullEntityIds(child, row[key], map);
+    if (mapped !== row[key]) write(key, mapped);
+  }
+  return out ?? row;
+};
+
 export const reshapePullResult = (pattern: unknown, result: unknown): unknown => {
   if (result === null || result === undefined) return null;
   if (isAllShape(pattern) || Array.isArray(pattern)) return result;

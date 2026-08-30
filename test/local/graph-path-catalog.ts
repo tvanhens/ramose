@@ -309,9 +309,26 @@ const compatibilityDefinitions = await Effect.runPromise(assembleCatalogDefiniti
   root: graphPathCatalog,
   artifactHash: DigestHex.make("0".repeat(64)),
 }));
-const leafCompatibilityUnit = Result.getOrThrow(
-  compatibilityDefinitions.require(CatalogId.make("local-graph-leaf")),
-);
+const compatibilityUnit = (id: string) =>
+  Result.getOrThrow(compatibilityDefinitions.require(CatalogId.make(id)));
+
 export const graphPathLeafReadCompatibilityHash = await Effect.runPromise(
-  hashReadCompatibility(leafCompatibilityUnit.unit.catalog),
+  hashReadCompatibility(compatibilityUnit("local-graph-leaf").unit.catalog),
+);
+
+/** The catalog a `Workspace` Graph binds its child database to. */
+export const graphPathChildReadCompatibilityHash = await Effect.runPromise(
+  hashReadCompatibility(compatibilityUnit("local-graph-child").unit.catalog),
+);
+
+/**
+ * The *root* catalog's read-compatibility hash.
+ *
+ * What a client that installed the root catalog would send for any path. A
+ * Graph child binds a different catalog, so activating one with this hash is
+ * exactly the "client installed the wrong catalog for this database" case, and
+ * the server has to refuse it before any data-bearing frame.
+ */
+export const graphPathRootReadCompatibilityHash = await Effect.runPromise(
+  hashReadCompatibility(compatibilityUnit("local-graph-root").unit.catalog),
 );

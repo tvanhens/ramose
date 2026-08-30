@@ -58,7 +58,6 @@ const invoke = async (
   token,
   headers: { "content-type": "application/json" },
   body: JSON.stringify({
-    ...operationProof,
     invocationId,
     operation,
     input,
@@ -130,7 +129,7 @@ const invokeWith = async (
   method: "POST",
   token,
   headers: { "content-type": "application/json" },
-  body: JSON.stringify({ ...operationProof, ...body }),
+  body: JSON.stringify(body),
 });
 
 const unreadableEntityId = (
@@ -448,7 +447,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
             "content-type": "application/json",
           },
           body: JSON.stringify({
-            ...operationProof,
             invocationId,
             operation: {
               owner: { kind: "entity", name: "nativeItem" },
@@ -1825,8 +1823,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           database,
           graphPath: [] as readonly string[],
           credential: token,
-          catalog: operationProof.catalog,
-          unitHash: operationProof.unitHash,
         });
 
       const queued = (
@@ -1888,6 +1884,62 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         }
         throw new Error(`submission never left Retry: ${seen.join(" | ")}`);
       };
+
+      test("a root invocation queued offline carries no deployment identity and still commits", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-client-root-proof";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_root_proof");
+        const endpoint = endpointFor(base, database, token);
+        expect(endpoint.graphPath).toEqual([]);
+        const version = (await otherDeploymentVersions())
+          .get("nativeItem/createAllocating")!;
+        const ref = clientRef();
+        const record = queued(version, {
+          input: { title: "Queued offline at the root" },
+          allocations: [{ slot: "item", clientRef: ref }],
+        });
+
+        const substituted = substituteMutationRefs(record, new Map());
+        const request = buildMutationRequest(record, endpoint, substituted!);
+        for (const carrier of [JSON.stringify(record), JSON.stringify(request.body)]) {
+          expect(carrier).not.toContain(operationProof.unitHash);
+          expect(carrier).not.toContain('"unitHash"');
+        }
+        expect(Object.hasOwn(request.body, "catalog")).toBe(false);
+        expect(record.operation.catalog as string).toBe(operationProof.catalog);
+        expect(request.body.operationVersion).toBe(version);
+
+        const committed = (await submitUntilTerminal(record, endpoint))
+          .acknowledgement;
+        expect(committed._tag).toBe("Committed");
+        if (committed._tag !== "Committed") throw new Error("expected a commit");
+        expect(committed.mappings).toHaveLength(1);
+        expect(isEntityId(committed.mappings[0]!.entityId)).toBe(true);
+        const rows = await testAdmin(base, database, "/query", {
+          query:
+            '[:find ?e :where [?e :nativeItem/title "Queued offline at the root"]]',
+        });
+        expect(rows.body.result.length).toBe(1);
+
+        const supplied = await json(base, `/db/${database}/op`, {
+          method: "POST",
+          token,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ...operationProof,
+            invocationId: invocationId(),
+            operation: {
+              owner: { kind: "entity", name: "nativeItem" },
+              localName: "createAllocating",
+            },
+            operationVersion: version,
+            allocations: [{ slot: "item", clientRef: clientRef() }],
+            input: { title: "Named its own deployment" },
+          }),
+        });
+        expect(supplied.status).toBe(403);
+      });
 
       test("a queued create commits, and the lost-ack retry returns the identical mappings", async () => {
         const base = ctx.urls().nativeOperationsUrl;
@@ -2105,6 +2157,5 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         })).toEqual({ _tag: "Retry", reason: "unreachable" });
       });
     });
-
   });
 };

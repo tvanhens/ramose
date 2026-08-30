@@ -10,6 +10,8 @@ import {
   OneShotReadError,
   runOneShotRead,
   type AuthorizedGraphPathTarget,
+  type CatalogId,
+  type CatalogUnitHash,
   type DatabaseRouteDerivation,
   type ResolvedDatabaseRoute,
 } from "../internal/authorization/index.ts";
@@ -78,6 +80,7 @@ import {
   publicOperationResult,
 } from "./authorized-operation.ts";
 import {
+  deployedCatalogProof,
   deployedDatabaseCatalogBindings,
   deployedOperationCatalogs,
   type OperationCatalogs,
@@ -388,8 +391,8 @@ export const handle = (
       const caller = callerFromVerified(verified);
       const invoke = (
         database: string,
-        catalogKey: NonNullable<typeof parsed.catalogKey>,
-        unitHash: NonNullable<typeof parsed.unitHash>,
+        catalogKey: CatalogId,
+        unitHash: CatalogUnitHash,
         routeDerivation?: DatabaseRouteDerivation,
       ) => Effect.tryPromise({
         try: () => invokeAuthoritativeOperation(
@@ -421,10 +424,11 @@ export const handle = (
           stacks: env.RAMOSE_STAGE !== "prod",
         }),
       });
+      const rootProof = deployedCatalogProof(peer.operationCatalogs, db);
       const ack = parsed.path.length === 0
-        ? parsed.catalogKey === undefined || parsed.unitHash === undefined
+        ? rootProof === undefined
           ? yield* new Unauthorized({ status: 403 })
-          : yield* invoke(db, parsed.catalogKey, parsed.unitHash)
+          : yield* invoke(db, rootProof.catalogKey, rootProof.unitHash)
         : databaseBindings === undefined
           ? yield* new Unauthorized({ status: 403 })
           : yield* Effect.gen(function* () {

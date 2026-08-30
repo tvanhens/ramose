@@ -11,6 +11,7 @@ import { queryObservationKey } from "../client/database.ts";
 import type {
   Client,
   ClientDatabase,
+  ClientValue,
   Subscription,
   SyncState,
 } from "../client/index.ts";
@@ -91,7 +92,7 @@ const pendingOnServer = (): QueryState<never> => PENDING;
 export const useQuery = <Row, Out>(
   query: QueryObject<Row, Out>,
   database?: ClientDatabase,
-): QueryState<Out> => {
+): QueryState<ClientValue<Out>> => {
   const provided = useContext(ClientContext);
   const db = database ?? provided?.open();
   if (db === undefined) {
@@ -100,7 +101,7 @@ export const useQuery = <Row, Out>(
     );
   }
   const key = queryObservationKey(query);
-  const store = queryStore<Out>(db, key, () => db.observe(query));
+  const store = queryStore<ClientValue<Out>>(db, key, () => db.observe(query));
   return useSyncExternalStore(store.subscribe, store.getSnapshot, pendingOnServer);
 };
 

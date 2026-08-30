@@ -25,15 +25,18 @@ import {
   type ReplicationSessionSnapshot,
 } from "../internal/replication/session.ts";
 import { sameReplicationIdentity } from "../internal/replication/state.ts";
+import type { QueueProgress } from "../internal/replication/submission.ts";
 import type { IndexedDbReplicaStorage } from "../internal/replication/indexeddb.ts";
 import type { ClientCatalog } from "./catalog.ts";
 import {
   clientQueryFrom,
   GraphDatabaseHandle,
   type ClientQuery,
+  type ClientValue,
   type GraphAncestor,
   type GraphRegistry,
 } from "./graph.ts";
+import { mutationNamespace, type MutationContext, type MutationNamespace } from "./mutation.ts";
 import { Store, sameResult, type Subscription } from "./subscription.ts";
 import { syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -116,6 +119,7 @@ export type DatabaseContext = {
   readonly onSyncChange: () => void;
   readonly onConfirmed: (identity: ReplicationIdentity) => void;
   readonly onFenced: () => void;
+  readonly mutations: MutationContext;
 };
 
 const resumed = (
@@ -209,12 +213,45 @@ export interface ClientDatabase {
   };
   readonly observe: <Row, Out>(
     query: QueryObject<Row, Out>,
-  ) => QuerySubscription<Out>;
+  ) => QuerySubscription<ClientValue<Out>>;
+  readonly mutate: MutationNamespace;
   readonly sync: Subscription<SyncState>;
 }
 
+/**
+ * An activation failure whose cause decides a terminal state rather than
+ * `offline`: a refused credential is not an unreachable network, and a storage
+ * layer that will not open leaves no durable substrate to queue against.
+ */
+class ActivationFailed extends Error {
+  constructor(readonly status: SyncStatus, cause: unknown) {
+    super("ramose/client: activation failed", { cause });
+  }
+}
+
+const activationStep = async <A>(
+  status: SyncStatus,
+  run: () => Promise<A>,
+): Promise<A> => {
+  try {
+    return await run();
+  } catch (cause) {
+    throw new ActivationFailed(status, cause);
+  }
+};
+
 export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   readonly query = { from: clientQueryFrom(this) };
+  private mutations: MutationNamespace | undefined;
+
+  get mutate(): MutationNamespace {
+    this.mutations ??= mutationNamespace(
+      this.context.mutations,
+      this,
+      this.context.mutations.databaseOperations(),
+    );
+    return this.mutations;
+  }
   private readonly syncStore = new Store<SyncState>(syncState("idle"));
   readonly sync = this.syncStore.subscription;
   readonly binding: Subscription<unknown> = Object.freeze({
@@ -235,22 +272,31 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private releaseOverlay: (() => void) | undefined;
   private identity: ReplicationIdentity | undefined;
   private committed: Db | undefined;
+  private account: string | undefined;
   private handles: ReadonlyMap<string, number> = new Map();
   private reverse: Map<number, string> | undefined;
+  private speculative: ReadonlyMap<number, string> = new Map();
   private viewValue: Db | undefined;
   private viewGeneration = 0;
   private lastSession: ReplicationSessionSnapshot | undefined;
   private stale = true;
   private updateRequired = false;
+  private queueUpdateRequired = false;
   private closed = false;
   private generation = 0;
 
   constructor(private readonly context: DatabaseContext) {}
 
-  observe<Row, Out>(query: QueryObject<Row, Out>): QuerySubscription<Out> {
+  observe<Row, Out>(
+    query: QueryObject<Row, Out>,
+  ): QuerySubscription<ClientValue<Out>> {
     this.context.assertLive("observe");
     const value = query as AnyQueryObject;
-    const lowered = lowerQueryObject(value);
+    const lowered = lowerQueryObject(value, {
+      entity: (eid) => this.entityId(eid),
+      resolveEntity: (id) =>
+        typeof id === "string" ? this.localIdOf(id) : undefined,
+    });
     const key = queryObservationKey(value);
     void this.activate();
     let last: QueryObserver | undefined = this.observers.get(key);
@@ -260,14 +306,14 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
         last = observer;
         return observer.subscribe(onChange);
       },
-      getSnapshot: (): QuerySnapshot<Out> => {
-        if (this.closed) return PENDING as QuerySnapshot<Out>;
+      getSnapshot: (): QuerySnapshot<ClientValue<Out>> => {
+        if (this.closed) return PENDING as QuerySnapshot<ClientValue<Out>>;
         const observer = this.observers.get(key);
         if (observer !== undefined) last = observer;
         return (last?.store.getSnapshot() ?? this.retired.get(key) ??
-          PENDING) as QuerySnapshot<Out>;
+          PENDING) as QuerySnapshot<ClientValue<Out>>;
       },
-    });
+    }) as QuerySubscription<ClientValue<Out>>;
   }
 
   private acquire(key: string, lowered: LoweredKernelQuery): QueryObserver {
@@ -284,6 +330,14 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.observers.set(key, observer);
     void observer.run(this.viewGeneration, this.viewValue, this.stale);
     return observer;
+  }
+
+  boundReconciler(): OptimisticReconciler | undefined {
+    return this.reconciler;
+  }
+
+  authenticatedBy(credential: { readonly cacheKey: string }): boolean {
+    return this.account !== undefined && this.account === credential.cacheKey;
   }
 
   graphPath(): readonly string[] {
@@ -310,6 +364,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       canonical,
       this.context.graph(),
       (operation) => this.context.assertLive(operation),
+      this.context.mutations,
     );
     this.graphChildren.set(key, child);
     return child;
@@ -317,23 +372,36 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
 
   activate(): Promise<void> {
     if (this.activation !== undefined) return this.activation;
-    this.activation = this.open().catch(() => {
-      this.publishStatus("offline");
+    this.activation = this.open().catch((cause: unknown) => {
+      const terminal = cause instanceof ActivationFailed ? cause.status : undefined;
+      if (terminal === undefined) {
+        this.publishStatus("offline");
+        return;
+      }
+      // Cleared so a later activation can retry: an expired token at boot is
+      // recoverable the moment the application signs in again, and the waiters
+      // are already settled by the fenced status published below.
+      this.activation = undefined;
+      this.publishStatus(terminal);
     });
     return this.activation;
   }
 
   private async open(): Promise<void> {
     this.publishStatus("connecting");
-    const [catalog, storage] = await Promise.all([
-      this.context.catalog(),
-      this.context.storage(),
-    ]);
+    const [catalog, storage] = await activationStep(
+      "closed",
+      () => Promise.all([this.context.catalog(), this.context.storage()]),
+    );
     if (!this.live()) return;
     this.catalog = catalog;
-    const credential = await this.context.credential();
+    const credential = await activationStep(
+      "authentication-required",
+      () => this.context.credential(),
+    );
     if (!this.live()) return;
     const lineage = this.context.graphLineage?.();
+    this.account = credential.cacheKey;
     const session = await ReplicationSession.open({
       activation: {
         server: this.context.server,
@@ -354,6 +422,38 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
     this.session = session;
     this.releaseSession = session.observe((snapshot) => this.accept(snapshot));
+  }
+
+  async reconcileSubmissions(
+    progress: readonly QueueProgress[],
+  ): Promise<void> {
+    const scope = this.confirmedScope();
+    const mine = scope === undefined ? undefined : replicaDatabaseKey(scope);
+    if (
+      !this.queueUpdateRequired && mine !== undefined &&
+      progress.some((entry) =>
+        entry.state._tag === "UpdateRequired" &&
+        replicaDatabaseKey(entry.receiver) === mine
+      )
+    ) {
+      this.queueUpdateRequired = true;
+      this.publishStatus("update-required");
+    }
+    const reconciler = this.reconciler;
+    if (reconciler === undefined || !this.live()) return;
+    const session = this.session;
+    await reconciler.reconcile(
+      progress,
+      session === undefined ? undefined : {
+        close: async () => {
+          this.releaseSession?.();
+          this.releaseSession = undefined;
+          this.session = undefined;
+          await session.close();
+        },
+      },
+    );
+    if (this.session === undefined && this.live()) await this.open();
   }
 
   private live(): boolean {
@@ -378,6 +478,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       }
       this.identity = identity;
       this.context.onConfirmed(identity);
+      this.context.mutations.submit(replicaDatabaseScopeOf(identity));
       void this.bindReconciler(identity).catch(() => undefined);
     }
     this.lastSession = snapshot;
@@ -401,6 +502,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.generation++;
     this.committed = undefined;
     this.forgetHandles();
+    this.forgetCredential();
     this.viewValue = undefined;
     this.viewGeneration = this.generation;
     this.releaseOverlay?.();
@@ -426,6 +528,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.generation++;
     this.committed = undefined;
     this.forgetHandles();
+    this.forgetCredential();
     this.viewValue = undefined;
     this.viewGeneration = this.generation;
     this.reconciler = undefined;
@@ -444,7 +547,9 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private statusOf(snapshot: ReplicationSessionSnapshot): SyncStatus {
     const status = readSessionSnapshot(snapshot).status;
     if (status === "authentication-required" || status === "closed") return status;
-    return this.updateRequired ? "update-required" : status;
+    return this.updateRequired || this.queueUpdateRequired
+      ? "update-required"
+      : status;
   }
 
   private publishStatus(status: SyncStatus): void {
@@ -476,15 +581,22 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     const reconciler = this.reconciler;
     const layers = reconciler?.snapshot().layers ?? emptyOverlayLayers;
     let view = committed;
+    let speculative = new Map<number, string>();
     if (committed !== undefined && reconciler !== undefined && layers.length > 0) {
       try {
-        view = (await reconciler.view(committed)).db;
+        const overlay = await reconciler.view(committed);
+        view = overlay.db;
+        for (const [handle, local] of overlay.speculative) {
+          speculative.set(local, handle);
+        }
       } catch {
         view = committed;
+        speculative = new Map();
       }
     }
     if (generation !== this.generation || this.closed) return;
     this.viewValue = view;
+    this.speculative = speculative;
     this.viewGeneration = generation;
     const stale = this.stale;
     for (const observer of this.observers.values()) {
@@ -531,9 +643,33 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     return { entity: (id) => this.handles.get(id) };
   }
 
+  private forgetCredential(): void {
+    this.account = undefined;
+  }
+
   private forgetHandles(): void {
     this.handles = new Map();
     this.reverse = undefined;
+    this.speculative = new Map();
+  }
+
+  private entityId(eid: number): string {
+    const handle = this.sealedHandleOf(eid);
+    if (handle !== undefined) return handle;
+    const speculative = this.speculative.get(eid);
+    if (speculative !== undefined) return speculative;
+    throw new Error(
+      "ramose/client: this row has no opaque identity in the current local value",
+    );
+  }
+
+  private localIdOf(id: string): number | undefined {
+    const committed = this.handles.get(id);
+    if (committed !== undefined) return committed;
+    for (const [local, handle] of this.speculative) {
+      if (handle === id) return local;
+    }
+    return undefined;
   }
 
   sealedHandleOf(eid: number): string | undefined {
@@ -584,6 +720,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.reconcilerPending = undefined;
     this.committed = undefined;
     this.forgetHandles();
+    this.forgetCredential();
     this.viewValue = undefined;
     for (const observer of this.observers.values()) {
       void observer.run(this.generation, undefined, true);

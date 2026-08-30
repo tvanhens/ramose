@@ -98,6 +98,22 @@ export const parseGraphPath = (
   return Result.succeed(Object.freeze(segments));
 };
 
+export const carriesCatalogProof = (
+  body: Record<string, unknown> | undefined,
+  headers: Headers,
+): boolean =>
+  (body !== undefined &&
+    (Object.hasOwn(body, "catalog") || Object.hasOwn(body, "unitHash"))) ||
+  headers.has(CATALOG_HEADER) || headers.has(UNIT_HASH_HEADER);
+
+export const refuseCatalogProof = (
+  body: Record<string, unknown> | undefined,
+  headers: Headers,
+): Result.Result<void, Unauthorized> =>
+  carriesCatalogProof(body, headers)
+    ? Result.fail(deny())
+    : Result.succeed(undefined);
+
 export const parseCatalogProofForPath = (
   path: readonly string[],
   body: Record<string, unknown> | undefined,
@@ -107,13 +123,7 @@ export const parseCatalogProofForPath = (
   Unauthorized
 > => {
   if (path.length === 0) return parseCatalogProof(body, headers);
-  if (
-    body !== undefined &&
-      (Object.hasOwn(body, "catalog") || Object.hasOwn(body, "unitHash")) ||
-    headers.has(CATALOG_HEADER) || headers.has(UNIT_HASH_HEADER)
-  ) {
-    return Result.fail(deny());
-  }
+  if (carriesCatalogProof(body, headers)) return Result.fail(deny());
   return Result.succeed({});
 };
 

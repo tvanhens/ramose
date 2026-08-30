@@ -1,9 +1,21 @@
 import { isCatalogDefinition, type CatalogDefinition } from "../Catalog.ts";
 import { IndexedDbReplicaStorage } from "../internal/replication/indexeddb.ts";
 import type { ReplicationIdentity } from "../internal/replication/protocol.ts";
-import { replicaScopeOf } from "../internal/replication/replica-lifecycle.ts";
+import {
+  replicaDatabaseKey,
+  replicaScopeOf,
+  type ReplicaDatabaseScope,
+} from "../internal/replication/replica-lifecycle.ts";
+import type { MutationEndpoint } from "../internal/replication/submission.ts";
 import { replicationActivationAddress } from "../internal/replication/transport.ts";
+import { completeSchema } from "../internal/authorization/read-tables.ts";
 import { installClientCatalog, type ClientCatalog } from "./catalog.ts";
+import {
+  installClientOperations,
+  type ClientOperations,
+} from "./operations.ts";
+import type { MutationContext } from "./mutation.ts";
+import { SubmissionLoop } from "./submission.ts";
 import {
   ClientClosedError,
   ClientConfigurationError,
@@ -14,7 +26,7 @@ import {
   type ClientDatabase,
   type DatabaseContext,
 } from "./database.ts";
-import { GraphRegistry } from "./graph.ts";
+import { fencedReceiver, GraphRegistry } from "./graph.ts";
 import { Store, type Subscription } from "./subscription.ts";
 import { aggregateSyncStatus, syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -68,6 +80,8 @@ class RamoseClient implements Client {
   private catalogBuild: Promise<ClientCatalog> | undefined;
   private storageHandle: Promise<IndexedDbReplicaStorage> | undefined;
   private confirmed: ReplicationIdentity | undefined;
+  private operations: ClientOperations | undefined;
+  private submissionLoop: SubmissionLoop | undefined;
   private terminal: "closed" | "cleared" | "fenced" | undefined;
   private clearing = false;
 
@@ -108,6 +122,74 @@ class RamoseClient implements Client {
       onFenced: () => {
         void this.terminate(this.clearing ? "cleared" : "fenced");
       },
+      mutations: this.mutationContext(),
+    };
+  }
+
+  private clientOperations(): ClientOperations {
+    this.operations ??= installClientOperations(
+      this.options.catalog,
+      completeSchema(this.options.catalog),
+    );
+    return this.operations;
+  }
+
+  private mutationContext(): MutationContext {
+    return {
+      databaseOperations: () => this.clientOperations().database,
+      catalog: () => this.catalog(),
+      storage: () => this.storage(),
+      assertLive: (operation) => this.assertLive(operation),
+      submit: (receiver) => this.submissions().request(receiver),
+      track: (_receiver, driver) => this.submissions().track(driver),
+    };
+  }
+
+  private closeSubmissions(): void {
+    this.submissionLoop?.close();
+  }
+
+  private submissions(): SubmissionLoop {
+    this.submissionLoop ??= new SubmissionLoop({
+      storage: () => this.storage(),
+      credential: () => this.credential(),
+      endpoint: (receiver, credential) => this.endpointFor(receiver, credential),
+      reconcile: async (receiver, progress) => {
+        await this.databaseFor(receiver)?.reconcileSubmissions(progress);
+      },
+      live: () => this.terminal === undefined,
+    });
+    return this.submissionLoop;
+  }
+
+  private databaseFor(
+    receiver: ReplicaDatabaseScope,
+  ): ClientDatabaseHandle | undefined {
+    const key = replicaDatabaseKey(receiver);
+    const candidates = [
+      ...(this.root === undefined ? [] : [this.root]),
+      ...(this.graph?.handles() ?? []),
+    ];
+    return candidates.find((handle) => {
+      const scope = handle.confirmedScope();
+      return scope !== undefined && replicaDatabaseKey(scope) === key;
+    });
+  }
+
+  private endpointFor(
+    receiver: ReplicaDatabaseScope,
+    credential: AuthCredential,
+  ): MutationEndpoint | undefined {
+    const handle = this.databaseFor(receiver);
+    if (handle === undefined) return undefined;
+    if (!handle.authenticatedBy(credential)) return undefined;
+    const fenced = fencedReceiver(handle.syncStatus());
+    if (fenced !== undefined) return undefined;
+    return {
+      origin: this.server,
+      database: this.options.root,
+      graphPath: handle.graphPath(),
+      credential: credential.token,
     };
   }
 
@@ -135,7 +217,10 @@ class RamoseClient implements Client {
   }
 
   private catalog(): Promise<ClientCatalog> {
-    this.catalogBuild ??= installClientCatalog(this.options.catalog);
+    this.catalogBuild ??= installClientCatalog(
+      this.options.catalog,
+      this.clientOperations().installed,
+    );
     return this.catalogBuild;
   }
 
@@ -223,6 +308,8 @@ class RamoseClient implements Client {
   ): Promise<void> {
     if (this.terminal !== undefined) return;
     this.terminal = reason;
+    this.closeSubmissions();
+    await this.submissionLoop?.settled();
     await this.graph?.close();
     await this.root?.close();
     await this.storageHandle?.then(

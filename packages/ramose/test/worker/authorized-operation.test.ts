@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import {
   CatalogId,
-  CatalogUnitHash,
   DatabaseId,
   type AuthoritativeOperationInvocation,
 } from "../../src/internal/authorization/index.ts";
@@ -60,7 +59,7 @@ describe("operation invocation transport", () => {
     });
   });
 
-  test("parses nested operation addresses without a caller catalog proof", async () => {
+  test("parses operation addresses, which never carry a caller catalog proof", async () => {
     const parsed = await Effect.runPromise(parseOperationRequest(new Request(
       "https://peer.test/db/root/op",
       {
@@ -78,21 +77,54 @@ describe("operation invocation transport", () => {
       },
     )));
     expect(parsed.path).toEqual(["acme", "design"]);
-    expect(parsed.catalogKey).toBeUndefined();
-    expect(parsed.unitHash).toBeUndefined();
+    expect(Object.hasOwn(parsed, "catalogKey")).toBe(false);
+    expect(Object.hasOwn(parsed, "unitHash")).toBe(false);
   });
 
-  test("retains exact proof for configured-root operations", async () => {
-    const catalogKey = CatalogId.make("root");
-    const unitHash = CatalogUnitHash.make("a".repeat(64));
+  test("refuses a caller-supplied catalog proof at every depth", async () => {
+    const supplied: readonly (readonly [string, Record<string, unknown>, HeadersInit])[] = [
+      ["root, in the body", { catalog: "root", unitHash: "a".repeat(64) }, {}],
+      ["nested, in the body", {
+        at: ["acme"],
+        catalog: "root",
+        unitHash: "a".repeat(64),
+      }, {}],
+      ["root, in the headers", {}, {
+        "x-ramose-catalog": "root",
+        "x-ramose-unit-hash": "a".repeat(64),
+      }],
+      ["root, malformed", { catalog: 7, unitHash: null }, {}],
+      ["root, half of one", { catalog: "root" }, {}],
+    ];
+    for (const [label, extra, headers] of supplied) {
+      const parsed = Effect.runPromise(parseOperationRequest(new Request(
+        "https://peer.test/db/root/op",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify({
+            ...extra,
+            operation: {
+              owner: { kind: "entity", name: "item" },
+              localName: "create",
+            },
+            invocationId: "root-invocation",
+            input: {},
+          }),
+        },
+      )));
+      await expect(parsed).rejects.toMatchObject({ status: 403 });
+      expect(label).toBeTruthy();
+    }
+  });
+
+  test("parses a configured-root operation that supplies no proof", async () => {
     const parsed = await Effect.runPromise(parseOperationRequest(new Request(
       "https://peer.test/db/root/op",
       {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          catalog: catalogKey,
-          unitHash,
           operation: {
             owner: { kind: "entity", name: "item" },
             localName: "create",
@@ -103,8 +135,7 @@ describe("operation invocation transport", () => {
       },
     )));
     expect(parsed.path).toEqual([]);
-    expect(parsed.catalogKey).toBe(catalogKey);
-    expect(parsed.unitHash).toBe(unitHash);
+    expect(parsed.invocationId).toBe("root-invocation");
   });
 
   test("requires one bounded caller invocation id", async () => {
@@ -114,8 +145,6 @@ describe("operation invocation transport", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          catalog: "root",
-          unitHash: "a".repeat(64),
           operation: {
             owner: { kind: "entity", name: "item" },
             localName: "create",

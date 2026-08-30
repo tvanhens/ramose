@@ -8,9 +8,22 @@ import {
   type AnyQueryObject,
 } from "../../packages/ramose/src/db/internal.ts";
 import {
+  CatalogId,
   DatabaseId,
+  DigestHex,
   deriveDynamicChildDatabaseId,
+  lowerOwnedOperations,
 } from "../../packages/ramose/src/internal/authorization/index.ts";
+import {
+  buildOutboxRecord,
+} from "../../packages/ramose/src/internal/replication/outbox.ts";
+import {
+  buildMutationRequest,
+  classifyMutationResponse,
+  substituteMutationRefs,
+} from "../../packages/ramose/src/internal/replication/submission.ts";
+import { submitMutation } from "../../packages/ramose/src/internal/replication/transport.ts";
+import { invocationId } from "../../packages/ramose/src/db/refs.ts";
 import {
   applyLiveDiffs,
   readLiveNdjson,
@@ -36,7 +49,10 @@ import {
   GateTagged,
   GateVisible,
   GRAPH_PATH_ROOT_DATABASE,
+  graphPathChildReadCompatibilityHash,
   graphPathLeafReadCompatibilityHash,
+  graphPathRootReadCompatibilityHash,
+  GraphPathLeafSchema,
   GraphPathRootSchema,
   PrivateWorkspace,
   Project,
@@ -104,7 +120,7 @@ const invoke = (
   retryPreResponse: true,
   headers: { "content-type": "application/json" },
   body: JSON.stringify({
-    ...(options.at === undefined ? graphPathRootProof : { at: options.at }),
+    ...(options.at === undefined ? {} : { at: options.at }),
     invocationId: crypto.randomUUID(),
     operation,
     input,
@@ -154,6 +170,7 @@ const nestedReplication = (
   token: string,
   at: readonly string[],
   resumeRevision?: string,
+  readCompatibilityHash: string = graphPathLeafReadCompatibilityHash,
 ): Promise<Response> => fetchPastProxyBlip(
   `${base.replace(/\/+$/, "")}/db/${GRAPH_PATH_ROOT_DATABASE}/replicate`,
   {
@@ -167,7 +184,7 @@ const nestedReplication = (
       protocol: 1,
       graphPath: at,
       scope: { type: "database" },
-      readCompatibilityHash: graphPathLeafReadCompatibilityHash,
+      readCompatibilityHash,
       ...(resumeRevision === undefined ? {} : { resumeRevision }),
     }),
   },
@@ -764,6 +781,143 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
       } finally {
         await closeObservedStream(resumed);
       }
+    });
+
+    test("an offline-queued child mutation reaches the child, not the root", async () => {
+      const base = ctx.urls().graphPathsUrl;
+      await installRoot(base);
+      const member = await signToken(GRAPH_PATH_ROOT_DATABASE, "member");
+      const suffix = crypto.randomUUID().slice(0, 8);
+      const workspaceName = `queued-${suffix}`;
+      const projectName = `queued-project-${suffix}`;
+      const text = `queued-note-${suffix}`;
+
+      const workspace = await invoke(base, member, {
+        owner: { kind: "entity", name: Workspace.ns },
+        localName: "create",
+      }, { name: workspaceName });
+      expect(workspace.status).toBe(200);
+      const project = await invoke(base, member, {
+        owner: { kind: "entity", name: Project.ns },
+        localName: "create",
+      }, { name: projectName }, { at: [workspaceName] });
+      expect(project.status).toBe(200);
+
+      const lowered = await Effect.runPromise(lowerOwnedOperations(
+        CatalogId.make("local-graph-leaf"),
+        GraphPathLeafSchema,
+        DigestHex.make("0".repeat(64)),
+      ));
+      const version = lowered.descriptors.find((descriptor) =>
+        descriptor.id.owner.name === "localNestedNote" &&
+        descriptor.id.localName === "create"
+      )!.version;
+
+      const record = buildOutboxRecord({
+        invocation: invocationId(),
+        receiver: {
+          server: "s".repeat(43),
+          principal: "p".repeat(43),
+          database: "d".repeat(43),
+        },
+        operation: {
+          catalog: "local-graph-leaf" as never,
+          owner: { kind: "entity", name: "localNestedNote" },
+          localName: "create",
+        },
+        operationVersion: version as never,
+        target: { type: "none" },
+        input: { text },
+        allocations: [],
+        inputRefs: [],
+        enqueuedAt: 1_700_000_000_000,
+      }, "scope", 1);
+
+      const substituted = substituteMutationRefs(record, new Map());
+      expect(substituted).toBeDefined();
+      const response = await submitMutation(buildMutationRequest(record, {
+        origin: new URL(base).origin,
+        database: GRAPH_PATH_ROOT_DATABASE,
+        graphPath: [workspaceName, projectName],
+        credential: member,
+      }, substituted!));
+      expect(classifyMutationResponse(record, response)._tag).toBe("Committed");
+
+      const notes = await nestedLive(base, member, [workspaceName, projectName]);
+      expect(notes.status).toBe(200);
+      const diffs = readLiveNdjson(notes)[Symbol.asyncIterator]();
+      try {
+        const first = await withTimeout(diffs.next(), 7_000, "queued child note");
+        expect(first.done).toBe(false);
+        expect(applyLiveDiffs([first.value!])).toContain(text);
+      } finally {
+        await closeObservedStream(diffs);
+      }
+    });
+
+    test("a child bound to another catalog is refused before any data", async () => {
+      const base = ctx.urls().graphPathsUrl;
+      await installRoot(base);
+      const member = await signToken(GRAPH_PATH_ROOT_DATABASE, "member");
+      const suffix = crypto.randomUUID().slice(0, 8);
+      const workspaceName = `foreign-catalog-${suffix}`;
+
+      const workspace = await invoke(base, member, {
+        owner: { kind: "entity", name: Workspace.ns },
+        localName: "create",
+      }, { name: workspaceName });
+      expect(workspace.status).toBe(200);
+      const project = await invoke(base, member, {
+        owner: { kind: "entity", name: Project.ns },
+        localName: "create",
+      }, { name: `project-${suffix}` }, { at: [workspaceName] });
+      expect(project.status).toBe(200);
+
+      const response = await nestedReplication(
+        base,
+        member,
+        [workspaceName],
+        undefined,
+        graphPathRootReadCompatibilityHash,
+      );
+
+      expect(response.status).toBe(409);
+      const frames = readReplicationNdjson(response)[Symbol.asyncIterator]();
+      try {
+        const first = await withTimeout(
+          frames.next(),
+          7_000,
+          "foreign-catalog activation",
+        );
+        expect(first.done).toBe(false);
+        expect(first.value?.frame).toEqual({
+          type: "TerminalError",
+          protocol: 1,
+          code: "update-required",
+        });
+        const next = await withTimeout(
+          frames.next(),
+          7_000,
+          "foreign-catalog stream end",
+        );
+        expect(next.done).toBe(true);
+        expect(first.value?.wire).not.toMatch(
+          /local-graph-child|local-graph-root|catalog|hash/i,
+        );
+      } finally {
+        await closeObservedStream(frames);
+      }
+
+      const compatible = await nestedReplication(
+        base,
+        member,
+        [workspaceName],
+        undefined,
+        graphPathChildReadCompatibilityHash,
+      );
+      expect(compatible.status).toBe(200);
+      const stream = readReplicationNdjson(compatible)[Symbol.asyncIterator]();
+      await closeObservedStream(stream);
     });
 
     test("keeps hidden graph facts out of discovery, paths, counts, and errors", async () => {

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type { OperationVersion } from "../../../src/internal/authorization/identities.ts";
+import { parseGraphPath } from "../../../src/worker/authorized-read.ts";
+import { parseOperationRequest } from "../../../src/worker/authorized-operation.ts";
 import {
   clientRef,
   invocationId,
@@ -58,8 +62,6 @@ const endpoint: MutationEndpoint = Object.freeze({
   database: "movies",
   graphPath: [],
   credential: "token",
-  catalog: "movies",
-  unitHash: "c".repeat(64),
 });
 
 const handles = (
@@ -140,30 +142,63 @@ describe("buildMutationRequest", () => {
       substituteMutationRefs(queued, new Map())!,
     );
     expect(request.body).toEqual({
-      catalog: "movies",
-      unitHash: "c".repeat(64),
       invocationId: queued.invocation,
       operationVersion: version,
       operation: { owner: { kind: "entity", name: "issue" }, localName: "create" },
       allocations: [{ slot: "item", clientRef: ref }],
       input: { title: "offline" },
     });
-
     expect(JSON.stringify(request.body)).not.toMatch(/run|source|bytecode/);
+    expect(Object.hasOwn(request.body, "catalog")).toBe(false);
+    expect(Object.hasOwn(request.body, "unitHash")).toBe(false);
   });
 
-  test("a nested receiver carries its graph path and a root one does not", () => {
+  test("every field of the body survives the worker's own parser", async () => {
+    const ref = clientRef();
+    const target = handle("T");
+    const queued = record({
+      target: { type: "entity", entityId: target },
+      input: { title: "offline", assignee: ref },
+      allocations: [{ slot: "item", clientRef: ref }],
+    });
+    const request = buildMutationRequest(
+      queued,
+      { ...endpoint, graphPath: ["org", "team"] },
+      substituteMutationRefs(queued, new Map())!,
+    );
+    const parsed = await Effect.runPromise(parseOperationRequest(
+      new Request(`${endpoint.origin}/db/${endpoint.database}/op`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request.body),
+      }),
+    ));
+
+    expect(parsed.path).toEqual(["org", "team"]);
+    expect(parsed.owner).toEqual({ kind: "entity", name: "issue" });
+    expect(parsed.localName).toBe("create");
+    expect(parsed.invocationId).toBe(queued.invocation);
+    expect(parsed.operationVersion).toBe(version);
+    expect(parsed.sealedTarget).toBe(target);
+    expect(parsed.target).toBeUndefined();
+    expect(parsed.allocations).toEqual([{ slot: "item", clientRef: ref }]);
+    expect(parsed.input).toEqual({ title: "offline", assignee: ref });
+  });
+
+  test("a nested receiver's path is the one the server actually parses", () => {
     const queued = record();
     const substituted = substituteMutationRefs(queued, new Map())!;
-    expect(buildMutationRequest(queued, endpoint, substituted).body)
-      .not.toHaveProperty("path");
-    expect(
-      buildMutationRequest(
-        queued,
-        { ...endpoint, graphPath: ["org", "team"] },
-        substituted,
-      ).body,
-    ).toMatchObject({ path: ["org", "team"] });
+    const root = buildMutationRequest(queued, endpoint, substituted).body;
+    const nested = buildMutationRequest(
+      queued,
+      { ...endpoint, graphPath: ["org", "team"] },
+      substituted,
+    ).body;
+
+    const search = new URLSearchParams();
+    expect(Result.getOrThrow(parseGraphPath(root, search))).toEqual([]);
+    expect(Result.getOrThrow(parseGraphPath(nested, search)))
+      .toEqual(["org", "team"]);
   });
 });
 
@@ -194,7 +229,6 @@ describe("classifyMutationResponse", () => {
   });
 
   test("a 200 without the durable completed receipt is not a commit", () => {
-
     const mappings = [{ clientRef: ref, entityId: handle("E") }];
     for (const receipt of [
       undefined,
@@ -210,7 +244,6 @@ describe("classifyMutationResponse", () => {
   });
 
   test("a commit that does not map every declared slot is never a commit", () => {
-
     for (const mappings of [
       undefined,
       [],
@@ -233,7 +266,6 @@ describe("classifyMutationResponse", () => {
   });
 
   test("a 200 whose result is absent is not a commit", () => {
-
     expect(classifyMutationResponse(plain, response(200, {
       receipt: completedReceipt(plain.invocation),
     }))).toEqual({ _tag: "Retry", reason: "malformed" });
@@ -296,7 +328,6 @@ describe("classifyMutationResponse", () => {
   });
 
   test("a refusal with no receipt of its own never removes durable work", () => {
-
     for (const status of [400, 401, 403] as const) {
       expect(classifyMutationResponse(plain, response(status, { error: "no" })))
         .toEqual({ _tag: "Retry", reason: "malformed" });
@@ -316,7 +347,6 @@ describe("classifyMutationResponse", () => {
   });
 
   test("a 409 code this build does not know stays queued", () => {
-
     expect(classifyMutationResponse(
       plain,
       response(409, { error: "request rejected", code: "invocation_paused" }),

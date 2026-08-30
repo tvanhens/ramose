@@ -101,6 +101,16 @@ describe("queryObservationKey", () => {
     expect(queryObservationKey(right)).toBe(queryObservationKey(left));
   });
 
+  test("keys a paged query that carries a cursor", () => {
+    const db = createClient(options()).open();
+    const first = db.query.from(Note).orderBy(Note.title).limit(1).after(null);
+    const cursor = { _tag: "Cursor", keys: ["a", "handle:1"] };
+    const next = db.query.from(Note).orderBy(Note.title).limit(1)
+      .after(cursor as never);
+    expect(queryObservationKey(first as never))
+      .not.toBe(queryObservationKey(next as never));
+  });
+
   test("separates questions whose answers are shaped differently", () => {
     const db = createClient(options()).open();
     const base = db.query.from(Note).orderBy(Note.title);

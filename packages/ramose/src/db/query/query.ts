@@ -21,6 +21,7 @@ import {
   isAgain,
   isAllShape,
   lowerPullPattern,
+  mapPullEntityIds,
   pullReshapeIdentity,
   reshapePullResult,
 } from "../Pull.ts";
@@ -94,6 +95,7 @@ export type BuiltOrder =
       readonly kind: "path";
       readonly path: readonly string[];
       readonly revs: readonly boolean[];
+      readonly ref: boolean;
       readonly dir: OrderDir;
       readonly empty: OrderEmpty;
     }
@@ -460,7 +462,7 @@ const orderKeyFromSelectColumn = (
       `ramose/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
     );
   }
-  return { kind: "path", path, revs: revsOf(carrier), dir, empty };
+  return { kind: "path", path, revs: revsOf(carrier), ref: isRefCarrier(carrier), dir, empty };
 };
 
 const resolveOrderKey = (
@@ -490,11 +492,21 @@ const resolveOrderKey = (
       `ramose/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
     );
   }
-  return { kind: "path", path, revs: revsOf(carrier), dir: st.dir, empty: st.empty };
+  return {
+    kind: "path",
+    path,
+    revs: revsOf(carrier),
+    ref: isRefCarrier(carrier),
+    dir: st.dir,
+    empty: st.empty,
+  };
 };
 
 const isPathCarrier = (x: unknown): x is PathCarrier =>
   typeof x === "object" && x !== null && typeof (x as { ident?: unknown }).ident === "string";
+
+const isRefCarrier = (carrier: PathCarrier): boolean =>
+  (carrier as { readonly valueType?: unknown }).valueType === "ref";
 
 const expandShapeToCells = (
   focus: AnyVar,
@@ -554,7 +566,7 @@ const bindGroupKey = (
   ctx: BuildCtx,
 ): AnyVar => {
   if (attr.ident === ":db/id") {
-    const id = mkVar("value");
+    const id = mkVar("id");
     ctx.clauses.push(Q.fact(focus, attr, id));
     return id;
   }
@@ -912,6 +924,10 @@ export const refine =
       false,
     );
 
+export type QueryLowering = {
+  readonly entity: (eid: number) => unknown;
+  readonly resolveEntity?: ((id: unknown) => number | undefined) | undefined;
+};
 export interface LoweredKernelQuery {
   readonly query: Record<string, unknown>;
   readonly shape: string;
@@ -956,9 +972,12 @@ const regexSource = (re: RegExp | string): string => {
 export const lowerQueryAst = (qv: AnyQueryObject): Record<string, unknown> =>
   lowerQueryObject(qv).query;
 
-export const tryLowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
+export const tryLowerQueryObject = (
+  qv: AnyQueryObject,
+  lowering?: QueryLowering,
+): LoweredKernelQuery => {
   try {
-    return lowerQueryObject(qv);
+    return lowerQueryObject(qv, lowering);
   } catch (e) {
     if (e instanceof InvalidRequest) throw e;
     throw new InvalidRequest({
@@ -967,18 +986,24 @@ export const tryLowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   }
 };
 
-export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
+export const lowerQueryObject = (
+  qv: AnyQueryObject,
+  lowering?: QueryLowering,
+): LoweredKernelQuery => {
+  const entityId = lowering?.entity ?? ((eid: number) => makeEid(eid));
   resetGensym();
   const ctx: BuildCtx = { clauses: [] };
   const built = runInto(qv, ctx, qv.stripCursor);
 
   const names = new Map<number, string>();
+  const kinds = new Map<string, AnyVar["kind"]>();
   let seq = 0;
   const nameOf = (v: AnyVar): string => {
     let n = names.get(v.id);
     if (n === undefined) {
       n = `?q${seq++}`;
       names.set(v.id, n);
+      kinds.set(n, v.kind);
     }
     return n;
   };
@@ -1353,7 +1378,27 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       case "entity":
       case "tx":
         return (cell) =>
-          typeof cell === "number" ? { id: makeEid(cell) } : cell;
+          typeof cell === "number"
+            ? { id: v.kind === "entity" ? entityId(cell) : makeEid(cell) }
+            : cell;
+      case "id":
+        return (cell) => (typeof cell === "number" ? entityId(cell) : cell);
+      case "t":
+        return (cell) => (typeof cell === "number" ? cell - TX_BASE : cell);
+      default:
+        return (cell) => cell;
+    }
+  };
+
+  const readAgg = (
+    fn: AggSpec["fn"],
+    v: AnyVar,
+  ): ((cell: unknown) => unknown) => {
+    if (fn !== "min" && fn !== "max") return (cell) => cell;
+    switch (v.kind) {
+      case "entity":
+      case "id":
+        return (cell) => (typeof cell === "number" ? entityId(cell) : cell);
       case "t":
         return (cell) => (typeof cell === "number" ? cell - TX_BASE : cell);
       default:
@@ -1376,10 +1421,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
             );
           })()
         : cell.v;
-      const read =
-        v.kind === "t" && (cell.fn === "min" || cell.fn === "max")
-          ? (x: unknown) => (typeof x === "number" ? x - TX_BASE : x)
-          : (x: unknown) => x;
+      const read = readAgg(cell.fn, v);
       let elem: unknown = [cell.fn, nameOf(v)];
       if (nameCells) {
         const alias = aggAlias.get(aggKey(cell)) ?? freshName("h");
@@ -1402,7 +1444,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       flats.push({
         path,
         elem: ["pull", focus, lowerPullPattern(map)],
-        read: (c) => reshapePullResult(map, c),
+        read: (c) => mapPullEntityIds(map, reshapePullResult(map, c), entityId),
         plan: pullReshapeIdentity(map),
       });
       return;
@@ -1443,7 +1485,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     find.push(nameOf(proj.v));
     finalizeRows = (tuples) =>
       tuples.map((t) =>
-        typeof t[0] === "number" ? { id: makeEid(t[0]) } : t[0],
+        typeof t[0] === "number" ? { id: entityId(t[0]) } : t[0],
       );
   } else if (isPullSpec(proj)) {
     projection = "pull";
@@ -1452,7 +1494,10 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     const focus = nameOf(proj.focus);
     where.push(...requiredClauses(focus, map));
     find.push(["pull", focus, lowerPullPattern(map)]);
-    finalizeRows = (tuples) => tuples.map((t) => reshapePullResult(map, t[0]));
+    finalizeRows = (tuples) =>
+      tuples.map((t) =>
+        mapPullEntityIds(map, reshapePullResult(map, t[0]), entityId)
+      );
   } else {
     const cells = isRowsSpec(proj) ? proj.cells : proj;
     for (const [k, cell] of Object.entries(cells)) flattenCell([k], cell as Cell);
@@ -1655,6 +1700,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const bindOrderPath = (
     path: readonly string[],
     revs: readonly boolean[],
+    ref: boolean,
     dir: OrderDir,
     empty: OrderEmpty,
   ): void => {
@@ -1674,6 +1720,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       );
     }
     const bound = lowerOrderPath(nameOf(built.focus), path, revs);
+    if (!kinds.has(bound.var)) kinds.set(bound.var, ref ? "entity" : "value");
     where.push(...bound.clauses);
     order.push({ var: bound.var, dir, empty });
   };
@@ -1705,7 +1752,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
           `ramose/query: orderBy(${pathOf(picked).join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
         );
       }
-      bindOrderPath(pathOf(picked), revsOf(picked), dir, empty);
+      bindOrderPath(pathOf(picked), revsOf(picked), isRefCarrier(picked), dir, empty);
       return;
     }
     throw new Error(
@@ -1725,7 +1772,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       if (o.kind === "cell") {
         orderFromPicked(o.cell, "orderBy", o.dir, o.empty);
       } else if (o.kind === "path") {
-        bindOrderPath(o.path, o.revs, o.dir, o.empty);
+        bindOrderPath(o.path, o.revs, o.ref, o.dir, o.empty);
       } else {
         throw new Error("ramose/query: orderBy leftover is not a projected cell or attribute path");
       }
@@ -1774,6 +1821,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const offset = boundCount(qv.stripCursor ? undefined : (qv.offsetN ?? built.offset), "offset");
 
   const pagedVars: string[] = [];
+  const pagedEntities: boolean[] = [];
   if (seek !== undefined) {
     if (offset !== undefined) {
       throw new Error(
@@ -1795,6 +1843,9 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       order.push({ var: root, dir: "asc", empty: "last" });
     }
     pagedVars.push(...order.map((o) => o.var));
+    pagedEntities.push(
+      ...order.map((o) => kinds.get(o.var) === "entity" || kinds.get(o.var) === "id"),
+    );
     if (seek !== null && seek.keys.length !== order.length) {
       throw new Error(
         `ramose/query: this cursor does not fit — it carries ${seek.keys.length} sort-key values and the query orders by ${order.length}; a cursor only continues the query that minted it`,
@@ -1804,6 +1855,20 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   }
   const baseLen = find.length - pagedVars.length;
 
+  const resolveCursorCell = (key: unknown, index: number): unknown => {
+    if (pagedEntities[index] !== true) return key;
+    const resolve = lowering?.resolveEntity;
+    if (resolve === undefined) return key;
+    const eid = resolve(key);
+    if (eid === undefined) {
+      throw new InvalidRequest({
+        message:
+          "ramose/query: this cursor names an entity this client cannot resolve — a cursor only continues the page that minted it, on the replica that minted it",
+      });
+    }
+    return eid;
+  };
+
   const query: Record<string, unknown> = {
     find,
     where,
@@ -1811,7 +1876,9 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     ...(having.length > 0 ? { having } : {}),
     ...(ruleDefs.length > 0 ? { rules: ruleDefs } : {}),
     ...(order.length > 0 ? { order } : {}),
-    ...(seek !== undefined && seek !== null ? { after: [...seek.keys] } : {}),
+    ...(seek !== undefined && seek !== null
+      ? { after: seek.keys.map((key, index) => resolveCursorCell(key, index)) }
+      : {}),
     ...(limit !== undefined ? { limit } : {}),
     ...(offset !== undefined ? { offset } : {}),
   };
@@ -1853,7 +1920,14 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
             !Array.isArray(last) ||
             (typeof limit === "number" && tuples.length < limit)
               ? null
-              : { _tag: "Cursor", keys: last.slice(baseLen) },
+              : {
+                _tag: "Cursor",
+                keys: last.slice(baseLen).map((key, index) =>
+                  pagedEntities[index] === true && typeof key === "number"
+                    ? entityId(key)
+                    : key
+                ),
+              },
         } satisfies Page;
       }
       if (take !== undefined) {

@@ -14,6 +14,7 @@ import {
 import {
   CatalogId,
   DatabaseId,
+  type CatalogUnitHash,
   type DigestHex,
 } from "../internal/authorization/identities.ts";
 import { sha256Hex } from "../internal/core/bytes.ts";
@@ -97,6 +98,24 @@ const wrapOperationCatalogs = (
   });
   registries.set(operationCatalogs, { deployed, bindings });
   return operationCatalogs;
+};
+
+export const deployedCatalogProof = (
+  operationCatalogs: OperationCatalogs,
+  database: string,
+): {
+  readonly catalogKey: CatalogId;
+  readonly unitHash: CatalogUnitHash;
+} | undefined => {
+  const state = registries.get(operationCatalogs);
+  if (state === undefined) return undefined;
+  const bound = Result.getOrUndefined(
+    state.deployed.requireDatabase(DatabaseId.make(database)),
+  );
+  return bound === undefined ? undefined : Object.freeze({
+    catalogKey: bound.definition.catalogKey,
+    unitHash: bound.definition.unitHash,
+  });
 };
 
 export const deployedOperationCatalogs = (

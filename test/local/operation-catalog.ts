@@ -43,6 +43,7 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-allocation-misbound",
   "operations-sealed-cold",
   "operations-client-submission",
+  "operations-client-root-proof",
   "operations-client-answers",
   "operations-mcp-describe",
   "operations-mcp-query",
@@ -316,7 +317,6 @@ export const Encoded = Entity("nativeEncoded", {
 }, {
   traits: [SealedTrait],
   operations: (Operation) => ({
-
     opaqueOutcome: Operation({
       self: false,
       input: EffectSchema.Struct({ label: EffectSchema.String }),

@@ -94,7 +94,6 @@ export const invoke = (
   retryPreResponse: true,
   headers: { "content-type": "application/json", ...originHeaders },
   body: JSON.stringify({
-    ...conformanceProof,
     invocationId,
     operation,
     input,
@@ -633,7 +632,6 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(completed.status).toBe(200);
       expect(completed.body).toEqual({
-
         result: {
           id: await entityHandle(base, database, member, issue),
           title: "Original invocation",

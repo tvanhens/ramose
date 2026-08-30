@@ -1,4 +1,12 @@
 import { COMPOSED_TRAITS, type AnyComposer } from "../db/Composer.ts";
+import type { AnyEntity } from "../db/Entity.ts";
+import type { Eid } from "../db/Eid.ts";
+import {
+  isClientRef,
+  isEntityId,
+  type EntityId,
+  type MutationRef,
+} from "../db/refs.ts";
 import { NotOne } from "../db/Errors.ts";
 import { Graph } from "../db/Graph.ts";
 import type { EntityRow, FluentQuery, WhereEq } from "../db/query/fluent.ts";
@@ -28,6 +36,11 @@ import {
   type QuerySubscription,
 } from "./database.ts";
 import { GraphPathError, GraphReceiverError } from "./errors.ts";
+import {
+  mutationNamespace,
+  type MutationContext,
+  type MutationNamespace,
+} from "./mutation.ts";
 import { Store, type Subscription } from "./subscription.ts";
 import { syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -102,6 +115,23 @@ export interface ClientQuery<
   oneOrFail(): GraphFocus<N, Row, Row, "oneOrFail">;
 }
 
+/**
+ * One observed value, with every entity id rendered as the opaque identity the
+ * client publishes: an `EntityId`, or a `ClientRef` for an entity this device
+ * created and the server has not issued a handle for yet.
+ */
+export type ClientValue<A> = A extends Eid<infer E extends AnyEntity>
+  ? MutationRef<E>
+  : A extends Date | Uint8Array ? A
+  : A extends readonly (infer Item)[] ? readonly ClientValue<Item>[]
+  : A extends object ? {
+      readonly [K in keyof A]: K extends ":db/id"
+        ? MutationRef | Extract<A[K], undefined>
+        : ClientValue<A[K]>;
+    }
+  : A;
+
+/** What a graph child needs from whatever database it hangs off. */
 export interface GraphAncestor {
   readonly activateGraph: () => void;
   readonly boundDatabase: () => ClientDatabaseHandle | undefined;
@@ -137,16 +167,23 @@ export const graphStableKey = (
   entity: string,
 ): string => `${replicaDatabaseKey(scope)} ${entity}`;
 
-type ResolvedSegment = { readonly id: number; readonly name: string };
+type ResolvedSegment = {
+  readonly id: EntityId;
+  readonly name: string;
+};
+
+const segmentIdentity = (row: unknown): unknown => {
+  if (row === null || typeof row !== "object") return undefined;
+  const id = (row as { id?: unknown }).id;
+  return typeof id === "object" && id !== null ? (id as { id?: unknown }).id : id;
+};
 
 const resolvedSegment = (row: unknown): ResolvedSegment | undefined => {
   if (row === null || typeof row !== "object") return undefined;
-  const { id, name } = row as { id?: unknown; name?: unknown };
-  const eid = typeof id === "object" && id !== null
-    ? (id as { id?: unknown }).id
-    : id;
-  if (typeof eid !== "number" || typeof name !== "string") return undefined;
-  return { id: eid, name };
+  const { name } = row as { name?: unknown };
+  const handle = segmentIdentity(row);
+  if (!isEntityId(handle) || typeof name !== "string") return undefined;
+  return { id: handle, name };
 };
 
 const CHAIN = ["where", "orderBy", "limit", "offset", "ids"] as const;
@@ -271,6 +308,10 @@ export class GraphRegistry {
     return [...this.databases.values()].map(({ handle }) => handle.syncStatus());
   }
 
+  handles(): readonly ClientDatabaseHandle[] {
+    return [...this.databases.values()].map(({ handle }) => handle);
+  }
+
   async close(): Promise<void> {
     const handles = [...this.databases.values()].map(({ handle }) => handle);
     this.databases.clear();
@@ -339,6 +380,7 @@ const failureStatus = (error: Error): SyncStatus => {
 
 export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
   readonly query = { from: clientQueryFrom(this) };
+  private mutations: MutationNamespace | undefined;
   private readonly bindingStore = new Store<GraphBinding>(PENDING_BINDING);
   readonly binding = this.bindingStore.subscription;
   private readonly syncStore = new Store<SyncState>(syncState("idle"));
@@ -360,6 +402,7 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
     private readonly canonical: AnyQueryObject,
     private readonly registry: GraphRegistry,
     private readonly assertLive: (operation: string) => void,
+    private readonly mutationContext: MutationContext,
   ) {}
 
   activateGraph(): void {
@@ -388,17 +431,29 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
       canonical,
       this.registry,
       this.assertLive,
+      this.mutationContext,
     );
     this.children.set(key, child);
     return child;
   }
 
-  observe<Row, Out>(query: QueryObject<Row, Out>): QuerySubscription<Out> {
+  get mutate(): MutationNamespace {
+    this.mutations ??= mutationNamespace(
+      this.mutationContext,
+      this,
+      this.mutationContext.databaseOperations(),
+    );
+    return this.mutations;
+  }
+
+  observe<Row, Out>(
+    query: QueryObject<Row, Out>,
+  ): QuerySubscription<ClientValue<Out>> {
     this.assertLive("observe");
     this.activateGraph();
-    let inner: QuerySubscription<Out> | undefined;
+    let inner: QuerySubscription<ClientValue<Out>> | undefined;
     let innerFor: ClientDatabaseHandle | undefined;
-    const attached = (): QuerySubscription<Out> | undefined => {
+    const attached = (): QuerySubscription<ClientValue<Out>> | undefined => {
       const bound = this.boundDatabase();
       if (bound === undefined) {
         inner = undefined;
@@ -431,10 +486,10 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
           releaseInner?.();
         };
       },
-      getSnapshot: (): QuerySnapshot<Out> => {
+      getSnapshot: (): QuerySnapshot<ClientValue<Out>> => {
         const observation = attached();
         if (observation !== undefined) return observation.getSnapshot();
-        return this.unboundSnapshot() as QuerySnapshot<Out>;
+        return this.unboundSnapshot() as QuerySnapshot<ClientValue<Out>>;
       },
     });
   }
@@ -526,16 +581,19 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
     const segment = resolvedSegment(snapshot.data);
     if (segment === undefined) {
+      if (isClientRef(segmentIdentity(snapshot.data))) {
+        this.publish(PENDING_BINDING, syncState(parent.syncStatus()));
+        return;
+      }
       this.fail(unavailable());
       return;
     }
     const scope = parent.confirmedScope();
-    const entity = parent.sealedHandleOf(segment.id);
-    if (scope === undefined || entity === undefined) {
+    if (scope === undefined) {
       this.publish(PENDING_BINDING, syncState(parent.syncStatus()));
       return;
     }
-    const stable = graphStableKey(scope, entity);
+    const stable = graphStableKey(scope, segment.id);
     const handle = this.registry.acquire(
       stable,
       [...parent.graphPath(), segment.name],

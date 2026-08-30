@@ -11,7 +11,17 @@ export type {
   QuerySubscription,
 } from "./database.ts";
 export type {
+  MutationMethod,
+  MutationNamespace,
+} from "./mutation.ts";
+export {
+  MutationRejectedError,
+  type Receipt,
+  type ReceiptState,
+} from "./receipt.ts";
+export type {
   ClientQuery,
+  ClientValue,
   ComposesGraph,
   GraphFocus,
   GraphFocusDb,

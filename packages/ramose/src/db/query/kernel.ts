@@ -4,7 +4,7 @@ import type { AnyComposer } from "../Composer.ts";
 import type { InFocus } from "./focus.ts";
 import type { FocusShape, Shape, ValidShape, SelectResult, AttrValue } from "../shapes.ts";
 
-export type VarKind = "entity" | "value" | "t" | "tx" | "op";
+export type VarKind = "entity" | "value" | "id" | "t" | "tx" | "op";
 
 export type VarNs<T> = T extends { readonly _ns: infer E }
   ? E extends AnyComposer

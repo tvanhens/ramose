@@ -216,6 +216,14 @@ describe("the resolved-database registry", () => {
     catalog: () => Promise.reject(new Error("not activated")),
     storage: () => Promise.reject(new Error("not activated")),
     credential: () => Promise.reject(new Error("not activated")),
+    mutations: {
+      databaseOperations: () => new Map(),
+      catalog: () => Promise.reject(new Error("not activated")),
+      storage: () => Promise.reject(new Error("not activated")),
+      assertLive: () => undefined,
+      submit: () => undefined,
+      track: () => undefined,
+    },
     assertLive: () => undefined,
     live: () => true,
     onSyncChange: () => undefined,
@@ -384,7 +392,6 @@ describe("the stable graph identity", () => {
 
 describe("an ancestor's terminal state", () => {
   test("becomes the path failure a descendant query surfaces", () => {
-
     expect(terminalPathError("authentication-required")?.reason).toBe("unauthorized");
     expect(terminalPathError("update-required")?.reason).toBe("update-required");
     expect(terminalPathError("closed")?.reason).toBe("closed");
@@ -404,7 +411,6 @@ describe("the mutation pre-queue gate", () => {
   });
 
   test("refuses a fenced database before its retained identity can address work", () => {
-
     expect(fencedReceiver("authentication-required")?.reason).toBe("unauthorized");
     expect(fencedReceiver("update-required")?.reason).toBe("update-required");
     expect(fencedReceiver("closed")?.reason).toBe("closed");

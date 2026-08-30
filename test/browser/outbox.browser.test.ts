@@ -685,7 +685,6 @@ browserTest("an unconfirmed scope cannot hold durable work", async ({ browser })
   const left = identity();
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-
     expect(
       await rejectedTag(
         storage.outbox().enqueue(draft(replicaDatabaseScopeOf(left)), {
@@ -1182,8 +1181,6 @@ const UNREACHABLE: MutationEndpoint = Object.freeze({
   database: "movies",
   graphPath: [],
   credential: "token",
-  catalog: "movies",
-  unitHash: "c".repeat(64),
 });
 
 browserTest(

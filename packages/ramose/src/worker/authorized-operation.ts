@@ -29,11 +29,17 @@ import {
 } from "./errors.ts";
 import {
   isEntityRef,
-  parseCatalogProofForPath,
   parseGraphPath,
+  refuseCatalogProof,
 } from "./authorized-read.ts";
 import { invalidateBasis } from "./peer.ts";
 
+/**
+ * Everything `/op` accepts from a caller, which excludes any catalog proof:
+ * `catalogKey` and `unitHash` are derived from deployed state, and a request
+ * supplying either is refused. Compatibility is decided by the pinned
+ * `OperationVersion` the durable record carries.
+ */
 export type ParsedOperationRequest = Omit<
   OperationInvocation,
   | "database"
@@ -45,8 +51,6 @@ export type ParsedOperationRequest = Omit<
 > & {
   readonly path: readonly string[];
   readonly invocationId: string;
-  readonly catalogKey?: OperationInvocation["catalogKey"];
-  readonly unitHash?: OperationInvocation["unitHash"];
 };
 
 type RoutedOperationRequest = Omit<ParsedOperationRequest, "path"> & {
@@ -154,8 +158,8 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
   const path = yield* Effect.fromResult(
     parseGraphPath(body, new URL(request.url).searchParams),
   );
-  const proof = yield* Effect.fromResult(
-    parseCatalogProofForPath(path, body, request.headers),
+  yield* Effect.fromResult(
+    refuseCatalogProof(body, request.headers),
   ).pipe(
     Effect.mapError(() => deny()),
   );
@@ -207,7 +211,6 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
     );
   }
   return {
-    ...proof,
     path,
     owner,
     localName: record.localName,

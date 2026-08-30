@@ -14,6 +14,7 @@ import type { AttributeSpec } from "../internal/core/schema.ts";
 import {
   makeClientProjectionCatalog,
   type ClientProjectionCatalog,
+  type InstalledProjection,
 } from "../internal/replication/projection-binding.ts";
 
 const CARDINALITY: Record<string, "one" | "many"> = {
@@ -64,6 +65,7 @@ export type ClientCatalog = {
 
 export const installClientCatalog = async (
   definition: CatalogDefinition,
+  projections: readonly InstalledProjection[] = [],
 ): Promise<ClientCatalog> => {
   const schema = completeSchema(definition);
   const readCompatibilityHash = await Effect.runPromise(
@@ -77,7 +79,7 @@ export const installClientCatalog = async (
     readCompatibilityHash,
     projections: makeClientProjectionCatalog(
       `${definition.key}:${readCompatibilityHash}`,
-      [],
+      projections,
     ),
   });
 };

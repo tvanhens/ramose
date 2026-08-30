@@ -118,7 +118,6 @@ const identityFor = (
 });
 
 type Seed = {
-
   readonly graphPath: readonly string[];
   readonly identity: ReplicationIdentity;
   readonly datoms: readonly SnapshotDatom[];
@@ -483,7 +482,6 @@ browserTest("does not read a predecessor Graph's replica through a rotated read 
       token: "bearer-before",
     },
     {
-
       graphPath: ["acme-org"],
       identity: identityFor(opaque("C"), ORG_LINEAGE, hash, opaque("1")),
       datoms: graphRow(opaque("f"), ":board", ":board/slug", "roadmap", "roadmap-board"),
@@ -501,7 +499,7 @@ browserTest("does not read a predecessor Graph's replica through a rotated read 
     token: string,
     child: "restores" | "reaches nothing",
   ): Promise<{
-    readonly id: number;
+    readonly id: string;
     readonly boards: readonly unknown[] | undefined;
   }> => {
     const client = offlineClient(name, { token, cacheKey: CACHE_KEY });
@@ -525,7 +523,7 @@ browserTest("does not read a predecessor Graph's replica through a rotated read 
       holdOrg();
       holdBoards();
       return {
-        id: (row.data as { readonly id: number }).id,
+        id: row.data!.id,
         boards: boards.getSnapshot().data as readonly unknown[] | undefined,
       };
     } finally {
@@ -536,11 +534,10 @@ browserTest("does not read a predecessor Graph's replica through a rotated read 
   const before = await ids("bearer-before", "restores");
   const after = await ids("bearer-after", "reaches nothing");
   try {
-
     expect(before.boards).toEqual([{ slug: "roadmap" }]);
-
-    expect(after.id).toBe(before.id);
-
+    expect(before.id).toMatch(/^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/);
+    expect(after.id).toMatch(/^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/);
+    expect(after.id).not.toBe(before.id);
     expect(after.boards).toBeUndefined();
   } finally {
     await deleteDatabase(name);
@@ -553,7 +550,6 @@ browserTest("stops resolving a path whose ancestor authorization was withdrawn",
   const installed = await installClientCatalog(AppCatalog);
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-
     await storage.unbindCredential(await replicationCredentialFingerprint(
       TOKEN,
       replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] }),
