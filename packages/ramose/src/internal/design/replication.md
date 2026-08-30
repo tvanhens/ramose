@@ -455,7 +455,10 @@ depended on. Every path derives from the one invariant:
   reconnect resumes the very same staging, and a base its commit can never
   satisfy again would strand the partition on every following attempt;
 - a **snapshot commit** and a **change apply** re-confirm their base revision
-  inside the very transaction that installs.
+  inside the very transaction that installs;
+- a **restored replica** additionally re-confirms the partition's sweep
+  generation, because reachability GC is a second writer that deletes nodes
+  without touching a manifest (see below).
 
 A failed generation re-check surfaces the ordinary typed fence error; a failed
 committed-state re-check reports that nothing is selected, so the caller chooses
@@ -493,6 +496,127 @@ partial one would pass over exactly the damage it skipped, and at 100k datoms
 that walk costs a whole cold restore per duplicate frame. Damage appearing
 afterwards is caught by the next restore's walk, with every other stored-node
 failure.
+
+## Reachability GC and bounded quota recovery
+
+A committed replica is content-addressed and immutable, so every install writes
+a new set of nodes and abandons the ones it superseded. At 100k datoms a whole
+replica is 81 nodes and 430 KiB, and one changed datom orphans 62 of those 81
+immediately. Quarantine leaves a partition's nodes and staging behind by design,
+and a failed install leaves the nodes it had already written. Reclaiming that is
+one sweep, and the only interesting part of it is what it may never delete.
+
+### Retention
+
+A node record is *retained* when it is reachable from a live root set of its own
+partition. Reachability is partition-local by construction: node records are
+keyed by `[partition, hash]`, so no partition can keep another's node alive. The
+live root sets are exactly:
+
+1. the four index roots of the partition's committed manifest, when one is
+   stored;
+2. every root set an in-process holder has retained — a replication session
+   retains the roots of the value it currently publishes, including a stale
+   value published over a partition that has since been quarantined;
+3. nothing at all for a partition with an in-flight materialization: its fresh
+   nodes have no roots yet, so that partition is excluded from the sweep
+   entirely rather than described by a root set.
+
+Everything else in the partition is unreachable from every value a live
+participant can read, and is swept. One thing is deliberately *not* retained: a
+`Db` older than the one its session currently publishes. Reclaiming superseded
+roots is the entire point of the sweep — they are where the garbage comes from —
+so a holder that needs an older value to stay readable must retain it. GC never
+writes a manifest, a head, a binding, or a candidate, so no install identifier
+can be dropped or invented by a sweep, and `writeCounts()` shows zero manifests
+and zero heads for any GC pass.
+
+### Sweep invariants
+
+- **Fail closed on damage.** The live set is computed by walking each live root
+  set. A walk that cannot complete — a missing, undecodable, or wrongly-kinded
+  node — leaves the partition's live set unknown, and GC then sweeps nothing in
+  that partition. Damage is never converted into deletion; the restore walk is
+  what classifies and quarantines it.
+- **Materialization exclusion.** `materialize` marks its partition in flight
+  synchronously before it creates its first node transaction, and clears the
+  mark only after the install transaction settles. GC reads that mark and
+  creates its sweep transaction in one synchronous block, with no `await`
+  between them. Either GC saw the mark and skipped the partition, or the
+  materialization had not yet created a node transaction — and every transaction
+  it creates afterwards is created after the sweep transaction. IndexedDB
+  serializes overlapping `readwrite` transactions in creation order, so a
+  content-addressed re-put of a node the sweep is deleting always lands after
+  the delete, never before it.
+- **Sweep CAS.** The live set is computed from a committed manifest read outside
+  the sweep transaction. The sweep transaction re-reads that manifest and
+  requires its fingerprint — including the install identifier — to be unchanged.
+  A sweep is therefore always consistent with the committed value as of the
+  instant it commits, and a partition whose manifest moved is skipped rather
+  than swept against a value nobody examined.
+- **Only impossible staging.** Staging is swept only when its recorded base
+  revision is no longer the committed one, which is exactly the condition under
+  which its `SnapshotCommit` can never install again. A snapshot still streaming
+  against a current base is never touched, and a reconnect rebases the stale
+  case anyway.
+- **One transaction.** The generation bump, the node deletes, and the staging
+  deletes are one IndexedDB transaction with a boundary immediately before its
+  commit, so a crash cut leaves either the complete pre-sweep state or the
+  complete post-sweep state. Both are states a later walk accepts, because the
+  swept set was provably unreachable from the committed manifest either way.
+
+### The sweep generation
+
+The publish fence rests on one premise: only a clear and an eviction delete
+content nodes, and both bump a generation the fence re-observes. GC deletes
+nodes without touching a manifest, so it must either take that same fence or
+break it. Two mechanisms were available.
+
+Bumping the guarded **database** generation was rejected. Every live session of
+that database leases that record, so a sweep would refuse those sessions' next
+install with the ordinary fence error — and sweeping superseded roots while a
+session is running is the normal case, not the exception. GC would then be
+unable to reclaim anything without disturbing exactly the sessions it must leave
+alone.
+
+Instead GC bumps a per-partition **sweep generation**: one more record in the
+same `replica-generations-v1` store, under the same discipline of being readable
+inside any transaction, with exactly one writer (a sweep that deleted at least
+one node) and exactly one reader (the restore publish fence). `validated` reads
+it in the same transaction that takes the walk's lifecycle lease, before the
+walk, and re-reads it in the same transaction that re-confirms the scope and
+database generations, after it. A changed value means nodes were deleted in this
+partition while the walk was running, so the manifest it validated is no longer
+safe to publish, and the restore reports that nothing is selected — nothing was
+lost, and the caller selects again from what is actually stored. A clear or an
+eviction keeps surfacing the ordinary typed fence error, unchanged.
+
+The install paths deliberately do not observe the sweep generation. They are
+protected by materialization exclusion instead: GC cannot delete the nodes an
+install is writing, so an install has nothing to re-confirm — and observing it
+would fence the very sessions that exclusion exists to leave running.
+
+### Bounded quota recovery
+
+Native quota exhaustion is a typed outcome, not a corruption. `QuotaExceededError`
+and the historical browser spellings — Firefox's `NS_ERROR_DOM_QUOTA_REACHED`
+and legacy code 1014, Safari's `QUOTA_EXCEEDED_ERR` and legacy code 22 — are
+classified together; everything else propagates unchanged.
+
+An install that fails that way performs at most one GC pass and at most one
+retry. The failed attempt's own nodes are unreachable, so the pass reclaims them
+along with every superseded root, and the pass runs between the two attempts —
+after the first attempt released its materialization mark, before the retry
+takes it — so the partition that needs the space is not the one partition GC
+skips. The pass is unscoped, because storage pressure is a property of the
+origin rather than of one principal, and it can still only delete what is
+provably unreachable.
+
+If the retry also exhausts quota, the install throws a typed quota error
+carrying what the pass reclaimed. Nothing was installed: materialization writes
+only content nodes, and the install itself is one atomic transaction, so the
+previously committed manifest is byte-identical to what it was and the
+old-or-new guarantee holds. Active data is never evicted to make room.
 
 ## Authorization and noninterference
 

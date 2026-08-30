@@ -37,11 +37,30 @@ export interface CheckpointArm {
 type Arm = {
   action: CheckpointAction;
   error?: string | undefined;
+  errorName?: string | undefined;
+  remaining: number;
   releaseAfterMs?: number | undefined;
   wait?: Promise<void>;
   release?: () => void;
   timer?: ReturnType<typeof setTimeout> | undefined;
   pending: boolean;
+};
+
+/**
+ * How a `throw` arm fails, beyond the default `Error(message)`.
+ *
+ * A boundary that stands in for a native platform failure has to fail the way
+ * the platform does — recovery classifies a `DOMException` by its name, and an
+ * ordinary `Error` would be classified as an unrelated bug and propagate. This
+ * makes the real operation fail with the real exception type at the real
+ * boundary; it never invents a successful result.
+ */
+export type CheckpointThrowOptions = {
+  readonly error?: string | undefined;
+  /** Throw a `DOMException` under this name instead of a plain `Error`. */
+  readonly errorName?: string | undefined;
+  /** How many times this arm fires before the boundary passes through again. */
+  readonly times?: number | undefined;
 };
 
 const arms = new Map<string, Arm>();
@@ -68,6 +87,27 @@ export const resetTestHooks = (): void => {
   arms.clear();
 };
 
+export const armCheckpointThrow = (
+  name: string,
+  options: CheckpointThrowOptions = {},
+): void => {
+  enableTestHooks();
+  arms.set(name, {
+    action: "throw",
+    error: options.error,
+    errorName: options.errorName,
+    remaining: options.times ?? 1,
+    pending: false,
+  });
+};
+
+const checkpointFailure = (name: string, arm: Arm): Error => {
+  const message = arm.error ?? `test checkpoint ${name}`;
+  return arm.errorName === undefined
+    ? new Error(message)
+    : new DOMException(message, arm.errorName);
+};
+
 export const armCheckpoint = (
   name: string,
   action: CheckpointAction,
@@ -84,12 +124,13 @@ export const armCheckpoint = (
     arms.set(name, {
       action,
       error,
+      remaining: 1,
       ...(releaseAfterMs === undefined ? {} : { releaseAfterMs }),
       pending: false,
     });
     return;
   }
-  arms.set(name, { action, error, pending: false });
+  armCheckpointThrow(name, { error });
 };
 
 export const releaseCheckpoint = (name: string): void => {
@@ -127,8 +168,9 @@ export const checkpoint = async (name: string): Promise<void> => {
   const arm = arms.get(name);
   if (arm === undefined) return;
   if (arm.action === "throw") {
-    arms.delete(name);
-    throw new Error(arm.error ?? `test checkpoint ${name}`);
+    arm.remaining--;
+    if (arm.remaining <= 0) arms.delete(name);
+    throw checkpointFailure(name, arm);
   }
   if (arm.action === "wait") {
     arm.pending = true;
@@ -159,8 +201,9 @@ export const checkpointSync = (name: string): void => {
   if (!enabled) return;
   const arm = arms.get(name);
   if (arm?.action !== "throw") return;
-  arms.delete(name);
-  throw new Error(arm.error ?? `test checkpoint ${name}`);
+  arm.remaining--;
+  if (arm.remaining <= 0) arms.delete(name);
+  throw checkpointFailure(name, arm);
 };
 
 /** Injected only by the repository's explicit source-only testing assembly. */

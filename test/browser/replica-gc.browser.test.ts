@@ -1,0 +1,676 @@
+/**
+ * Real-Chromium reachability GC and bounded quota recovery (#474 slice 11).
+ *
+ * Every sweep below runs against records the production adapter really wrote
+ * into the browser's own IndexedDB, and every assertion about what a pass
+ * removed or rewrote comes either from the pass's own outcome or from the
+ * adapter's write counters. Nothing here fakes storage, and the one place a
+ * native failure is simulated — quota exhaustion, which cannot be provoked
+ * honestly inside a test budget — is an armed boundary inside the real install
+ * transaction that fails with the real `DOMException` the platform raises.
+ */
+
+import { expect } from "vitest";
+import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
+import { Index } from "../../packages/ramose/src/internal/core/datom.ts";
+import type { Db } from "../../packages/ramose/src/internal/core/db.ts";
+import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
+import {
+  IndexedDbReplicaStorage,
+  replicaPartitionKey,
+  replicaSweepKey,
+} from "../../packages/ramose/src/internal/replication/indexeddb.ts";
+import type {
+  ReplicationIdentity,
+  SnapshotDatom,
+} from "../../packages/ramose/src/internal/replication/protocol.ts";
+import { ReplicationSession } from "../../packages/ramose/src/internal/replication/session.ts";
+import {
+  replicationActivationAddress,
+  replicationCredentialFingerprint,
+} from "../../packages/ramose/src/internal/replication/transport.ts";
+import { rootReplicaRouteSlot } from "../../packages/ramose/src/internal/replication/route-slot.ts";
+import {
+  armCheckpoint,
+  armCheckpointThrow,
+  checkpointStatus,
+  releaseCheckpoint,
+  resetTestHooks,
+  testRuntimeBoundaries,
+} from "../../packages/ramose/src/internal/test-hooks.ts";
+import { browserTest } from "./fixtures.ts";
+
+const opaque = (character: string): string => character.repeat(43);
+
+const SERVER = opaque("s");
+const PRINCIPAL = opaque("l");
+const ROOT_DATABASE = opaque("d");
+const CHILD_DATABASE = opaque("e");
+const READ_COMPATIBILITY = ReadCompatibilityHash.make(opaque("k"));
+
+const COMMITTED = "replica-committed-v1";
+const COMMITTED_HEADS = "replica-committed-heads-v1";
+const NODES = "replica-nodes-v1";
+const STAGING = "replica-staging-v1";
+const STAGING_CHUNKS = "replica-staging-chunks-v1";
+const GENERATIONS = "replica-generations-v1";
+
+const identity = (overrides: Partial<ReplicationIdentity> = {}): ReplicationIdentity => ({
+  version: 1,
+  server: SERVER,
+  principal: PRINCIPAL,
+  database: ROOT_DATABASE,
+  catalog: opaque("c"),
+  readView: opaque("v"),
+  readCompatibilityHash: READ_COMPATIBILITY,
+  graphLineage: [],
+  authenticator: opaque("a"),
+  ...overrides,
+});
+
+const attributes: readonly AttributeSpec[] = [
+  { ident: ":item/name", valueType: ":db.type/string", cardinality: "one", index: true },
+];
+
+const requestResult = <T>(request: IDBRequest<T>): Promise<T> =>
+  new Promise((resolve, reject) => {
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+
+const transactionDone = (transaction: IDBTransaction): Promise<void> =>
+  new Promise((resolve, reject) => {
+    transaction.addEventListener("complete", () => resolve(), { once: true });
+    transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
+  });
+
+const openNative = (name: string): Promise<IDBDatabase> =>
+  new Promise((resolve, reject) => {
+    const request = indexedDB.open(name);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("blocked", () => reject(new Error("upgrade blocked")), { once: true });
+  });
+
+const deleteDatabase = (name: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(name);
+    request.addEventListener("success", () => resolve(), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+
+const dump = async (name: string): Promise<Record<string, unknown[]>> => {
+  const database = await openNative(name);
+  const stores = [...database.objectStoreNames];
+  const transaction = database.transaction(stores, "readonly");
+  const contents: Record<string, unknown[]> = {};
+  for (const store of stores) {
+    contents[store] = await requestResult<unknown[]>(transaction.objectStore(store).getAll());
+  }
+  await transactionDone(transaction);
+  database.close();
+  return contents;
+};
+
+const bytes = (value: unknown): string =>
+  JSON.stringify(value, (_key, entry) =>
+    entry instanceof Uint8Array ? [...entry] : entry as unknown);
+
+const nodeRange = (partition: string): IDBKeyRange =>
+  IDBKeyRange.bound([partition, ""], [partition, "￿"]);
+
+const nodeHashes = async (name: string, partition: string): Promise<string[]> => {
+  const database = await openNative(name);
+  const transaction = database.transaction(NODES, "readonly");
+  const keys = await requestResult<IDBValidKey[]>(
+    transaction.objectStore(NODES).getAllKeys(nodeRange(partition)),
+  );
+  await transactionDone(transaction);
+  database.close();
+  return keys.map((key) => (key as [string, string])[1]).sort();
+};
+
+const sweepGeneration = async (name: string, partition: string): Promise<number> => {
+  const database = await openNative(name);
+  const transaction = database.transaction(GENERATIONS, "readonly");
+  const record = await requestResult<{ generation: number } | undefined>(
+    transaction.objectStore(GENERATIONS).get(replicaSweepKey(partition)),
+  );
+  await transactionDone(transaction);
+  database.close();
+  return record?.generation ?? 0;
+};
+
+/** Wait until an armed `wait` checkpoint has actually been reached. */
+const reachedCheckpoint = async (name: string): Promise<void> => {
+  for (let attempt = 0; attempt < 2000; attempt++) {
+    if (checkpointStatus()[name]?.pending === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error(`checkpoint ${name} was never reached`);
+};
+
+const snapshotDatom = (entity: string, value: string): SnapshotDatom => ({
+  entity,
+  field: ":item/name",
+  value: { type: "string", value },
+  op: "add",
+});
+
+const installSnapshot = async (
+  storage: IndexedDbReplicaStorage,
+  selected: ReplicationIdentity,
+  revision: string,
+  datoms: readonly SnapshotDatom[],
+): Promise<void> => {
+  const snapshot = `${revision}-snapshot`.padEnd(43, "q").slice(0, 43);
+  await storage.startSnapshot({
+    type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
+  });
+  let index = 0;
+  for (let offset = 0; offset < datoms.length; offset += 16) {
+    await storage.stageSnapshotChunk({
+      type: "SnapshotChunk", protocol: 1, identity: selected, snapshot,
+      index: index++,
+      datoms: datoms.slice(offset, offset + 16),
+    });
+  }
+  expect(await storage.commitSnapshot({
+    type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision,
+    chunks: index,
+  }, attributes)).toBeDefined();
+};
+
+/** A replica wide enough that one changed datom really orphans interior nodes. */
+const wideDatoms = (count: number, value: string): readonly SnapshotDatom[] =>
+  Array.from({ length: count }, (_unused, index) =>
+    snapshotDatom(`entity-${String(index).padStart(6, "0")}`.padEnd(43, "z"), `${value}-${index}`));
+
+const changeOne = (
+  selected: ReplicationIdentity,
+  from: string,
+  revision: string,
+  entity: string,
+  value: string,
+) => ({
+  type: "Change" as const,
+  protocol: 1 as const,
+  identity: selected,
+  from,
+  revision,
+  datoms: [{
+    entity,
+    field: ":item/name",
+    value: { type: "string" as const, value },
+    op: "add" as const,
+  }],
+});
+
+const confirm = async (
+  storage: IndexedDbReplicaStorage,
+  selected: ReplicationIdentity,
+  label: string,
+): Promise<void> => {
+  await storage.bindAuthenticated({
+    fingerprint: `fingerprint-${label}`,
+    identity: selected,
+    candidateKey: { selector: `selector-${label}`, routeSlot: `slot-${label}` },
+  });
+};
+
+const names = async (db: Db): Promise<string[]> => {
+  const attribute = db.attr(":item/name")!;
+  return (await db.datomsArray(Index.AEVT, { a: attribute.id })).map((datom) => datom.v as string);
+};
+
+browserTest(
+  "one pass reclaims the roots a change superseded and rewrites no manifest",
+  async ({ browser }) => {
+    const name = `ramose-gc-supersede-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      // Wide enough that each index really is a directory over several leaves,
+      // so the change below orphans interior nodes and not just four roots.
+      const seed = wideDatoms(4000, "seed");
+      await installSnapshot(storage, selected, opaque("1"), seed);
+      const afterSnapshot = await nodeHashes(name, partition);
+      expect(afterSnapshot.length).toBeGreaterThan(4);
+
+      const applied = await storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), seed[7].entity, "changed"),
+      );
+      expect(applied?.revision).toBe(opaque("2"));
+      const afterChange = await nodeHashes(name, partition);
+      // One datom rewrote a whole root-to-leaf path per index, so the store now
+      // holds both the current value and everything the change superseded.
+      expect(afterChange.length).toBeGreaterThan(afterSnapshot.length);
+
+      storage.resetWriteCounts();
+      const outcome = await storage.collectGarbage();
+      // A sweep is not an install: it writes no manifest, no head, and no node.
+      expect(storage.writeCounts()).toEqual({
+        nodes: 0, manifests: 0, heads: 0, staging: 0, stagingChunks: 0,
+      });
+      expect(outcome.partitions).toBe(1);
+      expect(outcome.swept).toBe(1);
+      expect(outcome.skipped).toBe(0);
+      expect(outcome.staging).toBe(0);
+      expect(outcome.nodes).toBeGreaterThan(0);
+      expect(outcome.nodes + outcome.retained).toBe(afterChange.length);
+
+      const survivors = await nodeHashes(name, partition);
+      expect(survivors.length).toBe(outcome.retained);
+      // Nothing the current value depends on was touched, so it still restores
+      // and reads exactly what the change left behind.
+      const restored = await storage.restore(selected, attributes, READ_COMPATIBILITY);
+      expect(restored?.revision).toBe(opaque("2"));
+      expect((await names(restored!.db)).includes("changed")).toBe(true);
+      expect(await sweepGeneration(name, partition)).toBe(1);
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest("a second pass over settled storage removes nothing", async ({ browser }) => {
+  const name = `ramose-gc-idempotent-${browser.uniqueId}`;
+  const selected = identity();
+  const partition = replicaPartitionKey(selected);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await installSnapshot(storage, selected, opaque("1"), wideDatoms(80, "seed"));
+    await storage.applyChange(
+      changeOne(selected, opaque("1"), opaque("2"), "entity-000003".padEnd(43, "z"), "changed"),
+    );
+    const first = await storage.collectGarbage();
+    expect(first.nodes).toBeGreaterThan(0);
+    const settled = bytes(await dump(name));
+
+    const second = await storage.collectGarbage();
+    expect(second).toEqual({
+      partitions: 1,
+      swept: 0,
+      skipped: 0,
+      nodes: 0,
+      retained: first.retained,
+      staging: 0,
+    });
+    // Byte-identical storage, including the sweep generation: an idempotent
+    // pass must not even bump the record the publish fence watches.
+    expect(bytes(await dump(name))).toBe(settled);
+    expect(await sweepGeneration(name, partition)).toBe(1);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest(
+  "a quarantined partition's leftover nodes and staging are swept once nothing pins them",
+  async ({ browser }) => {
+    const name = `ramose-gc-quarantine-${browser.uniqueId}`;
+    const selected = identity();
+    const sibling = identity({ database: CHILD_DATABASE });
+    const partition = replicaPartitionKey(selected);
+    const siblingPartition = replicaPartitionKey(sibling);
+    let storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(40, "left"));
+      await installSnapshot(storage, sibling, opaque("3"), wideDatoms(8, "right"));
+      await confirm(storage, selected, "left");
+      await confirm(storage, sibling, "right");
+      // Leave staging behind whose base can never be the committed revision
+      // again, which is what a connection interrupted mid-snapshot leaves.
+      await storage.startSnapshot({
+        type: "SnapshotStart", protocol: 1, identity: selected,
+        snapshot: opaque("y"), revision: opaque("9"),
+      });
+      await storage.stageSnapshotChunk({
+        type: "SnapshotChunk", protocol: 1, identity: selected, snapshot: opaque("y"),
+        index: 0, datoms: [snapshotDatom(opaque("x"), "abandoned")],
+      });
+
+      const before = await nodeHashes(name, partition);
+      const siblingBefore = await nodeHashes(name, siblingPartition);
+      storage.close();
+
+      // Damage one node body so the next restore refuses and quarantines.
+      const database = await openNative(name);
+      const damage = database.transaction(NODES, "readwrite");
+      const store = damage.objectStore(NODES);
+      const record = await requestResult<{ partition: string; hash: string; body: Uint8Array }>(
+        store.get([partition, before[0]]),
+      );
+      const body = new Uint8Array(record.body);
+      body[body.length - 1] ^= 0x01;
+      store.put({ partition, hash: before[0], body });
+      await transactionDone(damage);
+      database.close();
+
+      storage = await IndexedDbReplicaStorage.open(name);
+      const outcome = await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
+      expect(outcome._tag).toBe("replacement-required");
+      // Quarantine is withdrawal: the manifest is gone but the nodes and the
+      // orphaned staging are still there for the sweep to reclaim.
+      expect((await dump(name))[COMMITTED]).toHaveLength(1);
+      expect(await nodeHashes(name, partition)).toHaveLength(before.length);
+
+      const swept = await storage.collectGarbage();
+      expect(await nodeHashes(name, partition)).toEqual([]);
+      expect(swept.nodes).toBe(before.length);
+      expect(swept.staging).toBe(1);
+      // The sibling database is a different partition and keeps every node.
+      expect(await nodeHashes(name, siblingPartition)).toEqual(siblingBefore);
+      const dumped = await dump(name);
+      expect(dumped[STAGING]).toEqual([]);
+      expect(dumped[STAGING_CHUNKS]).toEqual([]);
+      expect(dumped[COMMITTED_HEADS]).toHaveLength(1);
+      expect(
+        (await storage.restore(sibling, attributes, READ_COMPATIBILITY))?.revision,
+      ).toBe(opaque("3"));
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a walk parked mid-validation cannot publish after a sweep removed its nodes",
+  async ({ browser }) => {
+    const name = `ramose-gc-parked-walk-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const reader = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    const writer = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installSnapshot(writer, selected, opaque("1"), wideDatoms(120, "seed"));
+      const original = await nodeHashes(name, partition);
+
+      // The walk validates the manifest committed right now and then parks on
+      // the boundary between a completed walk and the fence that publishes it.
+      armCheckpoint("replica.validated", "wait");
+      const walking = reader.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
+      await reachedCheckpoint("replica.validated");
+
+      // An ordinary install supersedes everything that walk just validated —
+      // this alone leaves the old value intact, which is why the fence used to
+      // permit it — and then a sweep reclaims the roots it superseded.
+      const applied = await writer.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), "entity-000009".padEnd(43, "z"), "changed"),
+      );
+      expect(applied?.revision).toBe(opaque("2"));
+      const sweep = await writer.collectGarbage();
+      expect(sweep.nodes).toBeGreaterThan(0);
+      const survivors = new Set(await nodeHashes(name, partition));
+      // The very roots the parked walk validated are gone from storage now.
+      expect(original.some((hash) => !survivors.has(hash))).toBe(true);
+      expect(await sweepGeneration(name, partition)).toBe(1);
+
+      releaseCheckpoint("replica.validated");
+      const outcome = await walking;
+      // No `Db` over deleted nodes, and no spurious quarantine either: the
+      // partition is intact, the walk simply may not publish what it read.
+      expect(outcome._tag).toBe("absent");
+      expect((await dump(name))[COMMITTED]).toHaveLength(1);
+
+      // Selecting again from what is actually stored yields the new value.
+      const again = await reader.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
+      expect(again._tag).toBe("restored");
+      expect((await reader.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+        .toBe(opaque("2"));
+    } finally {
+      resetTestHooks();
+      reader.close();
+      writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a sweep leaves a live session's published value readable and its writes running",
+  async ({ browser }) => {
+    const name = `ramose-gc-live-session-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    let session: ReplicationSession | undefined;
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(80, "seed"));
+      const address = replicationActivationAddress({
+        server: "http://127.0.0.1:1",
+        root: "root",
+        graphPath: [],
+      });
+      await storage.bindAuthenticated({
+        fingerprint: await replicationCredentialFingerprint(
+          "known-credential",
+          address,
+          await rootReplicaRouteSlot(),
+        ),
+        identity: selected,
+      });
+
+      // The session restores the committed replica and publishes it stale; its
+      // network attempt fails against a closed port, which leaves the value
+      // published and the session alive as a holder of those roots.
+      session = await ReplicationSession.open({
+        activation: { server: "http://127.0.0.1:1", root: "root", graphPath: [] },
+        credential: "known-credential",
+        attributes,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const published = session.snapshot().value;
+      expect(published?.revision).toBe(opaque("1"));
+
+      // Another writer supersedes the value this session still publishes.
+      const applied = await storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), "entity-000005".padEnd(43, "z"), "changed"),
+      );
+      expect(applied?.revision).toBe(opaque("2"));
+
+      const outcome = await storage.collectGarbage();
+      // Both root sets are live, so only what neither reaches is reclaimed and
+      // the retained set covers the union rather than just the manifest.
+      expect(outcome.skipped).toBe(0);
+      expect(outcome.retained).toBe((await nodeHashes(name, partition)).length);
+
+      // The session's own value still reads: its roots were retained.
+      expect((await names(published!.db)).length).toBe(80);
+      // And the session is not fenced — an ordinary install still lands.
+      const next = await storage.applyChange(
+        changeOne(selected, opaque("2"), opaque("3"), "entity-000006".padEnd(43, "z"), "later"),
+      );
+      expect(next?.revision).toBe(opaque("3"));
+
+      // Closing the session releases the retention, so the next pass reclaims
+      // exactly the roots that session had been keeping alive.
+      await session.close();
+      session = undefined;
+      const after = await storage.collectGarbage();
+      expect(after.nodes).toBeGreaterThan(0);
+      expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+        .toBe(opaque("3"));
+    } finally {
+      await session?.close();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest("a crash cut during a sweep leaves the partition untouched", async ({ browser }) => {
+  const name = `ramose-gc-crash-${browser.uniqueId}`;
+  const selected = identity();
+  const partition = replicaPartitionKey(selected);
+  let storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+  try {
+    await installSnapshot(storage, selected, opaque("1"), wideDatoms(60, "seed"));
+    await storage.applyChange(
+      changeOne(selected, opaque("1"), opaque("2"), "entity-000002".padEnd(43, "z"), "changed"),
+    );
+    const before = bytes(await dump(name));
+    const beforeHashes = await nodeHashes(name, partition);
+
+    // Cut the process at the last boundary before the sweep becomes durable.
+    armCheckpoint("replica.sweep", "throw", "simulated crash cut");
+    await expect(storage.collectGarbage()).rejects.toThrow("simulated crash cut");
+    // Either swept or not: the aborted transaction rolled the deletes back, so
+    // storage is byte-identical and the sweep generation never moved.
+    expect(bytes(await dump(name))).toBe(before);
+    expect(await sweepGeneration(name, partition)).toBe(0);
+    resetTestHooks();
+
+    // A later walk accepts the partition exactly as it stands, and a retried
+    // pass completes it.
+    storage.close();
+    storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+      .toBe(opaque("2"));
+    const retried = await storage.collectGarbage();
+    expect(retried.nodes).toBe(beforeHashes.length - retried.retained);
+    expect(retried.nodes).toBeGreaterThan(0);
+    expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+      .toBe(opaque("2"));
+  } finally {
+    resetTestHooks();
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest(
+  "an exhausted quota reclaims once and the retry installs",
+  async ({ browser }) => {
+    const name = `ramose-gc-quota-recovered-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(80, "seed"));
+      await storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), "entity-000001".padEnd(43, "z"), "one"),
+      );
+      // Nothing has swept this partition yet, so any advance below is the one
+      // recovery pass and nothing else.
+      expect(await sweepGeneration(name, partition)).toBe(0);
+
+      // The real install transaction fails with the real native exception the
+      // platform raises when the origin's storage is full.
+      armCheckpointThrow("replica.install", {
+        error: "storage is full",
+        errorName: "QuotaExceededError",
+        times: 1,
+      });
+      const applied = await storage.applyChange(
+        changeOne(selected, opaque("2"), opaque("3"), "entity-000002".padEnd(43, "z"), "two"),
+      );
+      // One pass, one retry, and the retry installed.
+      expect(applied?.revision).toBe(opaque("3"));
+      expect(await sweepGeneration(name, partition)).toBe(1);
+      expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+        .toBe(opaque("3"));
+      // The arm fired exactly once: the retry ran through the real boundary.
+      expect(checkpointStatus()["replica.install"]).toBeUndefined();
+    } finally {
+      resetTestHooks();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a second exhaustion is a typed outcome and preserves the old manifest exactly",
+  async ({ browser }) => {
+    const name = `ramose-gc-quota-exhausted-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(40, "seed"));
+      const manifestBefore = bytes((await dump(name))[COMMITTED]);
+      const headBefore = bytes((await dump(name))[COMMITTED_HEADS]);
+
+      armCheckpointThrow("replica.install", {
+        error: "storage is full",
+        errorName: "QuotaExceededError",
+        times: 2,
+      });
+      const failure = await storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), "entity-000000".padEnd(43, "z"), "one"),
+      ).then(() => undefined, (error: unknown) => error);
+      expect(failure).toMatchObject({
+        _tag: "ReplicaQuotaExhaustedError",
+        partition,
+      });
+      expect((failure as { reclaimedNodes: number }).reclaimedNodes).toBeGreaterThanOrEqual(0);
+
+      // Old-or-new: nothing was installed, and the previously committed value
+      // is byte-identical to what it was before the attempt.
+      const dumped = await dump(name);
+      expect(bytes(dumped[COMMITTED])).toBe(manifestBefore);
+      expect(bytes(dumped[COMMITTED_HEADS])).toBe(headBefore);
+      resetTestHooks();
+      const restored = await storage.restore(selected, attributes, READ_COMPATIBILITY);
+      expect(restored?.revision).toBe(opaque("1"));
+      expect((await names(restored!.db)).length).toBe(40);
+    } finally {
+      resetTestHooks();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "clear, eviction, and close settle with GC rather than against it",
+  async ({ browser }) => {
+    const name = `ramose-gc-lifecycle-${browser.uniqueId}`;
+    const selected = identity();
+    const child = identity({ database: CHILD_DATABASE });
+    const childPartition = replicaPartitionKey(child);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(30, "root"));
+      await installSnapshot(storage, child, opaque("2"), wideDatoms(30, "child"));
+      await confirm(storage, selected, "root");
+      await confirm(storage, child, "child");
+
+      // Eviction deletes the database's records outright, so a later pass finds
+      // no partition to sweep there and the ancestor is untouched.
+      const evicted = await storage.evictDatabase({
+        server: SERVER, principal: PRINCIPAL, database: CHILD_DATABASE,
+      });
+      expect(evicted.nodes).toBeGreaterThan(0);
+      expect(await nodeHashes(name, childPartition)).toEqual([]);
+      const afterEvict = await storage.collectGarbage();
+      expect(afterEvict.partitions).toBe(1);
+      expect(afterEvict.nodes).toBe(0);
+      expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+        .toBe(opaque("1"));
+
+      // A cleared scope is terminal for this handle: it may not be swept either,
+      // because sweeping would write a generation record back into it.
+      await storage.clearScope({ server: SERVER, principal: PRINCIPAL });
+      await expect(
+        storage.collectGarbage({ scope: { server: SERVER, principal: PRINCIPAL } }),
+      ).rejects.toMatchObject({ _tag: "ReplicaScopeClearedError" });
+      const afterClear = await storage.collectGarbage();
+      expect(afterClear).toEqual({
+        partitions: 0, swept: 0, skipped: 0, nodes: 0, retained: 0, staging: 0,
+      });
+      const dumped = await dump(name);
+      expect(dumped[NODES]).toEqual([]);
+      expect(dumped[COMMITTED]).toEqual([]);
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);

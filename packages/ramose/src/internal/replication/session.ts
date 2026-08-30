@@ -200,6 +200,14 @@ export class ReplicationSession {
   private readonly lease: ReplicaLease;
   private tracking: readonly (() => void)[] = [];
   private trackedDatabase: string | undefined;
+  /**
+   * The roots of the value this session currently publishes, kept alive against
+   * reachability GC. A published `Db` reads its nodes directly and no longer
+   * depends on the manifest, so a sweep that reclaimed superseded roots would
+   * otherwise turn it into a value that throws mid-query.
+   */
+  private releaseRetention: (() => void) | undefined;
+  private retainedDb: Db | undefined;
 
   private constructor(
     private readonly storage: IndexedDbReplicaStorage,
@@ -208,9 +216,14 @@ export class ReplicationSession {
     initial: BoundRestoredReplica | undefined,
     lease: ReplicaLease,
     registration: SessionRegistration | undefined,
+    retention: (() => void) | undefined,
     run: (session: ReplicationSession, generation: number) => Promise<void>,
   ) {
     this.lease = lease;
+    // Adopt the retention `open` took in the same synchronous block as the pin,
+    // rather than taking a second one over the same roots.
+    this.releaseRetention = retention;
+    this.retainedDb = initial?.db;
     this.state = Object.freeze({
       status: "connecting",
       ...(initial === undefined
@@ -300,6 +313,12 @@ export class ReplicationSession {
         await live?.close();
       },
     );
+    // Same synchronous block, for the same reason: a sweep beginning in the gap
+    // between reading this replica and constructing its session must already
+    // see the roots it depends on, or it could reclaim them as superseded.
+    const retention = restored === undefined
+      ? undefined
+      : options.storage.retainRoots(restored.identity, restored.db.roots);
     let candidate: ReplicaCacheCandidate | undefined;
     let lease: ReplicaLease;
     try {
@@ -318,6 +337,7 @@ export class ReplicationSession {
         : await options.storage.leaseFor(restored.identity);
     } catch (error) {
       for (const release of registration?.releases ?? []) release();
+      retention?.();
       throw error;
     }
     const session = new ReplicationSession(
@@ -327,6 +347,7 @@ export class ReplicationSession {
       restored,
       lease,
       registration,
+      retention,
       async (session, generation) => {
         let responseIdentity: ReplicationIdentity | undefined;
         let bindingConfirmed = restored !== undefined && candidateKey === undefined &&
@@ -450,6 +471,12 @@ export class ReplicationSession {
     } catch {
       // Close owns cancellation; non-cancellation failures were already observed.
     }
+    // A closed session is no longer a live holder, so its last value stops
+    // retaining nodes. The snapshot keeps carrying it for observers that are
+    // mid-render; nothing rebuilds a query from it.
+    this.releaseRetention?.();
+    this.releaseRetention = undefined;
+    this.retainedDb = undefined;
     const closed = Object.freeze({
       status: "closed" as const,
       ...(this.state.value === undefined ? {} : { value: this.state.value }),
@@ -464,8 +491,27 @@ export class ReplicationSession {
   }
 
   private publish(snapshot: ReplicationSessionSnapshot): void {
+    this.retain(snapshot.value);
     this.state = Object.freeze(snapshot);
     for (const observer of this.observers) this.notify(observer);
+  }
+
+  /**
+   * Move this session's root retention onto the value it is about to publish.
+   *
+   * The new retention is taken before the old one is released, and both happen
+   * in one synchronous step, so there is no instant in which the value being
+   * published is unreachable. The value this replaces is deliberately let go:
+   * superseded roots are exactly what a sweep exists to reclaim.
+   */
+  private retain(value: ReplicationSessionValue | undefined): void {
+    if (value?.db === this.retainedDb) return;
+    const release = value === undefined
+      ? undefined
+      : this.storage.retainRoots(value.identity, value.db.roots);
+    this.releaseRetention?.();
+    this.releaseRetention = release;
+    this.retainedDb = value?.db;
   }
 
   private notify(observer: ReplicationSessionObserver): void {
@@ -604,12 +650,13 @@ export class ReplicationSession {
           throw new Error("authenticated candidate action disagrees with its frame");
         }
         // Validate — and if it comes to it, quarantine — the committed value
-        // before this frame stages its replacement. Quarantine removes the
-        // partition's staging along with everything else, so running it
-        // afterwards would delete the staging record this very snapshot is
-        // being written into, and its commit could never install. Doing it
-        // first also lets the new staging record observe the absent committed
-        // revision as its base, so the commit is unconditionally installable.
+        // before this frame stages its replacement. Quarantine leaves staging
+        // alone, but it does remove the committed manifest, so running it
+        // afterwards would move the base revision out from under a staging
+        // record already opened against it and that snapshot's commit could
+        // never install. Doing it first lets the new staging record observe the
+        // absent committed revision as its base instead, so the commit is
+        // unconditionally installable.
         const restored = restoredReplica(
           await this.storage.restoreOutcome(
             frame.identity,
