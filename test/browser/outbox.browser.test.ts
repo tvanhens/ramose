@@ -21,6 +21,7 @@ import type {
   OutboxDraft,
   QueuedMapping,
 } from "../../packages/ramose/src/internal/replication/outbox.ts";
+import type { ClientRef } from "../../packages/ramose/src/db/refs.ts";
 import {
   mappingKey,
   mutationPartitionKey,
@@ -1195,10 +1196,20 @@ browserTest("no adversarial mapping can reach the mapping store", async ({ brows
     expect(refusals).toHaveLength(attacks.length);
     expect(JSON.stringify(await dumpMutations(name))).toBe(before);
 
-    // The legitimate mapping still lands and still releases nothing it should not.
-    await outbox.recordMappings(receiver, create.invocation, [
-      { clientRef: allocation, entityId: handle },
-    ], 1_700_000_000_000);
+    // An accessor that would answer the owned ref to the ownership check and a
+    // ref it does not own to the builder. Each field is read exactly once, so
+    // the two can never diverge: the mapping that lands is the one that was
+    // checked, and the ref it tried to smuggle in is never bound at all.
+    const foreign = clientRef();
+    let reads = 0;
+    await outbox.recordMappings(receiver, create.invocation, [{
+      get clientRef(): ClientRef {
+        reads++;
+        return reads === 1 ? allocation : foreign;
+      },
+      entityId: handle,
+    } as QueuedMapping], 1_700_000_000_000);
+    expect(reads).toBe(1);
     expect(await outbox.mappedRefs(scope)).toEqual(
       new Map([[
         mappingKey(mutationPartitionKey(receiver), allocation),

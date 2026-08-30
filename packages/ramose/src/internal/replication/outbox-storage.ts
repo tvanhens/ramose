@@ -28,7 +28,7 @@
 
 import * as Data from "effect/Data";
 import type { RuntimeBoundaries } from "../runtime-boundaries.ts";
-import type { ClientRef, EntityId, InvocationId } from "../../db/refs.ts";
+import type { InvocationId } from "../../db/refs.ts";
 import { isClientRef, isEntityId } from "../../db/refs.ts";
 import {
   abortTransaction,
@@ -691,25 +691,35 @@ export class IndexedDbOutbox {
   ): Promise<void> {
     const store = transaction.objectStore(MUTATION_MAPPINGS);
     const refs = transaction.objectStore(MUTATION_CLIENT_REFS);
-    for (const mapping of mappings) {
-      if (!isClientRef(mapping.clientRef) || !isEntityId(mapping.entityId)) {
+    // Materialized once, before anything is validated or looked up. The same
+    // rule the input snapshot follows: an accessor or proxy that answered one
+    // ref to the ownership check and another to the builder would install an
+    // immutable mapping for a ref this invocation does not own, and the ref
+    // that does own it could then never be mapped at all.
+    const claims = mappings.map((mapping) => ({
+      clientRef: mapping.clientRef,
+      entityId: mapping.entityId,
+    }));
+    for (const claim of claims) {
+      const { clientRef: ref, entityId } = claim;
+      if (!isClientRef(ref) || !isEntityId(entityId)) {
         throw new ClientRefMappingRefused({
           partition,
-          clientRef: String(mapping.clientRef),
+          clientRef: String(ref),
           reason: "not-a-ref-pair",
         });
       }
-      const sealing = sealingEpochOf(mapping.entityId);
+      const sealing = sealingEpochOf(entityId);
       if (sealing === undefined) {
         throw new ClientRefMappingRefused({
           partition,
-          clientRef: mapping.clientRef,
+          clientRef: ref,
           reason: "unreadable-handle",
         });
       }
       // Everything else about the row — including its timestamp — is the
       // canonical builder's business, below.
-      const key = [partition, mapping.clientRef];
+      const key = [partition, ref];
       const [allocation, current] = await Promise.all([
         requestResult<ClientRefRecord | undefined>(refs.get(key)),
         requestResult<ClientRefMappingRecord | undefined>(store.get(key)),
@@ -717,17 +727,15 @@ export class IndexedDbOutbox {
       if (allocation === undefined || allocation.invocation !== invocation) {
         throw new ClientRefMappingRefused({
           partition,
-          clientRef: mapping.clientRef,
+          clientRef: ref,
           reason: "not-allocated-here",
         });
       }
       if (current !== undefined) {
-        if (
-          current.invocation !== invocation || current.entityId !== mapping.entityId
-        ) {
+        if (current.invocation !== invocation || current.entityId !== entityId) {
           throw new ClientRefMappingRefused({
             partition,
-            clientRef: mapping.clientRef,
+            clientRef: ref,
             reason: "already-mapped",
           });
         }
@@ -735,9 +743,9 @@ export class IndexedDbOutbox {
       }
       store.add(buildClientRefMapping({
         partition,
-        clientRef: mapping.clientRef as ClientRef,
-        entityId: mapping.entityId as EntityId,
-        sealing: sealing as SealingEpoch,
+        clientRef: ref,
+        entityId,
+        sealing,
         invocation,
         mappedAt,
       }));
