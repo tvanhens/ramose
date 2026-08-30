@@ -62,6 +62,9 @@ export {
   reshapePullResult,
 } from "./Pull.ts";
 export * as Query from "./query/surface.ts";
+// The canonical plain-data query representation (#486). Portable, transport
+// free, and compiled onto the same engine the fluent builder targets.
+export * as QueryDocument from "./query/document/index.ts";
 export {
   Q,
   isPipeline,

@@ -422,6 +422,14 @@ const normalizeProj = (proj: unknown): Exclude<Projection, DistinctSpec<any>> | 
 const focusOf = (proj: unknown): AnyVar | undefined => {
   if (isVar(proj)) return proj;
   if (isPullSpec(proj)) return proj.focus;
+  // `Q.row(Q.pull(focus, …), extras)` — the merged cells ride beside the
+  // same entity, so the pull's root is still the row's order / paging
+  // focus. Without this an enriched row could not order by an attribute
+  // path or carry a keyset cursor.
+  if (isRowsSpec(proj)) {
+    const base = (proj.cells as CellRecord)["…"];
+    if (isPullSpec(base)) return base.focus;
+  }
   return undefined;
 };
 
