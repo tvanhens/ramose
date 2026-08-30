@@ -1763,6 +1763,57 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
       });
 
+      test("an opened input handle consumed by the commit replays through the same fence", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-input-consumed";
+        await install(base, database);
+        const token = await signToken(
+          database,
+          "member",
+          "user_sealed_input_consumed",
+        );
+        const created = await invokeWith(base, database, token, {
+          invocationId: "sealed-input-consumed-create-01",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeOther" },
+            localName: "createAllocating",
+          },
+          input: { name: "Consumed" },
+          allocations: [{ slot: "other", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+        const entityId = created.body.mappings[0].entityId as string;
+
+        // The entity this input names is deleted by the very commit that
+        // consumed it, so the replay has nothing left to resolve. It survives
+        // only through the durable fence's consumed-ref exemption, which is
+        // matched against the *decoded* input — and that is exactly why the
+        // handle is opened before the digest rather than after: an opened
+        // handle has to participate as the numeric eid it resolved to, or a
+        // lost acknowledgement would turn into a permanent refusal.
+        const body = {
+          invocationId: "sealed-input-consumed-01",
+          operation: {
+            owner: { kind: "entity" as const, name: "nativeItem" },
+            localName: "deleteHiddenOther",
+          },
+          input: { id: entityId },
+        };
+        const consumed = await invokeWith(base, database, token, body);
+        expect(consumed.status).toBe(200);
+        expect(consumed.body.result).toEqual({ name: "CONSUMED" });
+
+        const receiptsBefore = await operationReceiptCount(base, database);
+        const replayed = await invokeWith(base, database, token, body);
+        expect(replayed.status).toBe(200);
+        expect(replayed.body).toEqual(consumed.body);
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeOther/name "Consumed"]]',
+        });
+        expect(rows.body.result).toEqual([]);
+      });
+
       test("input handles carry the target position's exact failure taxonomy", async () => {
         const base = ctx.urls().nativeOperationsUrl;
         const database = "operations-sealed-input-taxonomy";

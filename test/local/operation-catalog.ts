@@ -53,6 +53,7 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-mcp-budget",
   "operations-sealed-input",
   "operations-sealed-input-taxonomy",
+  "operations-sealed-input-consumed",
   "operations-client-input-refs",
 ]);
 
