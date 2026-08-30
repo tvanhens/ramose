@@ -9,7 +9,7 @@ import Next from "../../../components/Next.astro";
 *New here? Start with [React and offline UX](/guides/react/).*
 
 :::note[Available today]
-`RamoseProvider`, `useDb`, `useQuery`, `useReceipt`, and `useSyncState` ship now. A Suspense-compatible option is not part of the adapter yet. On React 19, `receipt.committed` is a real promise, so `use()` suspends on one invocation without help from Ramose; React 18 has no `use()`, so branch on `useReceipt`'s status there.
+`RamoseProvider`, `useDb`, `useQuery`, `useReceipt`, and `useSyncState` ship now. A Suspense-compatible option does not: on React 19, `receipt.committed` is a promise `use()` already suspends on, and React 18 has no `use()`.
 :::
 
 ```tsx
@@ -78,7 +78,7 @@ Entity results expose `.data`, `.local`, and `.mutate`. Components rerender when
 />
 ```
 
-Use a row's `id` as its React key. It is an opaque `EntityId`, stable for the same server, principal, and database, so it survives reloads and new sessions and is safe to persist or put in a route. It means nothing outside that scope — another principal or another database resolves it as denied — so do not share one between principals. An entity created offline carries a `ClientRef` until its `EntityId` arrives: the handle keeps its object identity across that swap, but the `id` string changes, so a row keyed on `id` remounts once when the server's id lands.
+Use a row's `id` as its React key. It is an opaque `EntityId`, stable for the same server, principal, and database, so it survives reloads and is safe in a route; another principal or database resolves it as denied. An entity created offline carries a `ClientRef` until its `EntityId` arrives, so a row keyed on `id` remounts once at that swap.
 
 ## useReceipt
 
@@ -86,12 +86,10 @@ Use a row's `id` as its React key. It is an opaque `EntityId`, stable for the sa
 const [receipt, setReceipt] = useState<Receipt | null>(null)
 const state = useReceipt(receipt)
 
-<button onClick={() => setReceipt(db.mutate.createTask({ title }))}>
-  {state.status === "pending" || state.status === "queued" ? "Saving…" : "Save"}
-</button>
+<button onClick={() => setReceipt(db.mutate.createTask({ title }))}>Save</button>
 ```
 
-Observes one invocation and returns `ReceiptView`:
+Observes one invocation, returning `ReceiptView`:
 
 ```ts
 type ReceiptView =
@@ -103,11 +101,11 @@ type ReceiptView =
   | { status: "failed"; error: Error }
 ```
 
-Every member but `idle` is the client's own `ReceiptState`, passed through unchanged: React adds no second mutation state machine.
+Every member but `idle` is the client's `ReceiptState`, unchanged: React adds no second mutation state machine.
 
-`idle` is what a component reads before it holds a receipt — `null` and `undefined` both produce it — so the hook can be called unconditionally on the first render. It is distinct from `pending`: `pending` means a real invocation exists and has not reached the outbox yet, so a form tells "not submitted" from "submitting" without a second flag beside the receipt. `queued` means the invocation is durable and will be submitted, this session or a later one. `failed` means it never reached the outbox, so nothing durable exists and nothing will be retried.
+`idle` is what a component reads before it holds a receipt — `null` and `undefined` both give it — so the hook can be called unconditionally. `pending` means a real invocation has not reached the outbox; `failed` means it never will.
 
-Hold the receipt in state rather than rebuilding it during render, which would invoke once per render. Unmounting cancels nothing: a queued invocation proceeds without an observer, and a later component handed the same receipt reads whatever state it reached, terminal states included.
+Hold the receipt in state: rebuilding it during render would invoke once per render. Unmounting cancels nothing — a queued invocation is durable and proceeds without an observer.
 
 Use this hook when output or rejection drives UI; use `entity.local.pending` for quiet row feedback.
 
