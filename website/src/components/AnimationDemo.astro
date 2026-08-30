@@ -78,6 +78,16 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
     return { index, phase: cues[index][1] };
   };
 
+  const alignInstantDrop = (demo: Demo) => {
+    const source = demo.querySelector<HTMLElement>(".instant-slot--source");
+    const target = demo.querySelector<HTMLElement>(".instant-slot--target");
+    if (!source || !target) return;
+    const sourceBounds = source.getBoundingClientRect();
+    const targetBounds = target.getBoundingClientRect();
+    demo.style.setProperty("--instant-drop-x", `${targetBounds.left - sourceBounds.left}px`);
+    demo.style.setProperty("--instant-drop-y", `${targetBounds.top - sourceBounds.top}px`);
+  };
+
   const updateInstant = (demo: Demo, progress: number) => {
     const { index, phase } = cue(progress, [
       [0, "ready"],
@@ -234,6 +244,10 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
     history: updateHistory,
   };
 
+  const instantResize = new ResizeObserver((entries) => {
+    entries.forEach(({ target }) => alignInstantDrop(target as Demo));
+  });
+
   document.querySelectorAll<Demo>("[data-animation-demo]").forEach((demo) => {
     if (demo.dataset.animationDemoBound === "true") return;
     const variant = demo.dataset.animationVariant;
@@ -241,6 +255,10 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
     demo.dataset.animationDemoBound = "true";
     const duration = Number(demo.dataset.animationDuration) || 10000;
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (variant === "instant") {
+      alignInstantDrop(demo);
+      instantResize.observe(demo);
+    }
     let elapsed = variant === "agents" ? duration * 0.24 : 0;
     let previous = performance.now();
     let frame = 0;

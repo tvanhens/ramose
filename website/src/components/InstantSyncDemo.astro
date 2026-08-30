@@ -45,7 +45,16 @@ const steps = [
             </section>
             <section class="instant-column">
               <header><span>In progress</span><b data-instant-doing-count>1</b></header>
-              <div class="instant-slot instant-slot--source"></div>
+              <div class="instant-slot instant-slot--source">
+                <div class="instant-drag-card">
+                  <i class="instant-checkbox"></i>
+                  <span><strong>Polish onboarding</strong><small>RAM-221</small></span>
+                  <b class="instant-avatar is-bright">A</b>
+                  <svg viewBox="0 0 12 18" aria-hidden="true">
+                    <path d="M1 1 L1 13.6 L4.4 10.4 L6.9 16 L9.4 14.9 L6.9 9.4 L11 8.9 Z"></path>
+                  </svg>
+                </div>
+              </div>
             </section>
             <section class="instant-column">
               <header><span>Done</span><b data-instant-done-count>1</b></header>
@@ -56,14 +65,6 @@ const steps = [
               </div>
               <div class="instant-slot instant-slot--target"></div>
             </section>
-            <div class="instant-drag-card">
-              <i class="instant-checkbox"></i>
-              <span><strong>Polish onboarding</strong><small>RAM-221</small></span>
-              <b class="instant-avatar is-bright">A</b>
-              <svg viewBox="0 0 12 18" aria-hidden="true">
-                <path d="M1 1 L1 13.6 L4.4 10.4 L6.9 16 L9.4 14.9 L6.9 9.4 L11 8.9 Z"></path>
-              </svg>
-            </div>
             <span class="instant-local"><i></i>committed locally · 0.4 ms</span>
           </div>
         </div>
@@ -325,6 +326,7 @@ const steps = [
   }
 
   .instant-slot {
+    box-sizing: border-box;
     height: 3.4rem;
     margin-top: 0.6rem;
     border: 1px dashed #2a221e;
@@ -336,13 +338,16 @@ const steps = [
     margin-top: 0.4rem;
   }
 
+  .instant-slot--source {
+    position: relative;
+  }
+
   .instant-drag-card {
     position: absolute;
     z-index: 3;
-    top: 2rem;
-    left: calc(33.333% + 0.183rem);
-    width: calc(33.333% - 0.366rem);
-    height: 3.525rem;
+    inset: -1px;
+    width: auto;
+    height: auto;
     margin: 0;
     border-color: #4a3529;
     background: #1c1512;
@@ -632,7 +637,7 @@ const steps = [
     .instant-drag-card {
       border-color: #6d3f27;
       box-shadow: 0 0 1.6rem -0.7rem rgba(255, 77, 8, 0.45);
-      transform: translate3d(calc(100% + 0.55rem), 3.8rem, 0);
+      transform: translate3d(var(--instant-drop-x), var(--instant-drop-y), 0);
     }
 
     .instant-drag-card .instant-checkbox {
@@ -774,20 +779,6 @@ const steps = [
 
     .instant-avatar {
       display: none;
-    }
-
-    .instant-drag-card {
-      left: calc(33.333% + 0.1rem);
-      width: calc(33.333% - 0.2rem);
-    }
-
-    :global([data-animation-phase="commit"]),
-    :global([data-animation-phase="sync"]),
-    :global([data-animation-phase="converge"]),
-    :global([data-animation-phase="settle"]) {
-      .instant-drag-card {
-        transform: translate3d(calc(100% + 0.3rem), 3.8rem, 0);
-      }
     }
 
     .instant-local {
