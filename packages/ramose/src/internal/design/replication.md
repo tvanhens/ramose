@@ -275,8 +275,9 @@ currently installed client hash and compare it before `dbFromRecord` or any
 other `Db` construction. A mismatch removes only that committed replica,
 its committed head and local candidate bindings, staging/chunks, its
 partitioned content-addressed nodes, and its exact local credential binding.
-It never deletes the IndexedDB database or future outbox, receipt, client-ref,
-or optimistic store families.
+It never deletes the IndexedDB database or the mutation store families —
+#475's outbox, queue cursors, receipts, ClientRefs and their mappings, or
+#476's future optimistic layers.
 
 IndexedDB schema version 4 upgrades the landed replica stores conditionally.
 Compatible version-2/3 manifests carrying the confirmed hash survive. Legacy
@@ -335,8 +336,12 @@ revision.
 The `replica-cache-candidates-v1` and `replica-committed-heads-v1` object stores
 are separate from heavy committed manifests, exact credential bindings,
 staging, and content nodes. Candidate selection reads only those two bounded
-stores. Future outbox, receipt, ClientRef, and optimistic-layer stores remain
-independently clearable and are never part of candidate lookup or rebinding.
+stores. The mutation store families — outbox, queue cursors, receipts,
+ClientRefs and their mappings, and #476's future optimistic layers — are keyed
+by the stable server/principal/database triple rather than by the replica
+partition, so a read-view change or a database eviction leaves them intact.
+They are never part of candidate lookup or rebinding, and only an explicit
+scoped clear removes them, in the same transaction as the replicas.
 
 ## Integrity validation and corruption recovery
 

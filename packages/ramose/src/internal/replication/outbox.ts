@@ -87,6 +87,24 @@ export const mutationPartitionKey = (scope: ReplicaDatabaseScope): string =>
 export const mutationScopePrefix = (scope: ReplicaScope): string =>
   [PARTITION_DOMAIN, scope.server, scope.principal, ""].join(":");
 
+/**
+ * The receiver a partition key names. The components never contain the
+ * separator, so the key is exactly reversible — which is what lets a queue
+ * holding only an unreadable row still report which database it belongs to.
+ */
+export const parseMutationPartitionKey = (
+  partition: string,
+): ReplicaDatabaseScope | undefined => {
+  const parts = partition.split(":");
+  if (parts.length !== 4 || parts[0] !== PARTITION_DOMAIN) return undefined;
+  if (parts[1] === "" || parts[2] === "" || parts[3] === "") return undefined;
+  return Object.freeze({
+    server: parts[1]!,
+    principal: parts[2]!,
+    database: parts[3]!,
+  });
+};
+
 /** The permanent semantic identity of an operation, across every deployment. */
 export type QueuedOperation = {
   readonly catalog: CatalogId;
@@ -214,6 +232,14 @@ export class OutboxRecordInvalid extends Data.TaggedError(
   "OutboxRecordInvalid",
 )<{ readonly reason: string }> {}
 
+/**
+ * One invocation id reused for a different intent. Never a silent overwrite:
+ * the durable record that already exists is the one that will be submitted.
+ */
+export class OutboxInvocationConflict extends Data.TaggedError(
+  "OutboxInvocationConflict",
+)<{ readonly invocation: InvocationId; readonly partition: string }> {}
+
 const reject = (reason: string): never => {
   throw new OutboxRecordInvalid({ reason });
 };
@@ -242,7 +268,13 @@ const assertJsonValue = (value: unknown, at: string, seen: Set<object>): void =>
   if (seen.has(object)) reject(`input at ${at} is cyclic`);
   seen.add(object);
   if (Array.isArray(object)) {
-    object.forEach((item, index) => assertJsonValue(item, `${at}[${index}]`, seen));
+    for (let index = 0; index < object.length; index++) {
+      // An index-wise walk, not `forEach`: a hole in a sparse array is skipped
+      // by `forEach` but becomes `null` the moment the value is serialized for
+      // the wire, which would change the invocation digest after the fact.
+      if (!(index in object)) reject(`input at ${at}[${index}] is a hole`);
+      assertJsonValue(object[index], `${at}[${index}]`, seen);
+    }
   } else {
     const prototype = Object.getPrototypeOf(object);
     if (prototype !== Object.prototype && prototype !== null) {
@@ -410,6 +442,21 @@ export const buildOutboxRecord = (
 };
 
 /**
+ * Whether two records express the same durable intent.
+ *
+ * Everything a submission depends on is compared; the wall-clock stamp is not,
+ * because a retry of one intent legitimately happens later. Used to make a
+ * re-enqueue of an invocation id idempotent instead of a constraint failure the
+ * caller cannot tell apart from genuine reuse.
+ */
+export const sameOutboxIntent = (
+  left: OutboxRecord,
+  right: OutboxRecord,
+): boolean =>
+  JSON.stringify({ ...left, enqueuedAt: 0 }) ===
+    JSON.stringify({ ...right, enqueuedAt: 0 });
+
+/**
  * Every client ref this record must have a durable mapping for before it can
  * be submitted, in a stable order: the target first, then declared input
  * positions in declaration order.
@@ -433,18 +480,29 @@ export const outboxDependencies = (
 const allocatesItself = (record: OutboxRecord, ref: ClientRef): boolean =>
   record.allocations.some((allocation) => allocation.clientRef === ref);
 
+export type QuarantineReason = "codec-version" | "key-epoch";
+
 export type OutboxEntryState =
   | { readonly type: "ready" }
   | { readonly type: "blocked"; readonly missing: readonly ClientRef[] }
   /** Data-free, exactly like the authoritative resolver's quarantine. */
-  | {
-    readonly type: "update-required";
-    readonly reason: "codec-version" | "key-epoch";
-  };
+  | { readonly type: "update-required"; readonly reason: QuarantineReason };
+
+/**
+ * Durable mappings are keyed by receiver partition as well as client ref. A
+ * ref resolved in one database says nothing about a sibling: the handle it
+ * maps to is sealed to *that* database's scope, so treating one shared set of
+ * refs as global would release a queue whose partition has no mapping at all.
+ */
+export const mappingKey = (partition: string, ref: ClientRef): string =>
+  `${partition}\u0000${ref}`;
 
 export type OutboxDecisionContext = {
-  /** Client refs that already have a durable authoritative mapping. */
-  readonly mapped: ReadonlySet<string>;
+  /**
+   * Durable authoritative mappings, keyed by {@link mappingKey}, carrying the
+   * sealing epoch the mapped handle was minted under.
+   */
+  readonly mapped: ReadonlyMap<string, SealingEpoch>;
   /**
    * The server sealing-key epoch currently confirmed for this scope, when one
    * is known. `undefined` — offline, or before the first authenticated
@@ -454,29 +512,50 @@ export type OutboxDecisionContext = {
   readonly keyId?: string | undefined;
 };
 
+/** Why this build cannot use a sealed handle minted under `epoch`, if at all. */
+const quarantineReason = (
+  epoch: SealingEpoch,
+  keyId: string | undefined,
+): QuarantineReason | undefined => {
+  if (epoch.codecVersion !== ENTITY_ID_CODEC) return "codec-version";
+  if (keyId === undefined) return undefined;
+  return decideServerIdentityBinding(epoch.keyId, keyId).type === "incompatible"
+    ? "key-epoch"
+    : undefined;
+};
+
 /**
- * The state of one queued record. Quarantine is decided first and from the
- * record's own preamble, so an unreadable codec or a replaced key epoch is
- * never reported as an ordinary missing dependency.
+ * The state of one queued record.
+ *
+ * Quarantine is decided first — from the record's own preamble, then from the
+ * epochs of the handles its dependencies already resolve to — so a key
+ * rotation is never reported as an ordinary missing dependency, and a record
+ * whose only sealed handle arrives *through* a mapping still surfaces the
+ * promised data-free `update-required` rather than looking submittable.
  */
 export const decideOutboxEntry = (
   record: OutboxRecord,
   context: OutboxDecisionContext,
 ): OutboxEntryState => {
   if (record.sealing !== null) {
-    if (record.sealing.codecVersion !== ENTITY_ID_CODEC) {
-      return Object.freeze({ type: "update-required", reason: "codec-version" });
-    }
-    if (context.keyId !== undefined) {
-      const binding = decideServerIdentityBinding(record.sealing.keyId, context.keyId);
-      if (binding.type === "incompatible") {
-        return Object.freeze({ type: "update-required", reason: "key-epoch" });
-      }
+    const reason = quarantineReason(record.sealing, context.keyId);
+    if (reason !== undefined) {
+      return Object.freeze({ type: "update-required", reason });
     }
   }
-  const missing = outboxDependencies(record).filter((ref) =>
-    !context.mapped.has(ref) && !allocatesItself(record, ref)
-  );
+  const missing: ClientRef[] = [];
+  for (const ref of outboxDependencies(record)) {
+    if (allocatesItself(record, ref)) continue;
+    const epoch = context.mapped.get(mappingKey(record.partition, ref));
+    if (epoch === undefined) {
+      missing.push(ref);
+      continue;
+    }
+    const reason = quarantineReason(epoch, context.keyId);
+    if (reason !== undefined) {
+      return Object.freeze({ type: "update-required", reason });
+    }
+  }
   if (missing.length > 0) {
     return Object.freeze({ type: "blocked", missing: Object.freeze(missing) });
   }
@@ -488,6 +567,16 @@ const READY = Object.freeze({ type: "ready" }) as OutboxEntryState;
 export type OutboxEntry = {
   readonly record: OutboxRecord;
   readonly state: OutboxEntryState;
+};
+
+/**
+ * One stored row this build could not decode, named by the primary key
+ * IndexedDB derived from its key path — the one part of a broken row that is
+ * still trustworthy.
+ */
+export type UnreadableOutboxRow = {
+  readonly partition: string;
+  readonly sequence: number;
 };
 
 /** The single next action for one receiver database's FIFO queue. */
@@ -502,66 +591,111 @@ export type OutboxHead =
   | {
     readonly type: "update-required";
     readonly record: OutboxRecord;
-    readonly reason: "codec-version" | "key-epoch";
-  };
+    readonly reason: QuarantineReason;
+  }
+  /**
+   * The next row in durable order cannot be interpreted by this build. The
+   * queue holds: submitting the record behind it would execute out of order,
+   * and discarding it would destroy durable work.
+   */
+  | { readonly type: "unreadable"; readonly sequence: number };
 
 export type OutboxPartitionPlan = {
   readonly partition: string;
   readonly receiver: ReplicaDatabaseScope;
   readonly entries: readonly OutboxEntry[];
+  /** Rows of this queue this build could not decode, in durable order. */
+  readonly unreadable: readonly UnreadableOutboxRow[];
   readonly head: OutboxHead;
 };
 
 const EMPTY_HEAD = Object.freeze({ type: "empty" }) as OutboxHead;
 
+const headOf = (
+  entry: OutboxEntry | undefined,
+  unreadableAt: number | undefined,
+): OutboxHead => {
+  // Durable order decides, so an unreadable row ahead of the first readable
+  // record holds the queue rather than being skipped over.
+  if (
+    unreadableAt !== undefined &&
+    (entry === undefined || unreadableAt < entry.record.sequence)
+  ) {
+    return Object.freeze({ type: "unreadable", sequence: unreadableAt });
+  }
+  if (entry === undefined) return EMPTY_HEAD;
+  switch (entry.state.type) {
+    case "ready":
+      return Object.freeze({ type: "ready", record: entry.record });
+    case "blocked":
+      return Object.freeze({
+        type: "blocked",
+        record: entry.record,
+        missing: entry.state.missing,
+      });
+    case "update-required":
+      return Object.freeze({
+        type: "update-required",
+        record: entry.record,
+        reason: entry.state.reason,
+      });
+  }
+};
+
+type OutboxBucket = {
+  readonly records: OutboxRecord[];
+  readonly unreadable: UnreadableOutboxRow[];
+};
+
 /**
- * Group durable records into one plan per receiver database, in FIFO order.
+ * Group durable rows into one plan per receiver database, in FIFO order.
  *
- * The head is the *first* record of each queue and nothing else. A blocked or
- * quarantined head holds its own database — that is what preserves per-database
- * FIFO — while every other database's head is decided independently, so an
- * unmapped ref in one database never stalls another.
+ * The head is the first row of each queue in durable sequence order and
+ * nothing else. A blocked, quarantined, or unreadable head holds its own
+ * database — that is what preserves per-database FIFO — while every other
+ * database's head is decided independently, so an unmapped ref or a corrupt
+ * row in one database never stalls another.
  */
 export const planOutbox = (
   records: readonly OutboxRecord[],
+  unreadable: readonly UnreadableOutboxRow[],
   context: OutboxDecisionContext,
 ): readonly OutboxPartitionPlan[] => {
-  const grouped = new Map<string, OutboxRecord[]>();
-  for (const record of records) {
-    const bucket = grouped.get(record.partition);
-    if (bucket === undefined) grouped.set(record.partition, [record]);
-    else bucket.push(record);
-  }
+  const grouped = new Map<string, OutboxBucket>();
+  const bucketFor = (partition: string): OutboxBucket => {
+    const existing = grouped.get(partition);
+    if (existing !== undefined) return existing;
+    const created: OutboxBucket = { records: [], unreadable: [] };
+    grouped.set(partition, created);
+    return created;
+  };
+  for (const record of records) bucketFor(record.partition).records.push(record);
+  for (const row of unreadable) bucketFor(row.partition).unreadable.push(row);
   return Object.freeze(
     [...grouped.entries()]
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([partition, bucket]) => {
-        const ordered = [...bucket].sort((left, right) => left.sequence - right.sequence);
+      .flatMap(([partition, bucket]) => {
+        const receiver = bucket.records[0]?.receiver ??
+          parseMutationPartitionKey(partition);
+        // A partition key that does not parse and holds no readable record
+        // names no receiver: there is nothing to plan and nothing to submit.
+        if (receiver === undefined) return [];
+        const ordered = [...bucket.records].sort(
+          (left, right) => left.sequence - right.sequence,
+        );
+        const broken = [...bucket.unreadable].sort(
+          (left, right) => left.sequence - right.sequence,
+        );
         const entries = ordered.map((record) =>
           Object.freeze({ record, state: decideOutboxEntry(record, context) })
         );
-        const first = entries[0];
-        const head: OutboxHead = first === undefined
-          ? EMPTY_HEAD
-          : first.state.type === "ready"
-            ? Object.freeze({ type: "ready", record: first.record })
-            : first.state.type === "blocked"
-              ? Object.freeze({
-                type: "blocked",
-                record: first.record,
-                missing: first.state.missing,
-              })
-              : Object.freeze({
-                type: "update-required",
-                record: first.record,
-                reason: first.state.reason,
-              });
-        return Object.freeze({
+        return [Object.freeze({
           partition,
-          receiver: ordered[0]!.receiver,
+          receiver,
           entries: Object.freeze(entries),
-          head,
-        });
+          unreadable: Object.freeze(broken),
+          head: headOf(entries[0], broken[0]?.sequence),
+        })];
       }),
   );
 };
@@ -627,6 +761,15 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
     !isPlainObject(value.receiver) || typeof value.receiver.server !== "string" ||
     typeof value.receiver.principal !== "string" || typeof value.receiver.database !== "string"
   ) return undefined;
+  // The partition and the receiver it claims must be the same realm: a record
+  // filed under one database while naming another would submit somewhere its
+  // FIFO position never guarded.
+  const receiver = {
+    server: value.receiver.server,
+    principal: value.receiver.principal,
+    database: value.receiver.database,
+  };
+  if (mutationPartitionKey(receiver) !== value.partition) return undefined;
   if (
     !isPlainObject(value.operation) || typeof value.operation.catalog !== "string" ||
     typeof value.operation.localName !== "string" || value.operation.localName.length === 0 ||
@@ -671,11 +814,7 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
     sequence: value.sequence,
     invocation: value.invocation,
     scope: value.scope,
-    receiver: Object.freeze({
-      server: value.receiver.server,
-      principal: value.receiver.principal,
-      database: value.receiver.database,
-    }),
+    receiver: Object.freeze(receiver),
     operation: Object.freeze({
       catalog: value.operation.catalog as CatalogId,
       owner: Object.freeze({

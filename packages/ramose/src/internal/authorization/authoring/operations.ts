@@ -782,6 +782,10 @@ export const snapshotOwnedOperations = (
           },
           composers: composers.map((entity) => entity.name),
           writes: writes.map((entity) => entity.name),
+          // Inert declaration only: slot names and the output paths they bind.
+          // It rotates the version because a queued invocation pins that
+          // version before it can be submitted.
+          allocations: operation.allocations ?? [],
         }) as OperationVersionDescriptor,
         inputShape: deepFreeze(inputShape),
         outputShape: deepFreeze(outputShape),

@@ -19,16 +19,29 @@ import {
 
 const Issue = Entity("allocIssue", { title: string() });
 
-/** Only entity-reference positions of the declared output are addressable. */
-type Output = {
-  readonly issue: number;
-  readonly nested: { readonly child: number };
-  readonly title: string;
-};
+/**
+ * Only entity-reference positions of the declared output codec are
+ * addressable, and the decision is made on the schema: `count` decodes to the
+ * same `number` an `EntityId` does, and is still not a path.
+ */
+const Output = Schema.Struct({
+  issue: EntityId,
+  nested: Schema.Struct({ child: EntityId }),
+  many: Schema.Array(EntityId),
+  title: Schema.String,
+  count: Schema.Finite,
+});
 export type _paths = Expect<
-  Equal<EntityRefPath<Output>, readonly ["issue"] | readonly ["nested", "child"]>
+  Equal<
+    EntityRefPath<typeof Output>,
+    | readonly ["issue"]
+    | readonly ["nested", "child"]
+    | readonly ["many", number]
+  >
 >;
-export type _none = Expect<Equal<EntityRefPath<{ readonly title: string }>, never>>;
+export type _none = Expect<
+  Equal<EntityRefPath<typeof Schema.Struct<{ title: typeof Schema.String }>>, never>
+>;
 
 const created = Operation({
   input: Schema.Struct({ title: Schema.String }),
@@ -47,6 +60,14 @@ Operation({
   // @ts-expect-error a title is not an entity-reference position
   allocates: { title: ["title"] },
   run: () => ({ title: "x" }),
+});
+
+Operation({
+  input: Schema.Struct({}),
+  output: Schema.Struct({ count: Schema.Finite }),
+  // @ts-expect-error an ordinary number decodes like an entity id but is not one
+  allocates: { count: ["count"] },
+  run: () => ({ count: 1 }),
 });
 
 Operation({

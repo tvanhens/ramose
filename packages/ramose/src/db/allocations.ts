@@ -27,6 +27,8 @@
  * the next slice) covers a value that cannot depend on author key order.
  */
 
+import type { RamoseVt } from "./valueTypes.ts";
+
 /** One addressable position inside a decoded operation output. */
 export type AllocationPathSegment = string | number;
 
@@ -42,27 +44,35 @@ export type AllocationSlots = readonly AllocationSlot[];
 type Decrement = [never, 0, 1, 2, 3, 4];
 
 /**
- * Every path through `Output` that lands on an entity-reference position — the
- * decoded type of a `Ramose.EntityId` output slot. Bounded depth keeps the
- * type finite for recursive schemas; a deeper allocation target is not
- * expressible, which is the intended pressure toward flat output contracts.
+ * Every path through an output *codec* that lands on an entity-reference slot.
+ *
+ * It walks the schema, not the decoded type. A decoded `Ramose.EntityId` and a
+ * decoded `Schema.Number` are both `number`, so a decoded-type walk would let
+ * `allocates: { issue: ["count"] }` type-check and bind a durable client ref to
+ * an ordinary integer. The `RamoseVt<"ref">` brand only exists on the schema,
+ * so matching it there is what makes the contract real.
+ *
+ * `Struct` exposes `fields` and `Array` exposes `value`; anything else — a
+ * string, a literal, a union — has no entity-reference position and yields
+ * `never`. Bounded depth keeps the type finite for recursive schemas, which is
+ * the intended pressure toward flat output contracts.
  */
-export type EntityRefPath<Output, Depth extends number = 5> = [Depth] extends
+export type EntityRefPath<OCodec, Depth extends number = 5> = [Depth] extends
   [never] ? never
-  : [Output] extends [number] ? readonly []
-  : Output extends readonly (infer Item)[]
+  : OCodec extends RamoseVt<"ref"> ? readonly []
+  : OCodec extends { readonly value: infer Item }
     ? EntityRefPath<Item, Decrement[Depth]> extends
       infer Tail extends readonly AllocationPathSegment[]
       ? readonly [number, ...Tail]
     : never
-  : Output extends object ? {
-      [Key in keyof Output & string]: EntityRefPath<
-        Output[Key],
+  : OCodec extends { readonly fields: infer Fields } ? {
+      [Key in keyof Fields & string]: EntityRefPath<
+        Fields[Key],
         Decrement[Depth]
       > extends infer Tail extends readonly AllocationPathSegment[]
         ? readonly [Key, ...Tail]
         : never;
-    }[keyof Output & string]
+    }[keyof Fields & string]
   : never;
 
 /**
@@ -70,8 +80,8 @@ export type EntityRefPath<Output, Depth extends number = 5> = [Depth] extends
  * Only entity-reference positions of the operation's own declared output
  * type-check, so a slot cannot be bound to a title or a count.
  */
-export type AllocationDeclaration<Output> = {
-  readonly [slot: string]: EntityRefPath<Output>;
+export type AllocationDeclaration<OCodec> = {
+  readonly [slot: string]: EntityRefPath<OCodec>;
 };
 
 /** Conservative, stable, and safe as an object key and in a canonical digest. */

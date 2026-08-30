@@ -963,7 +963,7 @@ type OwnedOperationSpec<
    * server has committed it; only entity-reference positions type-check, so a
    * slot cannot be bound to a title or a count.
    */
-  readonly allocates?: AllocationDeclaration<CodecType<OCodec>>;
+  readonly allocates?: AllocationDeclaration<OCodec>;
   /**
    * Author-declared executable revision (default `1`). The operation-scoped
    * compatibility version (#487) excludes executable source, so bumping this

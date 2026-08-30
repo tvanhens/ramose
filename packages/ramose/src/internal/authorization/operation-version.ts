@@ -13,8 +13,11 @@
  * - the normalized semantic input and output contracts: the declared schema
  *   representation plus the lowered Ramose shape;
  * - the public precondition and allocation behavior: the admissible composer
- *   entity names for a targeted trait operation, and the declared write
- *   entity names;
+ *   entity names for a targeted trait operation, the declared write entity
+ *   names, and the ordered named client-ref allocation slots with the output
+ *   paths they bind (#475) — an offline client pins this version *before* it
+ *   can submit, so moving a slot's output path has to rotate the version or a
+ *   queued invocation would bind its client ref to a different entity;
  * - the author-declared executable revision.
  *
  * ## What it must never cover
@@ -30,6 +33,7 @@
  */
 
 import * as Effect from "effect/Effect";
+import type { AllocationSlots } from "../../db/allocations.ts";
 import type { OperationInputShape } from "./catalog.ts";
 import { hashDomainSeparatedCanonicalJson } from "./decode.ts";
 import {
@@ -42,8 +46,12 @@ import type { JsonValue } from "./json.ts";
 
 const OPERATION_VERSION_DOMAIN_V1 = "ramose/operation-version/v1\0";
 
-/** Canonical descriptor generation. Bumping it rotates every version. */
-export const OPERATION_VERSION_DESCRIPTOR_VERSION = 1 as const;
+/**
+ * Canonical descriptor generation. Bumping it rotates every version.
+ *
+ * 2 added the named client-ref allocation declaration (#475).
+ */
+export const OPERATION_VERSION_DESCRIPTOR_VERSION = 2 as const;
 
 /** Revision assumed when an operation does not declare one. */
 export const DEFAULT_OPERATION_REVISION = 1;
@@ -67,6 +75,11 @@ export type OperationVersionDescriptor = {
   readonly composers: readonly string[];
   /** Entity definitions this operation may allocate or write. */
   readonly writes: readonly string[];
+  /**
+   * Named client-ref allocation slots, already canonically ordered by slot
+   * name, each with the entity-reference output path it binds.
+   */
+  readonly allocations: AllocationSlots;
 };
 
 /**
@@ -332,6 +345,14 @@ export const operationVersionMaterial = (
   behavior: {
     composers: [...sortedNames(descriptor.composers)],
     writes: [...sortedNames(descriptor.writes)],
+    // Already canonically ordered by `allocationSlots`; re-sorted here so the
+    // digest cannot depend on how a caller assembled the descriptor.
+    allocations: [...descriptor.allocations]
+      .sort((left, right) => (left.slot < right.slot ? -1 : left.slot > right.slot ? 1 : 0))
+      .map((allocation) => ({
+        slot: allocation.slot,
+        path: [...allocation.path],
+      })),
   },
 });
 

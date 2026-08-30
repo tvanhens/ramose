@@ -263,7 +263,7 @@ browserTest("a restart reconstructs the exact per-database order", async ({ brow
     ]);
     expect(mine.head).toEqual({ type: "ready", record: mine.entries[0]!.record });
     expect(theirs.head).toEqual({ type: "ready", record: theirs.entries[0]!.record });
-    expect((await storage.outbox().restore(scope)).unreadable).toBe(0);
+    expect((await storage.outbox().restore(scope)).unreadable).toEqual([]);
   } finally {
     storage.close();
     await deleteDatabase(name);
@@ -285,11 +285,11 @@ browserTest("a dependent invocation stays blocked until a durable mapping exists
     let outbox = storage.outbox();
     // A create that allocates the ref, then work that depends on it, then one
     // unrelated invocation in a different database.
-    await outbox.enqueue(
+    const create = await outbox.enqueue(
       draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
       { scope },
     );
-    const dependent = await outbox.enqueue(
+    await outbox.enqueue(
       draft(receiver, {
         target: { type: "client-ref", clientRef: allocation },
         input: { assignee: allocation },
@@ -314,7 +314,9 @@ browserTest("a dependent invocation stays blocked until a durable mapping exists
     expect(theirs.entries[0]!.record.invocation).toBe(independent.invocation);
 
     const mapped = (await sealEntityId(sealingKeyOf(root), idScope(receiver), 42)) as EntityId;
-    await outbox.recordMappings(receiver, dependent.invocation, [
+    // The *allocating* invocation owns the mapping; the dependent one only
+    // consumes it.
+    await outbox.recordMappings(receiver, create.invocation, [
       { clientRef: allocation, entityId: mapped },
     ]);
 
@@ -459,6 +461,193 @@ browserTest("a fenced lease cannot queue work into a cleared scope", async ({ br
   } finally {
     writer.close();
     maintainer.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a receiver outside the confirmed scope is refused", async ({ browser }) => {
+  const name = `ramose-outbox-scope-${browser.uniqueId}`;
+  const left = identity();
+  const right = identity({ principal: RIGHT });
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    await confirm(storage, right, "right");
+    // Queueing another principal's database under this scope would file the
+    // record where this scope's restore cannot see it and its clear cannot
+    // remove it, while it showed up in the other principal's queue.
+    expect(
+      await rejectedTag(
+        storage.outbox().enqueue(draft(replicaDatabaseScopeOf(right)), {
+          scope: replicaScopeOf(left),
+        }),
+      ),
+    ).toBe("OutboxRecordInvalid");
+    expect((await dumpMutations(name))["mutation-outbox-v1"]).toEqual([]);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("re-enqueueing one invocation id is idempotent, and reuse is refused", async ({ browser }) => {
+  const name = `ramose-outbox-idempotent-${browser.uniqueId}`;
+  const left = identity();
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    const outbox = storage.outbox();
+    const intent = draft(receiver, { input: { title: "once" } });
+    const first = await outbox.enqueue(intent, { scope });
+
+    // The caller lost the completion result and retried the same intent under
+    // the same id: the durable record comes back, and nothing is written.
+    const again = await outbox.enqueue({ ...intent, enqueuedAt: Date.now() + 1_000 }, {
+      scope,
+    });
+    expect(again).toEqual(first);
+    expect((await dumpMutations(name))["mutation-outbox-v1"]).toHaveLength(1);
+    expect((await outbox.restore(scope)).records).toHaveLength(1);
+
+    // A different intent under the same id never overwrites the queued one.
+    expect(
+      await rejectedTag(
+        outbox.enqueue({ ...intent, input: { title: "different" } }, { scope }),
+      ),
+    ).toBe("OutboxInvocationConflict");
+    const stored = (await outbox.restore(scope)).records;
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.input).toEqual({ title: "once" });
+
+    // An ordinary second invocation still takes the next FIFO position.
+    const next = await outbox.enqueue(draft(receiver, { input: { title: "two" } }), {
+      scope,
+    });
+    expect(next.sequence).toBe(2);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("an authoritative mapping is immutable and belongs to its allocation", async ({ browser }) => {
+  const name = `ramose-outbox-mappings-${browser.uniqueId}`;
+  const left = identity();
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    const outbox = storage.outbox();
+    const allocation = clientRef();
+    const create = await outbox.enqueue(
+      draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+      { scope },
+    );
+    const other = await outbox.enqueue(draft(receiver), { scope });
+    const mapped = (await sealEntityId(sealingKeyOf(root), idScope(receiver), 5)) as EntityId;
+    const different = (await sealEntityId(sealingKeyOf(root), idScope(receiver), 6)) as EntityId;
+
+    // A ref this device never registered as an allocation, and a ref
+    // acknowledged by an invocation that does not allocate it, are both refused.
+    expect(
+      await rejectedTag(
+        outbox.recordMappings(receiver, create.invocation, [
+          { clientRef: clientRef(), entityId: mapped },
+        ]),
+      ),
+    ).toBe("ClientRefMappingRefused");
+    expect(
+      await rejectedTag(
+        outbox.recordMappings(receiver, other.invocation, [
+          { clientRef: allocation, entityId: mapped },
+        ]),
+      ),
+    ).toBe("ClientRefMappingRefused");
+    expect((await dumpMutations(name))["mutation-client-ref-mappings-v1"]).toEqual([]);
+
+    await outbox.recordMappings(receiver, create.invocation, [
+      { clientRef: allocation, entityId: mapped },
+    ]);
+    // Replaying the identical acknowledgement is accepted and changes nothing.
+    await outbox.recordMappings(receiver, create.invocation, [
+      { clientRef: allocation, entityId: mapped },
+    ]);
+    const stored = (await dumpMutations(name))["mutation-client-ref-mappings-v1"] as {
+      readonly entityId: string;
+    }[];
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.entityId).toBe(mapped);
+
+    // Redirecting the ref at another entity would move every later dependency.
+    expect(
+      await rejectedTag(
+        outbox.recordMappings(receiver, create.invocation, [
+          { clientRef: allocation, entityId: different },
+        ]),
+      ),
+    ).toBe("ClientRefMappingRefused");
+    expect(
+      ((await dumpMutations(name))["mutation-client-ref-mappings-v1"] as {
+        readonly entityId: string;
+      }[])[0]!.entityId,
+    ).toBe(mapped);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("an undecodable stored row holds its queue instead of promoting the next", async ({ browser }) => {
+  const name = `ramose-outbox-unreadable-${browser.uniqueId}`;
+  const left = identity();
+  const other = identity({ database: OTHER_DATABASE });
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  let storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    await confirm(storage, other, "left-other");
+    const outbox = storage.outbox();
+    await outbox.enqueue(draft(receiver, { input: { title: "one" } }), { scope });
+    const second = await outbox.enqueue(draft(receiver, { input: { title: "two" } }), {
+      scope,
+    });
+    await outbox.enqueue(draft(replicaDatabaseScopeOf(other)), { scope });
+    storage.close();
+
+    // Corrupt the head row in place, exactly as a partial write or a foreign
+    // build would leave it. Its primary key stays intact.
+    const raw = await openNative(name);
+    const corrupt = raw.transaction("mutation-outbox-v1", "readwrite");
+    const store = corrupt.objectStore("mutation-outbox-v1");
+    const head = await requestResult<Record<string, unknown>>(
+      store.get([mutationPartitionKey(receiver), 1]) as IDBRequest<Record<string, unknown>>,
+    );
+    store.put({ ...head, operationVersion: "not-a-digest" });
+    await transactionDone(corrupt);
+    raw.close();
+
+    storage = await IndexedDbReplicaStorage.open(name);
+    const restored = await storage.outbox().restore(scope);
+    expect(restored.unreadable).toEqual([
+      { partition: mutationPartitionKey(receiver), sequence: 1 },
+    ]);
+    const plans = await storage.outbox().plan(scope);
+    const held = plans.find((plan) => plan.receiver.database === ROOT_DATABASE)!;
+    // The second record decodes and is ready, and is still not the head.
+    expect(held.entries.map((entry) => entry.record.invocation)).toEqual([
+      second.invocation,
+    ]);
+    expect(held.head).toEqual({ type: "unreadable", sequence: 1 });
+    // Only this database is held.
+    expect(
+      plans.find((plan) => plan.receiver.database === OTHER_DATABASE)!.head.type,
+    ).toBe("ready");
+  } finally {
+    storage.close();
     await deleteDatabase(name);
   }
 });

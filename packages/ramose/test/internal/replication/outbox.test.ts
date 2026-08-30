@@ -36,11 +36,14 @@ import {
   buildOutboxRecord,
   decideOutboxEntry,
   decodeOutboxRecord,
+  mappingKey,
   mutationPartitionKey,
   mutationScopePrefix,
+  parseMutationPartitionKey,
   outboxDependencies,
   OutboxRecordInvalid,
   planOutbox,
+  sameOutboxIntent,
   sealingEpochOf,
   type OutboxDraft,
   type OutboxRecord,
@@ -179,6 +182,20 @@ describe("allocation slots", () => {
     expect(allocationPathKey(["issues", 1, "id"])).toBe(".issues#1.id");
   });
 });
+
+/** Durable mappings as `decideOutboxEntry` reads them: per partition, with epoch. */
+const mappings = (
+  entries: readonly (readonly [ReplicaDatabaseScope, string, { codecVersion: number; keyId: string }])[],
+): ReadonlyMap<string, { codecVersion: number; keyId: string }> =>
+  new Map(
+    entries.map(([at, ref, epoch]) => [
+      mappingKey(mutationPartitionKey(at), ref as never),
+      epoch,
+    ]),
+  );
+
+const currentEpoch = { codecVersion: 1, keyId: root.keyId };
+const staleEpoch = { codecVersion: 1, keyId: otherRoot.keyId };
 
 /** `Data.TaggedError` carries its detail in `reason`, not in `message`. */
 const rejection = (run: () => unknown): string => {
@@ -357,17 +374,56 @@ describe("dependencies and blocking", () => {
 
   test("an unmapped reference blocks and a durable mapping releases", () => {
     const record = dependent();
-    expect(decideOutboxEntry(record, { mapped: new Set() })).toEqual({
+    expect(decideOutboxEntry(record, { mapped: mappings([]) })).toEqual({
       type: "blocked",
       missing: [target, author],
     });
-    expect(decideOutboxEntry(record, { mapped: new Set([target]) })).toEqual({
-      type: "blocked",
-      missing: [author],
-    });
-    expect(decideOutboxEntry(record, { mapped: new Set([target, author]) })).toEqual({
-      type: "ready",
-    });
+    expect(
+      decideOutboxEntry(record, {
+        mapped: mappings([[receiver, target, currentEpoch]]),
+      }),
+    ).toEqual({ type: "blocked", missing: [author] });
+    expect(
+      decideOutboxEntry(record, {
+        mapped: mappings([
+          [receiver, target, currentEpoch],
+          [receiver, author, currentEpoch],
+        ]),
+      }),
+    ).toEqual({ type: "ready" });
+  });
+
+  test("a mapping in a sibling database does not release this one", () => {
+    const record = dependent();
+    expect(
+      decideOutboxEntry(record, {
+        mapped: mappings([
+          [otherReceiver, target, currentEpoch],
+          [otherReceiver, author, currentEpoch],
+        ]),
+      }),
+    ).toEqual({ type: "blocked", missing: [target, author] });
+  });
+
+  test("a dependency mapped under a replaced epoch quarantines instead of releasing", () => {
+    const record = dependent();
+    expect(
+      decideOutboxEntry(record, {
+        mapped: mappings([
+          [receiver, target, staleEpoch],
+          [receiver, author, staleEpoch],
+        ]),
+        keyId: root.keyId,
+      }),
+    ).toEqual({ type: "update-required", reason: "key-epoch" });
+    expect(
+      decideOutboxEntry(record, {
+        mapped: mappings([
+          [receiver, target, { codecVersion: 99, keyId: root.keyId }],
+          [receiver, author, currentEpoch],
+        ]),
+      }),
+    ).toEqual({ type: "update-required", reason: "codec-version" });
   });
 
   test("a record never blocks on a ref it allocates itself", () => {
@@ -381,7 +437,7 @@ describe("dependencies and blocking", () => {
       scopeKey,
       1,
     );
-    expect(decideOutboxEntry(record, { mapped: new Set() })).toEqual({ type: "ready" });
+    expect(decideOutboxEntry(record, { mapped: mappings([]) })).toEqual({ type: "ready" });
   });
 });
 
@@ -401,7 +457,7 @@ describe("sealing-epoch quarantine", () => {
   test("a replaced key epoch surfaces a data-free update-required", async () => {
     const record = await sealed();
     const state = decideOutboxEntry(record, {
-      mapped: new Set(),
+      mapped: mappings([]),
       keyId: otherRoot.keyId,
     });
     expect(state).toEqual({ type: "update-required", reason: "key-epoch" });
@@ -413,13 +469,13 @@ describe("sealing-epoch quarantine", () => {
 
   test("the same epoch is ordinary", async () => {
     const record = await sealed();
-    expect(decideOutboxEntry(record, { mapped: new Set(), keyId: root.keyId }))
+    expect(decideOutboxEntry(record, { mapped: mappings([]), keyId: root.keyId }))
       .toEqual({ type: "ready" });
   });
 
   test("an unconfirmed epoch never quarantines", async () => {
     const record = await sealed();
-    expect(decideOutboxEntry(record, { mapped: new Set() })).toEqual({ type: "ready" });
+    expect(decideOutboxEntry(record, { mapped: mappings([]) })).toEqual({ type: "ready" });
   });
 
   test("an unreadable codec version quarantines without any current epoch", async () => {
@@ -428,7 +484,7 @@ describe("sealing-epoch quarantine", () => {
       ...record,
       sealing: { codecVersion: ENTITY_ID_CODEC_VERSION + 1, keyId: root.keyId },
     };
-    expect(decideOutboxEntry(future, { mapped: new Set() })).toEqual({
+    expect(decideOutboxEntry(future, { mapped: mappings([]) })).toEqual({
       type: "update-required",
       reason: "codec-version",
     });
@@ -448,7 +504,7 @@ describe("sealing-epoch quarantine", () => {
       scopeKey,
       1,
     );
-    expect(decideOutboxEntry(record, { mapped: new Set(), keyId: otherRoot.keyId }))
+    expect(decideOutboxEntry(record, { mapped: mappings([]), keyId: otherRoot.keyId }))
       .toEqual({ type: "update-required", reason: "key-epoch" });
   });
 });
@@ -463,7 +519,7 @@ describe("per-receiver FIFO planning", () => {
 
   test("order is the durable sequence, not insertion or timestamp order", () => {
     const shuffled = [queued(receiver, 3), queued(receiver, 1), queued(receiver, 2)];
-    const [plan] = planOutbox(shuffled, { mapped: new Set() });
+    const [plan] = planOutbox(shuffled, [], { mapped: mappings([]) });
     expect(plan!.entries.map((entry) => entry.record.sequence)).toEqual([1, 2, 3]);
     expect(plan!.head).toEqual({ type: "ready", record: plan!.entries[0]!.record });
   });
@@ -475,7 +531,7 @@ describe("per-receiver FIFO planning", () => {
     });
     const behind = queued(receiver, 2);
     const elsewhere = queued(otherReceiver, 1);
-    const plans = planOutbox([blocked, behind, elsewhere], { mapped: new Set() });
+    const plans = planOutbox([blocked, behind, elsewhere], [], { mapped: mappings([]) });
     expect(plans).toHaveLength(2);
     const held = plans.find((plan) => plan.receiver.database === DATABASE)!;
     const free = plans.find((plan) => plan.receiver.database === OTHER_DATABASE)!;
@@ -497,7 +553,7 @@ describe("per-receiver FIFO planning", () => {
       scopeKey,
       1,
     );
-    const [plan] = planOutbox([record], { mapped: new Set(), keyId: otherRoot.keyId });
+    const [plan] = planOutbox([record], [], { mapped: mappings([]), keyId: otherRoot.keyId });
     expect(plan!.head).toEqual({
       type: "update-required",
       record,
@@ -506,7 +562,75 @@ describe("per-receiver FIFO planning", () => {
   });
 
   test("no records means no plans at all", () => {
-    expect(planOutbox([], { mapped: new Set() })).toEqual([]);
+    expect(planOutbox([], [], { mapped: mappings([]) })).toEqual([]);
+  });
+
+  test("an unreadable row ahead of the head holds its queue", () => {
+    const behind = queued(receiver, 2);
+    const elsewhere = queued(otherReceiver, 1);
+    const partition = mutationPartitionKey(receiver);
+    const plans = planOutbox(
+      [behind, elsewhere],
+      [{ partition, sequence: 1 }],
+      { mapped: mappings([]) },
+    );
+    const held = plans.find((plan) => plan.partition === partition)!;
+    // The readable record behind it is ready, and is still not the head: a row
+    // this build cannot interpret is never skipped over.
+    expect(held.entries[0]!.state).toEqual({ type: "ready" });
+    expect(held.head).toEqual({ type: "unreadable", sequence: 1 });
+    expect(held.unreadable).toEqual([{ partition, sequence: 1 }]);
+    // And it holds only its own database.
+    expect(
+      plans.find((plan) => plan.receiver.database === OTHER_DATABASE)!.head.type,
+    ).toBe("ready");
+  });
+
+  test("an unreadable row behind the head does not hold it", () => {
+    const first = queued(receiver, 1);
+    const partition = mutationPartitionKey(receiver);
+    const [plan] = planOutbox([first], [{ partition, sequence: 2 }], {
+      mapped: mappings([]),
+    });
+    expect(plan!.head).toEqual({ type: "ready", record: first });
+  });
+
+  test("a queue of nothing but unreadable rows still names its receiver", () => {
+    const partition = mutationPartitionKey(receiver);
+    const [plan] = planOutbox([], [{ partition, sequence: 1 }], {
+      mapped: mappings([]),
+    });
+    expect(plan!.receiver).toEqual(receiver);
+    expect(plan!.head).toEqual({ type: "unreadable", sequence: 1 });
+  });
+});
+
+describe("repeated intent", () => {
+  test("the same draft at the same sequence is the same intent", () => {
+    const one = draft();
+    expect(sameOutboxIntent(
+      buildOutboxRecord(one, scopeKey, 1),
+      buildOutboxRecord({ ...one, enqueuedAt: one.enqueuedAt + 5_000 }, scopeKey, 1),
+    )).toBe(true);
+  });
+
+  test("a changed input, target, version, or position is a different intent", () => {
+    const one = draft();
+    const base = buildOutboxRecord(one, scopeKey, 1);
+    const ref = clientRef();
+    for (
+      const other of [
+        { ...one, input: { title: "changed" } },
+        { ...one, operationVersion: ("c".repeat(64)) as never },
+        { ...one, operation: { ...one.operation, localName: "archive" } },
+        { ...one, target: { type: "client-ref", clientRef: ref } as const },
+        { ...one, allocations: [{ slot: "issue", clientRef: ref }] },
+      ]
+    ) {
+      expect(sameOutboxIntent(base, buildOutboxRecord(other, scopeKey, 1))).toBe(false);
+    }
+    // A different FIFO position is a different record, never a silent match.
+    expect(sameOutboxIntent(base, buildOutboxRecord(one, scopeKey, 2))).toBe(false);
   });
 });
 
@@ -548,6 +672,8 @@ describe("strict decoding of a stored record", () => {
         { ...base, allocations: [{ slot: "a", clientRef: "nope" }] },
         { ...base, inputRefs: [{ path: ["a"], ref: "nope" }] },
         { ...base, input: undefined },
+        // Filed under one database while naming another.
+        { ...base, receiver: { ...(base.receiver as object), database: OTHER_DATABASE } },
         "not a record",
         null,
       ]
@@ -584,5 +710,20 @@ describe("mutation partition keys", () => {
     expect(mutationPartitionKey(receiver)).toBe(
       ["ramose-mutation-v1", SERVER, PRINCIPAL, DATABASE].join(":"),
     );
+  });
+
+  test("a partition key names its receiver exactly, and nothing else parses", () => {
+    expect(parseMutationPartitionKey(mutationPartitionKey(receiver))).toEqual(receiver);
+    for (
+      const broken of [
+        mutationScopePrefix(receiver),
+        `ramose-mutation-v1:${SERVER}:${PRINCIPAL}`,
+        `ramose-replica-v2:${SERVER}:${PRINCIPAL}:${DATABASE}`,
+        `ramose-mutation-v1:${SERVER}:${PRINCIPAL}:${DATABASE}:extra`,
+        "",
+      ]
+    ) {
+      expect(parseMutationPartitionKey(broken)).toBeUndefined();
+    }
   });
 });
