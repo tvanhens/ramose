@@ -9,6 +9,7 @@
 
 <style>
   .rg-recovery-demo {
+    container-type: inline-size;
     min-width: 0;
     margin: 0;
     overflow: hidden;
@@ -34,6 +35,13 @@
 
     .rg-recovery-demo iframe {
       aspect-ratio: 40 / 38.55;
+    }
+  }
+
+  @container (max-width: 35rem) {
+    .rg-recovery-demo iframe {
+      height: calc(72.1cqw + 2.8125rem);
+      aspect-ratio: auto;
     }
   }
 </style>

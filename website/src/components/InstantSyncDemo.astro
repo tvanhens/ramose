@@ -9,6 +9,7 @@
 
 <style>
   .rg-sync-demo {
+    container-type: inline-size;
     margin: 2.5rem 0 0;
     overflow: hidden;
     border: 1px solid rgba(255, 101, 0, 0.26);
@@ -31,13 +32,9 @@
     }
   }
 
-  @media (max-width: 40rem) {
-    .rg-sync-demo {
-      container-type: inline-size;
-    }
-
+  @container (max-width: 35rem) {
     .rg-sync-demo iframe {
-      height: calc(36.9cqw + 2.75rem);
+      height: calc(36.9cqw + 2.8125rem);
       aspect-ratio: auto;
     }
   }

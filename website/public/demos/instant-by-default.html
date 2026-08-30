@@ -342,7 +342,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         '.ramose-instant-demo{position:absolute;top:0;left:0;width:71rem;min-width:71rem;margin:0;transform-origin:top left}',
         '.ramose-instant-demo>div{border:0!important;border-radius:0!important;box-shadow:none!important}',
         '#ramose-mobile-narrative{display:none}',
-        '@media(max-width:560px){#ramose-mobile-narrative{position:fixed;z-index:20;right:0;bottom:0;left:0;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:.65rem;height:2.75rem;padding:.4rem .7rem;border-top:1px solid #2a211d;background:rgba(11,10,9,.98);box-shadow:0 -.8rem 1.6rem -1.1rem #000;box-sizing:border-box}.ramose-mobile-narrative-bar{position:absolute;top:0;right:0;left:0;height:2px;background:#ff6500}.ramose-mobile-narrative-step{grid-row:1;color:#ffb080;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.65rem;letter-spacing:.1em}.ramose-mobile-narrative-copy{display:grid;min-width:0;gap:.1rem}.ramose-mobile-narrative-title{overflow:hidden;color:#f8f6f3;font-size:.8rem;font-weight:500;line-height:1.1;white-space:nowrap;text-overflow:ellipsis}.ramose-mobile-narrative-meta{overflow:hidden;color:#ffb080;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.58rem;line-height:1.2;white-space:nowrap;text-overflow:ellipsis}}'
+        '@media(max-width:560px){#ramose-mobile-narrative{position:fixed;z-index:20;top:0;left:0;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:.65rem;height:2.75rem;padding:.4rem .7rem;border-top:1px solid #2a211d;background:#0b0a09;box-shadow:0 -.8rem 1.6rem -1.1rem #000;box-sizing:border-box}.ramose-mobile-narrative-bar{position:absolute;top:0;right:0;left:0;height:2px;background:#ff6500}.ramose-mobile-narrative-step{grid-row:1;color:#ffb080;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.65rem;letter-spacing:.1em}.ramose-mobile-narrative-copy{display:grid;min-width:0;gap:.1rem}.ramose-mobile-narrative-title{overflow:hidden;color:#f8f6f3;font-size:.8rem;font-weight:500;line-height:1.1;white-space:nowrap;text-overflow:ellipsis}.ramose-mobile-narrative-meta{overflow:hidden;color:#ffb080;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.58rem;line-height:1.2;white-space:nowrap;text-overflow:ellipsis}}'
       ].join('');
       doc.head.appendChild(embedStyle);
       doc.title = 'Instant by default';
@@ -471,7 +471,21 @@ document.addEventListener('DOMContentLoaded', async function() {
         const visible = highlighted >= 0 ? highlighted : lastActive;
         if (mobile) {
           ensureCaption();
-          if (strip.style.display !== 'none') strip.style.display = 'none';
+          if (strip.style.display !== desktopDisplay) strip.style.display = desktopDisplay;
+          if (strip.style.gridTemplateColumns !== desktopColumns) {
+            strip.style.gridTemplateColumns = desktopColumns;
+          }
+          cards.forEach(function(card) {
+            if (card.style.display !== 'grid') card.style.display = 'grid';
+          });
+          const bounds = strip.getBoundingClientRect();
+          const top = Math.round(bounds.top * 100) / 100 + 'px';
+          const left = Math.round(bounds.left * 100) / 100 + 'px';
+          const width = Math.round(bounds.width * 100) / 100 + 'px';
+          if (caption.style.top !== top) caption.style.top = top;
+          if (caption.style.left !== left) caption.style.left = left;
+          if (caption.style.width !== width) caption.style.width = width;
+          if (strip.style.visibility !== 'hidden') strip.style.visibility = 'hidden';
           const activeCard = cards[visible];
           const title = activeCard && activeCard.querySelector('strong');
           const meta = activeCard && activeCard.querySelector('small');
@@ -479,6 +493,7 @@ document.addEventListener('DOMContentLoaded', async function() {
           captionTitle.textContent = title ? title.textContent.trim() : '';
           captionMeta.textContent = meta ? meta.textContent.trim() : '';
         } else {
+          if (strip.style.visibility !== '') strip.style.visibility = '';
           if (strip.style.display !== desktopDisplay) strip.style.display = desktopDisplay;
           if (strip.style.gridTemplateColumns !== desktopColumns) {
             strip.style.gridTemplateColumns = desktopColumns;

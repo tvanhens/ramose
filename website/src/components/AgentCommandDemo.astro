@@ -9,13 +9,14 @@
 
 <style>
   .rg-agent-demo {
+    container-type: inline-size;
     min-width: 0;
     margin: 0;
     overflow: hidden;
     border: 1px solid rgba(255, 101, 0, 0.26);
     border-radius: 0.9rem;
     background: #0a0908;
-    box-shadow: 0 2.5rem 6rem -4rem rgba(255, 76, 0, 0.7);
+    box-shadow: 0 2.5rem 6rem -4rem rgba(255, 76, 0, 0.65);
   }
 
   .rg-agent-demo iframe {
@@ -33,6 +34,13 @@
 
     .rg-agent-demo iframe {
       aspect-ratio: 40 / 50.25;
+    }
+  }
+
+  @container (max-width: 35rem) {
+    .rg-agent-demo iframe {
+      height: calc(107.3cqw + 2.8125rem);
+      aspect-ratio: auto;
     }
   }
 </style>
