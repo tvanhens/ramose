@@ -312,6 +312,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private readonly observers = new Map<string, QueryObserver>();
   private readonly retired = new Map<string, RetiredObservation>();
   private activation: Promise<void> | undefined;
+  private readonly settling = new Set<Promise<void>>();
   private catalog: ClientCatalog | undefined;
   private session: ReplicationSession | undefined;
   private releaseSession: (() => void) | undefined;
@@ -336,6 +337,21 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private generation = 0;
 
   constructor(private readonly context: DatabaseContext) {}
+
+  private spawn(work: Promise<unknown>): void {
+    const settled = work.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.settling.add(settled);
+    void settled.then(() => this.settling.delete(settled));
+  }
+
+  private async drain(): Promise<void> {
+    while (this.settling.size > 0) {
+      await Promise.all([...this.settling]);
+    }
+  }
 
   observe<N extends AnyComposer, Row, Out>(
     query: EntityFocused<N, Row, Out>,
@@ -438,7 +454,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }, shape, retired);
     if (this.closed) return observer;
     this.observers.set(key, observer);
-    void observer.run(this.viewGeneration, this.viewValue, this.stale);
+    this.spawn(observer.run(this.viewGeneration, this.viewValue, this.stale));
     return observer;
   }
 
@@ -589,7 +605,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.identity = identity;
       this.context.onConfirmed(identity);
       this.context.mutations.submit(replicaDatabaseScopeOf(identity));
-      void this.bindReconciler(identity).catch(() => undefined);
+      this.spawn(this.bindReconciler(identity));
     }
     this.lastSession = snapshot;
     const disposition = readSessionSnapshot(snapshot);
@@ -604,7 +620,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.reverse = undefined;
     }
     this.publishStatus(this.statusOf(snapshot));
-    void this.recompute();
+    this.spawn(this.recompute());
   }
 
   private fence(): void {
@@ -622,7 +638,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.reconcilerPending = undefined;
     this.reconcilerKey = undefined;
     for (const observer of this.observers.values()) {
-      void observer.run(this.generation, undefined, true);
+      this.spawn(observer.run(this.generation, undefined, true));
     }
     this.observers.clear();
     this.retired.clear();
@@ -652,7 +668,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.retired.clear();
     this.publishStatus("authentication-required");
     for (const observer of this.observers.values()) {
-      void observer.run(this.generation, undefined, true);
+      this.spawn(observer.run(this.generation, undefined, true));
     }
   }
 
@@ -712,7 +728,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.viewGeneration = generation;
     const stale = this.stale;
     for (const observer of this.observers.values()) {
-      void observer.run(generation, view, stale);
+      this.spawn(observer.run(generation, view, stale));
     }
   }
 
@@ -823,7 +839,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
           : this.statusOf(this.lastSession ?? { status: "connecting" }),
       );
     }
-    void this.recompute();
+    this.spawn(this.recompute());
   }
 
   private async settleActivation(): Promise<void> {
@@ -834,7 +850,10 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
 
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed) {
+      await this.drain();
+      return;
+    }
     this.closed = true;
     this.generation++;
     this.releaseOverlay?.();
@@ -849,7 +868,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.forgetCredential();
     this.viewValue = undefined;
     for (const observer of this.observers.values()) {
-      void observer.run(this.generation, undefined, true);
+      this.spawn(observer.run(this.generation, undefined, true));
     }
     this.observers.clear();
     this.retired.clear();
@@ -859,5 +878,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.session = undefined;
     if (session !== undefined) await session.close();
     await this.activation?.catch(() => undefined);
+    await this.drain();
   }
 }

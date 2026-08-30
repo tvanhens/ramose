@@ -315,6 +315,47 @@ browserTest("reattaches a subscription that is resubscribed after its last liste
   }
 });
 
+browserTest("close() drains its continuations before the storage connection closes", async ({ browser }) => {
+  const name = `ramose-client-close-drain-${browser.uniqueId}`;
+  await seed(name, [{ entity: opaque("e"), title: "kept", rank: "a" }]);
+  const closedConnections = new WeakSet<IDBDatabase>();
+  const afterClose: string[] = [];
+  const realClose = IDBDatabase.prototype.close;
+  const realTransaction = IDBDatabase.prototype.transaction;
+  IDBDatabase.prototype.close = function (this: IDBDatabase): void {
+    closedConnections.add(this);
+    realClose.call(this);
+  };
+  IDBDatabase.prototype.transaction = function (
+    this: IDBDatabase,
+    stores: string | string[],
+    mode?: IDBTransactionMode,
+    options?: IDBTransactionOptions,
+  ): IDBTransaction {
+    if (closedConnections.has(this)) {
+      afterClose.push(`${this.name}: ${JSON.stringify(stores)}`);
+    }
+    return realTransaction.call(this, stores, mode, options);
+  };
+  try {
+    for (let round = 0; round < 6; round++) {
+      const client = offlineClient(name);
+      const notes = titles(client.open());
+      const held = notes.subscribe(() => undefined);
+      await waitFor(notes, (snapshot) => snapshot.status === "ready");
+      held();
+      const rerunning = notes.subscribe(() => undefined);
+      await client.close();
+      rerunning();
+    }
+    expect(afterClose).toEqual([]);
+  } finally {
+    IDBDatabase.prototype.close = realClose;
+    IDBDatabase.prototype.transaction = realTransaction;
+    await deleteDatabase(name);
+  }
+});
+
 browserTest("reports a oneOrFail miss as an error rather than as rows", async ({ browser }) => {
   const name = `ramose-client-oneorfail-${browser.uniqueId}`;
   await seed(name, [

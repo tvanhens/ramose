@@ -507,6 +507,53 @@ browserTest(
 );
 
 browserTest(
+  "a waiting receipt settles without waiting for close() to finish draining",
+  async ({ browser }) => {
+    const name = `ramose-mutate-close-drain-${browser.uniqueId}`;
+    const identity = await seedRoot(name);
+    const app = client(name);
+    try {
+      const db = app.open();
+      const issues = db.observe(
+        db.query.from(Issue).orderBy(Issue.title).select({ title: Issue.title }),
+      );
+      const held = issues.subscribe(() => undefined);
+      await waitFor(issues, (snapshot) => snapshot.status === "ready");
+      await waitFor(db.sync, (state) => state.status === "offline");
+
+      const waiting = db.query
+        .from(Organization)
+        .where({ slug: "never-resolves" })
+        .one()
+        .db()
+        .mutate.createIssue({ title: "Waiting" });
+
+      held();
+      const rerunning = issues.subscribe(() => undefined);
+
+      const closing = app.close();
+
+      await expect(waiting.queued).rejects.toMatchObject({
+        _tag: "GraphReceiverError",
+        reason: "closed",
+      });
+      await expect(waiting.committed).rejects.toMatchObject({
+        _tag: "GraphReceiverError",
+      });
+      expect(waiting.getSnapshot().status).toBe("failed");
+
+      await closing;
+      rerunning();
+
+      expect(db.sync.getSnapshot().status).toBe("closed");
+      expect(await queued(name, identity)).toHaveLength(0);
+    } finally {
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a committed acknowledgement settles its receipt and keeps held handles",
   async ({ browser }) => {
     const name = `ramose-mutate-restart-${browser.uniqueId}`;
