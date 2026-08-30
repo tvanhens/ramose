@@ -10,9 +10,11 @@ hand-written additions, including tests, is a planning signal rather than a
 quota: split before coding when a change is likely to exceed it or spans
 unrelated risk boundaries.
 
-Request review after the implementation and relevant checks are stable. Batch
-the first review's root-cause fixes, then request one verification review rather
-than reviewing every corrective commit. If a second re-review uncovers another
+Request review after the implementation and relevant checks are stable.
+Automated review runs on every push to a ready pull request, so keep the pull
+request in draft while implementing and while batching a review round's
+root-cause fixes; mark it ready for one verification review rather than one
+review per corrective commit. If a second re-review uncovers another
 independent blocker class, pause and split or redesign the change. Describe the
 primary outcome, intentional public API additions, and relevant test lane in
 the pull request.
