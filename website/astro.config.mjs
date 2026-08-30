@@ -1,6 +1,5 @@
 // @ts-check
 import starlight from "@astrojs/starlight";
-import { wgslVitePlugin } from "vgpu/client";
 import { defineConfig } from "astro/config";
 import remarkExtractSnippets from "./scripts/remark-extract-snippets.mjs";
 
@@ -11,9 +10,6 @@ const site = "https://ramose.ai";
 
 export default defineConfig({
   site,
-  vite: {
-    plugins: [wgslVitePlugin()],
-  },
   markdown: {
     remarkPlugins: [remarkExtractSnippets],
   },
