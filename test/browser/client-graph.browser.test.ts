@@ -537,10 +537,14 @@ browserTest("does not read a predecessor Graph's replica through a rotated read 
   const hash = installed.readCompatibilityHash;
   // One database, two read views — what a delete/recreate of a Graph inside it
   // leaves behind. The predecessor's Graph row and the successor's are
-  // different entities with different opaque identities, and each view numbers
-  // its own visible entities from scratch, so the successor lands on the
-  // predecessor's *local* id. That collision is the whole hazard: a stable
-  // graph key that spanned read views would be byte-identical for the two.
+  // different entities, and each view numbers its own visible entities from
+  // scratch, so the successor lands on the predecessor's *local* id. That
+  // collision is the whole hazard, and the stable key must survive it while
+  // *not* separating the two read views — a benign rotation has to keep the
+  // child's replica. It does both because the key is the database scope plus
+  // the sealed `EntityId`: the scope is identical across the two views, and
+  // the two Graph entities seal different eids, so the collision that a
+  // partition-local id would have produced cannot arise (#477).
   await seed(name, [
     {
       graphPath: [],
@@ -622,8 +626,9 @@ browserTest("does not read a predecessor Graph's replica through a rotated read 
     // The collision is real: two different Graph entities, one local id.
     expect(after.id).toBe(before.id);
     // And the successor reads nothing of the predecessor's. It is a different
-    // Graph in a different read view, so it is a different stable identity,
-    // with no activation and no confirmed lineage to inherit.
+    // Graph entity, so it seals a different handle and is a different stable
+    // identity, with no activation and no confirmed lineage to inherit — even
+    // though the two read views share one scope and one local id.
     expect(after.boards).toBeUndefined();
   } finally {
     await deleteDatabase(name);

@@ -595,7 +595,11 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       }
       this.identity = identity;
       this.context.onConfirmed(identity);
-      void this.bindReconciler(identity);
+      // Fire and forget, and *observed*: binding is best-effort here — the
+      // committed replica publishes with or without its layers — but an
+      // unobserved rejection is an unhandled rejection in the page, which a
+      // close that raced this bind produces routinely.
+      void this.bindReconciler(identity).catch(() => undefined);
     }
     this.lastSession = snapshot;
     const disposition = readSessionSnapshot(snapshot);
@@ -773,7 +777,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       return this.reconcilerPending;
     }
     this.reconcilerKey = key;
-    this.reconcilerPending = (async () => {
+    const pending = (async () => {
       const storage = await this.context.storage();
       const catalog = await this.context.catalog();
       const reconciler = new OptimisticReconciler(
@@ -788,8 +792,20 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.reconciler = reconciler;
       this.releaseOverlay = reconciler.observe((state) => this.overlay(state));
       return reconciler;
-    })();
-    return this.reconcilerPending;
+    })().catch((cause: unknown): never => {
+      // A memo of a failure is worse than no memo: every later activation of
+      // this same database would be handed the rejection instead of trying
+      // again. The commonest cause is entirely ordinary — the storage handle
+      // closed while this bind was in flight — and the next activation opens
+      // its own.
+      if (this.reconcilerKey === key) {
+        this.reconcilerKey = undefined;
+        this.reconcilerPending = undefined;
+      }
+      throw cause;
+    });
+    this.reconcilerPending = pending;
+    return pending;
   }
 
   /**
