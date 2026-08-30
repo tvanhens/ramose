@@ -1441,15 +1441,25 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         });
         expect(afterDelete.status).toBe(403);
 
-        // Malformed, tampered, and foreign handles are the same sealed denial.
+        // Malformed, tampered, and foreign handles are all the same sealed
+        // denial — a truncated or non-canonical handle must be
+        // indistinguishable from a wrong-scope or unauthorized one, so none of
+        // them may come back as a shape complaint.
         const tampered = `${entityId.slice(0, 30)}${entityId[30] === "A" ? "B" : "A"}${entityId.slice(31)}`;
-        const forged = await invokeWith(base, database, token, {
-          invocationId: "sealed-target-forged-01",
-          operation: renameItem,
-          target: tampered,
-          input: { title: "Should never land" },
-        });
-        expect(forged.status).toBe(403);
+        for (const [label, target] of [
+          ["tampered", tampered],
+          ["truncated", entityId.slice(0, 40)],
+          ["non-base64url", `${"!".repeat(54)}A`],
+          ["empty", ""],
+        ] as const) {
+          const forged = await invokeWith(base, database, token, {
+            invocationId: `sealed-target-forged-${label}`,
+            operation: renameItem,
+            target,
+            input: { title: "Should never land" },
+          });
+          expect([label, forged.status]).toEqual([label, 403]);
+        }
       });
 
       test("a target the caller may not read fails sealed even though its handle resolves", async () => {

@@ -142,6 +142,25 @@ export type InvocationReplayFenceV1 = {
  */
 export type InvocationAllocationMappingsV1 = {
   readonly version: 1;
+  /**
+   * The sealing key epoch and the stable scope these handles were minted
+   * under.
+   *
+   * The receipt's own identity cannot stand in for them. Its scope digest
+   * covers the database and the verified claims, but not the public origin the
+   * request arrived on and not the server sealing key — both of which the
+   * sealed handle *is* bound to. Without these, a replay after a key rotation,
+   * or through a second origin, would hand back handles that cannot be opened
+   * in the caller's current scope and the client would durably persist client
+   * ref mappings it can never resolve. Replay compares them and quarantines
+   * instead.
+   */
+  readonly keyId: string;
+  readonly scope: {
+    readonly server: string;
+    readonly principal: string;
+    readonly database: string;
+  };
   readonly entries: readonly {
     readonly slot: string;
     readonly clientRef: string;
@@ -149,6 +168,24 @@ export type InvocationAllocationMappingsV1 = {
     readonly entityId: string;
   }[];
 };
+
+/**
+ * Whether a stored mapping extension is still openable by the caller that is
+ * replaying it. A mismatch is not a denial — the receipt is genuine and the
+ * caller is authorized — it is the typed, data-free update-required answer.
+ */
+export const allocationMappingsResolvable = (
+  mappings: InvocationAllocationMappingsV1,
+  keyId: string,
+  scope: {
+    readonly server: string;
+    readonly principal: string;
+    readonly database: string;
+  },
+): boolean =>
+  mappings.keyId === keyId && mappings.scope.server === scope.server &&
+  mappings.scope.principal === scope.principal &&
+  mappings.scope.database === scope.database;
 
 export type CompletedInvocationReceipt = InvocationReceiptIdentity & {
   readonly status: "completed";
@@ -606,6 +643,19 @@ const snapshotInvocationReplayFence = (
  * prevent. Handles are checked for the sealed wire shape, so a numeric eid can
  * never be written into a receipt even by a defect above this line.
  */
+const isScope = (
+  value: unknown,
+): value is InvocationAllocationMappingsV1["scope"] => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record.server === "string" && record.server.length > 0 &&
+    typeof record.principal === "string" && record.principal.length > 0 &&
+    typeof record.database === "string" && record.database.length > 0 &&
+    hasExactKeys(record, ["server", "principal", "database"]);
+};
+
 const isAllocationMappings = (
   value: unknown,
 ): value is InvocationAllocationMappingsV1 => {
@@ -615,7 +665,9 @@ const isAllocationMappings = (
   const record = value as Record<string, unknown>;
   if (
     record.version !== 1 || !Array.isArray(record.entries) ||
-    !hasExactKeys(record, ["version", "entries"])
+    typeof record.keyId !== "string" || record.keyId.length === 0 ||
+    !isScope(record.scope) ||
+    !hasExactKeys(record, ["version", "keyId", "scope", "entries"])
   ) return false;
   const slots = new Set<string>();
   const refs = new Set<string>();
@@ -644,6 +696,12 @@ const snapshotAllocationMappings = (
   }
   return Object.freeze({
     version: 1,
+    keyId: value.keyId,
+    scope: Object.freeze({
+      server: value.scope.server,
+      principal: value.scope.principal,
+      database: value.scope.database,
+    }),
     entries: Object.freeze(value.entries.map((entry) =>
       Object.freeze({
         slot: entry.slot,

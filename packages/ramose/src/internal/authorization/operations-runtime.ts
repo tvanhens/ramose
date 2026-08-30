@@ -86,8 +86,9 @@ import {
 import type { InvocationReplayFenceV1 } from "./invocation-receipts.ts";
 import {
   extractAllocations,
-  type AllocatedSlot,
+  sealAllocationMappings,
   type InvocationAllocation,
+  type SealedAllocationMapping,
 } from "./entity-targets.ts";
 import type { EntityIdScope } from "../replication/entity-id.ts";
 import type { ServerSealingKey } from "../replication/server-identity.ts";
@@ -142,12 +143,15 @@ export type OperationExecution = {
   /** Private data-only replay exemption captured from the staged dbAfter. */
   readonly replayFence: InvocationReplayFenceV1;
   /**
-   * The private eid each bound allocation slot resolved to, read from the
-   * declared entity-reference position of the materialized output *before* the
-   * commit. The Transactor seals these into the durable receipt; a numeric eid
-   * never leaves this boundary (#475).
+   * The exact `{ slot, clientRef, entityId }` mappings for this invocation's
+   * bound allocation slots, already sealed (#475).
+   *
+   * Read *and sealed* inside the pre-commit validator, so a numeric eid never
+   * leaves this boundary and so a sealing failure aborts the staged
+   * transaction instead of leaving the in-memory writer holding a commit the
+   * durable log will never receive.
    */
-  readonly allocations: readonly AllocatedSlot[];
+  readonly allocations: readonly SealedAllocationMapping[];
   /** Private lease fence retained by the serialized Transactor only. */
   readonly assertFresh: () => void;
 };
@@ -1836,6 +1840,34 @@ export const authorizeCatalogOperationReplay = async (
   );
 };
 
+/**
+ * The sealing root and scope an invocation that binds allocation slots must
+ * have. The Transactor establishes both before the invocation is queued, so a
+ * missing one is an engine defect — and raising it here, inside the pre-commit
+ * validator, aborts the staged transaction rather than stranding it.
+ */
+const requireSealing = (
+  sealing: ServerSealingKey | undefined,
+): ServerSealingKey => {
+  if (sealing === undefined) {
+    throw new OperationRuntimeFault(
+      "allocation",
+      new Error("allocation mappings have no server sealing root"),
+    );
+  }
+  return sealing;
+};
+
+const requireEntityIdScope = (invocation: OperationInvocation): EntityIdScope => {
+  if (invocation.entityIdScope === undefined) {
+    throw new OperationRuntimeFault(
+      "allocation",
+      new Error("allocation mappings have no sealing scope"),
+    );
+  }
+  return invocation.entityIdScope;
+};
+
 /** Execute one invocation while the Transactor's serialized writer owns the basis. */
 export const executeCatalogOperation = async (
   connection: Connection,
@@ -1843,6 +1875,8 @@ export const executeCatalogOperation = async (
   invocation: OperationInvocation,
   resolvedCatalog?: ResolvedOperationCatalog,
   admitted?: CatalogOperationAdmission,
+  /** Required only when this invocation binds allocation slots (#475). */
+  sealing?: ServerSealingKey,
 ): Promise<OperationExecution> => {
   const admission = admitted ?? await authorizeCatalogOperation(
     connection,
@@ -1950,7 +1984,19 @@ export const executeCatalogOperation = async (
           extraction.slot,
         );
       }
-      return { output: encoded, replayFence, allocations: extraction.slots };
+      // Sealed here, still before the commit. Doing it after `transactValidated`
+      // returns would mean a WebCrypto failure left this writer's in-memory
+      // state advanced past a transaction the durable log never receives, and
+      // every later commit would run on phantom state.
+      const allocations = extraction.slots.length === 0
+        ? []
+        : await sealAllocationMappings(
+          requireSealing(sealing),
+          requireEntityIdScope(invocation),
+          extraction.slots,
+          requested,
+        );
+      return { output: encoded, replayFence, allocations };
     },
     authoritativeNowMs,
     // Synchronous Connection pre-apply hook: every body/effect/read/output

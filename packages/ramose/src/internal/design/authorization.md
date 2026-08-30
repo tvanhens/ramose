@@ -343,6 +343,11 @@ tempid name, a callback's source, or the shape of a raw output number. A slot
 whose path is absent, is not a ref position, or does not hold a resolved eid
 fails the invocation rather than producing a partial mapping.
 
+**WR-11a.** A slot's eid is sealed inside the same pre-commit validator that
+read it. A sealing failure therefore aborts the staged transaction rather than
+leaving the writer's in-memory state past a commit the durable log never
+receives, and no numeric eid exists outside that validator.
+
 **WR-12.** The completed #487 receipt durably stores exact
 `{ clientRef, entityId }` mappings — sealed handles only, never numeric eids —
 as a versioned extension of the one receipt row and state machine. There is no
@@ -352,6 +357,13 @@ same invocation id reused with a different binding is the ordinary
 `invocation_conflict`, and an exact replay returns byte-identical mappings
 without a second commit. The replay fence (**self-delete and lost-ack**)
 is unchanged by any of this.
+
+**WR-13.** Stored mappings record the sealing key epoch and the stable scope
+they were minted under, because the receipt's own identity covers neither the
+public origin nor the server key. A replay whose current epoch or scope
+disagrees returns the typed data-free update-required rather than handles the
+caller could never open — a client must never durably persist a client-ref
+mapping it cannot resolve.
 
 ## 11. Live queries and session replication
 

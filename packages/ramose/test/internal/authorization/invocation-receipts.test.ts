@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { clientRef } from "../../../src/db/refs.ts";
 import {
+  allocationMappingsResolvable,
   CatalogId,
   CatalogUnitHash,
   DatabaseId,
@@ -355,6 +356,8 @@ describe("authoritative invocation receipt serialization", () => {
     if (claim._tag !== "Claim") throw new Error("expected claim");
     const allocations = {
       version: 1 as const,
+      keyId: "AAECAwQFBgcICQoLDA0ODw",
+      scope: { server: "srv", principal: "prn", database: "dbs" },
       entries: [{
         slot: "item",
         clientRef: allocatedRef,
@@ -389,10 +392,17 @@ describe("authoritative invocation receipt serialization", () => {
     // A numeric eid can never enter or leave a receipt, even from above.
     expect(() => parseStoredInvocationReceipt({
       ...completed,
-      allocations: {
-        version: 1,
-        entries: [{ slot: "item", clientRef: allocatedRef, entityId: 1001 }],
-      },
+      allocations: { ...allocations, entries: [{
+        slot: "item",
+        clientRef: allocatedRef,
+        entityId: 1001,
+      }] },
+    })).toThrow("invalid durable invocation receipt");
+    // A row that does not say which epoch and scope it was sealed under cannot
+    // be checked for resolvability, so it is corruption rather than a replay.
+    expect(() => parseStoredInvocationReceipt({
+      ...completed,
+      allocations: { version: 1, entries: allocations.entries },
     })).toThrow("invalid durable invocation receipt");
     expect(() => parseAuthoritativeInvocationResult({
       ...JSON.parse(JSON.stringify(outcome)),
@@ -402,13 +412,27 @@ describe("authoritative invocation receipt serialization", () => {
     expect(() => parseStoredInvocationReceipt({
       ...completed,
       allocations: {
-        version: 1,
+        ...allocations,
         entries: [
           { slot: "one", clientRef: allocatedRef, entityId: sealedEntityId },
           { slot: "two", clientRef: allocatedRef, entityId: sealedEntityId },
         ],
       },
     })).toThrow("invalid durable invocation receipt");
+
+    // The stored handles are openable only under the epoch and scope they were
+    // sealed to. A rotated key or a second public origin serving the same
+    // database must not hand back mappings the caller can never resolve.
+    expect(allocationMappingsResolvable(allocations, allocations.keyId, allocations.scope))
+      .toBe(true);
+    expect(allocationMappingsResolvable(allocations, "another-key-epoch", allocations.scope))
+      .toBe(false);
+    for (const component of ["server", "principal", "database"] as const) {
+      expect(allocationMappingsResolvable(allocations, allocations.keyId, {
+        ...allocations.scope,
+        [component]: "elsewhere",
+      })).toBe(false);
+    }
   });
 
   test("a completed receipt written before the mapping extension stays replayable", () => {

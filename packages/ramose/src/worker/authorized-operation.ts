@@ -14,7 +14,6 @@ import {
   type DatabaseRouteDerivation,
   type OperationInvocation,
 } from "../internal/authorization/index.ts";
-import { isEntityId } from "../db/refs.ts";
 import { fromJson, toJson } from "../internal/core/json.ts";
 import type { EntityIdScope } from "../internal/replication/entity-id.ts";
 import { makeEntityIdScope } from "../internal/replication/identity.ts";
@@ -188,11 +187,16 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
       "operationVersion must be a canonical operation version digest",
     );
   }
-  // An opaque sealed handle is the offline queue's durable target (#475). It
-  // is recognized before `fromJson` so a 55-character base64url string is
-  // never mistaken for an ordinary opaque scalar, and it is mutually exclusive
-  // with the numeric/lookup form: two targets are two different invocations.
-  const sealedTarget = isEntityId(body.target) ? body.target : undefined;
+  // An opaque sealed handle is the offline queue's durable target (#475).
+  //
+  // *Every* string target is one, well-formed or not, and is recognized before
+  // `fromJson` so a handle is never mistaken for an ordinary opaque scalar. A
+  // truncated, respelled, or forged handle must be indistinguishable from a
+  // wrong-scope one and from an unauthorized one, so it goes to the
+  // authoritative resolver and comes back as the same sealed denial rather
+  // than as a shape complaint here. It is mutually exclusive with the
+  // numeric/lookup form: two targets are two different invocations.
+  const sealedTarget = typeof body.target === "string" ? body.target : undefined;
   const target = body.target === undefined || sealedTarget !== undefined
     ? undefined
     : fromJson(body.target);

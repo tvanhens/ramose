@@ -70,6 +70,7 @@ import {
   type RuntimeBoundaries,
 } from "../runtime-boundaries.ts";
 import {
+  allocationMappingsResolvable,
   authorizeCatalogOperation,
   authorizeCatalogOperationGrant,
   authorizeCatalogOperationReplay,
@@ -88,7 +89,6 @@ import {
   requireSuppliedOperationVersion,
   resolveOperationCatalog,
   resolveSealedTarget,
-  sealAllocationMappings,
   transitionInvocationReceipt,
   type AuthoritativeInvocationResult,
   type AuthoritativeOperationInvocation,
@@ -572,6 +572,35 @@ export class Transactor {
   }
 
   /**
+   * Whether a durable receipt's stored mappings can still be opened by the
+   * caller replaying it.
+   *
+   * The receipt identity covers the database and the verified claims but not
+   * the public origin the request arrived on and not the server sealing key,
+   * and a sealed handle is bound to both. After a key rotation — or through a
+   * second origin serving the same database — a replay would otherwise return
+   * handles the caller cannot resolve, and the client would durably persist
+   * client ref mappings that are permanently unusable. That answer is the
+   * typed, data-free update-required, not a denial: the receipt is genuine.
+   */
+  private replayableMappings(
+    receipt: TerminalInvocationReceipt,
+    context: { readonly sealing: ServerSealingKey; readonly scope: EntityIdScope } | undefined,
+  ): boolean {
+    if (receipt.status !== "completed" || receipt.allocations === undefined) {
+      return true;
+    }
+    // A receipt with mappings was claimed under an invocation that bound slots,
+    // and the binding is in the digest, so a matching replay bound them too.
+    if (context === undefined) return false;
+    return allocationMappingsResolvable(
+      receipt.allocations,
+      context.sealing.keyId,
+      context.scope,
+    );
+  }
+
+  /**
    * The root and scope this invocation's allocation mappings are sealed under.
    *
    * `invoke` established both before the invocation was ever queued, so a
@@ -918,6 +947,10 @@ export class Transactor {
                   continue;
                 }
                 if (recovered._tag === "Replay" || recovered._tag === "Recover") {
+                  if (!this.replayableMappings(recovered.receipt, sealingContext)) {
+                    await resolveCompatibility("UpdateRequired");
+                    continue;
+                  }
                   p.resolve(invocationReceiptOutcome(recovered.receipt));
                   continue;
                 }
@@ -927,6 +960,10 @@ export class Transactor {
               // An exact replay keeps PR #527's behavior byte for byte. The
               // fenced admission below is unchanged and still runs first.
               if (inspected._tag === "Replay") {
+                if (!this.replayableMappings(inspected.receipt, sealingContext)) {
+                  await resolveCompatibility("UpdateRequired");
+                  continue;
+                }
                 if (inspected.receipt.status === "completed") {
                   await authorizeCatalogOperationReplay(
                     this.conn,
@@ -968,6 +1005,10 @@ export class Transactor {
                 continue;
               }
               if (decision._tag === "Replay" || decision._tag === "Recover") {
+                if (!this.replayableMappings(decision.receipt, sealingContext)) {
+                  await resolveCompatibility("UpdateRequired");
+                  continue;
+                }
                 if (decision.receipt.status === "completed") {
                   await authorizeCatalogOperationReplay(
                     this.conn,
@@ -988,28 +1029,30 @@ export class Transactor {
                 operation,
                 resolved,
                 admission,
+                sealingContext?.sealing,
               );
               const rep = executed.report;
-              // Seal every allocated eid before the receipt is written, so the
-              // durable row and every replay of it carry opaque handles only.
+              // Already sealed, inside the pre-commit validator: nothing
+              // between the staged transaction and this batch's durable write
+              // can fail, and the durable row carries opaque handles only.
               // Sealing is deterministic in (root, scope, eid), so a replay
               // reproduces these bytes without re-executing.
-              const mappings = sealingContext === undefined
-                ? undefined
-                : await sealAllocationMappings(
-                  sealingContext.sealing,
-                  sealingContext.scope,
-                  executed.allocations,
-                  bound,
-                );
               const event = {
                 _tag: "Complete" as const,
                 committedT: rep.t,
                 output: executed.output,
                 replayFence: executed.replayFence,
-                ...(mappings === undefined ? {} : {
-                  allocations: { version: 1 as const, entries: mappings },
-                }),
+                ...(sealingContext === undefined ||
+                    executed.allocations.length === 0
+                  ? {}
+                  : {
+                    allocations: {
+                      version: 1 as const,
+                      keyId: sealingContext.sealing.keyId,
+                      scope: { ...sealingContext.scope },
+                      entries: executed.allocations,
+                    },
+                  }),
               };
               const terminal = transitionInvocationReceipt(claim, event);
               const txInstant = rep.txData[0]?.v as number;
