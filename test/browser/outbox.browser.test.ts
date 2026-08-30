@@ -600,6 +600,61 @@ browserTest("an authoritative mapping is immutable and belongs to its allocation
   }
 });
 
+browserTest("an unconfirmed scope cannot hold durable work", async ({ browser }) => {
+  const name = `ramose-outbox-unconfirmed-${browser.uniqueId}`;
+  const left = identity();
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    // No authenticated response has confirmed this scope, so `clearScope`
+    // could never select it — which means nothing may be queued under it.
+    expect(
+      await rejectedTag(
+        storage.outbox().enqueue(draft(replicaDatabaseScopeOf(left)), {
+          scope: replicaScopeOf(left),
+        }),
+      ),
+    ).toBe("ReplicaScopeUnconfirmedError");
+    expect((await dumpMutations(name))["mutation-outbox-v1"]).toEqual([]);
+
+    await confirm(storage, left, "left");
+    const queued = await storage.outbox().enqueue(
+      draft(replicaDatabaseScopeOf(left)),
+      { scope: replicaScopeOf(left) },
+    );
+    expect(queued.sequence).toBe(1);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("one invocation id names one queued invocation across every database", async ({ browser }) => {
+  const name = `ramose-outbox-unique-${browser.uniqueId}`;
+  const left = identity();
+  const other = identity({ database: OTHER_DATABASE });
+  const scope = replicaScopeOf(left);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    await confirm(storage, other, "left-other");
+    const outbox = storage.outbox();
+    const intent = draft(replicaDatabaseScopeOf(left));
+    await outbox.enqueue(intent, { scope });
+
+    // A retry that re-resolved its receiver must not queue the same intent a
+    // second time in a sibling database.
+    expect(
+      await rejectedTag(
+        outbox.enqueue({ ...intent, receiver: replicaDatabaseScopeOf(other) }, { scope }),
+      ),
+    ).toBe("OutboxInvocationConflict");
+    expect((await dumpMutations(name))["mutation-outbox-v1"]).toHaveLength(1);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
 browserTest("an undecodable stored row holds its queue instead of promoting the next", async ({ browser }) => {
   const name = `ramose-outbox-unreadable-${browser.uniqueId}`;
   const left = identity();

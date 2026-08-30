@@ -41,6 +41,7 @@ import {
 } from "./idb.ts";
 import {
   REPLICA_GENERATIONS_STORE,
+  ReplicaScopeUnconfirmedError,
   replicaScopeKey,
   type ReplicaDatabaseScope,
   type ReplicaLease,
@@ -93,7 +94,14 @@ export const MUTATION_STORE_FAMILIES = [
   ...MUTATION_PREFIXED_FAMILIES,
 ] as const;
 
-/** Index letting the acknowledgement path find one invocation's queue record. */
+/**
+ * Unique index over the invocation id *alone*.
+ *
+ * An invocation id names exactly one queued invocation, full stop. Indexing it
+ * per partition would let one id be queued once per receiver database, so a
+ * retry that re-resolved its receiver after losing an enqueue result would
+ * execute the same intent twice instead of being refused.
+ */
 const BY_INVOCATION = "by-invocation";
 
 /**
@@ -119,7 +127,7 @@ export const createMutationStores = (database: IDBDatabase): void => {
     const outbox = database.createObjectStore(MUTATION_OUTBOX, {
       keyPath: ["partition", "sequence"],
     });
-    outbox.createIndex(BY_INVOCATION, ["partition", "invocation"], { unique: true });
+    outbox.createIndex(BY_INVOCATION, "invocation", { unique: true });
   }
   if (!database.objectStoreNames.contains(MUTATION_RECEIPTS)) {
     database.createObjectStore(MUTATION_RECEIPTS, {
@@ -286,15 +294,21 @@ export class IndexedDbOutbox {
       requestResult<QueueCursorRecord | undefined>(
         transaction.objectStore(MUTATION_QUEUES).get(partition),
       ),
-      requestResult<unknown>(
-        outbox.index(BY_INVOCATION).get([partition, draft.invocation]),
-      ),
+      requestResult<unknown>(outbox.index(BY_INVOCATION).get(draft.invocation)),
     ]);
+    // Only a scope an authenticated response confirmed may hold durable work:
+    // `clearScope` refuses an unconfirmed scope, so queueing under one would
+    // create local data the deletion API can never select.
+    if (fence === undefined) throw new ReplicaScopeUnconfirmedError({ scope: scopeKey });
     // Only the scope generation guards a queue. Evicting one cached database
     // must not fence the user's unsent work for it.
-    options.lease?.observe(scopeKey, fence?.generation ?? 0);
+    options.lease?.observe(scopeKey, fence.generation);
     if (existing !== undefined) {
       const queued = decodeOutboxRecord(existing);
+      // The same id in another receiver's queue is reuse, never a retry.
+      if (queued !== undefined && queued.partition !== partition) {
+        throw new OutboxInvocationConflict({ invocation: draft.invocation, partition });
+      }
       // An already-durable row this build cannot read is not evidence that the
       // intent matches, so it is refused rather than silently adopted. The row
       // stays exactly where it is; nothing was written.

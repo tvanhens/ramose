@@ -680,6 +680,33 @@ describe("strict decoding of a stored record", () => {
     ) {
       expect(decodeOutboxRecord(broken)).toBeUndefined();
     }
+    // A rewritten sealing epoch is not believed: the row's own handles decide.
+    const sealedBase = JSON.parse(JSON.stringify(
+      buildOutboxRecord(
+        draft({
+          target: {
+            type: "entity",
+            entityId: (await sealEntityId(sealing, idScope, 43)) as EntityId,
+          },
+        }),
+        scopeKey,
+        1,
+      ),
+    )) as Record<string, unknown>;
+    expect(decodeOutboxRecord(sealedBase)).toBeDefined();
+    for (
+      const forged of [
+        // Claiming no sealed handle at all would skip the quarantine.
+        { ...sealedBase, sealing: null },
+        // Claiming a different epoch would make an obsolete handle look current.
+        { ...sealedBase, sealing: { codecVersion: 1, keyId: otherRoot.keyId } },
+        // Claiming an epoch on a record that embeds no handle at all.
+        { ...base, sealing: { codecVersion: 1, keyId: root.keyId } },
+      ]
+    ) {
+      expect(decodeOutboxRecord(forged)).toBeUndefined();
+    }
+
     // A sealed target survives the round trip; only malformed ones do not.
     const sealedRecord = buildOutboxRecord(
       draft({

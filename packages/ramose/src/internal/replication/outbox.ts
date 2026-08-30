@@ -302,7 +302,7 @@ export const sameSealingEpoch = (
 ): boolean =>
   left.codecVersion === right.codecVersion && left.keyId === right.keyId;
 
-/** Every sealed handle a draft embeds, in declaration order. */
+/** Every sealed handle a record embeds, in declaration order. */
 const sealedHandles = (
   target: QueuedTarget,
   inputRefs: readonly QueuedInputRef[],
@@ -311,6 +311,30 @@ const sealedHandles = (
   if (target.type === "entity") handles.push(target.entityId);
   for (const use of inputRefs) if (isEntityId(use.ref)) handles.push(use.ref);
   return handles;
+};
+
+/**
+ * The one sealing epoch a record's own handles agree on.
+ *
+ * `null` means the record embeds no sealed handle at all. It is computed the
+ * same way when a draft is built and when a stored row is decoded, so the
+ * persisted epoch can never drift from the handles it claims to describe —
+ * otherwise a row whose `sealing` was rewritten to `null` would look
+ * submittable after a key rotation, which is exactly the quarantine the
+ * epoch exists to trigger.
+ */
+const embeddedSealingEpoch = (
+  target: QueuedTarget,
+  inputRefs: readonly QueuedInputRef[],
+): SealingEpoch | null | "unreadable" | "mixed" => {
+  let epoch: SealingEpoch | null = null;
+  for (const handle of sealedHandles(target, inputRefs)) {
+    const found = sealingEpochOf(handle);
+    if (found === undefined) return "unreadable";
+    if (epoch === null) epoch = found;
+    else if (!sameSealingEpoch(epoch, found)) return "mixed";
+  }
+  return epoch;
 };
 
 const readPath = (
@@ -404,15 +428,10 @@ export const buildOutboxRecord = (
     }
   }
 
-  let sealing: SealingEpoch | null = null;
-  for (const handle of sealedHandles(draft.target, draft.inputRefs)) {
-    const epoch = sealingEpochOf(handle);
-    if (epoch === undefined) reject("a sealed handle has no readable envelope");
-    if (sealing === null) sealing = epoch!;
-    else if (!sameSealingEpoch(sealing, epoch!)) {
-      reject("one invocation mixes two server sealing epochs");
-    }
-  }
+  const embedded = embeddedSealingEpoch(draft.target, draft.inputRefs);
+  if (embedded === "unreadable") reject("a sealed handle has no readable envelope");
+  if (embedded === "mixed") reject("one invocation mixes two server sealing epochs");
+  const sealing = embedded as SealingEpoch | null;
 
   return Object.freeze({
     partition: mutationPartitionKey(draft.receiver),
@@ -807,6 +826,16 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
   try {
     assertJsonValue(value.input, "input", new Set());
   } catch {
+    return undefined;
+  }
+  // The persisted epoch is not believed on its own: it must be exactly what
+  // this row's own handles say. A row whose `sealing` was rewritten — by a
+  // partial write, a foreign build, or tampering — is unreadable, not ready.
+  const embedded = embeddedSealingEpoch(target, inputRefs);
+  if (embedded === "unreadable" || embedded === "mixed") return undefined;
+  if (embedded === null) {
+    if (sealing !== null) return undefined;
+  } else if (sealing === null || !sameSealingEpoch(sealing, embedded)) {
     return undefined;
   }
   return Object.freeze({
