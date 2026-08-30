@@ -2239,8 +2239,20 @@ export class IndexedDbReplicaStorage {
     return (record?.generation ?? 0) === sweep;
   }
 
-  /** Remove one stale exact binding without touching its shared partition. */
-  private async unbindCredential(fingerprint: string): Promise<void> {
+  /**
+   * Remove one exact binding without touching its shared partition.
+   *
+   * Two callers, one rule: a binding is a *selector*, and a selector that the
+   * client has direct evidence is no longer good must stop selecting. It is
+   * stale when the partition it named now holds another value, and it is
+   * withdrawn when the server has refused the credential it was minted for —
+   * otherwise a later offline start would restore and publish the revoked
+   * principal's rows through a binding the server has already rejected.
+   *
+   * The partition itself is untouched: whose data it is has not changed, and
+   * deleting it is `clearLocalData()`'s decision, not this one's.
+   */
+  async unbindCredential(fingerprint: string): Promise<void> {
     const transaction = this.database.transaction(CREDENTIAL_BINDINGS, "readwrite");
     transaction.objectStore(CREDENTIAL_BINDINGS).delete(fingerprint);
     await commitTransaction(transaction);

@@ -245,6 +245,75 @@ browserTest("renders an exact bearer binding's replica offline and closes determ
   }
 });
 
+browserTest("retains no observation until something subscribes", async ({ browser }) => {
+  const name = `ramose-client-unretained-${browser.uniqueId}`;
+  await seed(name, [{ entity: opaque("e"), title: "later", rank: "a" }]);
+  const client = offlineClient(name);
+  try {
+    const db = client.open();
+    // Observing activates the database — but a render that is then abandoned
+    // must leave nothing behind: an observation is released only through an
+    // unsubscribe, so one installed without a subscription would be rerun by
+    // every later replica and overlay change, forever.
+    const notes = titles(db);
+    await waitFor(client.sync, (state) => state.status === "offline");
+    expect(notes.getSnapshot().status).toBe("pending");
+
+    const held = notes.subscribe(() => undefined);
+    expect((await waitFor(notes, (snapshot) => snapshot.status === "ready")).data)
+      .toEqual([{ title: "later" }]);
+    held();
+  } finally {
+    await client.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a withdrawn binding stops selecting the replica it named", async ({ browser }) => {
+  const name = `ramose-client-withdrawn-${browser.uniqueId}`;
+  await seed(name, [{ entity: opaque("e"), title: "revoked", rank: "a" }]);
+  const installed = await installClientCatalog(NotesCatalog);
+  const fingerprint = await replicationCredentialFingerprint(
+    TOKEN,
+    replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] }),
+    await rootReplicaRouteSlot(),
+  );
+
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    const bound = await storage.restoreBound(
+      fingerprint,
+      installed.attributes,
+      installed.readCompatibilityHash,
+    );
+    expect(bound).toBeDefined();
+    bound!.release();
+    // What the session does when the server refuses this exact credential.
+    await storage.unbindCredential(fingerprint);
+    expect(await storage.restoreBound(
+      fingerprint,
+      installed.attributes,
+      installed.readCompatibilityHash,
+    )).toBeUndefined();
+  } finally {
+    storage.close();
+  }
+
+  // End to end: the same credential now renders nothing offline, so a restart
+  // after a refusal cannot walk around the authentication fence.
+  const client = offlineClient(name);
+  try {
+    const notes = titles(client.open());
+    const held = notes.subscribe(() => undefined);
+    await waitFor(client.sync, (state) => state.status === "offline");
+    expect(notes.getSnapshot().status).toBe("pending");
+    held();
+  } finally {
+    await client.close();
+    await deleteDatabase(name);
+  }
+});
+
 browserTest("reattaches a subscription that is resubscribed after its last listener left", async ({ browser }) => {
   const name = `ramose-client-reattach-${browser.uniqueId}`;
   await seed(name, [{ entity: opaque("e"), title: "kept", rank: "a" }]);

@@ -293,7 +293,8 @@ export interface ClientDatabase {
    * query value, and this handle, does not.
    *
    * Safe to call during rendering: it performs no query, storage, or network
-   * work synchronously, and equal queries share one interned observation.
+   * work synchronously, retains nothing until something subscribes, and shares
+   * one interned observation across equal queries.
    */
   readonly observe: <Row, Out>(
     query: QueryObject<Row, Out>,
@@ -340,23 +341,28 @@ export class ClientDatabaseHandle implements ClientDatabase {
     const value = query as AnyQueryObject;
     const lowered = lowerQueryObject(value);
     const key = queryObservationKey(value);
+    void this.activate();
     // Resolved on every use, never captured. A subscription value outlives the
     // observation it names — a framework unmounts, the last listener goes, the
     // observation is released, and the *same* value is subscribed again on
     // remount. Holding the released observer there would hand that remount a
     // frozen snapshot that no replica or overlay change ever updates again.
-    const acquire = (): QueryObserver => this.acquire(key, lowered);
-    let last = acquire();
-    void this.activate();
+    //
+    // And nothing is interned until something subscribes: an observation is
+    // released only through an unsubscribe, so one installed by a render that
+    // is then abandoned would never be released, and every later replica or
+    // overlay change would rerun it forever.
+    let last: QueryObserver | undefined = this.observers.get(key);
     return Object.freeze({
       subscribe: (onChange: () => void) => {
-        last = acquire();
-        return last.subscribe(onChange);
+        const observer = this.acquire(key, lowered);
+        last = observer;
+        return observer.subscribe(onChange);
       },
       getSnapshot: (): QuerySnapshot<Out> => {
         const observer = this.observers.get(key);
         if (observer !== undefined) last = observer;
-        return last.store.getSnapshot() as QuerySnapshot<Out>;
+        return (last?.store.getSnapshot() ?? PENDING) as QuerySnapshot<Out>;
       },
     });
   }

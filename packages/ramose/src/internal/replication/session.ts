@@ -471,6 +471,15 @@ export class ReplicationSession {
             ...(session.state.value === undefined ? {} : { value: session.state.value }),
           });
         } catch (error) {
+          if (error instanceof ReplicationUnauthorizedError) {
+            // The server refused this exact credential, so the binding minted
+            // for it must stop selecting: without this, the next start would
+            // restore and publish the refused principal's rows offline through
+            // a binding the server has already rejected. Best effort — a
+            // withdrawal that cannot be written must not mask the refusal.
+            await options.storage.unbindCredential(fingerprint)
+              .catch(() => undefined);
+          }
           if (session.controller.signal.aborted || !session.current(generation)) return;
           session.publish({
             status: "failed",
