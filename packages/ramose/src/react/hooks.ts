@@ -64,6 +64,13 @@ const useClient = (): Client => {
  *
  * `open()` is interned and inert, so calling it while rendering costs one map
  * read and activates nothing.
+ *
+ * A terminal client — one that was closed, cleared, or fenced — throws here, as
+ * it does everywhere else. That is deliberate rather than softened into an
+ * empty render: those states are terminal for the *instance*, an application
+ * recovers by constructing a new client, and a tree that keeps rendering
+ * against the old one is asking a question that no longer has an answer. Swap
+ * the client on the provider (or unmount the tree) as part of closing it.
  */
 export const useDb = (): ClientDatabase => useClient().open();
 
