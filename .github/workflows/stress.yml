@@ -7,13 +7,9 @@
 name: stress
 
 on:
-  # `workflow_dispatch` only becomes selectable once this file is on the
-  # default branch. Until then the diagnostic branches carry it themselves,
-  # so a push there can drive a run. No other branch is affected.
-  push:
-    branches:
-      - "claude/551-**"
-      - "**/551-transport-forensics"
+  # Dispatch only. Nothing triggers this automatically — it is expensive
+  # (six conformance runs plus a ten-minute sweep) and its output is evidence,
+  # not a gate. Selectable from the Actions tab once this file is on master.
   workflow_dispatch:
     inputs:
       rounds:
