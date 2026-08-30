@@ -39,8 +39,24 @@ import {
 } from "./replica-schema.ts";
 import type { ReplicaRouteSlot } from "./route-slot.ts";
 import {
+  abortTransaction,
+  abortWithSignal,
+  commitTransaction,
+  compoundPrefixRange,
+  prefixRange,
+  requestResult,
+  transactionDone,
+} from "./idb.ts";
+import {
+  clearMutationScope,
+  createMutationStores,
+  IndexedDbOutbox,
+  MUTATION_STORE_FAMILIES,
+} from "./outbox-storage.ts";
+import {
   identityInDatabase,
   identityInScope,
+  REPLICA_GENERATIONS_STORE,
   replicaDatabaseKey,
   replicaDatabasePartitionPrefix,
   replicaDatabaseScopeOf,
@@ -88,7 +104,9 @@ import {
 const STORAGE_V2_DATABASE_VERSION = 5;
 /** The IndexedDB version that added the durable lifecycle generation records. */
 const LIFECYCLE_DATABASE_VERSION = 6;
-const DATABASE_VERSION = LIFECYCLE_DATABASE_VERSION;
+/** The IndexedDB version that added #475's mutation queue store families. */
+const MUTATION_DATABASE_VERSION = 7;
+const DATABASE_VERSION = MUTATION_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
 const COMMITTED_HEADS = "replica-committed-heads-v1";
 const STAGING = "replica-staging-v1";
@@ -97,13 +115,12 @@ const NODES = "replica-nodes-v1";
 const CREDENTIAL_BINDINGS = "replica-credential-bindings-v1";
 const CACHE_CANDIDATES = "replica-cache-candidates-v1";
 const ROUTE_SLOTS = "replica-route-slots-v1";
-const GENERATIONS = "replica-generations-v1";
+const GENERATIONS = REPLICA_GENERATIONS_STORE;
 const USER_T = 2;
 
 /**
  * Every store family this storage format owns. The pre-public migration resets
- * exactly these; future mutation stores (#475/#476) are separate families that
- * a later migration must decide about on its own.
+ * exactly these.
  */
 const REPLICA_STORE_FAMILIES = [
   COMMITTED,
@@ -121,10 +138,11 @@ const REPLICA_STORE_FAMILIES = [
  * Families keyed by the replica partition key alone.
  *
  * Scoped clear and database eviction delete one prefix range from each family
- * below, so the #475/#476 mutation families — outbox, receipts, ClientRef
- * mappings, optimistic layers, observation markers — are removed by the same
- * transaction with no new selection logic as soon as they adopt one of these
- * two index shapes.
+ * below. #475's mutation families are *not* here: they are keyed by the stable
+ * server/principal/database triple rather than by the read-view-bearing
+ * replica partition, precisely so a compatible schema change or a cache
+ * eviction cannot discard unsubmitted work. A scoped clear removes them
+ * through {@link clearMutationScope}, in the very same transaction.
  */
 const PARTITION_KEYED_FAMILIES = [COMMITTED, COMMITTED_HEADS, STAGING] as const;
 
@@ -288,6 +306,9 @@ export type ReplicaClearOutcome = {
   readonly bindings: number;
   readonly candidates: number;
   readonly routeObservations: number;
+  /** Queued invocations removed with the replicas, in the same transaction. */
+  readonly queued: number;
+  readonly clientRefs: number;
 };
 
 /** What one database eviction removed. */
@@ -397,76 +418,8 @@ const lifecycleRegistry = (name: string): LifecycleRegistry => {
   return created;
 };
 
-const requestResult = <T>(request: IDBRequest<T>): Promise<T> =>
-  new Promise((resolve, reject) => {
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-  });
-
-/**
- * An aborted transaction carries no error of its own, and the requests it
- * cancels bubble their own failure first, so both endings must be reported as
- * one inspectable exception rather than a bare `null`.
- */
-const transactionFailure = (transaction: IDBTransaction): DOMException =>
-  transaction.error ?? new DOMException("transaction aborted", "AbortError");
-
-const transactionDone = (transaction: IDBTransaction): Promise<void> =>
-  new Promise((resolve, reject) => {
-    transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener("abort", () => reject(transactionFailure(transaction)), {
-      once: true,
-    });
-    transaction.addEventListener("error", () => reject(transactionFailure(transaction)), {
-      once: true,
-    });
-  });
-
-const commitTransaction = async (transaction: IDBTransaction): Promise<void> => {
-  transaction.commit();
-  await transactionDone(transaction);
-};
-
-/** Abort a transaction because this operation intentionally lost a CAS. */
-const abortTransaction = async (transaction: IDBTransaction): Promise<void> => {
-  const done = transactionDone(transaction);
-  try {
-    transaction.abort();
-  } catch {
-    // Already finished: there is nothing left to roll back, and waiting for an
-    // event that has already fired would never resolve.
-    return;
-  }
-  try {
-    await done;
-  } catch (error) {
-    if (!(error instanceof DOMException) || error.name !== "AbortError") throw error;
-  }
-};
-
-const abortWithSignal = (
-  transaction: IDBTransaction,
-  signal: AbortSignal | undefined,
-): (() => void) => {
-  if (signal === undefined) return () => undefined;
-  const abort = (): void => transaction.abort();
-  signal.addEventListener("abort", abort, { once: true });
-  if (signal.aborted) abort();
-  return () => signal.removeEventListener("abort", abort);
-};
-
 const chunkRange = (partition: string): IDBKeyRange =>
   IDBKeyRange.bound([partition, 0], [partition, Number.MAX_SAFE_INTEGER]);
-
-/**
- * Partition keys are built from opaque identifiers that never contain the
- * separator, so a string prefix selects exactly one scope or one database.
- */
-const prefixRange = (prefix: string): IDBKeyRange =>
-  IDBKeyRange.bound(prefix, `${prefix}\uffff`);
-
-const compoundPrefixRange = (prefix: string): IDBKeyRange =>
-  IDBKeyRange.bound([prefix], [`${prefix}\uffff`]);
 
 const sameJson = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
@@ -895,6 +848,9 @@ export class IndexedDbReplicaStorage {
       if (!database.objectStoreNames.contains(GENERATIONS)) {
         database.createObjectStore(GENERATIONS, { keyPath: "key" });
       }
+      // #475's mutation families. They are created empty and need no data
+      // migration: version 6 and earlier could not queue an invocation.
+      createMutationStores(database);
       const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
       if (oldVersion > 0 && oldVersion < STORAGE_V2_DATABASE_VERSION && request.transaction !== null) {
         // One atomic pre-public reset. Every stored record older than storage
@@ -933,6 +889,21 @@ export class IndexedDbReplicaStorage {
     };
     this.registrations.add(once);
     return once;
+  }
+
+  /**
+   * The durable mutation queue over this same connection.
+   *
+   * It shares the handle rather than opening its own so that a scoped clear
+   * can delete the replicas and the queue in one transaction, and so an
+   * enqueue can read the very generation record that fences it.
+   */
+  outbox(): IndexedDbOutbox {
+    return new IndexedDbOutbox(
+      this.database,
+      this.boundaries,
+      (scope) => void this.assertScopeLive(scope),
+    );
   }
 
   /**
@@ -1025,7 +996,10 @@ export class IndexedDbReplicaStorage {
   async clearScope(scope: ReplicaScope): Promise<ReplicaClearOutcome> {
     const scopeKey = this.assertScopeLive(scope);
     const prefix = replicaScopePartitionPrefix(scope);
-    const transaction = this.database.transaction([...REPLICA_STORE_FAMILIES], "readwrite");
+    const transaction = this.database.transaction(
+      [...REPLICA_STORE_FAMILIES, ...MUTATION_STORE_FAMILIES],
+      "readwrite",
+    );
     let outcome: ReplicaClearOutcome;
     try {
       outcome = await this.stageClear(transaction, scope, scopeKey, prefix);
@@ -1100,6 +1074,9 @@ export class IndexedDbReplicaStorage {
         routeStore.put({ ...observation, replicaScopes: remaining } satisfies RouteSlotRecord);
       }
     }
+    // The user asked to delete this principal's local data, so the durable
+    // queue goes with the replicas — in this transaction, not beside it.
+    const mutations = await clearMutationScope(transaction, scope);
     const generation = confirmed.generation + 1;
     generations.put({
       ...confirmed,
@@ -1117,6 +1094,8 @@ export class IndexedDbReplicaStorage {
       bindings,
       candidates,
       routeObservations,
+      queued: mutations.queued,
+      clientRefs: mutations.clientRefs,
     });
   }
 

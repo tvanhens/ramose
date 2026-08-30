@@ -608,7 +608,7 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
 
     upgraded = await IndexedDbReplicaStorage.open(legacyName);
     const reopened = await openNative(legacyName);
-    expect(reopened.version).toBe(6);
+    expect(reopened.version).toBe(7);
     expect([...reopened.objectStoreNames]).toContain("replica-route-slots-v1");
     const inspect = reopened.transaction([
       ...LEGACY_STORE_KEY_PATHS.map(([store]) => store),

@@ -29,6 +29,13 @@
 import * as Data from "effect/Data";
 import { REPLICA_STORAGE_VERSION, type ReplicationIdentity } from "./protocol.ts";
 
+/**
+ * The durable generation store. Named here rather than in the storage adapter
+ * because every family that must be fenced — the committed replica and, since
+ * #475, the mutation queue — names the same store inside its own write.
+ */
+export const REPLICA_GENERATIONS_STORE = "replica-generations-v1";
+
 /** One server/authenticated-principal realm. Both halves are server-minted. */
 export type ReplicaScope = {
   readonly server: string;

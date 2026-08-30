@@ -129,6 +129,27 @@ export {
 // ── the database ───────────────────────────────────────────────────────────
 export type { SchemaEid, Eid } from "./Eid.ts";
 export type { EntityRef, LookupRef } from "./idents.ts";
+
+// ── durable offline identities (#475) ──────────────────────────────────────
+export {
+  clientRef,
+  invocationId,
+  isClientRef,
+  isEntityId,
+  isInvocationId,
+  isMutationRef,
+  type ClientRef,
+  type InvocationId,
+  type MutationRef,
+} from "./refs.ts";
+export {
+  allocationSlots,
+  type AllocationDeclaration,
+  type AllocationPathSegment,
+  type AllocationSlot,
+  type AllocationSlots,
+  type EntityRefPath,
+} from "./allocations.ts";
 export { tempid, type Tempid } from "./entityArg.ts";
 // the pattern-side types too, so pull helpers can accept exactly what
 // `db.pull` accepts (type-only: the runtime surface is unchanged)

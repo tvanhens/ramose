@@ -11,6 +11,12 @@
 
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import {
+  allocationSlots,
+  type AllocationDeclaration,
+  type AllocationSlots,
+} from "./allocations.ts";
+import type { EntityId as OpaqueEntityId } from "./refs.ts";
 import { COMPOSED_TRAITS } from "./Composer.ts";
 import { normalizeDoc } from "./documentation.ts";
 import type { Eid } from "./Eid.ts";
@@ -151,6 +157,19 @@ export type RunArg<C extends AnySchema, OC extends AnySchema, A> =
  * it after the writer assigns eids.
  */
 export const EntityId: typeof untargetedRef = untargetedRef;
+
+/**
+ * The opaque public handle that fills an {@link EntityId} slot.
+ *
+ * The value above declares the *slot*; this type is the durable, entity-branded
+ * identity that travels through it — the sealed server-issued handle a queued
+ * mutation may name as its target, never a numeric eid. Declaring both under
+ * one name is deliberate: `Ramose.EntityId` is the entity id, whether an author
+ * is writing a schema or typing a handle they were given.
+ */
+export type EntityId<Entity extends AnyEntity = AnyEntity> = OpaqueEntityId<
+  Entity
+>;
 
 /**
  * What a body may return for output type `O`: a handle is legal
@@ -710,6 +729,12 @@ export interface UnboundOperation<
   readonly self: Self;
   /** Additional entity definitions made reachable and typed for authoring. */
   readonly writes: Writes;
+  /**
+   * Canonically ordered client-ref allocation slots (#475). Inert data: it
+   * names output positions an offline client may address before the server has
+   * committed them, and carries nothing executable.
+   */
+  readonly allocations: AllocationSlots;
   /** Author-declared executable revision; `1` when undeclared. */
   readonly revision: number;
   readonly doc: string | undefined;
@@ -750,6 +775,8 @@ export interface OwnedOperation<
   readonly output: OCodec;
   readonly self: Self;
   readonly writes: Writes;
+  /** Canonically ordered client-ref allocation slots (#475). */
+  readonly allocations: AllocationSlots;
   /** Author-declared executable revision; `1` when undeclared. */
   readonly revision: number;
   readonly doc: string | undefined;
@@ -765,6 +792,7 @@ export type AnyOwnedOperation = {
   readonly output: Schema.Top;
   readonly self: boolean;
   readonly writes: readonly AnyEntity[];
+  readonly allocations: AllocationSlots;
   readonly revision: number;
   readonly doc: string | undefined;
   readonly run: (...args: never[]) => unknown;
@@ -929,6 +957,14 @@ type OwnedOperationSpec<
   readonly self?: Self;
   readonly writes?: ValidWriteDefinitions<Writes>;
   /**
+   * Named client-ref allocation slots (#475), each bound to an
+   * entity-reference path in this operation's own declared output. Declare one
+   * for every entity an offline client must be able to address before the
+   * server has committed it; only entity-reference positions type-check, so a
+   * slot cannot be bound to a title or a count.
+   */
+  readonly allocates?: AllocationDeclaration<CodecType<OCodec>>;
+  /**
    * Author-declared executable revision (default `1`). The operation-scoped
    * compatibility version (#487) excludes executable source, so bumping this
    * is how an author rotates an operation whose declared input/output
@@ -1065,6 +1101,7 @@ function defineOperation(
     output: nameOrSpec.output,
     self,
     writes: Object.freeze([...(nameOrSpec.writes ?? [])]),
+    allocations: allocationSlots(nameOrSpec.allocates),
     revision: normalizeOperationRevision(nameOrSpec.revision),
     doc: normalizeDoc(nameOrSpec.doc),
     run: nameOrSpec.run,
@@ -1225,6 +1262,7 @@ export const bindOwnedOperations = <
       output: operation.output,
       self: operation.self,
       writes: operation.writes,
+      allocations: operation.allocations ?? [],
       revision: normalizeOperationRevision(operation.revision),
       doc: operation.doc,
       run: operation.run,

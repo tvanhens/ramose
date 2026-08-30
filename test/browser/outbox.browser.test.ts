@@ -1,0 +1,464 @@
+/**
+ * The durable mutation queue against real IndexedDB (#475 slice 1).
+ *
+ * Nothing here is simulated: a real Chromium IndexedDB connection, the real
+ * transaction/abort semantics, the real sealed entity-id codec over WebCrypto,
+ * and the repository's inert runtime boundary armed only to decide where a
+ * crash cut lands.
+ */
+
+import { expect } from "vitest";
+import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
+import type { OperationVersion } from "../../packages/ramose/src/internal/authorization/identities.ts";
+import { clientRef, invocationId } from "../../packages/ramose/src/db/refs.ts";
+import type { EntityId } from "../../packages/ramose/src/db/refs.ts";
+import {
+  sealEntityId,
+  type EntityIdScope,
+} from "../../packages/ramose/src/internal/replication/entity-id.ts";
+import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
+import type { OutboxDraft } from "../../packages/ramose/src/internal/replication/outbox.ts";
+import { mutationPartitionKey } from "../../packages/ramose/src/internal/replication/outbox.ts";
+import {
+  replicaDatabaseScopeOf,
+  replicaScopeOf,
+  type ReplicaDatabaseScope,
+} from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
+import type { ReplicationIdentity } from "../../packages/ramose/src/internal/replication/protocol.ts";
+import {
+  generateServerIdentityRoot,
+  sealingKeyOf,
+} from "../../packages/ramose/src/internal/replication/server-identity.ts";
+import {
+  armCheckpoint,
+  resetTestHooks,
+  testRuntimeBoundaries,
+} from "../../packages/ramose/src/internal/test-hooks.ts";
+import { browserTest } from "./fixtures.ts";
+
+const opaque = (character: string): string => character.repeat(43);
+
+/** `Data.TaggedError` carries no message; the tag is the assertion. */
+const rejectedTag = async (work: Promise<unknown>): Promise<string> => {
+  try {
+    await work;
+  } catch (error) {
+    return (error as { readonly _tag?: string })._tag ?? String(error);
+  }
+  throw new Error("expected the enqueue to be refused");
+};
+
+const SERVER = opaque("s");
+const LEFT = opaque("l");
+const RIGHT = opaque("r");
+const ROOT_DATABASE = opaque("d");
+const OTHER_DATABASE = opaque("e");
+const READ_COMPATIBILITY = ReadCompatibilityHash.make(opaque("k"));
+
+const identity = (overrides: Partial<ReplicationIdentity> = {}): ReplicationIdentity => ({
+  version: 1,
+  server: SERVER,
+  principal: LEFT,
+  database: ROOT_DATABASE,
+  catalog: opaque("c"),
+  readView: opaque("v"),
+  readCompatibilityHash: READ_COMPATIBILITY,
+  graphLineage: [],
+  authenticator: opaque("a"),
+  ...overrides,
+});
+
+const root = generateServerIdentityRoot(1_700_000_000_000);
+const rotated = generateServerIdentityRoot(1_700_000_000_001);
+
+const idScope = (receiver: ReplicaDatabaseScope): EntityIdScope => ({
+  server: receiver.server,
+  principal: receiver.principal,
+  database: receiver.database,
+});
+
+const version = "b".repeat(64) as OperationVersion;
+
+const draft = (
+  receiver: ReplicaDatabaseScope,
+  overrides: Partial<OutboxDraft> = {},
+): OutboxDraft => ({
+  invocation: invocationId(),
+  receiver,
+  operation: {
+    catalog: "movies" as never,
+    owner: { kind: "entity", name: "issue" },
+    localName: "create",
+  },
+  operationVersion: version,
+  target: { type: "none" },
+  input: { title: "offline" },
+  allocations: [],
+  inputRefs: [],
+  enqueuedAt: Date.now(),
+  ...overrides,
+});
+
+const requestResult = <T>(request: IDBRequest<T>): Promise<T> =>
+  new Promise((resolve, reject) => {
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+
+const transactionDone = (transaction: IDBTransaction): Promise<void> =>
+  new Promise((resolve, reject) => {
+    transaction.addEventListener("complete", () => resolve(), { once: true });
+    transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
+  });
+
+const openNative = (name: string): Promise<IDBDatabase> =>
+  new Promise((resolve, reject) => {
+    const request = indexedDB.open(name);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+
+const deleteDatabase = (name: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(name);
+    request.addEventListener("success", () => resolve(), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+
+/** Every record of every mutation store, as a comparable value. */
+const dumpMutations = async (name: string): Promise<Record<string, unknown[]>> => {
+  const database = await openNative(name);
+  const stores = [...database.objectStoreNames].filter((store) =>
+    store.startsWith("mutation-")
+  );
+  const transaction = database.transaction(stores, "readonly");
+  const contents: Record<string, unknown[]> = {};
+  for (const store of stores) {
+    contents[store] = await requestResult<unknown[]>(
+      transaction.objectStore(store).getAll(),
+    );
+  }
+  await transactionDone(transaction);
+  database.close();
+  return contents;
+};
+
+const confirm = async (
+  storage: IndexedDbReplicaStorage,
+  selected: ReplicationIdentity,
+  label: string,
+): Promise<void> => {
+  await storage.bindAuthenticated({
+    fingerprint: `fingerprint-${label}`,
+    identity: selected,
+    candidateKey: { selector: `selector-${label}`, routeSlot: `slot-${label}` },
+  });
+};
+
+browserTest("one enqueue is all-or-nothing across a crash cut", async ({ browser }) => {
+  const name = `ramose-outbox-atomic-${browser.uniqueId}`;
+  const left = identity();
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+  try {
+    await confirm(storage, left, "left");
+    const outbox = storage.outbox();
+    const allocation = clientRef();
+
+    armCheckpoint("outbox.enqueue", "throw", "cut before the enqueue committed");
+    try {
+      await expect(
+        outbox.enqueue(
+          draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+          { scope },
+        ),
+      ).rejects.toThrow(/cut before the enqueue/);
+    } finally {
+      resetTestHooks();
+    }
+
+    // Not one of the five families kept a fragment: the queue is exactly as
+    // empty as it was before the attempt.
+    const cut = await dumpMutations(name);
+    for (const [store, records] of Object.entries(cut)) {
+      expect([store, records]).toEqual([store, []]);
+    }
+    expect((await outbox.restore(scope)).records).toEqual([]);
+
+    // The retry commits every part together.
+    const record = await outbox.enqueue(
+      draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+      { scope },
+    );
+    const committed = await dumpMutations(name);
+    expect(committed["mutation-outbox-v1"]).toHaveLength(1);
+    expect(committed["mutation-queues-v1"]).toEqual([{
+      partition: mutationPartitionKey(receiver),
+      scope: record.scope,
+      receiver: { ...receiver },
+      nextSequence: 2,
+      sealing: null,
+      updatedAt: record.enqueuedAt,
+    }]);
+    expect(committed["mutation-receipts-v1"]).toEqual([{
+      partition: record.partition,
+      invocation: record.invocation,
+      scope: record.scope,
+      state: "queued",
+      observation: null,
+      output: null,
+      mappings: [],
+      failure: null,
+      updatedAt: record.enqueuedAt,
+    }]);
+    expect(committed["mutation-client-refs-v1"]).toEqual([{
+      partition: record.partition,
+      clientRef: allocation,
+      invocation: record.invocation,
+      slot: "issue",
+      createdAt: record.enqueuedAt,
+    }]);
+    expect(committed["mutation-client-ref-mappings-v1"]).toEqual([]);
+  } finally {
+    resetTestHooks();
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a restart reconstructs the exact per-database order", async ({ browser }) => {
+  const name = `ramose-outbox-restart-${browser.uniqueId}`;
+  const left = identity();
+  const other = identity({ database: OTHER_DATABASE });
+  const receiver = replicaDatabaseScopeOf(left);
+  const otherReceiver = replicaDatabaseScopeOf(other);
+  const scope = replicaScopeOf(left);
+  let storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    await confirm(storage, other, "left-other");
+    const outbox = storage.outbox();
+    const first = await outbox.enqueue(draft(receiver, { input: { title: "one" } }), { scope });
+    const second = await outbox.enqueue(draft(receiver, { input: { title: "two" } }), { scope });
+    const elsewhere = await outbox.enqueue(
+      draft(otherReceiver, { input: { title: "elsewhere" } }),
+      { scope },
+    );
+    expect([first.sequence, second.sequence, elsewhere.sequence]).toEqual([1, 2, 1]);
+
+    storage.close();
+    storage = await IndexedDbReplicaStorage.open(name);
+    const plans = await storage.outbox().plan(scope);
+    expect(plans).toHaveLength(2);
+    const mine = plans.find((plan) => plan.receiver.database === ROOT_DATABASE)!;
+    const theirs = plans.find((plan) => plan.receiver.database === OTHER_DATABASE)!;
+    expect(mine.entries.map((entry) => entry.record.invocation)).toEqual([
+      first.invocation,
+      second.invocation,
+    ]);
+    expect(mine.entries.map((entry) => entry.record.input)).toEqual([
+      { title: "one" },
+      { title: "two" },
+    ]);
+    expect(mine.head).toEqual({ type: "ready", record: mine.entries[0]!.record });
+    expect(theirs.head).toEqual({ type: "ready", record: theirs.entries[0]!.record });
+    expect((await storage.outbox().restore(scope)).unreadable).toBe(0);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a dependent invocation stays blocked until a durable mapping exists", async ({ browser }) => {
+  const name = `ramose-outbox-blocked-${browser.uniqueId}`;
+  const left = identity();
+  const other = identity({ database: OTHER_DATABASE });
+  const receiver = replicaDatabaseScopeOf(left);
+  const otherReceiver = replicaDatabaseScopeOf(other);
+  const scope = replicaScopeOf(left);
+  const allocation = clientRef();
+  let storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    await confirm(storage, other, "left-other");
+    let outbox = storage.outbox();
+    // A create that allocates the ref, then work that depends on it, then one
+    // unrelated invocation in a different database.
+    await outbox.enqueue(
+      draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+      { scope },
+    );
+    const dependent = await outbox.enqueue(
+      draft(receiver, {
+        target: { type: "client-ref", clientRef: allocation },
+        input: { assignee: allocation },
+        inputRefs: [{ path: ["assignee"], ref: allocation }],
+      }),
+      { scope },
+    );
+    const independent = await outbox.enqueue(draft(otherReceiver), { scope });
+
+    storage.close();
+    storage = await IndexedDbReplicaStorage.open(name);
+    outbox = storage.outbox();
+    const restored = await outbox.plan(scope);
+    const mine = restored.find((plan) => plan.receiver.database === ROOT_DATABASE)!;
+    const theirs = restored.find((plan) => plan.receiver.database === OTHER_DATABASE)!;
+    // The allocating invocation is the head and is ready; the dependent one
+    // behind it is blocked on exactly the ref it names.
+    expect(mine.head.type).toBe("ready");
+    expect(mine.entries[1]!.state).toEqual({ type: "blocked", missing: [allocation] });
+    // A different database is entirely unaffected by that dependency.
+    expect(theirs.head).toEqual({ type: "ready", record: theirs.entries[0]!.record });
+    expect(theirs.entries[0]!.record.invocation).toBe(independent.invocation);
+
+    const mapped = (await sealEntityId(sealingKeyOf(root), idScope(receiver), 42)) as EntityId;
+    await outbox.recordMappings(receiver, dependent.invocation, [
+      { clientRef: allocation, entityId: mapped },
+    ]);
+
+    storage.close();
+    storage = await IndexedDbReplicaStorage.open(name);
+    const released = await storage.outbox().plan(scope);
+    const now = released.find((plan) => plan.receiver.database === ROOT_DATABASE)!;
+    expect(now.entries.map((entry) => entry.state)).toEqual([
+      { type: "ready" },
+      { type: "ready" },
+    ]);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a replaced sealing epoch quarantines the queue without clearing it", async ({ browser }) => {
+  const name = `ramose-outbox-epoch-${browser.uniqueId}`;
+  const left = identity();
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  let storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    const handle = (await sealEntityId(sealingKeyOf(root), idScope(receiver), 7)) as EntityId;
+    const queued = await storage.outbox().enqueue(
+      draft(receiver, { target: { type: "entity", entityId: handle } }),
+      { scope },
+    );
+    expect(queued.sealing).toEqual({ codecVersion: 1, keyId: root.keyId });
+
+    storage.close();
+    storage = await IndexedDbReplicaStorage.open(name);
+    const outbox = storage.outbox();
+
+    // The epoch the record was minted under is still current: ordinary.
+    const same = await outbox.plan(scope, root.keyId);
+    expect(same[0]!.head.type).toBe("ready");
+
+    // The server has replaced its sealing key. The queue surfaces the typed,
+    // data-free update-required state and keeps every record.
+    const rotatedPlan = await outbox.plan(scope, rotated.keyId);
+    expect(rotatedPlan[0]!.head).toEqual({
+      type: "update-required",
+      record: rotatedPlan[0]!.entries[0]!.record,
+      reason: "key-epoch",
+    });
+    const stored = await dumpMutations(name);
+    expect(stored["mutation-outbox-v1"]).toHaveLength(1);
+    expect(stored["mutation-receipts-v1"]).toHaveLength(1);
+
+    // An unconfirmed epoch — offline — is not evidence of a rotation.
+    expect((await outbox.plan(scope))[0]!.head.type).toBe("ready");
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a scoped clear removes one principal's queue and preserves the other", async ({ browser }) => {
+  const name = `ramose-outbox-clear-${browser.uniqueId}`;
+  const left = identity();
+  const right = identity({ principal: RIGHT });
+  const leftReceiver = replicaDatabaseScopeOf(left);
+  const rightReceiver = replicaDatabaseScopeOf(right);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    await confirm(storage, right, "right");
+    const outbox = storage.outbox();
+    const leftRef = clientRef();
+    await outbox.enqueue(
+      draft(leftReceiver, { allocations: [{ slot: "issue", clientRef: leftRef }] }),
+      { scope: replicaScopeOf(left) },
+    );
+    await outbox.enqueue(draft(leftReceiver), { scope: replicaScopeOf(left) });
+    const rightRef = clientRef();
+    const kept = await outbox.enqueue(
+      draft(rightReceiver, { allocations: [{ slot: "issue", clientRef: rightRef }] }),
+      { scope: replicaScopeOf(right) },
+    );
+
+    const outcome = await storage.clearScope(replicaScopeOf(left));
+    expect(outcome.queued).toBe(2);
+    expect(outcome.clientRefs).toBe(1);
+
+    const after = await dumpMutations(name);
+    const survivors = after["mutation-outbox-v1"] as { readonly partition: string }[];
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0]!.partition).toBe(mutationPartitionKey(rightReceiver));
+    expect(after["mutation-queues-v1"]).toHaveLength(1);
+    expect(after["mutation-receipts-v1"]).toHaveLength(1);
+    expect(after["mutation-client-refs-v1"]).toEqual([{
+      partition: mutationPartitionKey(rightReceiver),
+      clientRef: rightRef,
+      invocation: kept.invocation,
+      slot: "issue",
+      createdAt: kept.enqueuedAt,
+    }]);
+
+    // The clearing handle is terminal for that scope: it cannot repopulate the
+    // queue it just deleted, through the outbox any more than through the
+    // replica paths.
+    expect(
+      await rejectedTag(
+        storage.outbox().enqueue(draft(leftReceiver), { scope: replicaScopeOf(left) }),
+      ),
+    ).toBe("ReplicaScopeClearedError");
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a fenced lease cannot queue work into a cleared scope", async ({ browser }) => {
+  const name = `ramose-outbox-fence-${browser.uniqueId}`;
+  const left = identity();
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  const writer = await IndexedDbReplicaStorage.open(name);
+  const maintainer = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(writer, left, "left");
+    const lease = await writer.leaseFor(left);
+    await writer.outbox().enqueue(draft(receiver), { scope, lease });
+
+    // Another handle in the same realm clears the scope and bumps the durable
+    // generation the writer's lease is holding.
+    await maintainer.clearScope(scope);
+
+    expect(await rejectedTag(writer.outbox().enqueue(draft(receiver), { scope, lease })))
+      .toBe("ReplicaFencedError");
+    const after = await dumpMutations(name);
+    expect(after["mutation-outbox-v1"]).toEqual([]);
+
+    // A fresh lease may queue again: the clear removed the data, it did not
+    // make the scope permanently unusable for a new session.
+    const fresh = writer.lease();
+    const queued = await writer.outbox().enqueue(draft(receiver), { scope, lease: fresh });
+    expect(queued.sequence).toBe(1);
+  } finally {
+    writer.close();
+    maintainer.close();
+    await deleteDatabase(name);
+  }
+});
