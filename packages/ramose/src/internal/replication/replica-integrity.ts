@@ -643,13 +643,21 @@ export const validateReplicaManifest = (
           failure("manifest-invariant", `fact field ${datom.field} has no local id`),
         );
       }
-      if (
-        (datom.value as LogicalValue).type === "ref" &&
-        !entities.has((datom.value as Extract<LogicalValue, { type: "ref" }>).value)
-      ) {
-        return yield* Result.fail(
-          failure("manifest-invariant", "logical reference has no local entity"),
-        );
+      if ((datom.value as LogicalValue).type === "ref") {
+        const target = (datom.value as Extract<LogicalValue, { type: "ref" }>).value;
+        if (!entities.has(target)) {
+          return yield* Result.fail(
+            failure("manifest-invariant", "logical reference has no local entity"),
+          );
+        }
+        // The same requirement the subject carries. A reference is a way to
+        // reach an entity, so a target this value cannot address is the same
+        // hole as an unaddressable subject.
+        if (!handles.has(target)) {
+          return yield* Result.fail(
+            failure("manifest-invariant", "logical reference has no sealed handle"),
+          );
+        }
       }
     }
     return record as unknown as ReplicaManifest;
