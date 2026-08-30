@@ -18,9 +18,11 @@
  * 1. *Before* resolution, by parent plus canonical query identity — the same
  *    [loweredQuery, shape] identity observations already use. Equivalent paths
  *    written twice during a render are one handle.
- * 2. *After* resolution, by stable graph identity: the parent database plus the
- *    resolved Graph entity, never the mutable path text. A rename keeps the
- *    identity (and therefore the child replica); a delete/recreate does not.
+ * 2. *After* resolution, by stable graph identity: the parent *partition* plus
+ *    the resolved Graph entity, never the mutable path text. A rename keeps the
+ *    identity, and therefore the child replica; a delete/recreate does not, and
+ *    neither does the read-view rotation such a recreate arrives with — see
+ *    {@link graphStableKey} for why the partition rather than the database.
  *
  * The stable identity is also what feeds `ReplicationSession.open({
  * graphLineage })`: once a child activation confirms an identity, its
