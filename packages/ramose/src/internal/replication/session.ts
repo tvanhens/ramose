@@ -175,9 +175,10 @@ export class ReplicationSession {
     private readonly attributes: readonly AttributeSpec[],
     private readonly readCompatibilityHash: ReadCompatibilityHash,
     initial: BoundRestoredReplica | undefined,
+    lease: ReplicaLease,
     run: (session: ReplicationSession, generation: number) => Promise<void>,
   ) {
-    this.lease = storage.lease();
+    this.lease = lease;
     this.state = Object.freeze({
       status: "connecting",
       ...(initial === undefined
@@ -255,11 +256,19 @@ export class ReplicationSession {
         options.readCompatibilityHash,
       )
       : undefined;
+    // A restored session skips `bindAuthenticated`, so it must take its lease
+    // over the current generations before it can write anything; an empty
+    // lease would otherwise adopt a generation a concurrent clear had already
+    // bumped and repopulate the scope that clear just emptied.
+    const lease = restored === undefined
+      ? options.storage.lease()
+      : await options.storage.leaseFor(restored.identity);
     return new ReplicationSession(
       options.storage,
       options.attributes,
       options.readCompatibilityHash,
       restored,
+      lease,
       async (session, generation) => {
         let responseIdentity: ReplicationIdentity | undefined;
         let bindingConfirmed = restored !== undefined && candidateKey === undefined &&
@@ -525,7 +534,10 @@ export class ReplicationSession {
     if (!this.current(generation)) return true;
     switch (frame.type) {
       case "Reset":
-        await this.storage.resetStaging(frame.identity, { lease: this.lease });
+        await this.storage.resetStaging(frame.identity, {
+          signal: this.controller.signal,
+          lease: this.lease,
+        });
         if (!this.current(generation)) return true;
         if (
           this.state.value !== undefined &&
@@ -538,7 +550,10 @@ export class ReplicationSession {
         }
         return false;
       case "SnapshotStart":
-        await this.storage.startSnapshot(frame, { lease: this.lease });
+        await this.storage.startSnapshot(frame, {
+          signal: this.controller.signal,
+          lease: this.lease,
+        });
         if (
           this.current(generation) && this.state.value !== undefined &&
           sameReplicationIdentity(this.state.value.identity, frame.identity)
@@ -550,7 +565,10 @@ export class ReplicationSession {
         }
         return false;
       case "SnapshotChunk":
-        await this.storage.stageSnapshotChunk(frame, { lease: this.lease });
+        await this.storage.stageSnapshotChunk(frame, {
+          signal: this.controller.signal,
+          lease: this.lease,
+        });
         return false;
       case "SnapshotCommit": {
         const installed = await this.storage.commitSnapshot(

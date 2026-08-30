@@ -342,17 +342,35 @@ const confirmationRecords = (
 const seedConfirmedGenerations = (upgrade: IDBTransaction): void => {
   const generations = upgrade.objectStore(GENERATIONS);
   const confirmedAt = Date.now();
+  const scopes = new Set<string>();
   for (const family of [COMMITTED, ...IDENTITY_KEYED_FAMILIES]) {
     const request = upgrade.objectStore(family).getAll();
     request.addEventListener("success", () => {
       const records = request.result as readonly { readonly identity: ReplicationIdentity }[];
       for (const record of records) {
+        scopes.add(replicaScopeKey(replicaScopeOf(record.identity)));
         for (const seeded of confirmationRecords(record.identity, confirmedAt)) {
           generations.put(seeded);
         }
       }
     }, { once: true });
   }
+  // Issued after the reads above, so it observes the complete scope set. A
+  // pre-generation route observation records no owner, and origin and root
+  // text cannot name one, so every scope this database confirmed claims it:
+  // the row then disappears when the last of them clears instead of being
+  // orphaned by the first. The list is deletion ownership only — the lookup
+  // has never consulted it. With nothing confirmed, nothing can own the row.
+  const routes = upgrade.objectStore(ROUTE_SLOTS);
+  const observed = routes.getAll();
+  observed.addEventListener("success", () => {
+    const owners = [...scopes].sort();
+    for (const record of observed.result as readonly RouteSlotRecord[]) {
+      if (record.replicaScopes !== undefined) continue;
+      if (owners.length === 0) routes.delete([record.scope, record.pathKey]);
+      else routes.put({ ...record, replicaScopes: owners } satisfies RouteSlotRecord);
+    }
+  }, { once: true });
 };
 
 const lifecycleRegistry = (name: string): LifecycleRegistry => {
@@ -785,6 +803,24 @@ export class IndexedDbReplicaStorage {
    */
   lease(): ReplicaLease {
     return new ReplicaLease();
+  }
+
+  /**
+   * A lease that already holds the generations guarding one identity.
+   *
+   * A session restored from an exact credential binding never revisits
+   * `bindAuthenticated`, so an empty lease would adopt whatever generation its
+   * first write happens to read — including one a concurrent clear had already
+   * bumped, repopulating the scope it just emptied. Reading the generations up
+   * front makes that first write lose the fence instead.
+   */
+  async leaseFor(identity: ReplicationIdentity): Promise<ReplicaLease> {
+    this.assertScopeLive(replicaScopeOf(identity));
+    const lease = new ReplicaLease();
+    const transaction = this.database.transaction(GENERATIONS, "readonly");
+    await enforceFence(transaction, replicaFence(lease, identity));
+    await transactionDone(transaction);
+    return lease;
   }
 
   /**
@@ -1335,10 +1371,15 @@ export class IndexedDbReplicaStorage {
         : [STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
-    await enforceFence(transaction, fence);
-    transaction.objectStore(STAGING).delete(partition);
-    transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
-    await commitTransaction(transaction);
+    const removeAbort = abortWithSignal(transaction, options.signal);
+    try {
+      await enforceFence(transaction, fence);
+      transaction.objectStore(STAGING).delete(partition);
+      transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
+      await commitTransaction(transaction);
+    } finally {
+      removeAbort();
+    }
   }
 
   async startSnapshot(
@@ -1354,30 +1395,36 @@ export class IndexedDbReplicaStorage {
         : [COMMITTED, STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
-    await enforceFence(transaction, fence);
-    const staging = transaction.objectStore(STAGING);
-    const [current, committed] = await Promise.all([
-      requestResult<StagingRecord | undefined>(staging.get(partition)),
-      requestResult<CommittedRecord | undefined>(
-        transaction.objectStore(COMMITTED).get(partition),
-      ),
-    ]);
-    if (
-      current !== undefined && current.snapshot === frame.snapshot &&
-      current.revision === frame.revision && sameReplicationIdentity(current.identity, frame.identity)
-    ) {
-      await transactionDone(transaction);
-      return;
+    const removeAbort = abortWithSignal(transaction, options.signal);
+    try {
+      await enforceFence(transaction, fence);
+      const staging = transaction.objectStore(STAGING);
+      const [current, committed] = await Promise.all([
+        requestResult<StagingRecord | undefined>(staging.get(partition)),
+        requestResult<CommittedRecord | undefined>(
+          transaction.objectStore(COMMITTED).get(partition),
+        ),
+      ]);
+      if (
+        current !== undefined && current.snapshot === frame.snapshot &&
+        current.revision === frame.revision &&
+        sameReplicationIdentity(current.identity, frame.identity)
+      ) {
+        await transactionDone(transaction);
+        return;
+      }
+      staging.put({
+        partition,
+        identity: frame.identity,
+        snapshot: frame.snapshot,
+        revision: frame.revision,
+        baseRevision: committed?.revision ?? null,
+      } satisfies StagingRecord);
+      transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
+      await commitTransaction(transaction);
+    } finally {
+      removeAbort();
     }
-    staging.put({
-      partition,
-      identity: frame.identity,
-      snapshot: frame.snapshot,
-      revision: frame.revision,
-      baseRevision: committed?.revision ?? null,
-    } satisfies StagingRecord);
-    transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
-    await commitTransaction(transaction);
   }
 
   async stageSnapshotChunk(
@@ -1393,31 +1440,40 @@ export class IndexedDbReplicaStorage {
         : [STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
-    await enforceFence(transaction, fence);
-    const staging = await requestResult<StagingRecord | undefined>(
-      transaction.objectStore(STAGING).get(partition),
-    );
-    if (
-      staging === undefined || staging.snapshot !== frame.snapshot ||
-      !sameReplicationIdentity(staging.identity, frame.identity)
-    ) {
-      await abortTransaction(transaction);
-      return;
+    const removeAbort = abortWithSignal(transaction, options.signal);
+    try {
+      await enforceFence(transaction, fence);
+      const staging = await requestResult<StagingRecord | undefined>(
+        transaction.objectStore(STAGING).get(partition),
+      );
+      if (
+        staging === undefined || staging.snapshot !== frame.snapshot ||
+        !sameReplicationIdentity(staging.identity, frame.identity)
+      ) {
+        await abortTransaction(transaction);
+        return;
+      }
+      const chunks = transaction.objectStore(STAGING_CHUNKS);
+      const existing = await requestResult<StagingChunkRecord | undefined>(
+        chunks.get([partition, frame.index]),
+      );
+      if (existing !== undefined && !sameJson(existing.datoms, frame.datoms)) {
+        await abortTransaction(transaction);
+        throw new ReplicationTransitionError({
+          reason: "duplicate snapshot chunk changed bytes",
+        });
+      }
+      if (existing === undefined) {
+        chunks.put({
+          partition,
+          index: frame.index,
+          datoms: frame.datoms,
+        } satisfies StagingChunkRecord);
+      }
+      await commitTransaction(transaction);
+    } finally {
+      removeAbort();
     }
-    const chunks = transaction.objectStore(STAGING_CHUNKS);
-    const existing = await requestResult<StagingChunkRecord | undefined>(
-      chunks.get([partition, frame.index]),
-    );
-    if (existing !== undefined && !sameJson(existing.datoms, frame.datoms)) {
-      await abortTransaction(transaction);
-      throw new ReplicationTransitionError({
-        reason: "duplicate snapshot chunk changed bytes",
-      });
-    }
-    if (existing === undefined) {
-      chunks.put({ partition, index: frame.index, datoms: frame.datoms } satisfies StagingChunkRecord);
-    }
-    await commitTransaction(transaction);
   }
 
   private async stagedState(frame: SnapshotCommit): Promise<{

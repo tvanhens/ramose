@@ -338,16 +338,27 @@ browserTest("a fenced lease cannot repopulate a cleared scope or write nodes aft
     await installSnapshot(writer, left, opaque("1"), "left-root");
     await confirm(writer, left, "left");
 
-    // A session-shaped lease adopts the generations it is writing under.
-    const lease = writer.lease();
+    // A restored session takes its lease over the current generations before
+    // it writes anything, exactly as `ReplicationSession.open` does.
+    const lease = await writer.leaseFor(left);
+    expect(lease.generationOf(replicaScopeKey(scopeOf(left)))).toBe(1);
+    expect(lease.generationOf(replicaDatabaseKey(databaseOf(left)))).toBe(1);
     await writer.startSnapshot({
       type: "SnapshotStart", protocol: 1, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
     }, { lease });
-    expect(lease.generationOf(replicaScopeKey(scopeOf(left)))).toBe(1);
+
+    // A second restored session that has not written anything yet still holds
+    // its generations, so a queued first write cannot land after the clear.
+    const idle = await writer.leaseFor(left);
 
     // Another handle clears the scope; the durable generation moves.
     expect((await maintainer.clearScope(scopeOf(left))).generation).toBe(2);
+
+    await expect(writer.startSnapshot({
+      type: "SnapshotStart", protocol: 1, identity: left,
+      snapshot: opaque("q"), revision: opaque("2"),
+    }, { lease: idle })).rejects.toMatchObject({ _tag: "ReplicaFencedError" });
 
     // The fenced lease cannot bring any of it back.
     await expect(writer.startSnapshot({
@@ -556,7 +567,12 @@ browserTest("a replica stored before generations existed stays clearable", async
       }
     });
     const seed = legacy.transaction(
-      ["replica-committed-v1", "replica-nodes-v1", "replica-credential-bindings-v1"],
+      [
+        "replica-committed-v1",
+        "replica-nodes-v1",
+        "replica-credential-bindings-v1",
+        "replica-route-slots-v1",
+      ],
       "readwrite",
     );
     seed.objectStore("replica-committed-v1").put({
@@ -570,6 +586,10 @@ browserTest("a replica stored before generations existed stays clearable", async
     // Written only from an authenticated response, so it proves confirmation.
     seed.objectStore("replica-credential-bindings-v1").put({
       fingerprint: "pre-generation-fingerprint", identity: left,
+    });
+    // A pre-generation observation records no owning scope at all.
+    seed.objectStore("replica-route-slots-v1").put({
+      scope: "origin-root", pathKey: "path-key", slot: "slot-shared",
     });
     await transactionDone(seed);
     legacy.close();
@@ -585,6 +605,15 @@ browserTest("a replica stored before generations existed stays clearable", async
       replicaScopeKey(scopeOf(left)),
     ].sort());
 
+    // The one confirmed scope adopts the ownerless observation, so the clear
+    // below removes it instead of orphaning it beyond any later recovery.
+    expect(upgraded["replica-route-slots-v1"]).toEqual([{
+      scope: "origin-root",
+      pathKey: "path-key",
+      slot: "slot-shared",
+      replicaScopes: [replicaScopeKey(scopeOf(left))],
+    }]);
+
     // The owner of a pre-generation replica can still delete their own data.
     const outcome = await storage.clearScope(scopeOf(left));
     expect(outcome.partitions).toBe(1);
@@ -595,6 +624,8 @@ browserTest("a replica stored before generations existed stays clearable", async
     expect(cleared["replica-committed-v1"]).toEqual([]);
     expect(cleared["replica-nodes-v1"]).toEqual([]);
     expect(cleared["replica-credential-bindings-v1"]).toEqual([]);
+    expect(cleared["replica-route-slots-v1"]).toEqual([]);
+    expect(outcome.routeObservations).toBe(1);
   } finally {
     storage?.close();
     await deleteDatabase(name);
