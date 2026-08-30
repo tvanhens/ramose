@@ -263,7 +263,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     inspectedHead.close();
     expect(head).toEqual({
       partition,
-      storageVersion: 2,
+      storageVersion: 3,
       identity: selected,
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
@@ -313,7 +313,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
 
     const correctHead = {
       partition,
-      storageVersion: 2,
+      storageVersion: 3,
       identity: selected,
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
@@ -647,7 +647,7 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
       attributes,
       selected.readCompatibilityHash,
     ))?.revision).toBe(opaque("r"));
-    expect(replicaPartitionKey(selected).startsWith("ramose-replica-v2:")).toBe(true);
+    expect(replicaPartitionKey(selected).startsWith("ramose-replica-v3:")).toBe(true);
   } finally {
     upgraded?.close();
     await deleteDatabase(legacyName);

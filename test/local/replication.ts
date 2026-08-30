@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
+import { isEntityId } from "../../packages/ramose/src/db/refs.ts";
 import {
   applyReplicationFrame,
   decodeReplicationFrame,
@@ -45,6 +46,7 @@ const RETENTION_PRESSURE_DATABASE = CONFORMANCE_DATABASES[15]!;
 const WATCH_FAILURE_DATABASE = CONFORMANCE_DATABASES[16]!;
 const RESUME_READY_DATABASE = CONFORMANCE_DATABASES[17]!;
 const COMPATIBILITY_DATABASE = CONFORMANCE_DATABASES[18]!;
+const ENTITY_HANDLE_DATABASE = CONFORMANCE_DATABASES[20]!;
 
 const withTimeout = async <A>(
   promise: Promise<A>,
@@ -571,6 +573,59 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(session.status).toBe(401);
       expect(session.body).toEqual({ error: "unauthorized" });
+    });
+
+    test("every replicated entity arrives with its sealed handle, bound to this principal", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, ENTITY_HANDLE_DATABASE, false);
+      const bindings = async (token: string) => {
+        const response = await openReplication(base, world.database, token);
+        expect(response.status).toBe(200);
+        const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+        try {
+          const snapshot = await collectCommittedSnapshot(iterator);
+          return {
+            handles: snapshot.state.committed?.handles ?? new Map<string, string>(),
+            entities: new Set(
+              (snapshot.state.committed?.datoms ?? []).flatMap((datom) =>
+                datom.value.type === "ref"
+                  ? [datom.entity, datom.value.value]
+                  : [datom.entity]
+              ),
+            ),
+          };
+        } finally {
+          await closeIterator(iterator);
+        }
+      };
+
+      const mine = await bindings(world.member);
+      // Complete: the client refuses a value it could not address, so reaching a
+      // committed state at all is already half the claim — this states the other
+      // half, that the binding covers exactly the entities the value names.
+      expect(mine.entities.size).toBeGreaterThan(0);
+      expect(new Set(mine.handles.keys())).toEqual(mine.entities);
+      const handles = [...mine.handles.values()];
+      // Sealed envelopes, canonically spelled, one per entity.
+      for (const handle of handles) expect(isEntityId(handle)).toBe(true);
+      expect(new Set(handles).size).toBe(handles.length);
+      // The wire identity and the handle are different derivations of one eid.
+      for (const [entity, handle] of mine.handles) {
+        expect(handle).not.toBe(entity);
+      }
+      // Deterministic per (root, scope, eid), so a second activation of the same
+      // partition names every entity identically — which is what lets a handle
+      // survive in a durable queue across a reconnect.
+      expect((await bindings(world.member)).handles).toEqual(mine.handles);
+
+      // …and bound to the principal. Another principal reading the same
+      // database is handed handles from its own scope, so nothing this stream
+      // disclosed is a handle that stream holds.
+      const theirs = await bindings(world.admin);
+      expect([...theirs.handles.values()].length).toBeGreaterThan(0);
+      for (const handle of theirs.handles.values()) {
+        expect(handles).not.toContain(handle);
+      }
     });
 
     test("unchanged resume is one-shot and zero/hidden physical worlds are byte/checkpoint-identical", async () => {

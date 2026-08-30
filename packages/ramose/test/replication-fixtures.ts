@@ -18,29 +18,45 @@ import type {
   SnapshotChunk,
 } from "../src/internal/replication/protocol.ts";
 
-const ALPHABET =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+/** The envelope's fixed width: `version ‖ keyId(16) ‖ siv(16) ‖ ciphertext(8)`. */
+const ENVELOPE_BYTES = 41;
 
-/**
- * The final character of a 41-byte envelope carries two padding bits, so only
- * the sixteen alphabet positions divisible by four are canonical there.
- */
-const FINAL = "AEIMQUYcgkosw048";
+const base64Url = (bytes: Uint8Array): string => {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+};
 
 /**
  * A well-formed sealed handle for one fixture wire identity.
  *
  * Deterministic, so a fixture that installs a snapshot and later applies a
  * change binds the same entity to the same handle without threading a table
- * through every helper — which is the property a real stream has too.
+ * through every helper — which is the property a real stream has too. And
+ * distinct per identity with real margin: a manifest refuses two entities that
+ * share a handle, so a fixture whose expansion collapsed would fail as damage
+ * rather than as the collision it is. The bytes are an xorshift stream seeded
+ * by an FNV-1a fold of the identity, base64url'd exactly as the envelope is —
+ * which is what makes the result canonical by construction rather than by a
+ * hand-picked final character.
  */
 export const sealedHandle = (identity: string): string => {
-  let text = "";
-  for (let index = 0; index < 54; index++) {
-    const code = identity.charCodeAt(index % identity.length) + index;
-    text += ALPHABET[code % ALPHABET.length];
+  let state = 0x811c9dc5;
+  for (let index = 0; index < identity.length; index++) {
+    state = Math.imul(state ^ identity.charCodeAt(index), 0x01000193) >>> 0;
   }
-  return `${text}${FINAL[identity.charCodeAt(0) % FINAL.length]}`;
+  const bytes = new Uint8Array(ENVELOPE_BYTES);
+  // Byte 0 is the codec version in every envelope version, so a fixture handle
+  // reads as this build's codec rather than as a quarantine.
+  bytes[0] = 1;
+  for (let index = 1; index < ENVELOPE_BYTES; index++) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    bytes[index] = state & 0xff;
+  }
+  return base64Url(bytes);
 };
 
 type EntityNaming = {

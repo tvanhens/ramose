@@ -216,9 +216,11 @@ browserTest("keeps stable partition-local ids across snapshot, change, and reope
     expect(final!.handles.get(sealedHandle(entityZ))).toBe(originalEid);
     expect(final!.handles.get(sealedHandle(entityM)))
       .toBe(thirdNames.get("incremental"));
-    // An entity this value no longer holds is not addressable through it: the
-    // second snapshot's `entityA` was replaced wholesale by the third revision.
-    expect(final!.handles.has(sealedHandle(entityA))).toBe(false);
+    // Every entity the value holds is addressable, including one the change
+    // never mentioned: the binding describes the committed value, not the
+    // last frame.
+    expect(final!.handles.get(sealedHandle(entityA)))
+      .toBe(thirdNames.get("lexically earlier"));
     // And a handle no replicated frame ever bound is simply not here — the
     // client cannot derive one, which is the point of carrying it.
     expect(final!.handles.has(sealedHandle(opaque("w")))).toBe(false);

@@ -116,7 +116,7 @@ const scopeOf = (selected: ReplicationIdentity) => replicaScopeOf(selected);
 const databaseOf = (selected: ReplicationIdentity) => replicaDatabaseScopeOf(selected);
 
 const scopePrefix = (selected: ReplicationIdentity): string =>
-  ["ramose-replica-v2", selected.server, selected.principal, ""].join(":");
+  ["ramose-replica-v3", selected.server, selected.principal, ""].join(":");
 
 const snapshotDatom = (value: string): SnapshotDatom => ({
   entity: opaque("x"),
@@ -559,7 +559,7 @@ browserTest("a replica stored before generations existed stays clearable", async
   const name = `ramose-lifecycle-backfill-${browser.uniqueId}`;
   const left = identity();
   const partition = [
-    "ramose-replica-v2", left.server, left.principal, left.database, left.readView,
+    "ramose-replica-v3", left.server, left.principal, left.database, left.readView,
     left.readCompatibilityHash,
   ].join(":");
   let storage: IndexedDbReplicaStorage | undefined;
@@ -579,7 +579,7 @@ browserTest("a replica stored before generations existed stays clearable", async
       "readwrite",
     );
     seed.objectStore("replica-committed-v1").put({
-      partition, storageVersion: 2, identity: left,
+      partition, storageVersion: 3, identity: left,
       readCompatibilityHash: left.readCompatibilityHash, revision: opaque("1"),
       datoms: [], attributes: [], entityIds: [], attributeIds: [], roots: {}, nextLocalId: 1000,
     });
