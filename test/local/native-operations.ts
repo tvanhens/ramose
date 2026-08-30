@@ -11,7 +11,20 @@ import {
   Schema,
   string,
 } from "ramose/db";
+import { invocationId, type EntityId } from "../../packages/ramose/src/db/refs.ts";
 import { base64Url } from "../../packages/ramose/src/internal/replication/server-identity.ts";
+import {
+  buildOutboxRecord,
+  mappingKey,
+  type OutboxDraft,
+  type OutboxRecord,
+} from "../../packages/ramose/src/internal/replication/outbox.ts";
+import {
+  buildMutationRequest,
+  classifyMutationResponse,
+  substituteMutationRefs,
+} from "../../packages/ramose/src/internal/replication/submission.ts";
+import { submitMutation } from "../../packages/ramose/src/internal/replication/transport.ts";
 import { lowerOwnedOperations } from "../../packages/ramose/src/internal/authorization/authoring/index.ts";
 import {
   CatalogId,
@@ -1634,5 +1647,209 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(rows.body.result).toEqual([]);
       });
     });
+
+    /**
+     * The offline client's own submission path, end to end.
+     *
+     * The record is a real durable outbox row, built by the same canonical
+     * builder the browser queue writes through; the request is the one
+     * `buildMutationRequest` produces; the transport is the real `submitMutation`
+     * over `fetch`; and the answers are the real deployed Worker's. Nothing is
+     * scripted, so the classification table is proven against the responses the
+     * server actually sends rather than against an imagined vocabulary.
+     */
+    describe("offline client submission through the real transport", () => {
+      const RECEIVER = Object.freeze({
+        server: "s".repeat(43),
+        principal: "p".repeat(43),
+        database: "d".repeat(43),
+      });
+
+      const endpointFor = (base: string, database: string, token: string) =>
+        Object.freeze({
+          origin: new URL(base).origin,
+          database,
+          graphPath: [] as readonly string[],
+          credential: token,
+          catalog: operationProof.catalog,
+          unitHash: operationProof.unitHash,
+        });
+
+      const queued = (
+        version: string,
+        overrides: Partial<OutboxDraft> = {},
+      ): OutboxRecord =>
+        buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "createAllocating",
+          },
+          operationVersion: version as never,
+          target: { type: "none" },
+          input: { title: "Queued offline" },
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_000,
+          ...overrides,
+        }, "scope", 1);
+
+      const submit = async (
+        record: OutboxRecord,
+        endpoint: ReturnType<typeof endpointFor>,
+        handles: ReadonlyMap<string, EntityId> = new Map(),
+      ) => {
+        const substituted = substituteMutationRefs(record, handles);
+        expect(substituted).toBeDefined();
+        return classifyMutationResponse(
+          record,
+          await submitMutation(
+            buildMutationRequest(record, endpoint, substituted!),
+          ),
+        );
+      };
+
+      test("a queued create commits, and the lost-ack retry returns the identical mappings", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-client-submission";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_client_submit");
+        const endpoint = endpointFor(base, database, token);
+        const version = (await otherDeploymentVersions())
+          .get("nativeItem/createAllocating")!;
+        const ref = clientRef();
+        const record = queued(version, {
+          allocations: [{ slot: "item", clientRef: ref }],
+        });
+
+        const committed = await submit(record, endpoint);
+        expect(committed._tag).toBe("Committed");
+        if (committed._tag !== "Committed") throw new Error("expected a commit");
+        expect(committed.mappings).toHaveLength(1);
+        expect(committed.mappings[0]!.clientRef).toBe(ref);
+        expect(isEntityId(committed.mappings[0]!.entityId)).toBe(true);
+
+        const receiptsBefore = await operationReceiptCount(base, database);
+        // The acknowledgement this client never received: resubmitting the same
+        // durable row consumes #487's exact replay.
+        expect(await submit(record, endpoint)).toEqual(committed);
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Queued offline"]]',
+        });
+        expect(rows.body.result.length).toBe(1);
+
+        // A dependent record submits the sealed handle in place of the ref,
+        // exactly as the queue would once the mapping is durable.
+        const dependent = buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "rename",
+          },
+          operationVersion: (await otherDeploymentVersions())
+            .get("nativeItem/rename")! as never,
+          target: { type: "client-ref", clientRef: ref },
+          input: { title: "Renamed through the queue" },
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_001,
+        }, "scope", 2);
+        expect(substituteMutationRefs(dependent, new Map())).toBeUndefined();
+        const renamed = await submit(
+          dependent,
+          endpoint,
+          new Map([[
+            mappingKey(dependent.partition, ref),
+            committed.mappings[0]!.entityId as EntityId,
+          ]]),
+        );
+        expect(renamed).toMatchObject({
+          _tag: "Committed",
+          output: { title: "Renamed through the queue" },
+        });
+      });
+
+      test("every non-terminal and terminal answer classifies from the real Worker", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-client-answers";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_client_answers");
+        const endpoint = endpointFor(base, database, token);
+        const versions = await otherDeploymentVersions();
+        const version = versions.get("nativeItem/createAllocating")!;
+        const ref = clientRef();
+        const record = queued(version, {
+          allocations: [{ slot: "item", clientRef: ref }],
+        });
+        expect((await submit(record, endpoint))._tag).toBe("Committed");
+
+        // Same id, a different durable client identity for the slot.
+        const rebound = buildOutboxRecord({
+          invocation: record.invocation,
+          receiver: RECEIVER,
+          operation: record.operation,
+          operationVersion: record.operationVersion,
+          target: { type: "none" },
+          input: record.input,
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_002,
+        }, "scope", 1);
+        expect(await submit(rebound, endpoint))
+          .toEqual({ _tag: "Rejected", code: "invocation_conflict" });
+
+        // A queued invocation pinned to a contract the deployment has moved
+        // past: non-terminal, typed, and never a silent drop.
+        const stale = queued(versions.get("nativeItem/create")!, {
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(await submit(stale, endpoint))
+          .toEqual({ _tag: "UpdateRequired", reason: "operation-changed" });
+
+        // An unreadable sealing epoch reaches the same non-terminal state
+        // through a different code, and still commits nothing.
+        const quarantined = buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "rename",
+          },
+          operationVersion: versions.get("nativeItem/rename")! as never,
+          target: {
+            type: "entity",
+            entityId: unreadableEntityId("key-epoch") as EntityId,
+          },
+          input: { title: "Should never land" },
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_003,
+        }, "scope", 3);
+        expect(await submit(quarantined, endpoint)).toEqual({
+          _tag: "UpdateRequired",
+          reason: "invocation-update-required",
+        });
+
+        // A caller the operation grant refuses is a terminal rejection: no
+        // amount of retrying turns a `reader` into a `member`.
+        expect(await submit(queued(version), {
+          ...endpoint,
+          credential: await signToken(database, "reader", "user_client_reader"),
+        })).toEqual({ _tag: "Rejected", code: "unauthorized" });
+
+        // And an unreachable peer is the one answer that must be asked again.
+        expect(await submit(queued(version), {
+          ...endpoint,
+          origin: "http://127.0.0.1:1",
+        })).toEqual({ _tag: "Retry", reason: "unreachable" });
+      });
+    });
+
   });
 };

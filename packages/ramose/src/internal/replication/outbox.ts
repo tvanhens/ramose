@@ -464,6 +464,24 @@ export const buildOutboxRecord = (
   scopeKey: string,
   sequence: number,
 ): OutboxRecord => {
+  // Read exactly once, exactly as the input and the mappings are. Everything
+  // below — the partition key, the reversibility check, and the stored row —
+  // reads this snapshot, so an accessor cannot answer one receiver to the key
+  // and another to the record filed under it.
+  const receiver = Object.freeze({
+    server: draft.receiver.server,
+    principal: draft.receiver.principal,
+    database: draft.receiver.database,
+  });
+  const partition = mutationPartitionKey(receiver);
+  // The same reversibility every other mutation family requires. A receiver
+  // component carrying the separator would produce a key that names a
+  // different realm when it is read back, so the row is refused here rather
+  // than committed and then found unreadable — or, worse, found readable as
+  // some other database's queue.
+  if (parseMutationPartitionKey(partition) === undefined) {
+    reject("the receiver database does not form a reversible partition key");
+  }
   if (!isInvocationId(draft.invocation)) {
     reject("the invocation id is not a durable client invocation id");
   }
@@ -548,11 +566,11 @@ export const buildOutboxRecord = (
   const sealing = embedded as SealingEpoch | null;
 
   const record: OutboxRecord = Object.freeze({
-    partition: mutationPartitionKey(draft.receiver),
+    partition,
     sequence,
     invocation: draft.invocation,
     scope: scopeKey,
-    receiver: Object.freeze({ ...draft.receiver }),
+    receiver,
     operation: Object.freeze({
       catalog: draft.operation.catalog,
       owner: Object.freeze({ ...draft.operation.owner }),
@@ -1048,11 +1066,19 @@ export const decodeClientRefMapping = (
  * ─────────────────────────────────────────────────────────────────────── */
 
 /**
- * Refuse to persist anything the reader cannot read back.
+ * Refuse to persist anything the reader cannot read back, and return exactly
+ * what the reader will see.
  *
  * `structuredClone` is the exact transformation IndexedDB applies, so this
  * catches accessors, prototypes, holes, and unclonable values as well as every
  * field-level disagreement between a builder and its decoder.
+ *
+ * The *decoded* value is what is returned, never the caller's own object. The
+ * durable row and the value handed back are then the same value by
+ * construction, so a caller comparing its intent against a durable row is
+ * comparing like with like — and a retry whose draft carries harmless extra own
+ * properties on a sub-object is recognized as the same intent rather than
+ * refused as reuse.
  */
 const durable = <T>(
   record: T,
@@ -1065,10 +1091,11 @@ const durable = <T>(
   } catch {
     return reject(`a ${kind} record cannot be stored by structured clone`);
   }
-  if (decode(stored) === undefined) {
+  const decoded = decode(stored);
+  if (decoded === undefined) {
     reject(`a ${kind} record does not survive its own durable decoder`);
   }
-  return record;
+  return decoded!;
 };
 
 const decodeReceiverScope = (
@@ -1103,12 +1130,22 @@ const isCodecVersion = (value: unknown): value is number =>
 /** The durable FIFO cursor of one receiver database. */
 export const buildQueueCursor = (
   record: QueueCursorRecord,
-): QueueCursorRecord =>
-  durable(
+): QueueCursorRecord => {
+  const receiver = Object.freeze({
+    server: record.receiver.server,
+    principal: record.receiver.principal,
+    database: record.receiver.database,
+  });
+  // Symmetric with `buildOutboxRecord`: the cursor names the same realm its
+  // queue does, so it refuses a non-reversible key on the same terms.
+  if (parseMutationPartitionKey(mutationPartitionKey(receiver)) === undefined) {
+    reject("the receiver database does not form a reversible partition key");
+  }
+  return durable(
     Object.freeze({
       partition: record.partition,
       scope: record.scope,
-      receiver: Object.freeze({ ...record.receiver }),
+      receiver,
       nextSequence: record.nextSequence,
       sealing: record.sealing === null ? null : Object.freeze({ ...record.sealing }),
       updatedAt: record.updatedAt,
@@ -1116,6 +1153,7 @@ export const buildQueueCursor = (
     decodeQueueCursor,
     "queue cursor",
   );
+};
 
 export const decodeQueueCursor = (
   value: unknown,

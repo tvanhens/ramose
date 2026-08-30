@@ -40,6 +40,8 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-sealed-quarantine",
   "operations-allocation-misbound",
   "operations-sealed-cold",
+  "operations-client-submission",
+  "operations-client-answers",
 ]);
 
 const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(

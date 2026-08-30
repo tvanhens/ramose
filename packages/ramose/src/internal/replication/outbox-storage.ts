@@ -28,8 +28,9 @@
 
 import * as Data from "effect/Data";
 import type { RuntimeBoundaries } from "../runtime-boundaries.ts";
-import type { InvocationId } from "../../db/refs.ts";
+import type { EntityId, InvocationId } from "../../db/refs.ts";
 import { isClientRef, isEntityId } from "../../db/refs.ts";
+import type { MutationAcknowledgement } from "./submission.ts";
 import {
   abortTransaction,
   abortWithSignal,
@@ -243,6 +244,27 @@ export type OutboxRestoration = {
   readonly unreadable: readonly UnreadableOutboxRow[];
 };
 
+/** The two acknowledgements that are terminal, and therefore durable. */
+export type TerminalAcknowledgement = Extract<
+  MutationAcknowledgement,
+  { readonly _tag: "Committed" } | { readonly _tag: "Rejected" }
+>;
+
+const epochsOf = (
+  mapped: ReadonlyMap<string, ClientRefMappingRecord>,
+): ReadonlyMap<string, SealingEpoch> =>
+  new Map([...mapped].map(([key, record]) => [key, record.sealing] as const));
+
+/** Order-insensitive, because two mappings of one ref cannot both exist. */
+const sameMappings = (
+  left: readonly QueuedMapping[],
+  right: readonly QueuedMapping[],
+): boolean => {
+  if (left.length !== right.length) return false;
+  const seen = new Map(left.map((mapping) => [mapping.clientRef, mapping.entityId]));
+  return right.every((mapping) => seen.get(mapping.clientRef) === mapping.entityId);
+};
+
 /** A durable mapping this store refused to write. */
 export class ClientRefMappingRefused extends Data.TaggedError(
   "ClientRefMappingRefused",
@@ -293,27 +315,38 @@ export class IndexedDbOutbox {
     draft: OutboxDraft,
     options: EnqueueOptions,
   ): Promise<OutboxRecord> {
+    // Read exactly once, before anything is checked or derived. The scope
+    // check, the partition key, and the durable row must all describe the same
+    // receiver: an accessor that answered one database to the scope check and
+    // another to the builder would file the row where this scope's restore and
+    // its clear can never reach it.
+    const receiver: ReplicaDatabaseScope = Object.freeze({
+      server: draft.receiver.server,
+      principal: draft.receiver.principal,
+      database: draft.receiver.database,
+    });
+    const snapshot: OutboxDraft = { ...draft, receiver };
     // A queue is selected by its receiver's partition key but fenced, cleared,
     // and reported by the supplied scope. If those disagreed, the record would
     // be invisible to this scope's restore and survive its clear while
     // appearing in another principal's queue.
     if (
-      draft.receiver.server !== options.scope.server ||
-      draft.receiver.principal !== options.scope.principal
+      receiver.server !== options.scope.server ||
+      receiver.principal !== options.scope.principal
     ) {
       throw new OutboxRecordInvalid({
         reason: "the receiver database is outside the supplied confirmed scope",
       });
     }
     const scopeKey = replicaScopeKey(options.scope);
-    const partition = mutationPartitionKey(draft.receiver);
+    const partition = mutationPartitionKey(receiver);
     const observed = await this.preflightScope(options.scope);
     const transaction = this.database.transaction([...ENQUEUE_STORES], "readwrite");
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       return await this.stageEnqueue(
         transaction,
-        draft,
+        snapshot,
         options,
         scopeKey,
         partition,
@@ -523,14 +556,23 @@ export class IndexedDbOutbox {
    */
   async restore(scope: ReplicaScope): Promise<OutboxRestoration> {
     this.assertScopeLive(scope);
-    const range = compoundPrefixRange(mutationScopePrefix(scope));
     const transaction = this.database.transaction(MUTATION_OUTBOX, "readonly");
+    const restored = await this.readOutbox(transaction, scope);
+    await transactionDone(transaction);
+    return restored;
+  }
+
+  /** Stage the queued rows of one scope inside the caller's transaction. */
+  private async readOutbox(
+    transaction: IDBTransaction,
+    scope: ReplicaScope,
+  ): Promise<OutboxRestoration> {
+    const range = compoundPrefixRange(mutationScopePrefix(scope));
     const store = transaction.objectStore(MUTATION_OUTBOX);
     const [stored, keys] = await Promise.all([
       requestResult<unknown[]>(store.getAll(range)),
       requestResult<IDBValidKey[]>(store.getAllKeys(range)),
     ]);
-    await transactionDone(transaction);
     const records: OutboxRecord[] = [];
     const unreadable: UnreadableOutboxRow[] = [];
     for (const [index, value] of stored.entries()) {
@@ -566,20 +608,29 @@ export class IndexedDbOutbox {
   async mappedRefs(scope: ReplicaScope): Promise<ReadonlyMap<string, SealingEpoch>> {
     this.assertScopeLive(scope);
     const transaction = this.database.transaction(MUTATION_MAPPINGS, "readonly");
+    const mapped = await this.readMappings(transaction, scope);
+    await transactionDone(transaction);
+    return epochsOf(mapped);
+  }
+
+  /** Stage the durable mappings of one scope inside the caller's transaction. */
+  private async readMappings(
+    transaction: IDBTransaction,
+    scope: ReplicaScope,
+  ): Promise<ReadonlyMap<string, ClientRefMappingRecord>> {
     const stored = await requestResult<unknown[]>(
       transaction.objectStore(MUTATION_MAPPINGS).getAll(
         compoundPrefixRange(mutationScopePrefix(scope)),
       ),
     );
-    await transactionDone(transaction);
-    const mapped = new Map<string, SealingEpoch>();
+    const mapped = new Map<string, ClientRefMappingRecord>();
     for (const value of stored) {
       // A mapping whose persisted epoch disagrees with its own handle is
       // dropped, so its dependents stay blocked instead of being released
       // against a handle this build may not be able to resolve at all.
       const record = decodeClientRefMapping(value);
       if (record === undefined) continue;
-      mapped.set(mappingKey(record.partition, record.clientRef), record.sealing);
+      mapped.set(mappingKey(record.partition, record.clientRef), record);
     }
     return mapped;
   }
@@ -596,12 +647,42 @@ export class IndexedDbOutbox {
     scope: ReplicaScope,
     keyId?: string,
   ): Promise<readonly OutboxPartitionPlan[]> {
+    return (await this.submissionPlan(scope, keyId)).plans;
+  }
+
+  /**
+   * The plan and the exact handles its ready records will submit, read in one
+   * transaction.
+   *
+   * Both halves must come from the same snapshot. Read separately, an
+   * acknowledgement committing in between would let the plan report a head
+   * blocked on a ref that is already resolved — or, in the other order, report
+   * a record ready whose own row the same acknowledgement has already removed.
+   */
+  async submissionPlan(
+    scope: ReplicaScope,
+    keyId?: string,
+  ): Promise<{
+    readonly plans: readonly OutboxPartitionPlan[];
+    readonly handles: ReadonlyMap<string, EntityId>;
+  }> {
+    this.assertScopeLive(scope);
+    const transaction = this.database.transaction(
+      [MUTATION_OUTBOX, MUTATION_MAPPINGS],
+      "readonly",
+    );
     const [restored, mapped] = await Promise.all([
-      this.restore(scope),
-      this.mappedRefs(scope),
+      this.readOutbox(transaction, scope),
+      this.readMappings(transaction, scope),
     ]);
-    const context: OutboxDecisionContext = { mapped, keyId };
-    return planOutbox(restored.records, restored.unreadable, context);
+    await transactionDone(transaction);
+    const context: OutboxDecisionContext = { mapped: epochsOf(mapped), keyId };
+    return Object.freeze({
+      plans: planOutbox(restored.records, restored.unreadable, context),
+      handles: new Map(
+        [...mapped].map(([key, record]) => [key, record.entityId] as const),
+      ),
+    });
   }
 
   /** One durable receipt, or `undefined` when the invocation is unknown here. */
@@ -680,6 +761,148 @@ export class IndexedDbOutbox {
       throw error;
     }
     await commitTransaction(transaction);
+  }
+
+  /**
+   * Persist one terminal acknowledgement, atomically.
+   *
+   * A commit writes the exact `{ clientRef, entityId }` mappings, the receipt
+   * with its output and the internal `committed-unobserved` marker, and the
+   * removal of the submitted outbox row — in one client transaction, or none of
+   * it. A rejection writes the typed failure and removes the row on the same
+   * terms. There is no window in which the receipt says committed while the
+   * invocation is still queued, or in which a dependent record is released
+   * against a mapping whose own receipt did not land.
+   *
+   * The independent replication stream is *not* in this transaction, which is
+   * exactly why the marker exists: the commit is durable here and the causally
+   * fresh activation that observes it is a separate, later event (#476).
+   *
+   * Idempotent by construction. A crash cut anywhere leaves the invocation
+   * queued, the next pass resubmits it, and #487's exact replay produces the
+   * same acknowledgement; reapplying it converges instead of failing.
+   */
+  async acknowledge(
+    record: OutboxRecord,
+    acknowledgement: TerminalAcknowledgement,
+    acknowledgedAt = Date.now(),
+  ): Promise<ReceiptRecord> {
+    const scopeKey = replicaScopeKey(record.receiver);
+    const observed = await this.preflightScope(record.receiver);
+    const transaction = this.database.transaction(
+      [
+        MUTATION_OUTBOX,
+        MUTATION_RECEIPTS,
+        MUTATION_MAPPINGS,
+        MUTATION_CLIENT_REFS,
+        REPLICA_GENERATIONS_STORE,
+      ],
+      "readwrite",
+    );
+    try {
+      await this.fenceScope(transaction, scopeKey, observed, undefined);
+      const receipt = await this.stageAcknowledgement(
+        transaction,
+        record,
+        acknowledgement,
+        acknowledgedAt,
+      );
+      // The last boundary before the acknowledgement becomes durable. Inert in
+      // production; the source-only testing assembly arms it to cut here, which
+      // is what proves receipt, mappings, marker, and removal are one write.
+      await this.boundaries.checkpoint("outbox.acknowledge");
+      this.assertScopeLive(record.receiver);
+      await commitTransaction(transaction);
+      return receipt;
+    } catch (error) {
+      await abortTransaction(transaction);
+      throw error;
+    }
+  }
+
+  private async stageAcknowledgement(
+    transaction: IDBTransaction,
+    record: OutboxRecord,
+    acknowledgement: TerminalAcknowledgement,
+    acknowledgedAt: number,
+  ): Promise<ReceiptRecord> {
+    const receipts = transaction.objectStore(MUTATION_RECEIPTS);
+    const key = [record.partition, record.invocation];
+    const stored = await requestResult<unknown>(receipts.get(key));
+    const current = stored === undefined ? undefined : decodeReceipt(stored);
+    if (stored !== undefined && current === undefined) {
+      throw new OutboxRecordInvalid({
+        reason: "the durable receipt of this invocation is unreadable",
+      });
+    }
+    // The enqueue wrote this row in the same transaction that queued the
+    // invocation, so its absence means the acknowledgement is for work this
+    // device does not own.
+    if (current === undefined) {
+      throw new OutboxRecordInvalid({
+        reason: "no durable receipt exists for this invocation",
+      });
+    }
+    const next = acknowledgement._tag === "Committed"
+      ? buildReceipt({
+        partition: record.partition,
+        invocation: record.invocation,
+        scope: current.scope,
+        state: "committed",
+        // The internal reconciliation marker #476 consumes. It is written in
+        // this transaction and cleared only by a causally fresh activation.
+        observation: "unobserved",
+        output: acknowledgement.output,
+        mappings: acknowledgement.mappings,
+        failure: null,
+        updatedAt: acknowledgedAt,
+      })
+      : buildReceipt({
+        partition: record.partition,
+        invocation: record.invocation,
+        scope: current.scope,
+        state: "rejected",
+        // A rejection needs no observation fence: nothing was committed.
+        observation: null,
+        output: null,
+        mappings: [],
+        failure: { code: acknowledgement.code },
+        updatedAt: acknowledgedAt,
+      });
+    if (current.state !== "queued") {
+      // Converged already. A repeated acknowledgement must present exactly the
+      // same terminal answer; anything else means two different results were
+      // claimed for one invocation, and the durable one wins.
+      if (
+        current.state !== next.state || current.failure?.code !== next.failure?.code ||
+        !sameMappings(current.mappings, next.mappings)
+      ) {
+        throw new OutboxInvocationConflict({
+          invocation: record.invocation,
+          partition: record.partition,
+        });
+      }
+      transaction.objectStore(MUTATION_OUTBOX).delete([
+        record.partition,
+        record.sequence,
+      ]);
+      return current;
+    }
+    if (acknowledgement._tag === "Committed") {
+      await this.stageMappings(
+        transaction,
+        record.partition,
+        record.invocation,
+        acknowledgement.mappings,
+        acknowledgedAt,
+      );
+    }
+    receipts.put(next);
+    transaction.objectStore(MUTATION_OUTBOX).delete([
+      record.partition,
+      record.sequence,
+    ]);
+    return next;
   }
 
   private async stageMappings(

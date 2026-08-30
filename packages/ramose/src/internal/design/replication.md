@@ -343,6 +343,40 @@ partition, so a read-view change or a database eviction leaves them intact.
 They are never part of candidate lookup or rebinding, and only an explicit
 scoped clear removes them, in the same transaction as the replicas.
 
+### Submission and acknowledgement (#475 slice 2)
+
+One pass drives at most one head per receiver database, and only the head.
+Databases are decided independently and driven concurrently, so a blocked,
+quarantined, or unreadable head holds its own queue and no other; within a
+database, moving only the head is what preserves FIFO across a restart.
+
+A record naming an unmapped `ClientRef` waits exactly where it is. Once its
+mapping is durable, the *submitted* body carries the sealed handle in the
+target and at each declared input position — computed fresh at submission time
+from the mappings that exist then. The durable row is never rewritten: it
+records what the client actually intended, and the canonical invocation digest
+is over that intent.
+
+The plan and the handles its ready records will submit are read in **one**
+readonly transaction. Read separately, an acknowledgement committing in between
+would let the plan report a head blocked on a ref that is already resolved, or
+report a record ready whose own row the same acknowledgement has removed.
+
+Every terminal answer is persisted in exactly one client transaction: the
+receipt with its output and mappings, the removal of the submitted outbox row,
+and — for a commit — the internal `committed-unobserved` marker. The
+independent replication stream is deliberately *not* in that transaction, which
+is precisely why the marker exists: the commit is durable here and the causally
+fresh activation that observes it is a separate, later event (#476, slice 3).
+A crash cut anywhere leaves the invocation queued, and the next pass consumes
+#487's exact replay — the same receipt, the same mappings, no second commit.
+
+Non-terminal answers change nothing durable and surface as typed queue states.
+`operation_changed` and `invocation_update_required` are never silent drops:
+the record stays queued at its head and the reason is reported. A transport
+failure and an answer this build cannot interpret are both `Retry`, never a
+silent commit.
+
 ## Integrity validation and corruption recovery
 
 Every restore path — cold restore, confirmed-candidate restore, and exact
