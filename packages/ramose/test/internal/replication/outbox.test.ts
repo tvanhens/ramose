@@ -277,6 +277,40 @@ describe("building one durable queue record", () => {
     expect(ok.inputRefs).toEqual([{ path: ["author"], ref }]);
   });
 
+  test("a declared position must be a path the decoder can read back", () => {
+    const ref = clientRef();
+    // An empty property name is not addressable. Accepting it here would
+    // commit a row the decoder then refuses, holding an innocent partition.
+    expect(rejection(() =>
+      buildOutboxRecord(
+        draft({ input: { "": ref }, inputRefs: [{ path: [""], ref }] }),
+        scopeKey,
+        1,
+      )
+    )).toMatch(/addressable path/);
+    expect(rejection(() =>
+      buildOutboxRecord(
+        draft({ input: { a: [ref] }, inputRefs: [{ path: ["a", 1.5], ref }] }),
+        scopeKey,
+        1,
+      )
+    )).toMatch(/addressable path/);
+  });
+
+  test("every record it builds decodes back to itself", () => {
+    const ref = clientRef();
+    const record = buildOutboxRecord(
+      draft({
+        input: { nested: { list: [ref] } },
+        inputRefs: [{ path: ["nested", "list", 0], ref }],
+        allocations: [{ slot: "issue", clientRef: clientRef() }],
+      }),
+      scopeKey,
+      3,
+    );
+    expect(decodeOutboxRecord(JSON.parse(JSON.stringify(record)))).toEqual(record);
+  });
+
   test("rejects duplicate slots, reused refs, and duplicate positions", () => {
     const ref = clientRef();
     expect(rejection(() =>
@@ -619,6 +653,29 @@ describe("repeated intent", () => {
       buildOutboxRecord(one, scopeKey, 1),
       buildOutboxRecord({ ...one, enqueuedAt: one.enqueuedAt + 5_000 }, scopeKey, 1),
     )).toBe(true);
+  });
+
+  test("object property order is not part of the intent", () => {
+    // The authoritative invocation digest canonicalizes JSON object keys, so a
+    // caller that rebuilt its input in another order is retrying, not reusing.
+    const base = draft({ input: { title: "one", done: false, tags: ["a", "b"] } });
+    expect(sameOutboxIntent(
+      buildOutboxRecord(base, scopeKey, 1),
+      buildOutboxRecord(
+        { ...base, input: { tags: ["a", "b"], done: false, title: "one" } },
+        scopeKey,
+        1,
+      ),
+    )).toBe(true);
+    // Array order still is: it is the declared sequence, not a key set.
+    expect(sameOutboxIntent(
+      buildOutboxRecord(base, scopeKey, 1),
+      buildOutboxRecord(
+        { ...base, input: { title: "one", done: false, tags: ["b", "a"] } },
+        scopeKey,
+        1,
+      ),
+    )).toBe(false);
   });
 
   test("a changed input, target, version, or position is a different intent", () => {

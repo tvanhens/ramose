@@ -111,6 +111,21 @@ const transactionDone = (transaction: IDBTransaction): Promise<void> =>
     transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
   });
 
+const openVersioned = (
+  name: string,
+  version: number,
+  upgrade: (database: IDBDatabase) => void,
+): Promise<IDBDatabase> =>
+  new Promise((resolve, reject) => {
+    const request = indexedDB.open(name, version);
+    request.addEventListener("upgradeneeded", () => upgrade(request.result), { once: true });
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("blocked", () => reject(new Error("upgrade blocked")), {
+      once: true,
+    });
+  });
+
 const openNative = (name: string): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const request = indexedDB.open(name);
@@ -649,6 +664,66 @@ browserTest("one invocation id names one queued invocation across every database
       ),
     ).toBe("OutboxInvocationConflict");
     expect((await dumpMutations(name))["mutation-outbox-v1"]).toHaveLength(1);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("an earlier build's mutation indexes are replaced on upgrade", async ({ browser }) => {
+  const name = `ramose-outbox-indexes-${browser.uniqueId}`;
+  const left = identity();
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  // A database exactly as an earlier build of this unreleased version left it:
+  // the store family exists, but `by-invocation` is the old compound index and
+  // `by-client-ref` does not exist at all.
+  const legacy = await openVersioned(name, 7, (database) => {
+    database.createObjectStore("mutation-queues-v1", { keyPath: "partition" });
+    const outbox = database.createObjectStore("mutation-outbox-v1", {
+      keyPath: ["partition", "sequence"],
+    });
+    outbox.createIndex("by-invocation", ["partition", "invocation"], { unique: true });
+    database.createObjectStore("mutation-receipts-v1", {
+      keyPath: ["partition", "invocation"],
+    });
+    database.createObjectStore("mutation-client-refs-v1", {
+      keyPath: ["partition", "clientRef"],
+    });
+    database.createObjectStore("mutation-client-ref-mappings-v1", {
+      keyPath: ["partition", "clientRef"],
+    });
+  });
+  legacy.close();
+
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    const inspected = await openNative(name);
+    const outbox = inspected.transaction("mutation-outbox-v1", "readonly")
+      .objectStore("mutation-outbox-v1");
+    // The stale compound index was replaced under its own name, not kept.
+    expect(outbox.index("by-invocation").keyPath).toBe("invocation");
+    const refs = inspected.transaction("mutation-client-refs-v1", "readonly")
+      .objectStore("mutation-client-refs-v1");
+    expect([...refs.indexNames]).toContain("by-client-ref");
+    inspected.close();
+
+    // And the invariants they carry actually hold.
+    const allocation = clientRef();
+    const first = await storage.outbox().enqueue(
+      draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+      { scope },
+    );
+    expect(
+      await rejectedTag(
+        storage.outbox().enqueue(
+          draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+          { scope },
+        ),
+      ),
+    ).toBe("ClientRefConflict");
+    expect(first.sequence).toBe(1);
   } finally {
     storage.close();
     await deleteDatabase(name);

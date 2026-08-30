@@ -104,9 +104,19 @@ import {
 const STORAGE_V2_DATABASE_VERSION = 5;
 /** The IndexedDB version that added the durable lifecycle generation records. */
 const LIFECYCLE_DATABASE_VERSION = 6;
-/** The IndexedDB version that added #475's mutation queue store families. */
-const MUTATION_DATABASE_VERSION = 7;
-const DATABASE_VERSION = MUTATION_DATABASE_VERSION;
+/**
+ * The version that added #475's mutation queue store families, and the one
+ * that added their global-identity indexes.
+ *
+ * Version 7 existed only inside this unreleased change.
+ *
+ * Opening at an unchanged version never fires `upgradeneeded`, so a database
+ * an earlier build of this same unreleased format already created would keep
+ * the older index shape and fail at the first allocating enqueue. The bump is
+ * what makes {@link createMutationStores} run again and reconcile them.
+ */
+const MUTATION_INDEX_DATABASE_VERSION = 8;
+const DATABASE_VERSION = MUTATION_INDEX_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
 const COMMITTED_HEADS = "replica-committed-heads-v1";
 const STAGING = "replica-staging-v1";
@@ -849,7 +859,9 @@ export class IndexedDbReplicaStorage {
         database.createObjectStore(GENERATIONS, { keyPath: "key" });
       }
       // #475's mutation families. They are created empty and need no data
-      // migration: version 6 and earlier could not queue an invocation.
+      // migration: version 6 and earlier could not queue an invocation, and
+      // version 7 only ever existed inside this unreleased change. Indexes are
+      // reconciled here rather than assumed.
       if (request.transaction !== null) createMutationStores(database, request.transaction);
       const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
       if (oldVersion > 0 && oldVersion < STORAGE_V2_DATABASE_VERSION && request.transaction !== null) {

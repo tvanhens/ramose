@@ -60,6 +60,7 @@ import type {
   OperationVersion,
   OwnerRef,
 } from "../authorization/identities.ts";
+import { canonicalizeJson } from "../authorization/canonical-json.ts";
 import type { JsonValue } from "../authorization/json.ts";
 import { decideServerIdentityBinding } from "./server-identity.ts";
 import type { ReplicaDatabaseScope, ReplicaScope } from "./replica-lifecycle.ts";
@@ -347,6 +348,21 @@ const embeddedSealingEpoch = (
 };
 
 /**
+ * A path segment the builder accepts and the decoder can read back.
+ *
+ * Both ends apply this: a path the builder allowed but the decoder rejected
+ * would produce a durable row that becomes unreadable on the next restart and
+ * holds its partition. An empty property name is therefore not an addressable
+ * reference position, in either direction.
+ */
+const validPathSegment = (segment: unknown): boolean =>
+  (typeof segment === "string" && segment.length > 0) ||
+  (typeof segment === "number" && Number.isSafeInteger(segment) && segment >= 0);
+
+const validPath = (path: readonly AllocationPathSegment[]): boolean =>
+  path.every(validPathSegment);
+
+/**
  * Whether every declared entity-reference position still holds exactly the
  * reference it declares. Checked when a draft is built *and* when a stored row
  * is decoded: if the two could drift, a row could be reported ready on a
@@ -358,6 +374,7 @@ const inputRefsAgree = (
 ): boolean => {
   const positions = new Set<string>();
   for (const use of inputRefs) {
+    if (!validPath(use.path)) return false;
     const position = JSON.stringify(use.path);
     if (positions.has(position)) return false;
     positions.add(position);
@@ -450,6 +467,9 @@ export const buildOutboxRecord = (
   const positions = new Set<string>();
   for (const use of draft.inputRefs) {
     const position = JSON.stringify(use.path);
+    if (!validPath(use.path)) {
+      reject(`input position ${position} is not an addressable path`);
+    }
     if (positions.has(position)) reject(`input position ${position} is declared twice`);
     positions.add(position);
     if (!isClientRef(use.ref) && !isEntityId(use.ref)) {
@@ -499,16 +519,37 @@ export const buildOutboxRecord = (
  * Whether two records express the same durable intent.
  *
  * Everything a submission depends on is compared; the wall-clock stamp is not,
- * because a retry of one intent legitimately happens later. Used to make a
- * re-enqueue of an invocation id idempotent instead of a constraint failure the
- * caller cannot tell apart from genuine reuse.
+ * because a retry of one intent legitimately happens later. Comparison is over
+ * RFC 8785 canonical JSON — the same canonicalization the authoritative
+ * invocation digest uses — so a caller that rebuilt its input with the
+ * properties in another order is recognized as the same intent rather than
+ * refused as reuse.
  */
+const intentMaterial = (record: OutboxRecord): JsonValue =>
+  ({
+    partition: record.partition,
+    sequence: record.sequence,
+    invocation: record.invocation,
+    scope: record.scope,
+    receiver: { ...record.receiver },
+    operation: {
+      catalog: record.operation.catalog,
+      owner: { ...record.operation.owner },
+      localName: record.operation.localName,
+    },
+    operationVersion: record.operationVersion,
+    target: { ...record.target },
+    input: record.input,
+    allocations: record.allocations.map((allocation) => ({ ...allocation })),
+    inputRefs: record.inputRefs.map((use) => ({ path: [...use.path], ref: use.ref })),
+    sealing: record.sealing === null ? null : { ...record.sealing },
+  }) as JsonValue;
+
 export const sameOutboxIntent = (
   left: OutboxRecord,
   right: OutboxRecord,
 ): boolean =>
-  JSON.stringify({ ...left, enqueuedAt: 0 }) ===
-    JSON.stringify({ ...right, enqueuedAt: 0 });
+  canonicalizeJson(intentMaterial(left)) === canonicalizeJson(intentMaterial(right));
 
 /**
  * Every client ref this record must have a durable mapping for before it can
@@ -785,13 +826,7 @@ const decodePath = (
   value: unknown,
 ): readonly AllocationPathSegment[] | undefined => {
   if (!Array.isArray(value)) return undefined;
-  for (const segment of value) {
-    if (typeof segment === "string" && segment.length > 0) continue;
-    if (typeof segment === "number" && Number.isSafeInteger(segment) && segment >= 0) {
-      continue;
-    }
-    return undefined;
-  }
+  if (!value.every(validPathSegment)) return undefined;
   return Object.freeze([...value] as AllocationPathSegment[]);
 };
 

@@ -151,7 +151,15 @@ export const createMutationStores = (
       ? upgrade.objectStore(name)
       : database.createObjectStore(name, { keyPath });
     for (const [index, path] of indexes) {
-      if (store.indexNames.contains(index)) continue;
+      if (store.indexNames.contains(index)) {
+        const current = store.index(index);
+        // An index of the same name but a different key path or uniqueness is
+        // a *different* invariant, so it is replaced rather than kept: the
+        // earlier build's compound `by-invocation` index would otherwise leave
+        // global invocation ownership unenforced under its own name.
+        if (current.keyPath === path && current.unique) continue;
+        store.deleteIndex(index);
+      }
       store.createIndex(index, path, { unique: true });
     }
   };
