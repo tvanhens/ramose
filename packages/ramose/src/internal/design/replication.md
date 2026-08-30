@@ -277,7 +277,7 @@ its committed head and local candidate bindings, staging/chunks, its
 partitioned content-addressed nodes, and its exact local credential binding.
 It never deletes the IndexedDB database or the mutation store families —
 #475's outbox, queue cursors, receipts, ClientRefs and their mappings, or
-#476's future optimistic layers.
+#476's optimistic layers.
 
 IndexedDB schema version 4 upgrades the landed replica stores conditionally.
 Compatible version-2/3 manifests carrying the confirmed hash survive. Legacy
@@ -676,9 +676,15 @@ invocations are refused the same way.
 
 ### ClientRef aliasing
 
-A projection may create or use a `ClientRef` only through a declared allocation
-slot. It cannot manufacture an `EntityId`, a mapping, a receipt, an
-authorization, or a commit result.
+A projection cannot manufacture an `EntityId`, a mapping, a receipt, an
+authorization, or a commit result. It may *create* a `ClientRef` only through a
+declared allocation slot, and it may *use* one only when that ref is
+committed-mapped, supplied by the invocation's own target or validated input, or
+minted by one of its declared slots — the three sources a durable layer row
+accounts for. Slice 1 enforced the create half; slice 2's durable row carries
+the other two, which is what closes the rule on `set`, `remove`, and `delete`
+(see "The closed aliasing rule" below). The input-supplied case is why those
+verbs cannot simply be narrowed to allocations.
 
 Reference resolution is one function with three cases, and the middle case is
 the whole aliasing rule:
@@ -753,15 +759,131 @@ queued layer on every deploy — the opposite of what #475's stable handles buy.
 Revision drift *is* `update-required`: the alternative is executing a
 projection whose author has said it no longer means the same thing.
 
-### What slice 2 owns
+## Durability and observation-fenced reconciliation (#476 slice 2)
 
-Durable layer rows scoped by the confirmed server/principal/database triple and
-removed by `clearLocalData()`; reconstructing layers and `ClientRef` mappings on
-restart; wiring `ActivationFence` to `fence(n)` and the submission pass's
-rejections to `reject`; the atomic "install the fenced replica, remove those
-layers, replay the rest" transaction; the `.local` sidecar pending metadata;
-and proving quarantine on a codec/key-epoch incompatibility. Slice 1 fixes the
-shapes those transitions move; it persists nothing.
+Slice 1 fixed the shapes; this slice persists them and drives the transitions.
+
+### The durable layer row
+
+One row per invocation that produced a layer, in `mutation-layers-v1`, keyed
+`[partition, sequence]` — the *same* partition and the *same* FIFO position its
+outbox row holds, so a scoped clear removes it by the same prefix range and the
+FIFO order needs no second source of truth. A unique `by-invocation` index
+enforces that one invocation owns at most one layer, globally, exactly as the
+receipt store enforces invocation ownership.
+
+The row holds: operation identity, the pinned `OperationVersion`, the *declared*
+projection identity `{revision, build}`, the validated input, the invocation's
+target, its declared allocation slots and the client refs they minted, the refs
+its target and input supply, the sealing epoch its own handles agree on
+(codec version and the identity root's `keyId`), and its own bookkeeping —
+sequence, state, and activation stamp.
+
+It holds **no callback source, AST, bytecode, closure, or interpreter
+artifact**, and — deliberately — **no changeset**. The changeset is recomputed
+on restart by resolving the callback from the installed bundle and running it
+over the stored input. A stored changeset would outlive the very identity check
+that exists to refuse it: a bundle whose projection has drifted would replay a
+snapshot of code its author has disowned. Recomputation is what makes "restart
+reconstructs exactly the same speculative view by natively replaying the
+matching projection" a statement about the code installed *now*.
+
+Every write is inside a transaction that already exists:
+
+| durable event | layer transition | transaction |
+|---|---|---|
+| enqueue | the row is created `queued` | the enqueue write, so a projection is durable before `receipt.queued` resolves and a cut can never leave one half |
+| commit | `committed-unobserved`, stamped with the activation the same transaction read | the acknowledgement write, beside the receipt, the mappings, and the row removal |
+| reject | the row is removed | the same acknowledgement write; the rejection cascade removes the cut's rows too |
+| fence(n) | every `committed-unobserved` row its receipts covered is removed | the reconciliation transaction below |
+| `clearLocalData()` | every row of the scope is removed | the one atomic clearing transaction, with the replicas |
+
+### The reconciliation transaction
+
+`fenceActivation(receiver, n)` is one client storage transaction over the
+receipts, the layers, the committed heads, and the scope generation. In it:
+
+1. **confirm** the authoritative replica state this fence observes — the
+   committed head of this receiver database, over every read view of it. A
+   settled outcome always implies one; its absence means the replica was
+   cleared or evicted in between, so nothing is removed and the next outcome
+   reselects;
+2. advance every receipt the fence covers from `unobserved` to `observed`
+   (`stamp < n`, the whole bookkeeping);
+3. remove exactly the layers those receipts own — selected by the *receipt*, so
+   one predicate decides both halves;
+4. read back the surviving rows in sequence order. That order **is** the record
+   of the resulting layer order: it comes from inside the transaction that
+   produced it, so the replay is over what was committed rather than over a
+   later read a concurrent enqueue could already have changed.
+
+All four or none. A terminal, an incomplete reset, a prior generation, and an
+identity or schema mismatch never reach it — the session settles none of them —
+and a scope whose generation moved is refused before anything is written. An
+undecodable layer row is counted, never removed.
+
+### The driver
+
+`OptimisticReconciler` is the production caller, one per receiver database:
+
+```
+acknowledgement persisted  →  restart(prior)   close → increment → open
+fresh activation opens     →  outcome(n)       the session's own hook
+first settled frame        →  settle(n)        the reconciliation transaction
+```
+
+The order is the contract, not a convenience — see the fence section above. A
+`Committed` queue progress is what requires a fresh activation; a `Rejected` one
+requires nothing but an immediate replay, because the acknowledgement already
+removed exactly that layer. There is no dependency graph and no replication
+wait.
+
+Crash cuts converge because every state is a function of durable rows:
+
+| cut | after restart |
+|---|---|
+| inside the enqueue | no layer and no invocation |
+| after the acknowledgement, before the fence | the mapped optimistic view, intact — the layer is `committed-unobserved` and its ref aliases onto the returned handle |
+| after `beginActivation`, before the activation opens | the counter is larger than it needed to be, which fences a superset and is always safe |
+| inside the fence transaction | nothing observed, nothing removed; the next settled frame fences |
+| after a rejection, before the replay | exactly that layer gone, the later ones replayed at their new positions |
+
+### Restart and quarantine
+
+Restoring is total, and scoped to the whole receiver database. A rotated
+projection revision, a missing operation or projection, an unreadable row, or a
+sealing epoch this build cannot use withholds *every* layer of that database as
+the typed, data-free `update-required` state. Partial replay would present a
+speculative view the installed bundle cannot account for. The durable rows are
+kept, so a compatible build replays them unchanged, and **the committed replica
+is never reset by any of it** — a projection-only client change does not
+invalidate replicated data.
+
+Build drift alone still rebinds; that is slice 1's decision table, unchanged.
+
+### The closed aliasing rule
+
+The durable row carries the refs the invocation was given, so the overlay's
+rule is closed on every verb rather than on `create` alone: a `ClientRef` is
+admitted when it is committed-mapped, supplied by this invocation's own target
+or validated input, or minted by one of its declared allocation slots.
+Anything else is the `undeclared-ref` refusal — recorded and skipped, never a
+speculative entity no durable record accounts for.
+
+Aliases are bound in one pass over `(layer, operation)` order *before* the fold,
+so resolution is order-symmetric: naming a mapped handle before the client ref
+that aliases it resolves exactly as naming it after does, and the entity is
+presented once either way.
+
+### The `.local` sidecar
+
+Entity-local pending metadata is derived from the layers and nothing else —
+recomputed, never accumulated, so removing a layer removes its contribution by
+construction. Per entity: the invocations still holding optimistic state for it,
+whether any of them is still `queued`, and whether one of them brought it into
+the view. It is client-internal state, never a persisted trait, never an
+application datom, and not yet public API; #477 decides what an application
+sees.
 
 ## Integrity validation and corruption recovery
 

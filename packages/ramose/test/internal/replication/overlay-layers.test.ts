@@ -43,7 +43,13 @@ const drive = (
 const enqueue = (
   invocation: InvocationId,
   sequence: number,
-): OverlayEvent => ({ type: "enqueue", invocation, sequence, changeset: empty });
+): OverlayEvent => ({
+  type: "enqueue",
+  invocation,
+  sequence,
+  declared: [],
+  changeset: empty,
+});
 
 const three = (): OverlayLayers =>
   drive([enqueue(ids.a, 1), enqueue(ids.b, 2), enqueue(ids.c, 3)]);
@@ -63,6 +69,7 @@ describe("enqueue", () => {
       sequence: 2,
       state: "queued",
       activation: null,
+      declared: [],
       changeset: empty,
     });
   });

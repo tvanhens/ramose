@@ -67,6 +67,7 @@ import {
 import {
   identityInDatabase,
   identityInScope,
+  REPLICA_COMMITTED_HEADS_STORE,
   REPLICA_GENERATIONS_STORE,
   replicaDatabaseKey,
   replicaDatabasePartitionPrefix,
@@ -140,13 +141,21 @@ const LIFECYCLE_DATABASE_VERSION = 6;
  */
 const MUTATION_INDEX_DATABASE_VERSION = 9;
 /**
+ * Version 10 adds #476's optimistic-layer family.
+ *
+ * A new store needs an `upgradeneeded` transaction to exist at all, and the
+ * bump is also what makes {@link createMutationStores} run again over a
+ * database an earlier build of this unreleased format already created.
+ */
+const OPTIMISTIC_LAYER_DATABASE_VERSION = 10;
+/**
  * The version this build opens at. Exported so a test that inspects the raw
  * database cannot pin a stale number and start failing on the next bump.
  */
-export const REPLICA_DATABASE_VERSION = MUTATION_INDEX_DATABASE_VERSION;
+export const REPLICA_DATABASE_VERSION = OPTIMISTIC_LAYER_DATABASE_VERSION;
 const DATABASE_VERSION = REPLICA_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
-const COMMITTED_HEADS = "replica-committed-heads-v1";
+const COMMITTED_HEADS = REPLICA_COMMITTED_HEADS_STORE;
 const STAGING = "replica-staging-v1";
 const STAGING_CHUNKS = "replica-staging-chunks-v1";
 const NODES = "replica-nodes-v1";
@@ -428,6 +437,8 @@ export type ReplicaClearOutcome = {
   /** Queued invocations removed with the replicas, in the same transaction. */
   readonly queued: number;
   readonly clientRefs: number;
+  /** Optimistic layers (#476) removed in that same transaction. */
+  readonly layers: number;
 };
 
 /** What one database eviction removed. */
@@ -1456,6 +1467,7 @@ export class IndexedDbReplicaStorage {
       routeObservations,
       queued: mutations.queued,
       clientRefs: mutations.clientRefs,
+      layers: mutations.layers,
     });
   }
 

@@ -29,37 +29,29 @@
 
 import type { InvocationId } from "../../db/refs.ts";
 import type { ReplicationFrame } from "./protocol.ts";
-import type { ActivationObservationState } from "./outbox-storage.ts";
+import type {
+  ActivationFenceOutcome,
+  ActivationObservationState,
+} from "./outbox-storage.ts";
 import type { UnobservedReceipt } from "./outbox.ts";
 import type { ReplicaDatabaseScope } from "./replica-lifecycle.ts";
 import type { QueueProgress } from "./submission.ts";
 
 /**
- * What one accepted frame turned out to be, as the session determined it.
+ * Whether one *settled* frame satisfies the post-commit activation fence.
  *
- * The frame type alone is not enough: a `Change` whose local install lost its
- * CAS installed nothing, and an incomplete snapshot staging never commits. The
- * disposition is exactly the extra fact that decides.
- */
-export type ActivationOutcomeEvidence = {
-  readonly frame: ReplicationFrame["type"];
-  /**
-   * Whether the session accepted this frame as an authoritative outcome
-   * carrying the current committed state: a change that continued the
-   * committed revision (or that this replica already held), a resume
-   * acknowledgement that matched, or a snapshot commit that installed.
-   */
-  readonly settled: boolean;
-};
-
-/**
- * Whether one accepted frame satisfies the post-commit activation fence.
+ * The caller establishes settledness — that this frame carried the current
+ * committed state — before asking, because the frame type alone cannot: a
+ * `Change` whose local install lost its CAS installed nothing, and an
+ * incomplete snapshot staging never commits. Slice 3 carried that fact as a
+ * `settled` parameter every call site passed `true` for; now that the
+ * production driver's call sites exist and all sit inside the session's own
+ * settled path, the constant is gone and the precondition is stated here.
  *
  * `Change`, `ResumeReady`, and `SnapshotCommit` are the only three frames that
- * can, and only when the session actually settled them. Keepalive is liveness
- * rather than state; a terminal ends the activation without an outcome; a
- * `Reset`, `SnapshotStart`, or `SnapshotChunk` is staging, and incomplete
- * staging is never an outcome.
+ * can satisfy the fence. Keepalive is liveness rather than state; a terminal
+ * ends the activation without an outcome; a `Reset`, `SnapshotStart`, or
+ * `SnapshotChunk` is staging, and incomplete staging is never an outcome.
  *
  * The frozen contract names the reset case as "`SnapshotCommit` following a
  * matching `Reset`". A fresh activation that supplies no resume revision — its
@@ -71,10 +63,9 @@ export type ActivationOutcomeEvidence = {
  * authoritative basis fence.
  */
 export const satisfiesActivationFence = (
-  evidence: ActivationOutcomeEvidence,
+  frame: ReplicationFrame["type"],
 ): boolean => {
-  if (!evidence.settled) return false;
-  switch (evidence.frame) {
+  switch (frame) {
     case "Change":
     case "ResumeReady":
     case "SnapshotCommit":
@@ -129,7 +120,7 @@ export type ActivationFenceStore = {
   readonly fenceActivation: (
     receiver: ReplicaDatabaseScope,
     activation: number,
-  ) => Promise<readonly InvocationId[]>;
+  ) => Promise<ActivationFenceOutcome>;
 };
 
 const EMPTY: readonly InvocationId[] = Object.freeze([]);
@@ -217,15 +208,19 @@ export class ActivationFence {
   /**
    * Consume one activation's first matching authoritative outcome.
    *
-   * Returns the invocations this transition marked observed — empty when the
-   * activation covered nothing, or when it had already fenced.
+   * Returns everything the reconciliation transaction did — the invocations it
+   * marked observed, the authoritative revision it confirmed, and the resulting
+   * durable layer order — or `undefined` when this activation had already
+   * fenced and the transaction was therefore not run again.
    */
-  async settle(activation: number): Promise<readonly InvocationId[]> {
-    if (activation <= this.settled) return EMPTY;
-    const fenced = await this.store.fenceActivation(this.receiver, activation);
+  async settle(
+    activation: number,
+  ): Promise<ActivationFenceOutcome | undefined> {
+    if (activation <= this.settled) return undefined;
+    const outcome = await this.store.fenceActivation(this.receiver, activation);
     this.settled = Math.max(this.settled, activation);
-    this.publish(await this.store.observationState(this.receiver), fenced);
-    return fenced;
+    this.publish(await this.store.observationState(this.receiver), outcome.fenced);
+    return outcome;
   }
 
   /**

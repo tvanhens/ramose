@@ -77,8 +77,14 @@ export type OverlayResolver = {
   readonly mapping: (ref: ClientRef) => EntityId | undefined;
 };
 
-/** Why one projected operation could not become datoms. */
-export type OverlayRefusalReason =
+/**
+ * Why one projected *operation* could not become datoms.
+ *
+ * Distinct from `overlay-layers.ts`'s {@link OverlayEventRefusalReason}, which
+ * says why a lifecycle event left the ordered layers unchanged. The two were
+ * both named `OverlayRefusalReason` in slice 1.
+ */
+export type OverlayOperationRefusalReason =
   /** No such attribute in the committed schema. */
   | "unknown-field"
   /** The value's type is not the attribute's declared type. */
@@ -88,13 +94,21 @@ export type OverlayRefusalReason =
    * Refused rather than invented: only a ref this device minted may bring a
    * new entity into the local view.
    */
-  | "unknown-entity";
+  | "unknown-entity"
+  /**
+   * A client ref that is neither committed-mapped, supplied by this
+   * invocation's own input or target, nor minted by one of its declared
+   * allocation slots. The durable layer carries exactly that set, so a ref no
+   * durable record accounts for is refused rather than given a speculative
+   * entity the queue could never resolve.
+   */
+  | "undeclared-ref";
 
 export type OverlayRefusal = {
   readonly invocation: InvocationId;
   /** Position of the refused operation inside its layer's changeset. */
   readonly index: number;
-  readonly reason: OverlayRefusalReason;
+  readonly reason: OverlayOperationRefusalReason;
 };
 
 export type OverlayView = {
@@ -137,11 +151,23 @@ export const projectOverlay = async (
   layers: OverlayLayers,
   resolver: OverlayResolver,
 ): Promise<OverlayView> => {
+  // The overlay adds datoms strictly *above* `basisT`, so an as-of value would
+  // hide every one of them and a history value would present retractions as
+  // facts. Neither is a live local view, and the production driver only ever
+  // passes the session's own committed value; a temporal one is a programming
+  // error rather than a state to reconcile.
+  if (committed.asOfT !== undefined || committed.isHistory) {
+    throw new Error(
+      "ramose/overlay: the speculative overlay applies only to a live committed value",
+    );
+  }
   const schema = committed.schema;
   const entities = new Map<string, number>();
   const speculative = new Map<string, number>();
   const refusals: OverlayRefusal[] = [];
   let nextEid = committed.nextEid;
+  /** The refs the layer currently being folded is entitled to name. */
+  let declared: ReadonlySet<string> = new Set();
 
   /**
    * The aliasing rule. A client ref resolves *through* its durable mapping, so
@@ -150,12 +176,18 @@ export const projectOverlay = async (
    * entity the replica has not received yet — takes a speculative id under
    * that same key, which is what keeps a `committed-unobserved` layer visible
    * without a rollback flash while replication catches up.
+   *
+   * Returns the refusal reason rather than `undefined` so an undeclared ref is
+   * reported as itself instead of as an unknown entity.
    */
-  const resolve = (ref: MutationRef): number | undefined => {
+  const resolve = (ref: MutationRef): number | OverlayOperationRefusalReason => {
     const direct = entities.get(ref);
     if (direct !== undefined) return direct;
     if (isClientRef(ref)) {
       const mapped = resolver.mapping(ref);
+      // Closed by construction: a ref this layer neither owns nor was given,
+      // and that no committed mapping resolves, brings nothing into view.
+      if (mapped === undefined && !declared.has(ref)) return "undeclared-ref";
       const key = mapped ?? ref;
       let eid = entities.get(key);
       if (eid === undefined) {
@@ -173,10 +205,27 @@ export const projectOverlay = async (
       return eid;
     }
     const eid = resolver.entity(ref as EntityId);
-    if (eid === undefined) return undefined;
+    if (eid === undefined) return "unknown-entity";
     entities.set(ref, eid);
     return eid;
   };
+
+  /**
+   * Bind every alias before anything is folded.
+   *
+   * Resolution would otherwise be order-asymmetric: naming a mapped handle
+   * *before* the client ref that aliases it found nothing registered and was
+   * refused, while naming it after resolved. Both orders express the same
+   * intent, so the aliases are established in one pass over `(layer,
+   * operation)` order first — which also fixes the speculative ids by first
+   * appearance, exactly as the determinism contract requires.
+   */
+  for (const layer of layers) {
+    declared = new Set(layer.declared);
+    for (const op of layer.changeset) {
+      for (const ref of referencesOf(op)) if (isClientRef(ref)) resolve(ref);
+    }
+  }
 
   /**
    * Lower one projected value through the replica's own fact projection, then
@@ -189,7 +238,7 @@ export const projectOverlay = async (
     value: ProjectionValue,
     e: number,
     t: number,
-  ): Datom | OverlayRefusalReason => {
+  ): Datom | OverlayOperationRefusalReason => {
     const fact = replicaFactDatom(
       asLogical(op.entity, op.field, value),
       schema,
@@ -211,13 +260,24 @@ export const projectOverlay = async (
       basisT,
       schema,
       nextEid,
+      // Carried, not dropped. A filtered committed value must stay filtered
+      // under the overlay, and the temporal coordinates are preserved for the
+      // same reason — the guard above is what keeps them trivial today.
+      asOfT: committed.asOfT,
+      history: committed.isHistory,
       filters: committed.filters,
       composition: committed.composition,
     });
 
-  const novelty = new Novelty();
   const isAvet = (a: number): boolean => schema.isAvet(a);
   const isVaet = (a: number): boolean => schema.isVaet(a);
+  // Seeded from the committed value's own novelty, never replaced by an empty
+  // one. A replica that applied a change since it was last flushed carries
+  // datoms here that no tree root holds, so installing a fresh Novelty would
+  // silently drop them and the overlay would answer from a *stale* committed
+  // basis while claiming the current one.
+  const novelty = new Novelty();
+  novelty.add(committed.novelty.byIndex[Index.EAVT].all(), isAvet, isVaet);
   /**
    * The view the next operation reads: the committed value plus every
    * operation already folded in. The fold is per *operation*, not per layer —
@@ -234,14 +294,13 @@ export const projectOverlay = async (
   const datomsFor = async (
     op: ProjectionOp,
     at: number,
-  ): Promise<Datom[] | OverlayRefusalReason> => {
+  ): Promise<Datom[] | OverlayOperationRefusalReason> => {
     // Resolve every reference the operation names before anything is emitted,
     // so a partly-resolved operation can never reach the view.
     const resolved = referencesOf(op).map(resolve);
-    const e = resolved[0];
-    if (e === undefined || resolved.some((eid) => eid === undefined)) {
-      return "unknown-entity";
-    }
+    const refused = resolved.find((eid) => typeof eid === "string");
+    if (refused !== undefined) return refused as OverlayOperationRefusalReason;
+    const e = resolved[0] as number;
     const retract = (prior: Datom): Datom => ({ ...prior, t: at, op: false });
     if (op.op === "create") {
       return [makeDatom(e, RAMOSE_TYPE, ValueTag.Str, op.type, at, true)];
@@ -281,6 +340,7 @@ export const projectOverlay = async (
   };
 
   for (const layer of layers) {
+    declared = new Set(layer.declared);
     for (let index = 0; index < layer.changeset.length; index++) {
       const emitted = await datomsFor(layer.changeset[index]!, t + 1);
       if (typeof emitted === "string") {

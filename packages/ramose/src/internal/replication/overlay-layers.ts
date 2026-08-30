@@ -13,7 +13,7 @@
  */
 
 import type { ProjectionChangeset } from "../../db/Projection.ts";
-import type { InvocationId } from "../../db/refs.ts";
+import type { InvocationId, MutationRef } from "../../db/refs.ts";
 
 /**
  * `committed-unobserved` is the whole reason a commit is not a removal: the
@@ -34,6 +34,14 @@ export type OverlayLayer = {
    * while queued. A fence at `n` removes this layer when it is strictly below.
    */
   readonly activation: number | null;
+  /**
+   * Every reference this layer is entitled to name (#476 slice 2): the client
+   * refs its declared allocation slots minted, plus the refs its own target and
+   * validated input supplied. It comes from the durable row, so the overlay's
+   * aliasing rule is closed — a ref that is neither committed-mapped nor listed
+   * here is refused rather than given a speculative entity nothing accounts for.
+   */
+  readonly declared: readonly MutationRef[];
   readonly changeset: ProjectionChangeset;
 };
 
@@ -46,6 +54,7 @@ export type OverlayEvent =
     readonly type: "enqueue";
     readonly invocation: InvocationId;
     readonly sequence: number;
+    readonly declared: readonly MutationRef[];
     readonly changeset: ProjectionChangeset;
   }
   | {
@@ -56,7 +65,16 @@ export type OverlayEvent =
   | { readonly type: "reject"; readonly invocation: InvocationId }
   | { readonly type: "fence"; readonly activation: number };
 
-export type OverlayRefusalReason =
+/**
+ * Why one lifecycle *event* left the list unchanged.
+ *
+ * Deliberately a different name from `overlay.ts`'s {@link
+ * OverlayOperationRefusalReason}: one says an event could not be applied to the
+ * ordered layers, the other says a projected operation could not become datoms.
+ * They were both spelled `OverlayRefusalReason` in slice 1, which made two
+ * disjoint unions share one name across two modules.
+ */
+export type OverlayEventRefusalReason =
   | "duplicate-invocation"
   | "out-of-order"
   | "unknown-invocation"
@@ -69,8 +87,13 @@ export type OverlayLayersApplied = {
   readonly layers: OverlayLayers;
   readonly removed: readonly InvocationId[];
   /**
-   * The lowest index whose applied position changed, so the caller knows how
-   * much of the overlay must be rebuilt. `layers.length` means nothing moved.
+   * The lowest index *of the returned list* that must be applied again.
+   *
+   * `enqueue` returns the new layer's own index; `reject` and `fence` return
+   * the position the first removal vacated, which every survivor behind it has
+   * now shifted into. It equals `layers.length` — the length of the *returned*
+   * list — exactly when nothing has to be replayed at all, which is what
+   * `commit` and a fence that covered nothing report.
    */
   readonly replayFrom: number;
 };
@@ -79,7 +102,7 @@ export type OverlayLayersResult =
   | OverlayLayersApplied
   | {
     readonly type: "refused";
-    readonly reason: OverlayRefusalReason;
+    readonly reason: OverlayEventRefusalReason;
     readonly layers: OverlayLayers;
   };
 
@@ -96,7 +119,7 @@ const applied = (
   });
 
 const refused = (
-  reason: OverlayRefusalReason,
+  reason: OverlayEventRefusalReason,
   layers: OverlayLayers,
 ): OverlayLayersResult =>
   Object.freeze({ type: "refused" as const, reason, layers });
@@ -130,6 +153,7 @@ const enqueue = (
       sequence: event.sequence,
       state: "queued" as const,
       activation: null,
+      declared: Object.freeze([...event.declared]),
       changeset: event.changeset,
     })],
     [],

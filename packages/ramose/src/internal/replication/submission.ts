@@ -419,6 +419,57 @@ export const classifyMutationResponse = (
   return RETRY("malformed");
 };
 
+/**
+ * Why one database's pass did not complete, as a value a caller can act on.
+ *
+ * Every arm but `aborted` and `storage` names a durable condition that will
+ * answer the identical pass identically, so a driver can stop resubmitting and
+ * surface it instead of looping.
+ */
+export type InterruptedReason =
+  /** The scope was cleared or its generation moved under this pass. */
+  | "scope-fenced"
+  /** No confirmed generation record: this scope was never confirmed here. */
+  | "scope-unconfirmed"
+  /** A different durable receipt already owns this invocation id. */
+  | "invocation-conflict"
+  /** A client ref this acknowledgement may not map, or left unmapped. */
+  | "mapping-refused"
+  /** A record or row this build refuses to persist or cannot interpret. */
+  | "record-invalid"
+  /** The caller's signal aborted the pass. */
+  | "aborted"
+  /** Anything else the storage boundary raised. */
+  | "storage";
+
+/**
+ * Classify one thrown failure into the reason vocabulary above.
+ *
+ * Read from the tagged-error tag rather than from a message, so the mapping
+ * does not depend on prose, and defaulting to `storage` so an unfamiliar
+ * failure is still reported rather than swallowed.
+ */
+export const interruptedReason = (error: unknown): InterruptedReason => {
+  const tag = (error as { readonly _tag?: unknown } | undefined)?._tag;
+  switch (tag) {
+    case "ReplicaFencedError":
+    case "ReplicaScopeClearedError":
+      return "scope-fenced";
+    case "ReplicaScopeUnconfirmedError":
+      return "scope-unconfirmed";
+    case "OutboxInvocationConflict":
+    case "ClientRefConflict":
+      return "invocation-conflict";
+    case "ClientRefMappingRefused":
+      return "mapping-refused";
+    case "OutboxRecordInvalid":
+      return "record-invalid";
+  }
+  return (error as { readonly name?: unknown } | undefined)?.name === "AbortError"
+    ? "aborted"
+    : "storage";
+};
+
 /** What one pass did to one receiver database's queue. */
 export type QueueProgress = {
   readonly partition: string;
@@ -455,8 +506,15 @@ export type QueueProgress = {
      * either direction and the next pass decides the same head again; it is
      * reported so one database's failure cannot silently erase what its
      * siblings did in the same pass.
+     *
+     * The reason is typed rather than discarded (#475 slice 3 carry-forward).
+     * An acknowledgement that throws every time — a scope a clear has already
+     * fenced, an invocation id a different receipt owns, a row this build
+     * cannot persist — would otherwise resubmit forever with nothing naming
+     * what has to change, which is the same silent loop a receipt-free refusal
+     * was given a name to avoid.
      */
-    | { readonly _tag: "Interrupted" }
+    | { readonly _tag: "Interrupted"; readonly reason: InterruptedReason }
     | {
       readonly _tag: "Retry";
       readonly invocation: InvocationId;
@@ -552,7 +610,10 @@ export const runSubmissionPass = async (
   return Object.freeze(settled.map((outcome, index) => {
     if (outcome.status === "fulfilled") return outcome.value;
     const plan = plans[index]!;
-    return progress(plan.partition, plan.receiver, { _tag: "Interrupted" });
+    return progress(plan.partition, plan.receiver, {
+      _tag: "Interrupted",
+      reason: interruptedReason(outcome.reason),
+    });
   }));
 };
 

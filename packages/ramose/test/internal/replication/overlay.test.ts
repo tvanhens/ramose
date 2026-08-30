@@ -20,6 +20,7 @@ import {
   invocationId,
   unsafeEntityId,
   type ClientRef,
+  type MutationRef,
   type EntityId,
   type InvocationId,
 } from "../../../src/db/refs.ts";
@@ -158,9 +159,26 @@ const layer = (
   sequence: ++sequence,
   state: "queued",
   activation: null,
+  // Every ref the changeset names, unless a case is explicitly narrowing the
+  // declared set: slice 2's durable row carries exactly this list.
+  declared: declaredIn(changeset),
   changeset,
   ...overrides,
 });
+
+/** The refs a changeset names, as the durable layer would have recorded them. */
+const declaredIn = (
+  changeset: ProjectionChangeset,
+): readonly MutationRef[] => {
+  const refs = new Set<MutationRef>();
+  for (const op of changeset) {
+    refs.add(op.entity);
+    if ((op.op === "set" || op.op === "remove") && op.value?.type === "ref") {
+      refs.add(op.value.value);
+    }
+  }
+  return [...refs];
+};
 
 const overlay = (
   layers: OverlayLayers,
@@ -545,5 +563,149 @@ describe("commit does not change the view", () => {
     expect(await dump(await view([queued]))).toEqual(
       await dump(await view([committedUnobserved])),
     );
+  });
+});
+
+describe("slice-1 gate carry-forwards (#476 slice 2)", () => {
+  const refusalsOf = async (
+    ordered: OverlayLayers,
+    mappings?: Readonly<Record<string, EntityId>>,
+  ): Promise<readonly string[]> =>
+    (await overlay(ordered, mappings)).refusals.map((refusal) =>
+      `${refusal.index}:${refusal.reason}`
+    );
+
+  /**
+   * N2. A committed value that applied a change since it was last flushed
+   * carries datoms in novelty that no tree root holds. Installing a fresh
+   * `Novelty` would drop them, and the overlay would answer from a *stale*
+   * committed basis while claiming the current one.
+   */
+  test("seeds from the committed value's own novelty", async () => {
+    const novelty = new Novelty();
+    const attribute = committed.schema.attr(":issue/title")!.id;
+    const at = committed.basisT + 1;
+    novelty.add(
+      [
+        { e: alpha, a: attribute, vt: ValueTag.Str, v: "alpha", t: at, op: false },
+        { e: alpha, a: attribute, vt: ValueTag.Str, v: "alpha-changed", t: at, op: true },
+      ],
+      (a) => committed.schema.isAvet(a),
+      (a) => committed.schema.isVaet(a),
+    );
+    const live = new Db({
+      store: committed.store,
+      roots: committed.roots,
+      novelty,
+      basisT: at,
+      schema: committed.schema,
+      nextEid: committed.nextEid,
+    });
+    const overlaid = await projectOverlay(
+      live,
+      [layer(authored((tx) => tx.set(BETA, title, "beta-optimistic")))],
+      resolver(),
+    );
+    expect(await titles(overlaid.db)).toEqual(["alpha-changed", "beta-optimistic"]);
+  });
+
+  test("refuses a temporal committed value rather than silently hiding every layer", async () => {
+    for (const temporal of [committed.asOf(committed.basisT), committed.history()]) {
+      await expect(projectOverlay(temporal, [], resolver())).rejects.toThrow(
+        /applies only to a live committed value/,
+      );
+    }
+  });
+
+  /**
+   * N3. `replication.md` says a projection may create *or use* a `ClientRef`
+   * only through a declared slot; slice 1 enforced that on `create` alone. The
+   * durable layer now carries the refs the invocation was given, so the rule is
+   * closed on every verb — while the input-supplied case stays open, which is
+   * why `set` could not simply be narrowed to allocations.
+   */
+  test("refuses a client ref the durable layer does not account for", async () => {
+    const stray = clientRef();
+    expect(
+      await refusalsOf([
+        layer(authored((tx) => tx.set(stray, title, "x")), { declared: [] }),
+      ]),
+    ).toEqual(["0:undeclared-ref"]);
+    expect(
+      await refusalsOf([
+        layer(authored((tx) => tx.set(ALPHA, owner, stray)), { declared: [ALPHA] }),
+      ]),
+    ).toEqual(["0:undeclared-ref"]);
+    expect(
+      await refusalsOf([
+        layer(authored((tx) => tx.delete(stray)), { declared: [] }),
+      ]),
+    ).toEqual(["0:undeclared-ref"]);
+  });
+
+  test("admits a ref the input supplied, a slot minted, or a mapping resolves", async () => {
+    const supplied = clientRef();
+    expect(
+      await refusalsOf([
+        layer(authored((tx) => tx.set(supplied, title, "x")), { declared: [supplied] }),
+      ]),
+    ).toEqual([]);
+    const slot = clientRef();
+    expect(
+      await refusalsOf([
+        layer(authored((tx) => tx.create("draft", Issue), { draft: slot }), {
+          declared: [slot],
+        }),
+      ]),
+    ).toEqual([]);
+    // Committed-mapped needs no declaration: the authoritative receipt that
+    // produced the mapping is itself the account of that ref.
+    const mapped = clientRef();
+    expect(
+      await refusalsOf(
+        [layer(authored((tx) => tx.set(mapped, title, "x")), { declared: [] })],
+        { [mapped]: ALPHA },
+      ),
+    ).toEqual([]);
+  });
+
+  /**
+   * N4. Naming a mapped handle *before* the client ref that aliases it was an
+   * `unknown-entity` refusal, while naming it after resolved. Both orders
+   * express the same intent, so every alias is bound in one pass first.
+   */
+  test("resolves a mapped handle whichever order the layers name it in", async () => {
+    const ref = clientRef();
+    const byHandleFirst: OverlayLayers = [
+      layer(authored((tx) => tx.set(UNSEEN, title, "by-handle")), { declared: [] }),
+      layer(authored((tx) => tx.set(ref, rank, 9)), { declared: [ref] }),
+    ];
+    const byRefFirst: OverlayLayers = [
+      layer(authored((tx) => tx.set(ref, rank, 9)), { declared: [ref] }),
+      layer(authored((tx) => tx.set(UNSEEN, title, "by-handle")), { declared: [] }),
+    ];
+    expect(await refusalsOf(byHandleFirst, { [ref]: UNSEEN })).toEqual([]);
+    expect(await refusalsOf(byRefFirst, { [ref]: UNSEEN })).toEqual([]);
+    // One entity, never two, in either order.
+    expect((await overlay(byHandleFirst, { [ref]: UNSEEN })).speculative.size).toBe(1);
+    expect((await overlay(byRefFirst, { [ref]: UNSEEN })).speculative.size).toBe(1);
+  });
+
+  /**
+   * N5. `delete` retracts every datom the entity holds, `:ramose/type`
+   * included; a later `set` in the same layer then asserts an attribute datom
+   * on an entity that no longer claims a type. That is exactly what
+   * retract-then-assert means, and the intent is pinned here rather than left
+   * to be rediscovered.
+   */
+  test("delete then set in one layer resurrects the attribute, not the type", async () => {
+    const db = await view([layer(authored((tx) => {
+      tx.delete(ALPHA).set(ALPHA, title, "resurrected");
+    }))]);
+    const rows = await db.datomsArray(Index.EAVT, { e: alpha });
+    expect(rows.map((datom) => committed.schema.ident(datom.a))).toEqual([
+      ":issue/title",
+    ]);
+    expect(rows[0]?.v).toBe("resurrected");
   });
 });

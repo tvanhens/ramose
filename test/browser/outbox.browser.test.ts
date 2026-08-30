@@ -9,6 +9,7 @@
 
 import { expect } from "vitest";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
+import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
 import type { OperationVersion } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import { clientRef, invocationId } from "../../packages/ramose/src/db/refs.ts";
 import type { EntityId } from "../../packages/ramose/src/db/refs.ts";
@@ -179,6 +180,23 @@ const dumpMutations = async (name: string): Promise<Record<string, unknown[]>> =
   return contents;
 };
 
+const REPLICA_ATTRIBUTES: readonly AttributeSpec[] = [
+  { ident: ":item/name", valueType: ":db.type/string", index: true },
+];
+
+/** Release a value this test is done with, so no retention outlives it. */
+const dropped = (value: { readonly release: () => void } | undefined): void => {
+  value?.release();
+};
+
+/**
+ * Confirm one identity's scope *and* install its committed replica.
+ *
+ * The observation fence confirms the authoritative replica state inside its own
+ * transaction (#476), so a receiver database that has never installed one has
+ * nothing for a fence to observe. Installing a real snapshot here is what makes
+ * every fence assertion below exercise that confirmation rather than skip it.
+ */
 const confirm = async (
   storage: IndexedDbReplicaStorage,
   selected: ReplicationIdentity,
@@ -189,6 +207,27 @@ const confirm = async (
     identity: selected,
     candidateKey: { selector: `selector-${label}`, routeSlot: `slot-${label}` },
   });
+  const snapshot = `snapshot-${label}`.padEnd(43, "0");
+  const revision = `revision-${label}`.padEnd(43, "0");
+  await storage.startSnapshot({
+    type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
+  });
+  await storage.stageSnapshotChunk({
+    type: "SnapshotChunk",
+    protocol: 1,
+    identity: selected,
+    snapshot,
+    index: 0,
+    datoms: [{
+      entity: `entity-${label}`.padEnd(43, "0"),
+      field: ":item/name",
+      value: { type: "string", value: label },
+      op: "add",
+    }],
+  });
+  dropped(await storage.commitSnapshot({
+    type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
+  }, REPLICA_ATTRIBUTES));
 };
 
 browserTest("one enqueue is all-or-nothing across a crash cut", async ({ browser }) => {
@@ -2084,7 +2123,7 @@ browserTest(
       const late = await commitOne(outbox, receiver, scope, 1_700_000_000_003);
       expect((await outbox.receipt(receiver, late.invocation))?.activation).toBe(1);
 
-      const fenced = await outbox.fenceActivation(receiver, 1, 1_700_000_000_010);
+      const fenced = (await outbox.fenceActivation(receiver, 1, 1_700_000_000_010)).fenced;
       expect([...fenced].sort()).toEqual(
         [first.invocation, second.invocation].sort(),
       );
@@ -2095,10 +2134,10 @@ browserTest(
       ]);
       // The stamp is not rewritten, so re-fencing the same activation is a
       // no-op rather than a second sweep.
-      expect(await outbox.fenceActivation(receiver, 1)).toEqual([]);
+      expect((await outbox.fenceActivation(receiver, 1)).fenced).toEqual([]);
 
       expect(await outbox.beginActivation(receiver)).toBe(2);
-      expect(await outbox.fenceActivation(receiver, 2, 1_700_000_000_020))
+      expect((await outbox.fenceActivation(receiver, 2, 1_700_000_000_020)).fenced)
         .toEqual([late.invocation]);
       expect(await outbox.observationState(receiver)).toEqual({
         partition: mutationPartitionKey(receiver),
@@ -2137,7 +2176,7 @@ browserTest(
         1_700_000_000_001,
       );
       expect(await outbox.beginActivation(receiver)).toBe(1);
-      expect(await outbox.fenceActivation(receiver, 1)).toEqual([]);
+      expect((await outbox.fenceActivation(receiver, 1)).fenced).toEqual([]);
       expect((await outbox.receipt(receiver, record.invocation))?.observation)
         .toBeNull();
       expect((await outbox.observationState(receiver)).unobserved).toEqual([]);
@@ -2208,7 +2247,7 @@ browserTest(
 
       // The next activation fences it, with the number the cuts left behind.
       expect(await storage.outbox().beginActivation(receiver)).toBe(3);
-      expect(await storage.outbox().fenceActivation(receiver, 3))
+      expect((await storage.outbox().fenceActivation(receiver, 3)).fenced)
         .toEqual([committed.invocation]);
       expect((await storage.outbox().observationState(receiver)).unobserved)
         .toEqual([]);
@@ -2253,7 +2292,7 @@ browserTest(
       } as IDBDatabase["transaction"];
       let fenced: readonly string[];
       try {
-        fenced = await outbox.fenceActivation(receiver, 1);
+        fenced = (await outbox.fenceActivation(receiver, 1)).fenced;
       } finally {
         databasePrototype.transaction = nativeTransaction;
       }
@@ -2261,8 +2300,15 @@ browserTest(
         committed.map((receipt) => receipt.invocation).sort(),
       );
       // Coalescing is not three writes that happen to agree: one matching
-      // frame on one fresh activation clears every marker it covers, or none.
-      expect(writes).toEqual([["mutation-receipts-v1", "replica-generations-v1"]]);
+      // frame on one fresh activation clears every marker it covers, removes
+      // every layer they own, and confirms the authoritative replica those
+      // layers were waiting for — in one transaction, or none.
+      expect(writes).toEqual([[
+        "mutation-receipts-v1",
+        "mutation-layers-v1",
+        "replica-committed-heads-v1",
+        "replica-generations-v1",
+      ]]);
     } finally {
       storage.close();
       await deleteDatabase(name);

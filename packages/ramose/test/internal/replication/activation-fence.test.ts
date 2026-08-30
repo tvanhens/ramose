@@ -73,25 +73,16 @@ const FRAMES: readonly ReplicationFrame["type"][] = [
 ];
 
 describe("satisfiesActivationFence", () => {
-  test("only a settled Change, ResumeReady, or SnapshotCommit fences", () => {
-    const fencing = FRAMES.filter((frame) =>
-      satisfiesActivationFence({ frame, settled: true })
-    );
-    expect(fencing).toEqual(["SnapshotCommit", "Change", "ResumeReady"]);
+  test("only a Change, ResumeReady, or SnapshotCommit fences", () => {
+    expect(FRAMES.filter(satisfiesActivationFence))
+      .toEqual(["SnapshotCommit", "Change", "ResumeReady"]);
   });
 
-  test("nothing fences unsettled, whatever the frame says", () => {
-    // A change whose local install lost its CAS, an incomplete snapshot
-    // staging, a keepalive, a terminal: the session settled none of them, so
-    // none of them may clear a marker.
-    for (const frame of FRAMES) {
-      expect(satisfiesActivationFence({ frame, settled: false })).toBe(false);
-    }
-  });
-
-  test("staging, liveness, and terminals never fence even when settled", () => {
+  test("staging, liveness, and terminals never fence", () => {
+    // The caller has already established that the frame settled; these are
+    // refused on their type alone, whatever the session did with them.
     for (const frame of ["Reset", "SnapshotStart", "SnapshotChunk", "KeepAlive", "TerminalError"] as const) {
-      expect(satisfiesActivationFence({ frame, settled: true })).toBe(false);
+      expect(satisfiesActivationFence(frame)).toBe(false);
     }
   });
 });
@@ -208,7 +199,7 @@ describe("requiresActivationFence", () => {
         { _tag: "Empty" },
         { _tag: "Offline" },
         { _tag: "Blocked", missing: [] },
-        { _tag: "Interrupted" },
+        { _tag: "Interrupted", reason: "storage" },
         { _tag: "Refused", invocation, code: undefined },
         { _tag: "Retry", invocation, reason: "unreachable" },
       ] as const

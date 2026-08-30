@@ -761,8 +761,15 @@ export type OutboxDecisionContext = {
   readonly keyId?: string | undefined;
 };
 
-/** Why this build cannot use a sealed handle minted under `epoch`, if at all. */
-const quarantineReason = (
+/**
+ * Why this build cannot use a sealed handle minted under `epoch`, if at all.
+ *
+ * Exported because #476's durable layers carry sealed handles too and must
+ * quarantine on exactly the same terms: one rule, one taxonomy, so a rotated
+ * sealing key can never leave a queue quarantined while its optimistic layer
+ * still replays against the replica the rotation invalidated.
+ */
+export const decideQuarantine = (
   epoch: SealingEpoch,
   keyId: string | undefined,
 ): QuarantineReason | undefined => {
@@ -787,7 +794,7 @@ export const decideOutboxEntry = (
   context: OutboxDecisionContext,
 ): OutboxEntryState => {
   if (record.sealing !== null) {
-    const reason = quarantineReason(record.sealing, context.keyId);
+    const reason = decideQuarantine(record.sealing, context.keyId);
     if (reason !== undefined) {
       return Object.freeze({ type: "update-required", reason });
     }
@@ -799,7 +806,7 @@ export const decideOutboxEntry = (
       missing.push(ref);
       continue;
     }
-    const reason = quarantineReason(epoch, context.keyId);
+    const reason = decideQuarantine(epoch, context.keyId);
     if (reason !== undefined) {
       return Object.freeze({ type: "update-required", reason });
     }

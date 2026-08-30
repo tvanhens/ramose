@@ -36,6 +36,17 @@ import { REPLICA_STORAGE_VERSION, type ReplicationIdentity } from "./protocol.ts
  */
 export const REPLICA_GENERATIONS_STORE = "replica-generations-v1";
 
+/**
+ * The committed-head store, named here for the same reason.
+ *
+ * #476's observation fence removes optimistic layers only in a transaction
+ * that has *confirmed* the authoritative replica state those layers were
+ * waiting for, so the mutation boundary has to name this family inside its own
+ * write. The storage adapter owns the record shape; only its revision is read
+ * from outside.
+ */
+export const REPLICA_COMMITTED_HEADS_STORE = "replica-committed-heads-v1";
+
 /** One server/authenticated-principal realm. Both halves are server-minted. */
 export type ReplicaScope = {
   readonly server: string;

@@ -162,13 +162,25 @@ export const makeClientProjectionCatalog = (
     if (entries.has(key)) {
       invalid(`two installed operations share the identity ${key}`);
     }
-    if (entry.projection !== undefined) {
-      if (typeof entry.projection.run !== "function") {
-        invalid(`${key} declares a projection that is not a function`);
-      }
-      normalizeProjectionRevision(entry.projection.revision);
+    if (entry.projection === undefined) {
+      entries.set(key, entry);
+      continue;
     }
-    entries.set(key, entry);
+    if (typeof entry.projection.run !== "function") {
+      invalid(`${key} declares a projection that is not a function`);
+    }
+    // Stored *normalized*, not merely checked. `resolveProjectionBinding`
+    // compares the installed revision against the durable one directly, so an
+    // entry that kept an unnormalized value — an author's `undefined`, which
+    // means the default `1` — would report drift against a row the same
+    // declaration wrote.
+    entries.set(key, Object.freeze({
+      operation: entry.operation,
+      projection: Object.freeze({
+        revision: normalizeProjectionRevision(entry.projection.revision),
+        run: entry.projection.run,
+      }),
+    }));
   }
   return Object.freeze({
     build: projectionBuild(build),

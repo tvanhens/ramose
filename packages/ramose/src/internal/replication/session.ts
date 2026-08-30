@@ -580,7 +580,7 @@ export class ReplicationSession {
   ): Promise<void> {
     const hook = this.onActivationOutcome;
     if (hook === undefined || this.fenced || !this.current(generation)) return;
-    if (!satisfiesActivationFence({ frame: frame.type, settled: true })) return;
+    if (!satisfiesActivationFence(frame.type)) return;
     this.fenced = true;
     try {
       await hook();

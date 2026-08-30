@@ -43,9 +43,20 @@ import {
   transactionDone,
 } from "./idb.ts";
 import {
+  buildOptimisticLayer,
+  decodeOptimisticLayer,
+  MUTATION_LAYERS,
+  withLayerState,
+  type LayerRows,
+  type OptimisticLayerRecord,
+} from "./overlay-records.ts";
+import type { ProjectionIdentity } from "./projection-binding.ts";
+import {
+  REPLICA_COMMITTED_HEADS_STORE,
   REPLICA_GENERATIONS_STORE,
   ReplicaFencedError,
   ReplicaScopeUnconfirmedError,
+  replicaDatabasePartitionPrefix,
   replicaScopeKey,
   type ReplicaDatabaseScope,
   type ReplicaLease,
@@ -82,6 +93,7 @@ import {
   type OutboxRecord,
   type QueuedMapping,
   type ReceiptRecord,
+  type ReceiptState,
   type SealingEpoch,
   type UnobservedReceipt,
   type UnreadableOutboxRow,
@@ -92,6 +104,7 @@ export const MUTATION_QUEUES = "mutation-queues-v1";
 export const MUTATION_RECEIPTS = "mutation-receipts-v1";
 export const MUTATION_CLIENT_REFS = "mutation-client-refs-v1";
 export const MUTATION_MAPPINGS = "mutation-client-ref-mappings-v1";
+export { MUTATION_LAYERS } from "./overlay-records.ts";
 
 /** Keyed by the mutation partition key alone. */
 const MUTATION_KEYED_FAMILIES = [MUTATION_QUEUES] as const;
@@ -102,6 +115,10 @@ const MUTATION_PREFIXED_FAMILIES = [
   MUTATION_RECEIPTS,
   MUTATION_CLIENT_REFS,
   MUTATION_MAPPINGS,
+  // #476's optimistic layers. In this list, and keyed by the same stable
+  // triple, so `clearLocalData()` removes them in the one atomic clearing
+  // transaction that removes the replicas and the queue.
+  MUTATION_LAYERS,
 ] as const;
 
 /** Every family this slice owns, for the migration and the clear transaction. */
@@ -141,6 +158,11 @@ const ENQUEUE_STORES = [
   MUTATION_QUEUES,
   MUTATION_RECEIPTS,
   MUTATION_CLIENT_REFS,
+  // #476: the optimistic layer becomes durable in the very transaction that
+  // queues its invocation, so a projection is visible before submission and
+  // durable before `receipt.queued` resolves — and a crash cut can never leave
+  // a queued invocation whose layer is missing, or a layer with no invocation.
+  MUTATION_LAYERS,
   REPLICA_GENERATIONS_STORE,
 ] as const;
 
@@ -205,12 +227,19 @@ export const createMutationStores = (
     [BY_CLIENT_REF, "clientRef"],
   ]);
   ensure(MUTATION_MAPPINGS, ["partition", "clientRef"], [[BY_CLIENT_REF, "clientRef"]]);
+  // #476's optimistic layers share the outbox's FIFO position, so they sort by
+  // the same compound key and a scoped clear removes them by the same prefix
+  // range. The invocation index is global for the same reason the receipt's
+  // is: exactly one layer may ever exist for one invocation id.
+  ensure(MUTATION_LAYERS, ["partition", "sequence"], [[BY_INVOCATION, "invocation"]]);
 };
 
 /** What a scoped clear removed from the mutation families. */
 export type MutationClearOutcome = {
   readonly queued: number;
   readonly clientRefs: number;
+  /** Optimistic layers removed, including `committed-unobserved` ones. */
+  readonly layers: number;
 };
 
 /**
@@ -223,12 +252,15 @@ export const clearMutationScope = async (
   scope: ReplicaScope,
 ): Promise<MutationClearOutcome> => {
   const prefix = mutationScopePrefix(scope);
-  const [queued, clientRefs] = await Promise.all([
+  const [queued, clientRefs, layers] = await Promise.all([
     requestResult<number>(
       transaction.objectStore(MUTATION_OUTBOX).count(compoundPrefixRange(prefix)),
     ),
     requestResult<number>(
       transaction.objectStore(MUTATION_CLIENT_REFS).count(compoundPrefixRange(prefix)),
+    ),
+    requestResult<number>(
+      transaction.objectStore(MUTATION_LAYERS).count(compoundPrefixRange(prefix)),
     ),
   ]);
   for (const family of MUTATION_KEYED_FAMILIES) {
@@ -237,7 +269,7 @@ export const clearMutationScope = async (
   for (const family of MUTATION_PREFIXED_FAMILIES) {
     transaction.objectStore(family).delete(compoundPrefixRange(prefix));
   }
-  return Object.freeze({ queued, clientRefs });
+  return Object.freeze({ queued, clientRefs, layers });
 };
 
 /** Everything an enqueue supplies beyond the draft itself. */
@@ -251,6 +283,16 @@ export type EnqueueOptions = {
    */
   readonly lease?: ReplicaLease | undefined;
   readonly signal?: AbortSignal | undefined;
+  /**
+   * The identity of the projection that produced this invocation's optimistic
+   * layer (#476), or `undefined` when the operation declares none — in which
+   * case the invocation queues normally and simply has no layer.
+   *
+   * Only the *identity* is supplied. The changeset the projection produced is
+   * never persisted: it is recomputed on restart by resolving the callback
+   * from the installed bundle and running it over this record's own input.
+   */
+  readonly projection?: ProjectionIdentity | undefined;
 };
 
 /**
@@ -266,6 +308,54 @@ export type ActivationObservationState = {
   readonly activation: number;
   /** Committed receipts whose marker is still on, oldest activation first. */
   readonly unobserved: readonly UnobservedReceipt[];
+};
+
+/**
+ * What one observation-fenced reconciliation transaction did (#476 slice 2).
+ *
+ * `layers` is the *resulting* durable layer order, read inside the very
+ * transaction that removed the fenced ones — so the order the caller replays is
+ * the order this transaction left, not one re-read afterwards that a concurrent
+ * enqueue could already have changed.
+ */
+export type ActivationFenceOutcome = {
+  readonly receiver: ReplicaDatabaseScope;
+  readonly activation: number;
+  /** Receipts whose `unobserved` marker this transaction advanced. */
+  readonly fenced: readonly InvocationId[];
+  /** The authoritative committed revision this transaction confirmed. */
+  readonly confirmed: string;
+  readonly layers: readonly OptimisticLayerRecord[];
+  /** Layer rows this build could not decode; counted, never removed. */
+  readonly unreadable: number;
+};
+
+/**
+ * The authoritative committed revision this receiver database currently holds.
+ *
+ * Read *inside* the fence transaction, over every read view of the database, so
+ * removing a `committed-unobserved` layer is atomic with the confirmation that
+ * the authoritative state it was waiting for is installed. A settled outcome
+ * always implies one, so its absence means the replica was cleared or evicted
+ * between the install and this transaction: nothing is removed, and the next
+ * outcome on this activation reselects.
+ */
+const confirmCommittedHead = async (
+  transaction: IDBTransaction,
+  receiver: ReplicaDatabaseScope,
+): Promise<string> => {
+  const heads = await requestResult<unknown[]>(
+    transaction.objectStore(REPLICA_COMMITTED_HEADS_STORE).getAll(
+      prefixRange(replicaDatabasePartitionPrefix(receiver)),
+    ),
+  );
+  for (const head of heads) {
+    const revision = (head as { readonly revision?: unknown } | null)?.revision;
+    if (typeof revision === "string" && revision.length > 0) return revision;
+  }
+  throw new OutboxRecordInvalid({
+    reason: "no committed replica of this receiver database confirms the fenced outcome",
+  });
 };
 
 /** Rows the queue could not interpret, kept and reported, never submitted. */
@@ -650,6 +740,17 @@ export class IndexedDbOutbox {
         createdAt: record.enqueuedAt,
       }));
     }
+    // The optimistic layer, in this same write. Built from the record rather
+    // than from a second caller-supplied shape, so the layer and the invocation
+    // it projects cannot disagree about the partition, the FIFO position, the
+    // target, the input, or the declared slots.
+    if (options.projection !== undefined) {
+      transaction.objectStore(MUTATION_LAYERS).add(buildOptimisticLayer({
+        record,
+        projection: options.projection,
+        createdAt: record.enqueuedAt,
+      }));
+    }
     // The last boundary before this invocation becomes durable. Inert in
     // production; the source-only testing assembly arms it to cut here, which
     // is what proves the enqueue is all-or-nothing.
@@ -798,6 +899,38 @@ export class IndexedDbOutbox {
     });
   }
 
+  /**
+   * The authoritative `{ clientRef → entityId }` mappings of one receiver
+   * database, as the overlay's aliasing rule reads them.
+   *
+   * Keyed by the ref alone rather than by {@link mappingKey}, because one
+   * receiver database's overlay only ever asks about its own partition — and a
+   * ref resolved in a sibling says nothing here: the handle it maps to is
+   * sealed to that database's scope.
+   */
+  async mappedHandles(
+    receiver: ReplicaDatabaseScope,
+  ): Promise<ReadonlyMap<string, EntityId>> {
+    this.assertScopeLive(receiver);
+    const transaction = this.database.transaction(MUTATION_MAPPINGS, "readonly");
+    const stored = await requestResult<unknown[]>(
+      transaction.objectStore(MUTATION_MAPPINGS).getAll(
+        compoundPrefixRange(mutationPartitionKey(receiver)),
+      ),
+    );
+    await transactionDone(transaction);
+    const handles = new Map<string, EntityId>();
+    for (const value of stored) {
+      // Through the same decoder every other reader uses: a mapping whose
+      // persisted epoch disagrees with its own handle is dropped, so the
+      // overlay keeps showing the speculative entity instead of aliasing onto
+      // a handle this build may not be able to resolve at all.
+      const record = decodeClientRefMapping(value);
+      if (record !== undefined) handles.set(record.clientRef, record.entityId);
+    }
+    return handles;
+  }
+
   /** One durable receipt, or `undefined` when the invocation is unknown here. */
   async receipt(
     receiver: ReplicaDatabaseScope,
@@ -917,6 +1050,12 @@ export class IndexedDbOutbox {
         MUTATION_RECEIPTS,
         MUTATION_MAPPINGS,
         MUTATION_CLIENT_REFS,
+        // #476: a commit retains the layer under its new name and stamps it
+        // with the activation this transaction reads; a rejection removes
+        // exactly that layer. Either way it is the same write as the receipt,
+        // so there is no window in which the receipt is terminal and the layer
+        // still says queued.
+        MUTATION_LAYERS,
         REPLICA_GENERATIONS_STORE,
       ],
       "readwrite",
@@ -1042,6 +1181,11 @@ export class IndexedDbOutbox {
         record.partition,
         record.sequence,
       ]);
+      // Converged, but the layer transition may still be missing: a cut can
+      // leave the receipt durable while a later identical acknowledgement is
+      // what actually runs this branch. Reapplying it is idempotent — the row
+      // already at the right state is written back unchanged.
+      await this.stageLayerOutcome(transaction, record, current.state, current.activation);
       return current;
     }
     if (acknowledgement._tag === "Committed") {
@@ -1076,10 +1220,47 @@ export class IndexedDbOutbox {
       record.partition,
       record.sequence,
     ]);
+    await this.stageLayerOutcome(transaction, record, next.state, next.activation);
     if (acknowledgement._tag === "Rejected") {
       await this.cascadeRejection(transaction, record, acknowledgedAt);
     }
     return next;
+  }
+
+  /**
+   * Move one invocation's optimistic layer to match its terminal receipt.
+   *
+   * A commit *retains* the layer, stamped with the activation counter this
+   * transaction read, so the visible datoms do not change and a delayed or
+   * coalesced authoritative change cannot produce a rollback flash. A rejection
+   * removes exactly that one layer; every later layer is replayed at its new
+   * position by the caller, immediately, with no replication wait and no
+   * dependency graph.
+   *
+   * An invocation with no layer — its operation declared no projection —
+   * simply has no row here, and this does nothing.
+   */
+  private async stageLayerOutcome(
+    transaction: IDBTransaction,
+    record: OutboxRecord,
+    state: ReceiptState,
+    activation: number,
+  ): Promise<void> {
+    const layers = transaction.objectStore(MUTATION_LAYERS);
+    const key = [record.partition, record.sequence];
+    if (state === "rejected") {
+      layers.delete(key);
+      return;
+    }
+    const stored = await requestResult<unknown>(layers.get(key));
+    if (stored === undefined) return;
+    const layer = decodeOptimisticLayer(stored);
+    // A row this build cannot interpret is left exactly where it is. The
+    // restore quarantines its receiver database data-free; rewriting it here
+    // would destroy the only evidence a compatible build could replay.
+    if (layer === undefined) return;
+    if (layer.state === "committed-unobserved" && layer.activation === activation) return;
+    layers.put(withLayerState(layer, "committed-unobserved", activation));
   }
 
   /**
@@ -1140,6 +1321,10 @@ export class IndexedDbOutbox {
         updatedAt: acknowledgedAt,
       }));
       outbox.delete([next.partition, next.sequence]);
+      // The cut removes the cascaded invocation's layer too, in this same
+      // transaction. Its projection can never commit, so leaving the layer
+      // would show optimistic state for work nothing will ever perform.
+      transaction.objectStore(MUTATION_LAYERS).delete([next.partition, next.sequence]);
     }
   }
 
@@ -1259,21 +1444,37 @@ export class IndexedDbOutbox {
   }
 
   /**
-   * Mark every receipt this activation covers as observed, in one transaction.
+   * The observation-fenced reconciliation transaction (#476 slice 2).
    *
    * Called with the number {@link IndexedDbOutbox.beginActivation} returned,
    * once that activation has delivered its first matching authoritative
-   * outcome. Either every covered receipt flips or none does, so a cut here has
-   * no partial state to reconcile — the next activation simply reselects.
+   * outcome. In **one** client storage transaction it:
    *
-   * Idempotent: a receipt already `observed` is not selected, and neither is
-   * one stamped at or above this activation.
+   *   1. confirms the authoritative replica state this fence is observing — the
+   *      committed head of this receiver database, which the session installed
+   *      before it settled the frame. Nothing is removed on the strength of an
+   *      outcome whose replica this transaction cannot see;
+   *   2. advances every covered receipt's marker from `unobserved` to
+   *      `observed`;
+   *   3. removes exactly the `committed-unobserved` layers those receipts own;
+   *   4. reads back the resulting durable layer order, which is what the caller
+   *      then replays.
+   *
+   * Either all four happen or none does, so a cut here has no partial state to
+   * reconcile — the next activation simply reselects, from a strictly larger
+   * number. A terminal, an incomplete reset, a prior generation, and an
+   * identity or schema mismatch never reach this at all: the session settles
+   * none of them, and a scope whose generation moved is refused by the fence
+   * below before anything is written.
+   *
+   * Idempotent: a receipt already `observed` is not selected, neither is one
+   * stamped at or above this activation, and the layer it owned is already gone.
    */
   async fenceActivation(
     receiver: ReplicaDatabaseScope,
     activation: number,
     observedAt = Date.now(),
-  ): Promise<readonly InvocationId[]> {
+  ): Promise<ActivationFenceOutcome> {
     if (!Number.isSafeInteger(activation) || activation < 1) {
       throw new OutboxRecordInvalid({
         reason: "an activation fence needs the durable activation it was begun with",
@@ -1283,16 +1484,24 @@ export class IndexedDbOutbox {
     const partition = mutationPartitionKey(receiver);
     const observed = await this.preflightScope(receiver);
     const transaction = this.database.transaction(
-      [MUTATION_RECEIPTS, REPLICA_GENERATIONS_STORE],
+      [
+        MUTATION_RECEIPTS,
+        MUTATION_LAYERS,
+        REPLICA_COMMITTED_HEADS_STORE,
+        REPLICA_GENERATIONS_STORE,
+      ],
       "readwrite",
     );
     try {
       await this.fenceScope(transaction, scopeKey, observed, undefined);
+      const confirmed = await confirmCommittedHead(transaction, receiver);
       const receipts = transaction.objectStore(MUTATION_RECEIPTS);
-      const stored = await requestResult<unknown[]>(
-        receipts.getAll(compoundPrefixRange(partition)),
-      );
-      const fenced: InvocationId[] = [];
+      const layerStore = transaction.objectStore(MUTATION_LAYERS);
+      const [stored, layerRows] = await Promise.all([
+        requestResult<unknown[]>(receipts.getAll(compoundPrefixRange(partition))),
+        requestResult<unknown[]>(layerStore.getAll(compoundPrefixRange(partition))),
+      ]);
+      const fenced = new Set<InvocationId>();
       for (const value of stored) {
         const receipt = decodeReceipt(value);
         if (receipt === undefined || !fencedByActivation(receipt, activation)) {
@@ -1305,18 +1514,74 @@ export class IndexedDbOutbox {
           // became durable, so leaving it makes re-fencing select nothing.
           updatedAt: observedAt,
         }));
-        fenced.push(receipt.invocation);
+        fenced.add(receipt.invocation);
       }
+      let unreadable = 0;
+      const remaining: OptimisticLayerRecord[] = [];
+      for (const value of layerRows) {
+        const layer = decodeOptimisticLayer(value);
+        // An undecodable row is counted, never removed. Its receiver database
+        // is already quarantined data-free by the restore, and deleting it here
+        // would destroy work a compatible build could still replay.
+        if (layer === undefined) {
+          unreadable += 1;
+          continue;
+        }
+        // The receipt decides, not the layer's own stamp: the two moved in one
+        // transaction, and selecting on the receipt keeps a single predicate.
+        if (fenced.has(layer.invocation)) {
+          layerStore.delete([layer.partition, layer.sequence]);
+          continue;
+        }
+        remaining.push(layer);
+      }
+      remaining.sort((left, right) => left.sequence - right.sequence);
       // Inert in production; the testing assembly arms it to cut between the
       // matching frame and the transaction that consumes it.
       await this.boundaries.checkpoint("outbox.fence");
       this.assertScopeLive(receiver);
       await commitTransaction(transaction);
-      return Object.freeze(fenced);
+      return Object.freeze({
+        receiver,
+        activation,
+        fenced: Object.freeze([...fenced]),
+        confirmed,
+        layers: Object.freeze(remaining),
+        unreadable,
+      });
     } catch (error) {
       await abortTransaction(transaction);
       throw error;
     }
+  }
+
+  /**
+   * Every durable optimistic layer of one receiver database, in FIFO order.
+   *
+   * This is restart reconstruction: the rows are the whole speculative view,
+   * and the changesets are recomputed from them by native replay rather than
+   * restored from storage.
+   */
+  async optimisticLayers(
+    receiver: ReplicaDatabaseScope,
+  ): Promise<LayerRows> {
+    this.assertScopeLive(receiver);
+    const transaction = this.database.transaction(MUTATION_LAYERS, "readonly");
+    const stored = await requestResult<unknown[]>(
+      transaction.objectStore(MUTATION_LAYERS).getAll(
+        compoundPrefixRange(mutationPartitionKey(receiver)),
+      ),
+    );
+    await transactionDone(transaction);
+    const rows: OptimisticLayerRecord[] = [];
+    let unreadable = 0;
+    for (const value of stored) {
+      const layer = decodeOptimisticLayer(value);
+      if (layer === undefined) unreadable += 1;
+      else rows.push(layer);
+    }
+    rows.sort((left, right) => left.sequence - right.sequence);
+    return Object.freeze({ layers: Object.freeze(rows), unreadable });
   }
 
   private async stageMappings(
