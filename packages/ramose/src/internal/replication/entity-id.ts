@@ -35,22 +35,30 @@
  * Numeric eids never appear in a token, a receipt, a URL, browser storage, or
  * any public API; only the sealed form crosses those boundaries.
  *
- * Construction (WebCrypto only; verified available in workerd and in the
- * repository's test runtimes):
- *   HKDF-SHA-256 derives one AES-256-GCM key and one HMAC-SHA-256 nonce key
- *   per scope from the durable identity/sealing root; the nonce is the first
- *   96 bits of HMAC-SHA-256(nonceKey, eidBytes), which makes the whole token a
- *   deterministic function of (root, scope, eid) — cacheable, replay-friendly,
- *   and equality-comparable.
+ * Construction — deterministic authenticated encryption with a synthetic IV
+ * (SIV, RFC 5297 in structure, with HMAC-SHA-256 in place of S2V). WebCrypto
+ * only; every primitive is verified available in workerd and in the
+ * repository's test runtimes:
  *
- * Deterministic AES-GCM is safe here because the plaintext is the *only* nonce
- * input, as in SIV-style constructions: the same eid reuses its nonce and
- * produces the identical token, which discloses nothing beyond the equality
- * the handle is meant to expose. Two *different* eids in one scope collide
- * only on a 96-bit PRF collision — below 2^-32 for a scope holding 2^32
- * entities — and one eid is 2^53-bounded, so a scope cannot approach that
- * bound. Keys are per-scope, so the birthday count never spans databases or
- * principals.
+ *   HKDF-SHA-256 derives one HMAC-SHA-256 key and one AES-256-CTR key per
+ *   scope from the durable identity/sealing root. The synthetic IV is the
+ *   first 128 bits of HMAC-SHA-256(macKey, aad || eidBytes) — the eid bytes
+ *   are always the trailing eight, so that encoding is unambiguous — and the
+ *   ciphertext is AES-256-CTR over the eid bytes with the synthetic IV as the
+ *   counter. The synthetic IV is therefore the authentication tag *and* the
+ *   counter, and the whole token is a deterministic function of
+ *   (root, scope, eid): cacheable, replay-friendly, equality-comparable.
+ *
+ * Why not deterministic AES-GCM. A nonce derived by truncating a PRF is not
+ * injective, so two eids in one scope would eventually share a GCM nonce under
+ * one key — and a repeated GCM (key, nonce) pair does not fail gracefully: it
+ * leaks the XOR of the plaintexts *and* exposes the GHASH authentication key,
+ * which forges handles. HMAC-SHA-256 has no such key-recovery mode. Here two
+ * distinct eids collide only on a 128-bit HMAC collision (about 2^-64 for a
+ * scope holding 2^32 handles) and even that leaks nothing beyond the XOR of
+ * two eight-byte plaintexts. Keys are per-scope, so the birthday count never
+ * spans databases or principals. Reusing the IV for the *same* eid is the
+ * intended behaviour and discloses only the equality the handle already means.
  */
 
 import { canonicalizeJson } from "../authorization/canonical-json.ts";
@@ -68,29 +76,29 @@ type Bytes = Uint8Array<ArrayBuffer>;
 export const ENTITY_ID_CODEC_VERSION = 1;
 
 const KEY_ID_BYTES = 16;
-const NONCE_BYTES = 12;
+/** The synthetic IV: the authentication tag and the AES-CTR counter block. */
+const SIV_BYTES = 16;
 const EID_BYTES = 8;
-const TAG_BYTES = 16;
 
 /**
- * `version || keyId || nonce || ciphertext || tag` — a fixed 53 bytes.
+ * `version || keyId || siv || ciphertext` — a fixed 41 bytes.
  *
  * Byte 0 is the codec version and bytes 1..17 are the key id in *every*
  * version of this envelope; a future version may move nothing else. That is
  * what lets an older build classify a newer token as `update-required`
  * instead of denying it.
  */
-const ENVELOPE_BYTES = 1 + KEY_ID_BYTES + NONCE_BYTES + EID_BYTES + TAG_BYTES;
-const NONCE_AT = 1 + KEY_ID_BYTES;
-const SEALED_AT = NONCE_AT + NONCE_BYTES;
+const ENVELOPE_BYTES = 1 + KEY_ID_BYTES + SIV_BYTES + EID_BYTES;
+const SIV_AT = 1 + KEY_ID_BYTES;
+const SEALED_AT = SIV_AT + SIV_BYTES;
 
 /** Canonical unpadded base64url of exactly {@link ENVELOPE_BYTES} bytes. */
-export const SEALED_ENTITY_ID_PATTERN = /^[A-Za-z0-9_-]{71}$/;
+export const SEALED_ENTITY_ID_PATTERN = /^[A-Za-z0-9_-]{55}$/;
 
 /** Fixed, non-secret HKDF salt. Domain separation lives in the info strings. */
 const HKDF_SALT = utf8.encode("ramose:entity-id:v1");
-const AES_INFO = "ramose:entity-id:aes-256-gcm:v1";
-const NONCE_INFO = "ramose:entity-id:nonce:v1";
+const CIPHER_INFO = "ramose:entity-id:aes-256-ctr:v1";
+const SIV_INFO = "ramose:entity-id:siv:v1";
 const AAD_DOMAIN = "ramose:entity-id:aad:v1";
 
 /**
@@ -149,7 +157,7 @@ const canonicalScope = (scope: EntityIdScope): string =>
     server: scope.server,
   });
 
-type EntityIdKeys = { readonly aes: CryptoKey; readonly nonce: CryptoKey };
+type EntityIdKeys = { readonly cipher: CryptoKey; readonly mac: CryptoKey };
 
 const derived = new Map<string, Promise<EntityIdKeys>>();
 const MAX_CACHED_SCOPES = 32;
@@ -176,24 +184,24 @@ const deriveKeys = async (
       root,
       256,
     );
-  const [aesBits, nonceBits] = await Promise.all([
-    bits(AES_INFO),
-    bits(NONCE_INFO),
+  const [cipherBits, macBits] = await Promise.all([
+    bits(CIPHER_INFO),
+    bits(SIV_INFO),
   ]);
-  const [aes, nonce] = await Promise.all([
-    crypto.subtle.importKey("raw", aesBits, { name: "AES-GCM" }, false, [
+  const [cipher, mac] = await Promise.all([
+    crypto.subtle.importKey("raw", cipherBits, { name: "AES-CTR" }, false, [
       "encrypt",
       "decrypt",
     ]),
     crypto.subtle.importKey(
       "raw",
-      nonceBits,
+      macBits,
       { name: "HMAC", hash: "SHA-256" },
       false,
       ["sign"],
     ),
   ]);
-  return Object.freeze({ aes, nonce });
+  return Object.freeze({ cipher, mac });
 };
 
 /**
@@ -264,12 +272,39 @@ const encodeEid = (eid: number): Bytes => {
   return bytes;
 };
 
-const deterministicNonce = async (
+/**
+ * The synthetic IV: HMAC-SHA-256 over the additional data followed by the eid
+ * bytes, truncated to 128 bits. The eid is always the trailing eight bytes, so
+ * the concatenation has exactly one reading and needs no length prefix.
+ */
+const syntheticIv = async (
   keys: EntityIdKeys,
+  aad: Bytes,
   eidBytes: Bytes,
+): Promise<Bytes> => {
+  const signed = new Uint8Array(aad.length + eidBytes.length);
+  signed.set(aad);
+  signed.set(eidBytes, aad.length);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", keys.mac, signed))
+    .slice(0, SIV_BYTES);
+};
+
+/**
+ * AES-256-CTR over exactly one block's worth of plaintext, so the counter
+ * never increments and encryption is its own inverse.
+ */
+const keystream = async (
+  keys: EntityIdKeys,
+  siv: Bytes,
+  bytes: Bytes,
 ): Promise<Bytes> =>
-  new Uint8Array(await crypto.subtle.sign("HMAC", keys.nonce, eidBytes))
-    .slice(0, NONCE_BYTES);
+  new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-CTR", counter: siv, length: 64 },
+      keys.cipher,
+      bytes,
+    ),
+  );
 
 const equalBytes = (left: Uint8Array, right: Uint8Array): boolean => {
   if (left.length !== right.length) return false;
@@ -308,25 +343,18 @@ const sealWith = async (
   scopeText: string,
   keys: EntityIdKeys,
   eidBytes: Bytes,
-  nonce: Bytes,
 ): Promise<SealedEntityId> => {
   const keyId = keyIdBytes(sealing);
-  const sealed = new Uint8Array(
-    await crypto.subtle.encrypt(
-      {
-        name: "AES-GCM",
-        iv: nonce,
-        additionalData: additionalData(keyId, scopeText),
-        tagLength: TAG_BYTES * 8,
-      },
-      keys.aes,
-      eidBytes,
-    ),
+  const siv = await syntheticIv(
+    keys,
+    additionalData(keyId, scopeText),
+    eidBytes,
   );
+  const sealed = await keystream(keys, siv, eidBytes);
   const envelope = new Uint8Array(ENVELOPE_BYTES);
   envelope[0] = ENTITY_ID_CODEC_VERSION;
   envelope.set(keyId, 1);
-  envelope.set(nonce, NONCE_AT);
+  envelope.set(siv, SIV_AT);
   envelope.set(sealed, SEALED_AT);
   return base64Url(envelope);
 };
@@ -344,40 +372,11 @@ export const sealEntityId = async (
 ): Promise<SealedEntityId> => {
   const eidBytes = encodeEid(eid);
   const scopeText = canonicalScope(scope);
-  const keys = await keysFor(sealing, scopeText);
-  return sealWith(
-    sealing,
-    scopeText,
-    keys,
-    eidBytes,
-    await deterministicNonce(keys, eidBytes),
-  );
-};
-
-/**
- * The general sealing form, with the nonce supplied instead of derived.
- *
- * Only {@link sealEntityId}'s deterministic nonce survives resolution — any
- * other nonce authenticates under AES-GCM and is then rejected by the nonce
- * recomputation. Exported so that check is covered against the real derived
- * keys rather than a substitute.
- */
-export const sealEntityIdWithNonce = async (
-  sealing: ServerSealingKey,
-  scope: EntityIdScope,
-  eid: number,
-  nonce: Uint8Array,
-): Promise<SealedEntityId> => {
-  if (nonce.length !== NONCE_BYTES) {
-    throw new TypeError("ramose/replication: an entity id nonce is 12 bytes");
-  }
-  const scopeText = canonicalScope(scope);
   return sealWith(
     sealing,
     scopeText,
     await keysFor(sealing, scopeText),
-    encodeEid(eid),
-    new Uint8Array(nonce),
+    eidBytes,
   );
 };
 
@@ -399,30 +398,22 @@ export const openEntityId = async (
   if (envelope[0] !== ENTITY_ID_CODEC_VERSION) return quarantine("codec-version");
   if (envelope.length !== ENVELOPE_BYTES) return DENIED;
   const keyId = keyIdBytes(sealing);
-  if (!equalBytes(envelope.subarray(1, NONCE_AT), keyId)) {
+  if (!equalBytes(envelope.subarray(1, SIV_AT), keyId)) {
     return quarantine("key-epoch");
   }
-  const nonce = envelope.slice(NONCE_AT, SEALED_AT);
+  const siv = envelope.slice(SIV_AT, SEALED_AT);
   const scopeText = canonicalScope(scope);
   const keys = await keysFor(sealing, scopeText);
-  let opened: ArrayBuffer;
-  try {
-    opened = await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: nonce,
-        additionalData: additionalData(keyId, scopeText),
-        tagLength: TAG_BYTES * 8,
-      },
-      keys.aes,
-      envelope.slice(SEALED_AT),
-    );
-  } catch {
-    return DENIED;
-  }
-  const eidBytes = new Uint8Array(opened);
-  if (eidBytes.length !== EID_BYTES) return DENIED;
-  if (!equalBytes(await deterministicNonce(keys, eidBytes), nonce)) {
+  const eidBytes = await keystream(keys, siv, envelope.slice(SEALED_AT));
+  // The synthetic IV is the tag: recomputing it over the recovered plaintext
+  // and the additional data is what authenticates the handle, and it is
+  // compared without an early exit.
+  if (
+    !equalBytes(
+      await syntheticIv(keys, additionalData(keyId, scopeText), eidBytes),
+      siv,
+    )
+  ) {
     return DENIED;
   }
   const eid = new DataView(

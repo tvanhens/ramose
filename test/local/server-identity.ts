@@ -198,7 +198,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       const eid = 4_294_967_296;
 
       const token = await sealEntityId(base, database, scope, eid);
-      expect(token).toMatch(/^[A-Za-z0-9_-]{71}$/);
+      expect(token).toMatch(/^[A-Za-z0-9_-]{55}$/);
       // Deterministic inside the live Worker: handles are cache- and
       // replay-comparable.
       expect(await sealEntityId(base, database, scope, eid)).toBe(token);
@@ -239,7 +239,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       }
 
       const tampered = envelopeOf(token);
-      tampered[30] = tampered[30]! ^ 0x40;
+      tampered[35] = tampered[35]! ^ 0x40;
       expect(await openEntityId(base, database, scope, base64Url(tampered)))
         .toEqual({ type: "denied" });
 

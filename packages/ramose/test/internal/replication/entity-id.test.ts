@@ -5,7 +5,6 @@ import {
   openEntityId,
   SEALED_ENTITY_ID_PATTERN,
   sealEntityId,
-  sealEntityIdWithNonce,
   type EntityIdScope,
   type ServerSealingKey,
 } from "../../../src/internal/replication/index.ts";
@@ -49,7 +48,7 @@ describe("the sealed EntityId codec", () => {
   test("round-trips the private eid and resolves with its scope", async () => {
     const token = await sealEntityId(sealing, scope(), 42);
     expect(token).toMatch(SEALED_ENTITY_ID_PATTERN);
-    expect(bytesOf(token).length).toBe(53);
+    expect(bytesOf(token).length).toBe(41);
     expect(bytesOf(token)[0]).toBe(ENTITY_ID_CODEC_VERSION);
     expect(await openEntityId(sealing, scope(), token)).toEqual({
       type: "resolved",
@@ -61,11 +60,11 @@ describe("the sealed EntityId codec", () => {
   test("the same root, scope, and eid always produce the identical token", async () => {
     const first = await sealEntityId(sealing, scope(), 7);
     expect(await sealEntityId(sealing, scope(), 7)).toBe(first);
-    // Frozen construction: HKDF-SHA-256 -> AES-256-GCM with the deterministic
-    // HMAC nonce, canonical 53-byte envelope. Changing any constant changes
+    // Frozen construction: HKDF-SHA-256 -> HMAC-SHA-256 synthetic IV ->
+    // AES-256-CTR, canonical 41-byte envelope. Changing any constant changes
     // this literal, and would orphan every persisted queued target.
     expect(first).toBe(
-      "AR8gISIjJCUmJygpKissLS4KizbEKSk92-bbC4FZoPvziy4L4Ebm0w9XbhCM3sPAUh1pDX8",
+      "AR8gISIjJCUmJygpKissLS5h7GSx2nwjtWKjHe0iqxdpwiqkYHCSLwc",
     );
     expect(await sealEntityId(sealing, scope(), 8)).not.toBe(first);
   });
@@ -135,8 +134,8 @@ describe("the sealed EntityId codec", () => {
 
   test("tampering with any envelope field is the ordinary sealed denial", async () => {
     const token = await sealEntityId(sealing, scope(), 11);
-    // key id, nonce, ciphertext, tag.
-    for (const index of [1, 20, 30, 45]) {
+    // key id, synthetic IV, ciphertext.
+    for (const index of [1, 20, 35]) {
       const mutated = flip(token, index);
       const resolution = await openEntityId(sealing, scope(), mutated);
       expect(resolution).toEqual(
@@ -148,13 +147,26 @@ describe("the sealed EntityId codec", () => {
     }
   });
 
-  test("a token that authenticates under a non-derived nonce is still denied", async () => {
-    const nonce = new Uint8Array(12).fill(9);
-    const token = await sealEntityIdWithNonce(sealing, scope(), 11, nonce);
-    // AES-GCM accepts it: the nonce recomputation is what rejects it.
-    expect(token).toMatch(SEALED_ENTITY_ID_PATTERN);
-    expect(bytesOf(token).slice(17, 29)).toEqual(nonce);
-    expect(await openEntityId(sealing, scope(), token)).toEqual({ type: "denied" });
+  test("the synthetic IV is the tag, so mixed envelope halves never resolve", async () => {
+    const mine = bytesOf(await sealEntityId(sealing, scope(), 11));
+    const other = bytesOf(await sealEntityId(sealing, scope(), 12));
+
+    // This token's synthetic IV with the other token's ciphertext: AES-CTR
+    // happily produces *some* plaintext, and the recomputed IV rejects it.
+    const swappedCiphertext = mine.slice();
+    swappedCiphertext.set(other.slice(33), 33);
+    expect(await openEntityId(sealing, scope(), base64Url(swappedCiphertext)))
+      .toEqual({ type: "denied" });
+
+    // And the reverse: another token's IV over this ciphertext.
+    const swappedIv = mine.slice();
+    swappedIv.set(other.slice(17, 33), 17);
+    expect(await openEntityId(sealing, scope(), base64Url(swappedIv)))
+      .toEqual({ type: "denied" });
+
+    // Both halves together are just the other handle, and it still resolves.
+    expect(await openEntityId(sealing, scope(), base64Url(other)))
+      .toEqual({ type: "resolved", eid: 12, scope: scope() });
   });
 
   test("every scope component separates, and none of them can be forged", async () => {
