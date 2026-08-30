@@ -646,9 +646,19 @@ export class Transactor {
     }
     const scope = operation.entityIdScope;
     const keyId = operation.entityIdKeyId;
-    // `invoke` established both before this was queued and the route refuses an
-    // invocation carrying one without the other, so absence here is an engine
-    // defect rather than a caller error or a moved epoch.
+    // Two different situations, one answer, and the answer is right for both.
+    //
+    // For a sealed target or a bound allocation slot this is unreachable —
+    // `invoke` established the scope before the invocation was queued and the
+    // route refuses one carrying a scope without its key id — so absence is an
+    // engine defect, refused before the body runs rather than after the staged
+    // commit.
+    //
+    // For a *string at a declared input ref position* it is reachable, and it
+    // means the Worker's provisioning predicate saw nothing an envelope could
+    // be: the string is too short, or not canonical base64url, so it is no
+    // codec version's handle. The ordinary sealed denial is exactly the
+    // taxonomy's answer for that (WR-17b), never a quarantine.
     if (p.sealing === undefined || scope === undefined || keyId === undefined) {
       throw opaqueOperationDenial();
     }
