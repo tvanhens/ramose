@@ -29,7 +29,7 @@ import {
   conformanceProof,
   loadConformanceProof,
 } from "./conformance-proof.ts";
-import { json, openStream, testAdmin, type LocalUrls } from "./fixtures.ts";
+import { json, fetchPastProxyBlip, testAdmin, type LocalUrls } from "./fixtures.ts";
 
 const TITLES =
   "[:find [?title ...] :where [?e :conformanceIssue/title ?title]]";
@@ -429,7 +429,7 @@ const openLive = async (
   base: string,
   database: string,
   token: string,
-): Promise<Response> => openStream(
+): Promise<Response> => fetchPastProxyBlip(
   `${base.replace(/\/+$/, "")}/db/${database}/live`,
   {
     method: "POST",

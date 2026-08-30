@@ -33,7 +33,7 @@ import {
   seedWorld,
   type World,
 } from "./conformance.ts";
-import { json, openStream, post, testAdmin, type LocalUrls } from "./fixtures.ts";
+import { json, fetchPastProxyBlip, post, testAdmin, type LocalUrls } from "./fixtures.ts";
 
 const SNAPSHOT_DATABASE = CONFORMANCE_DATABASES[10]!;
 const RESUME_DATABASE = CONFORMANCE_DATABASES[11]!;
@@ -72,7 +72,7 @@ export const openReplication = (
   protocol = 1,
   signal?: AbortSignal,
   readCompatibilityHash = conformanceReadCompatibilityHash,
-): Promise<Response> => openStream(
+): Promise<Response> => fetchPastProxyBlip(
   `${base.replace(/\/+$/, "")}/db/${encodeURIComponent(database)}/replicate`,
   {
     method: "POST",

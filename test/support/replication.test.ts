@@ -65,7 +65,7 @@ test("a stream cut mid-frame is a truncation, not a malformed frame", async () =
     yield bytes;
   })();
 
-  const decoded = [];
+  const decoded: ReplicationFrame[] = [];
   const consume = async () => {
     for await (const observed of decodeReplicationNdjson(chunks)) {
       decoded.push(observed.frame);

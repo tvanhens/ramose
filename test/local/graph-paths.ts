@@ -20,7 +20,7 @@ import {
   collectCommittedSnapshot,
   readReplicationNdjson,
 } from "../support/replication.ts";
-import { json, openStream, testAdmin, type LocalUrls } from "./fixtures.ts";
+import { json, fetchPastProxyBlip, testAdmin, type LocalUrls } from "./fixtures.ts";
 import {
   GateHidden,
   GateLink,
@@ -126,7 +126,7 @@ const nestedLive = (
   base: string,
   token: string,
   at: readonly string[],
-): Promise<Response> => openStream(
+): Promise<Response> => fetchPastProxyBlip(
   `${base.replace(/\/+$/, "")}/db/${GRAPH_PATH_ROOT_DATABASE}/live`,
   {
     method: "POST",
@@ -144,7 +144,7 @@ const nestedReplication = (
   token: string,
   at: readonly string[],
   resumeRevision?: string,
-): Promise<Response> => openStream(
+): Promise<Response> => fetchPastProxyBlip(
   `${base.replace(/\/+$/, "")}/db/${GRAPH_PATH_ROOT_DATABASE}/replicate`,
   {
     method: "POST",
