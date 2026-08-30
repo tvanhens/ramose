@@ -20,6 +20,11 @@ import {
   replicationActivationAddress,
   replicationCredentialFingerprint,
 } from "../../packages/ramose/src/internal/replication/transport.ts";
+import {
+  armCheckpoint,
+  resetTestHooks,
+  testRuntimeBoundaries,
+} from "../../packages/ramose/src/internal/test-hooks.ts";
 import { browserTest } from "./fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
@@ -286,12 +291,13 @@ browserTest("clears one confirmed scope and preserves every other realm byte-ide
   }
 });
 
-browserTest("an aborted clear transaction leaves the old complete state", async ({ browser }) => {
+browserTest("a clear cut before it commits leaves the old complete state", async ({ browser }) => {
   const name = `ramose-lifecycle-abort-${browser.uniqueId}`;
   const left = identity();
-  const storage = await IndexedDbReplicaStorage.open(name);
-  const prototype = IDBTransaction.prototype;
-  const nativeCommit = prototype.commit;
+  // The repository's inert runtime boundary, armed only for this test. The
+  // real IndexedDB transaction and the real clear run unchanged; the armed
+  // checkpoint only decides when the boundary before its commit fails.
+  const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
   try {
     await installSnapshot(storage, left, opaque("1"), "left-root");
     await confirm(storage, left, "left", {
@@ -299,30 +305,26 @@ browserTest("an aborted clear transaction leaves the old complete state", async 
     });
     const before = bytes(await dump(name));
 
-    // Cut the very transaction that performs the clear, using real IndexedDB
-    // abort semantics rather than a substitute store.
-    let cut = false;
-    prototype.commit = function (this: IDBTransaction): void {
-      if (!cut && this.db.name === name) {
-        cut = true;
-        this.abort();
-        return;
-      }
-      nativeCommit.call(this);
-    } as IDBTransaction["commit"];
-    await expect(storage.clearScope(scopeOf(left))).rejects.toHaveProperty("name", "AbortError");
-    prototype.commit = nativeCommit;
-    expect(cut).toBe(true);
+    armCheckpoint("replica.clear", "throw", "cut before the clear committed");
+    try {
+      await expect(storage.clearScope(scopeOf(left))).rejects.toThrow(/cut before the clear/);
+    } finally {
+      resetTestHooks();
+    }
 
-    // Every family, including the generation fence, is exactly as it was.
+    // Every deletion the transaction had already issued rolled back, and the
+    // generation fence is exactly where it was.
     expect(bytes(await dump(name))).toBe(before);
     // The handle never became terminal, so the old complete value still reads.
     expect(await names((await storage.restore(left, attributes, READ_COMPATIBILITY))!.db))
       .toEqual(["left-root"]);
     // Retrying completes the clear.
     expect((await storage.clearScope(scopeOf(left))).generation).toBe(2);
+    const cleared = await dump(name);
+    expect(cleared["replica-committed-v1"]).toEqual([]);
+    expect(cleared["replica-nodes-v1"]).toEqual([]);
   } finally {
-    prototype.commit = nativeCommit;
+    resetTestHooks();
     storage.close();
     await deleteDatabase(name);
   }

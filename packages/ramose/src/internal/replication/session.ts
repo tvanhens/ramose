@@ -155,6 +155,31 @@ const valueFrom = (
   stale,
 });
 
+type SessionRegistration = {
+  readonly database: string;
+  readonly releases: readonly (() => void)[];
+};
+
+/**
+ * Pin one database and enroll one participant in a single synchronous step, so
+ * no await can separate reading a replica from becoming visible to a clear or
+ * an eviction.
+ */
+const sessionRegistration = (
+  storage: IndexedDbReplicaStorage,
+  identity: ReplicationIdentity,
+  close: () => Promise<void>,
+): SessionRegistration => {
+  const database = replicaDatabaseScopeOf(identity);
+  return {
+    database: replicaDatabaseKey(database),
+    releases: [
+      storage.pinDatabase(database),
+      storage.enroll({ scope: replicaScopeOf(identity), database, close }),
+    ],
+  };
+};
+
 export class ReplicationSession {
   private readonly controller = new AbortController();
   private readonly observers = new Set<ReplicationSessionObserver>();
@@ -176,6 +201,7 @@ export class ReplicationSession {
     private readonly readCompatibilityHash: ReadCompatibilityHash,
     initial: BoundRestoredReplica | undefined,
     lease: ReplicaLease,
+    registration: SessionRegistration | undefined,
     run: (session: ReplicationSession, generation: number) => Promise<void>,
   ) {
     this.lease = lease;
@@ -185,7 +211,11 @@ export class ReplicationSession {
         ? {}
         : { value: valueFrom(initial.identity, initial, true) }),
     });
-    if (initial !== undefined) this.track(initial.identity);
+    // Adopt the registration `open` already took, rather than taking a second.
+    if (registration !== undefined) {
+      this.trackedDatabase = registration.database;
+      this.tracking = registration.releases;
+    }
     this.loop = run(this, this.generation);
   }
 
@@ -201,15 +231,9 @@ export class ReplicationSession {
     const key = replicaDatabaseKey(database);
     if (this.trackedDatabase === key) return;
     this.untrack();
-    this.trackedDatabase = key;
-    this.tracking = [
-      this.storage.pinDatabase(database),
-      this.storage.enroll({
-        scope: replicaScopeOf(identity),
-        database,
-        close: () => this.close(),
-      }),
-    ];
+    const registration = sessionRegistration(this.storage, identity, () => this.close());
+    this.trackedDatabase = registration.database;
+    this.tracking = registration.releases;
   }
 
   private untrack(): void {
@@ -250,25 +274,47 @@ export class ReplicationSession {
       options.attributes,
       options.readCompatibilityHash,
     );
-    const candidate = restored === undefined && candidateKey !== undefined
-      ? await options.storage.selectCacheCandidate(
-        candidateKey,
-        options.readCompatibilityHash,
-      )
-      : undefined;
-    // A restored session skips `bindAuthenticated`, so it must take its lease
-    // over the current generations before it can write anything; an empty
-    // lease would otherwise adopt a generation a concurrent clear had already
-    // bumped and repopulate the scope that clear just emptied.
-    const lease = restored === undefined
-      ? options.storage.lease()
-      : await options.storage.leaseFor(restored.identity);
-    return new ReplicationSession(
+    // Register before the next await. Destructive maintenance that begins in
+    // the gap between reading this replica and constructing its session must
+    // already see the pin and the enrolment, or it would delete the nodes this
+    // value depends on and return without having closed anything.
+    let live: ReplicationSession | undefined;
+    let closedBeforeStart = false;
+    const registration = restored === undefined ? undefined : sessionRegistration(
+      options.storage,
+      restored.identity,
+      async () => {
+        closedBeforeStart = true;
+        await live?.close();
+      },
+    );
+    let candidate: ReplicaCacheCandidate | undefined;
+    let lease: ReplicaLease;
+    try {
+      candidate = restored === undefined && candidateKey !== undefined
+        ? await options.storage.selectCacheCandidate(
+          candidateKey,
+          options.readCompatibilityHash,
+        )
+        : undefined;
+      // A restored session skips `bindAuthenticated`, so it must take its
+      // lease over the current generations before it can write anything; an
+      // empty lease would otherwise adopt a generation a concurrent clear had
+      // already bumped and repopulate the scope that clear just emptied.
+      lease = restored === undefined
+        ? options.storage.lease()
+        : await options.storage.leaseFor(restored.identity);
+    } catch (error) {
+      for (const release of registration?.releases ?? []) release();
+      throw error;
+    }
+    const session = new ReplicationSession(
       options.storage,
       options.attributes,
       options.readCompatibilityHash,
       restored,
       lease,
+      registration,
       async (session, generation) => {
         let responseIdentity: ReplicationIdentity | undefined;
         let bindingConfirmed = restored !== undefined && candidateKey === undefined &&
@@ -364,6 +410,11 @@ export class ReplicationSession {
         }
       },
     );
+    live = session;
+    // Maintenance closed this session while it was still being built, so it
+    // must never be handed back live over data that no longer exists.
+    if (closedBeforeStart) await session.close();
+    return session;
   }
 
   snapshot(): ReplicationSessionSnapshot {

@@ -12,6 +12,10 @@ import { deserializeNode, gzipCodec, serializeNode } from "../core/store.ts";
 import type { IndexId } from "../core/datom.ts";
 import type { NodeRef, NodeStore, TreeNode } from "../core/tree.ts";
 import {
+  inertRuntimeBoundaries,
+  type RuntimeBoundaries,
+} from "../runtime-boundaries.ts";
+import {
   REPLICA_STORAGE_VERSION,
   type Change,
   type LogicalDatom,
@@ -414,7 +418,13 @@ const commitTransaction = async (transaction: IDBTransaction): Promise<void> => 
 /** Abort a transaction because this operation intentionally lost a CAS. */
 const abortTransaction = async (transaction: IDBTransaction): Promise<void> => {
   const done = transactionDone(transaction);
-  transaction.abort();
+  try {
+    transaction.abort();
+  } catch {
+    // Already finished: there is nothing left to roll back, and waiting for an
+    // event that has already fired would never resolve.
+    return;
+  }
   try {
     await done;
   } catch (error) {
@@ -720,11 +730,19 @@ export class IndexedDbReplicaStorage {
   private constructor(
     readonly name: string,
     private readonly database: IDBDatabase,
+    private readonly boundaries: RuntimeBoundaries,
   ) {
     this.registry = lifecycleRegistry(name);
   }
 
-  static async open(name = DEFAULT_REPLICA_DATABASE_NAME): Promise<IndexedDbReplicaStorage> {
+  /**
+   * `boundaries` is the repository's inert runtime boundary by default; only
+   * the explicit source-only testing assembly injects an armable one.
+   */
+  static async open(
+    name = DEFAULT_REPLICA_DATABASE_NAME,
+    boundaries: RuntimeBoundaries = inertRuntimeBoundaries,
+  ): Promise<IndexedDbReplicaStorage> {
     const request = indexedDB.open(name, DATABASE_VERSION);
     request.addEventListener("upgradeneeded", (event) => {
       const database = request.result;
@@ -777,7 +795,7 @@ export class IndexedDbReplicaStorage {
     });
     const database = await requestResult(request);
     database.addEventListener("versionchange", () => database.close());
-    return new IndexedDbReplicaStorage(name, database);
+    return new IndexedDbReplicaStorage(name, database, boundaries);
   }
 
   close(): void {
@@ -888,12 +906,35 @@ export class IndexedDbReplicaStorage {
     const scopeKey = this.assertScopeLive(scope);
     const prefix = replicaScopePartitionPrefix(scope);
     const transaction = this.database.transaction([...REPLICA_STORE_FAMILIES], "readwrite");
+    let outcome: ReplicaClearOutcome;
+    try {
+      outcome = await this.stageClear(transaction, scope, scopeKey, prefix);
+    } catch (error) {
+      // IndexedDB auto-commits a transaction with no pending request, so a
+      // failure between the deletions and the commit must roll them back
+      // explicitly or a partial clear would become durable.
+      await abortTransaction(transaction);
+      throw error;
+    }
+    await commitTransaction(transaction);
+    this.clearedScopes.add(scopeKey);
+    await this.closeMatching((participant) =>
+      replicaScopeKey(participant.scope) === scopeKey
+    );
+    return outcome;
+  }
+
+  private async stageClear(
+    transaction: IDBTransaction,
+    scope: ReplicaScope,
+    scopeKey: string,
+    prefix: string,
+  ): Promise<ReplicaClearOutcome> {
     const generations = transaction.objectStore(GENERATIONS);
     const confirmed = await requestResult<GenerationRecord | undefined>(
       generations.get(scopeKey),
     );
     if (confirmed === undefined) {
-      await abortTransaction(transaction);
       throw new ReplicaScopeUnconfirmedError({ scope: scopeKey });
     }
     const [partitions, nodes] = await Promise.all([
@@ -945,11 +986,9 @@ export class IndexedDbReplicaStorage {
       generation,
       fencedAt: Date.now(),
     } satisfies GenerationRecord);
-    await commitTransaction(transaction);
-    this.clearedScopes.add(scopeKey);
-    await this.closeMatching((participant) =>
-      replicaScopeKey(participant.scope) === scopeKey
-    );
+    // The last boundary before this clear becomes durable. Inert in
+    // production; the source-only testing assembly arms it to cut here.
+    await this.boundaries.checkpoint("replica.clear");
     return Object.freeze({
       scope: scopeKey,
       generation,
@@ -985,13 +1024,34 @@ export class IndexedDbReplicaStorage {
       ...IDENTITY_KEYED_FAMILIES,
       GENERATIONS,
     ], "readwrite");
+    let outcome: ReplicaEvictOutcome;
+    try {
+      outcome = await this.stageEviction(transaction, scope, scopeKey, databaseKey, prefix);
+    } catch (error) {
+      await abortTransaction(transaction);
+      throw error;
+    }
+    await commitTransaction(transaction);
+    await this.closeMatching((participant) =>
+      participant.database !== undefined &&
+      replicaDatabaseKey(participant.database) === databaseKey
+    );
+    return outcome;
+  }
+
+  private async stageEviction(
+    transaction: IDBTransaction,
+    scope: ReplicaDatabaseScope,
+    scopeKey: string,
+    databaseKey: string,
+    prefix: string,
+  ): Promise<ReplicaEvictOutcome> {
     const generations = transaction.objectStore(GENERATIONS);
     const [confirmed, current] = await Promise.all([
       requestResult<GenerationRecord | undefined>(generations.get(scopeKey)),
       requestResult<GenerationRecord | undefined>(generations.get(databaseKey)),
     ]);
     if (confirmed === undefined) {
-      await abortTransaction(transaction);
       throw new ReplicaScopeUnconfirmedError({ scope: scopeKey });
     }
     const [partitions, nodes] = await Promise.all([
@@ -1033,11 +1093,7 @@ export class IndexedDbReplicaStorage {
       confirmedAt: current?.confirmedAt ?? Date.now(),
       fencedAt: Date.now(),
     } satisfies GenerationRecord);
-    await commitTransaction(transaction);
-    await this.closeMatching((participant) =>
-      participant.database !== undefined &&
-      replicaDatabaseKey(participant.database) === databaseKey
-    );
+    await this.boundaries.checkpoint("replica.evict");
     return Object.freeze({
       database: databaseKey,
       generation,
