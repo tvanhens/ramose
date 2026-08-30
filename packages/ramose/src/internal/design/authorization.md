@@ -475,6 +475,15 @@ shape is what makes the position real, the same reason **WR-11** reads
 allocation slots against the declared output shape rather than off a raw
 number.
 
+Opening grants nothing here either (**WR-9**). Input refs are deliberately not
+target-visibility checked — an admitted operation is trusted server code whose
+reads are not filtered by caller read policy (**WR-5**, **WR-6**) — and that is
+unchanged, because a resolved handle is indistinguishable from the numeric eid
+naming the same entity. The channel in fact *narrows*: any caller could always
+supply an arbitrary numeric eid at such a position, whereas a handle only opens
+under the scope that minted it, so a caller can name only entities this
+server already handed that principal in that database.
+
 **WR-17a. The canonical digest covers the resolved eid, not the handle.**
 Substitution happens before `prepareInvocationReceipt`, so the target and every
 input ref digest as the private eid — which is precisely what the target
