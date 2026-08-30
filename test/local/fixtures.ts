@@ -272,7 +272,10 @@ export const json = async (
     // reports the same way as a request that never answered at all.
     return { res, text: await res.text() };
   };
-  let fresh = false;
+  // Losing the keep-alive race is what does not reproduce locally, so the
+  // retry arm is otherwise unexercised. `RAMOSE_FORCE_FRESH=1` sends every
+  // opted-in request the way a retry sends it; the suite passes under it.
+  let fresh = process.env.RAMOSE_FORCE_FRESH === "1" && retryPreResponse;
   for (let attempt = 0; ; attempt++) {
     const origin = new URL(url).origin;
     const startedAt = Date.now();
