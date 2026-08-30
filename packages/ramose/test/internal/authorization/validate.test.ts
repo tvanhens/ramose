@@ -1,11 +1,3 @@
-/**
- * Core v1 semantic validation of catalog-bound authorization IR.
- *
- * Binding and structural decode are out of scope. Access-plan derivation
- * and installed-IR assembly live in install tests. Deferred language tests
- * belong in decode tests — they must fail before this kernel runs.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -1177,7 +1169,7 @@ describe("type distinction", () => {
     const validated = expectValidated(
       validateBoundAuthorizationResult({ bound: boundDocument([]), descriptor }),
     );
-    // @ts-expect-error — validated intermediate is not installed IR
+    // @ts-expect-error
     requireInstalled(validated);
     expect(validated._tag).toBe("ValidatedAuthorizationIR");
   });

@@ -32,7 +32,7 @@ describe("transact", () => {
     expect(db.attr(":user/friends")!.cardinality).toBe("many");
     expect(db.attr(":user/email")!.unique).toBe("identity");
     expect(db.schema.entid(":color/red")).toBeGreaterThanOrEqual(1000);
-    expect(db.attr(":color/red")).toBeUndefined(); // plain ident, not an attribute
+    expect(db.attr(":color/red")).toBeUndefined();
     expect(conn.t).toBe(2);
   });
 
@@ -54,7 +54,7 @@ describe("transact", () => {
     const b = await db.entity(bob);
     expect(b![":user/friends"]).toEqual([alice, carol].sort((x, y) => x - y));
     expect((b![":user/joined"] as Date).toISOString()).toBe("2020-01-01T00:00:00.000Z");
-    // tx entity has txInstant
+
     const tx = await db.entity(rep.txEid);
     expect((tx![":db/txInstant"] as Date).getTime()).toBe(1_700_000_000_000);
     expect(rep.txData[0].a).toBe(50);
@@ -68,12 +68,12 @@ describe("transact", () => {
     const ops = r2.txData.filter((d) => d.a === conn.db().attr(":user/age")!.id).map((d) => [d.v, d.op]);
     expect(ops).toEqual([[30, false], [31, true]]);
     const r3 = await conn.transact([[":db/add", u, ":user/age", 31]]);
-    expect(r3.txData.length).toBe(1); // only txInstant
+    expect(r3.txData.length).toBe(1);
     expect((await conn.db().entity(u))![":user/age"]).toBe(31);
-    // history shows both values
+
     const hist = await conn.db().history().datomsArray(Index.EAVT, { e: u, a: conn.db().attr(":user/age")!.id });
     expect(hist.map((d) => [d.v, d.op])).toEqual([[30, true], [30, false], [31, true]]);
-    // as-of sees the old value
+
     expect((await conn.db().asOf(r1.t).entity(u))![":user/age"]).toBe(30);
   });
 
@@ -86,7 +86,7 @@ describe("transact", () => {
     expect((await conn.db().entity(u))![":user/age"]).toBe(5);
     await expect(conn.transact([{ ":user/name": "B", ":user/handle": "aa" }])).rejects.toBeInstanceOf(TxError);
     await expect(conn.transact([{ ":user/name": "B", ":user/email": "b@x" }, { ":user/name": "C", ":user/email": "b@x", ":user/age": 1 }])).resolves.toBeDefined();
-    // moving a unique value between entities within one tx via retract works
+
     const rb = await conn.transact([{ ":db/id": "b", ":user/email": "b@x" }]);
     const b = rb.tempids.b;
     await expect(conn.transact([[":db/add", u, ":user/handle", "aa"], [":db/add", b, ":user/handle", "aa"]])).rejects.toBeInstanceOf(TxError);
@@ -104,7 +104,7 @@ describe("transact", () => {
     expect(await conn.db().entid([":user/email", "a@x"])).toBe(u);
     expect(await conn.db().entid([":user/email", "nope"])).toBeUndefined();
     await expect(conn.transact([[":db/add", [":user/email", "nope"], ":user/age", 9]])).rejects.toBeInstanceOf(TxError);
-    // ref to ident entity
+
     await conn.transact([{ ":db/ident": ":user/favorite", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one", ":db/optional": true }]);
     await conn.transact([[":db/add", u, ":user/favorite", ":color/red"]]);
     expect((await conn.db().entity(u))![":user/favorite"]).toBe(conn.db().schema.entid(":color/red"));
@@ -125,8 +125,8 @@ describe("transact", () => {
     expect((await conn.db().entity(a))![":user/tags"]).toBeUndefined();
     const deleted = await conn.transact([[":db/retractEntity", a]]);
     expect(await conn.db().entity(a)).toBeUndefined();
-    expect(await conn.db().entity(addr)).toBeUndefined(); // component
-    expect((await conn.db().entity(b))![":user/friends"]).toBeUndefined(); // incoming ref removed
+    expect(await conn.db().entity(addr)).toBeUndefined();
+    expect((await conn.db().entity(b))![":user/friends"]).toBeUndefined();
     const rootOps = deleted.txOps.filter((op) => op.e === a);
     const componentOps = deleted.txOps.filter((op) => op.e === addr);
     const incomingOps = deleted.txOps.filter((op) => op.e === b);
@@ -136,7 +136,7 @@ describe("transact", () => {
     expect(componentOps.every((op) => op.fromRetractEntity && !op.retractEntityRoot)).toBe(true);
     expect(incomingOps.length).toBeGreaterThan(0);
     expect(incomingOps.every((op) => op.fromRetractEntity && !op.retractEntityRoot)).toBe(true);
-    // history still has everything
+
     expect((await conn.db().history().datomsArray(Index.EAVT, { e: a })).length).toBeGreaterThan(0);
   });
 
@@ -171,13 +171,13 @@ describe("transact", () => {
     expect(roots1.t).toBe(conn.t);
     await conn.transact([[":db/add", u, ":user/age", 2]]);
     expect((await conn.db().entity(u))![":user/age"]).toBe(2);
-    expect((await dbBefore.entity(u))![":user/age"]).toBe(1); // old snapshot unaffected
+    expect((await dbBefore.entity(u))![":user/age"]).toBe(1);
     const roots2 = await conn.index();
     expect(roots2.eavt.hash).not.toBe(roots1.eavt.hash);
     expect((await conn.db().entity(u))![":user/age"]).toBe(2);
     expect((await conn.dbAtRoot(roots1).entity(u))![":user/age"]).toBe(1);
     expect((await conn.db().asOf(roots1.t).entity(u))![":user/age"]).toBe(1);
-    // schema survives restore from roots
+
     const restored = await Connection.restore(conn.store, roots2, [], conn.nextEntityId);
     expect(restored.db().attr(":user/friends")!.cardinality).toBe("many");
     expect((await restored.db().entity(u))![":user/age"]).toBe(2);

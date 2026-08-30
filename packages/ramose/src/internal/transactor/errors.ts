@@ -1,18 +1,3 @@
-/**
- * Tagged errors + HTTP mapping for the Transactor's request boundary.
- *
- * Effect lives *only* here and in the handler that dispatches routes — never
- * in the resolve/commit loop, which stays plain async/await.
- *
- * Wire shape (unchanged fields the client depends on, plus a stable machine
- * tag):
- *   { error: <human message>, tag: "<Tag>", message: <human message>,
- *     code?: <TxError code>, retryAfterMs?: <ms> }
- * `error` keeps the human-readable message because the Worker surfaces it as
- * the `message` of the tagged `DbError` it hands the client; `tag` is the
- * stable discriminator.
- */
-
 import * as Data from "effect/Data";
 import {
   InvalidRequest,
@@ -24,34 +9,19 @@ import { TxError } from "../core/index.ts";
 
 export { TxRejected };
 
-/** The transactor aborted: in-memory and durable state may have diverged. */
 export class TransactorDeadError extends Error {
   constructor(reason: string) {
     super(`transactor aborted: ${reason}`);
   }
 }
 
-/** This instance is dead and is being rebuilt from durable state → 503. Maps to `Unavailable` at the client boundary. */
 export class TransactorDead extends Data.TaggedError("TransactorDead")<{ message: string; retryAfterMs: number }> {}
-/**
- * A dependency this request needs is momentarily out of reach → 503.
- *
- * Distinct from {@link Internal}: nothing is wrong with the request or with
- * this instance's state, and asking again is the correct response. The durable
- * sealing root is the case that exists today — it lives in another Durable
- * Object, so a cold isolate has to fetch it, and a transient failure there must
- * not look like an engine defect or answer an opaque 500 that a durable offline
- * queue cannot tell apart from a permanent one.
- */
 export class Unavailable extends Data.TaggedError("Unavailable")<{
   message: string;
   retryAfterMs: number;
 }> {}
-/** Malformed request → 400. */
 export class BadRequest extends Data.TaggedError("BadRequest")<{ message: string }> {}
-/** Unknown route → 404. */
 export class NotFound extends Data.TaggedError("NotFound")<{ message: string }> {}
-/** Anything else → 500. */
 export class Internal extends Data.TaggedError("Internal")<{ message: string }> {}
 
 export type TransactorHttpError =
@@ -75,7 +45,6 @@ const TAGS = {
   Internal: 500,
 } as const;
 
-/** Classify anything thrown by a route into a tagged error. */
 export function toHttpError(err: unknown): TransactorHttpError {
   if (
     err instanceof TxRejected || err instanceof Unauthorized ||
@@ -92,7 +61,6 @@ export function toHttpError(err: unknown): TransactorHttpError {
 export const statusOf = (e: TransactorHttpError): number =>
   e._tag === "Unauthorized" ? (e.status ?? 401) : TAGS[e._tag];
 
-/** Stable JSON error response; statuses and body fields match the pre-Effect handler. */
 export function errorResponse(e: TransactorHttpError): Response {
   const body: Record<string, unknown> = { error: e.message, tag: e._tag, message: e.message };
   const headers: Record<string, string> = { "content-type": "application/json" };

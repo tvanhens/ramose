@@ -1,11 +1,3 @@
-/**
- * The speculative layer state machine and replay ordering (#476 slice 1).
- *
- * Every transition here is a pure function of the ordered layers and one
- * event. The durable half — the layer rows, the scoped clear, and the real
- * `ActivationFence` driving `fence` — is slice 2's, against real IndexedDB.
- */
-
 import { describe, expect, test } from "bun:test";
 import type { ProjectionChangeset } from "../../../src/db/Projection.ts";
 import { invocationId, type InvocationId } from "../../../src/db/refs.ts";

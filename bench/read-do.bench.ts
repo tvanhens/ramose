@@ -1,13 +1,3 @@
-/**
- * M7 read-path bench against a running Ramose deployment: warm query latency
- * through the Worker (replica basis + edge datalog over cached segments).
- *
- *   RAMOSE_URL=http://localhost:1337 bun run bench/read-do.bench.ts [people=5000] [runs=200] [concurrency=8]
- *
- * Reports client-observed p50/p95 (includes local HTTP RTT) and the server-side
- * `x-ramose-ms` p50 (query execution only). Multi-colo scaling cannot be
- * measured against a local emulator; see bench/RESULTS.md.
- */
 import { attrMap, Peer } from "../test/support/ramoseHttp.ts";
 import { fmt, percentile } from "./lib.ts";
 
@@ -23,7 +13,7 @@ const headers: Record<string, string> = {};
 if (process.env.RAMOSE_REPLICA_HINT) headers["x-ramose-replica-hint"] = process.env.RAMOSE_REPLICA_HINT;
 if (process.env.RAMOSE_CACHE_BASIS) headers["x-ramose-cache-basis"] = process.env.RAMOSE_CACHE_BASIS;
 if (process.env.RAMOSE_CACHE_MODE) headers["x-ramose-cache-mode"] = process.env.RAMOSE_CACHE_MODE;
-// RAMOSE_MIN_T=1: every read carries x-ramose-min-t = t of the last write this bench made (read fence)
+
 const fence = process.env.RAMOSE_MIN_T === "1";
 const client = new Peer(url, { token: process.env.RAMOSE_TOKEN, headers });
 console.log(`variant: hint=${process.env.RAMOSE_REPLICA_HINT ?? "(default)"} cacheBasis=${process.env.RAMOSE_CACHE_BASIS ?? "(default)"} cacheMode=${process.env.RAMOSE_CACHE_MODE ?? "(default)"} minT=${fence ? "on" : "off"}`);
@@ -35,7 +25,7 @@ await db.transact([
   attrMap(":person/age", "long"),
   attrMap(":person/friends", "ref", { cardinality: "many" }),
 ]);
-// seed in batches of 200 entities per tx
+
 for (let i = 0; i < people; i += 200) {
   const tx: unknown[] = [];
   for (let j = i; j < Math.min(people, i + 200); j++) {
@@ -43,11 +33,11 @@ for (let i = 0; i < people; i += 200) {
   }
   await db.transact(tx);
 }
-// friends (refs to existing entities) + index so most data lives in segments
+
 const ids = (await db.q<number[]>(`[:find [?e ...] :where [?e :person/city "city-3"]]`)).slice(0, 500);
 await db.transact(ids.map((e, i) => [":db/add", e, ":person/friends", ids[(i + 1) % ids.length]]));
 await db.index();
-// D4-style fence: one more write, then every read demands >= its t
+
 const lastT = fence ? (await db.transact([{ ":person/name": "fence", ":person/city": "city-0", ":person/age": 1 }])).t : undefined;
 const qopts = lastT !== undefined ? { minT: lastT } : {};
 
@@ -60,7 +50,7 @@ const QUERIES: Record<string, { q: string; inputs?: unknown[] }> = {
 
 const results: Record<string, unknown> = {};
 for (const [name, { q, inputs }] of Object.entries(QUERIES)) {
-  const warm = await db.queryEnvelope(q, inputs, qopts); // warm
+  const warm = await db.queryEnvelope(q, inputs, qopts);
   if (warm.meta?.colo || warm.meta?.replicaHint) console.log(`  ${name}: worker colo=${warm.meta?.colo ?? "?"} replicaHint=${warm.meta?.replicaHint ?? "?"}`);
   const client_ms: number[] = [], server_ms: number[] = [];
   let hits = 0, refetches = 0, behind = 0;

@@ -1,9 +1,3 @@
-/**
- * Public database-replication stream over the real authorization and Replica
- * topology. This is deliberately separate from the raw testing-only session
- * wire: only complete authorized logical values enter these frames.
- */
-
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -77,7 +71,6 @@ const runtimeError = (reason: string, cause?: unknown): ReplicationRuntimeError 
     ? new ReplicationRuntimeError({ reason })
     : new ReplicationRuntimeError({ reason, cause });
 
-// The response stream, rather than the Effect fiber, owns this controller.
 const makeStreamAbortController = (): AbortController => new AbortController();
 
 type AuthorizedVersion = {
@@ -106,11 +99,6 @@ export type AuthorizedReplicationInput = {
   readonly boundaries?: RuntimeBoundaries;
 };
 
-/**
- * Everything downstream of admission derives identities from the durable
- * identity/sealing root, resolved once per stream and never from the rotating
- * `RAMOSE_INTERNAL_SECRET` (which stays the Worker→DO capability only).
- */
 type ReplicationRun = AuthorizedReplicationInput & {
   readonly identityRoot: ServerIdentityRoot;
   readonly sealing: ServerSealingKey;
@@ -146,8 +134,6 @@ const atBoundary = async (
   try {
     await abortable(boundaries.checkpoint(name), signal);
   } catch (cause) {
-    // If the effective watch signal wins the race, dispose the source-only
-    // parked waiter in its creating request context before failing closed.
     boundaries.checkpointCancel?.(name);
     throw cause;
   }
@@ -185,18 +171,6 @@ const rawDatabase = (version: AuthorizedVersion): string =>
 const leaseAlive = (version: AuthorizedVersion): boolean =>
   Date.now() < version.leaseExpiresAt;
 
-/**
- * The encoder one activation projects its datoms through.
- *
- * Two identities per entity, minted together. The wire identity is scoped by
- * the whole replication authenticator, so it rotates with the catalog and the
- * read view and keeps two partitions of one database unlinkable. The sealed
- * handle is bound to the stable `{ server, principal, database }` scope read
- * straight off the identity this stream already authorized — the same scope the
- * operation boundary seals allocation mappings under, which is what makes a
- * handle carried by replication and a handle returned by a receipt the same
- * string for the same entity.
- */
 const identityEncoder = (
   input: ReplicationRun,
   version: AuthorizedVersion,
@@ -266,9 +240,6 @@ const snapshotFrames = async function* (
     }
     const logical = identityEncoder(input, version);
     const candidate = await currentState(input, version, logical, signal);
-    // Projection and hashing are bounded in memory, not necessarily in wall
-    // time. If they consumed this authorization lease, discard the work
-    // before any state-dependent frame crosses the boundary.
     if (!leaseAlive(version)) continue;
     const snapshot = await makeSnapshotIdentity(
       input.sealing,
@@ -303,8 +274,6 @@ const snapshotFrames = async function* (
           renewedSnapshot !== undefined &&
           !await chunkStillAuthorized(renewedSnapshot, entries, signal)
         ) return false;
-        // Authorization may expire while a delayed chunk is checked. Repeat
-        // under a fresh complete-path lease rather than emitting on the edge.
         if (leaseAlive(version)) {
           signal.throwIfAborted();
           return true;
@@ -325,9 +294,6 @@ const snapshotFrames = async function* (
       }),
       signal,
     )) {
-      // After the first bounded renewal, every remaining chunk still comes
-      // from the original immutable snapshot and must exist in the newest
-      // complete authorized value before it can cross the public boundary.
       if (!await authorizeChunk(entries)) {
         restart = true;
         break;
@@ -376,7 +342,6 @@ const snapshotFrames = async function* (
   }
 };
 
-/** Every reset is preceded by a fresh complete-path authorization fence. */
 const resetFrames = async function* (
   input: ReplicationRun,
   authorize: () => Promise<AuthorizedVersion>,
@@ -532,10 +497,6 @@ const advanceFrames = async function* (
         signal,
       );
       if (options.acknowledgeUnchanged) {
-        // The controllable boundary may have been parked while the database
-        // advanced. Reauthorize after it and require the exact logical basis
-        // already validated above, leaving no await between the final fence
-        // and the state-bearing yield.
         const readyVersion = await authorize();
         if (!sameVersion(expectedPath, expectedIdentity, readyVersion)) {
           throw new Error("replication authorization partition changed");
@@ -599,8 +560,6 @@ const replicationFrames = async function* (
     const version = await run(Effect.gen(function* () {
       const verified = yield* authenticateRequest(input.request);
       const caller = callerFromVerified(verified);
-      // Match the established live-query lease: authorization work consumes
-      // the lease instead of receiving a fresh five seconds after it finishes.
       const leaseStartedAt = Date.now();
       const leaseExpiresAt = Math.min(
         caller.exp * 1_000,
@@ -615,7 +574,6 @@ const replicationFrames = async function* (
           bypassBasisCache: true,
           authoritativeBasisFence: true,
         }),
-        // Initial admission already provisioned every authorized child.
         provision: () => Effect.void,
       }, (authorized) => Effect.succeed(authorized));
       const pathIdentity = graphPathLeaseIdentity(
@@ -677,8 +635,6 @@ const replicationFrames = async function* (
   effectiveSignal = effectiveController.signal;
   const watchFailed: Promise<typeof WATCH_FAILED> = watch.failed.then(
     (): typeof WATCH_FAILED => {
-      // This source-only marker records the actual watch-close callback
-      // without parking a Promise in a separate request context.
       input.boundaries?.checkpointReached?.("replication.watch.failed");
       effectiveController.abort(new Error("replication basis watch closed"));
       return WATCH_FAILED;
@@ -726,10 +682,6 @@ const replicationFrames = async function* (
         );
       } catch {
         effectiveSignal.throwIfAborted();
-        // A revision store sealed under a replaced identity root reports a
-        // typed `ServerIdentityIncompatible`; like any other non-authoritative
-        // resume failure it quarantines that state and falls through to a full
-        // authorized reset instead of reusing it.
         basisT = undefined;
       }
       if (basisT === undefined) {
@@ -755,8 +707,6 @@ const replicationFrames = async function* (
     }
 
     effectiveSignal.throwIfAborted();
-    // The phase is fixed from the last admitted lease, never from a basis
-    // notification or the amount of hidden work in a completed cycle.
     let nextCycleAt = committed.version.leaseExpiresAt;
     let cycle = scheduledCycle(Math.max(0, nextCycleAt - Date.now()));
     try {
@@ -784,8 +734,6 @@ const replicationFrames = async function* (
           throw new Error("replication authorization partition changed");
         }
         if (renewed.target.context.currentDb.basisT === committed.basisT) {
-          // An idle fence must still reauthorize every ancestor, but an
-          // unchanged target basis needs no logical database scan.
           committed = Object.freeze({ ...committed, version: renewed });
           await atBoundary(
             input.boundaries,
@@ -826,8 +774,6 @@ const readableFrames = (
 ): ReadableStream<Uint8Array> => {
   const onAbort = () => {
     controller.abort();
-    // A response can be parked at a yielded frame with no further pull. End
-    // the generator proactively so request abort still closes the real watch.
     void frames.return?.().catch(() => undefined);
   };
   if (requestSignal.aborted) onAbort();
@@ -943,7 +889,6 @@ export const incompatibleReplicationResponse = (
   },
 );
 
-/** Schema disagreement is terminal before any data-bearing stream exists. */
 export const updateRequiredReplicationResponse = (
   headers: Record<string, string>,
 ): Response => new Response(

@@ -1,7 +1,3 @@
-/**
- * Recursive expression validation, derived-metadata recomputation, and limits.
- */
-
 import * as Result from "effect/Result";
 import type { CanonicalAuthorizationExpr } from "../expr.ts";
 import type { EntityId } from "../identities.ts";

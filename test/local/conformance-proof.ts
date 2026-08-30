@@ -1,5 +1,3 @@
-/** Runtime-bound configured-root proof used to form public requests. */
-
 import type { OperationCatalogProof } from "ramose/worker";
 import { catalogProof } from "./fixtures.ts";
 import { CONFORMANCE_DATABASES } from "./conformance-catalog.ts";

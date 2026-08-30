@@ -1,24 +1,3 @@
-/**
- * Nested pull filters: kernel fragments, translated to the pull AST.
- *
- * The `where` entries of a cardinality-many collection's options record
- * (`.select(shape, { where: [ … ] })`, or `values(attr, { where: [ … ] })`
- * for a scalar) are the same filter fragments the pipe uses (`is`, `has`,
- * `Q.not`, a `matching(attr, pred)`, any userland combinator built from the
- * kernel). Each fragment runs against a
- * synthetic *element* var, and the recorded clauses — both sides inert data —
- * compile into the engine's per-element predicate tree ({@link PullElemPred}):
- * facts chain into paths (or `some` hops when an element carries several
- * constraints), `Q.not` maps to `not`, `Q.or` to `or`, and a comparison on
- * the element itself lowers with an empty path (which is how a card-many
- * scalar's values filter: the fragment is handed the value var directly).
- *
- * What cannot translate is rejected, never approximated: a pull-phase filter
- * runs per element after the row set is fixed, so it cannot correlate with
- * the enclosing query's vars, join two chains on a shared var, call an
- * engine rule, or read time positions.
- */
-
 import type {
   PullElemCmp,
   PullElemOp,
@@ -38,16 +17,12 @@ import {
   type SubBody,
 } from "./kernel.ts";
 
-/** One `where` entry: a fragment over the element (an entity var for a
- * ref collection, the value var itself for a card-many scalar). */
 export type ElemFilterFragment = (focus: AnyVar) => Iterable<unknown>;
 
 const err = (msg: string): never => {
   throw new Error(`ramose/query: ${msg}`);
 };
 
-/** Kernel comparison op → pull `:where` op, when the element is the first
- * (subject) operand. */
 const OPS: Partial<Record<string, PullElemOp>> = {
   "=": "=",
   "not=": "!=",
@@ -61,7 +36,6 @@ const OPS: Partial<Record<string, PullElemOp>> = {
   in: "in",
 };
 
-/** The same op with the element on the *right* — only order comparisons flip. */
 const FLIPPED: Partial<Record<string, PullElemOp>> = {
   "=": "=",
   "not=": "!=",
@@ -89,7 +63,6 @@ const regexSource = (re: RegExp | string): string => {
   return re.source;
 };
 
-/** A comparison operand as an elem-pred `value`: eids unwrap. */
 const lowerValue = (v: unknown): unknown => unwrapEidLike(v);
 
 const isCmpPred = (p: PullElemPred): p is PullElemCmp =>
@@ -103,7 +76,6 @@ const isRefAttr = (attr: unknown): boolean =>
   attr !== null &&
   (attr as { valueType?: unknown }).valueType === "ref";
 
-/** Every var a clause list mentions, groups included. */
 const collectVarIds = (list: readonly BClause[], into: Set<number>): void => {
   for (const c of list) {
     switch (c._tag) {
@@ -140,19 +112,12 @@ const collectVarIds = (list: readonly BClause[], into: Set<number>): void => {
   }
 };
 
-/** Does this clause mention `v` in a position the translator can root on? */
 const mentions = (c: BClause, v: AnyVar): boolean => {
   const one = new Set<number>();
   collectVarIds([c], one);
   return one.has(v.id);
 };
 
-/**
- * Lower `where` fragments into the pull AST's per-element predicates.
- * `attr` is the collection hop the filter attaches to: a ref (or backlink)
- * hands the fragments an element *entity* var; a card-many scalar hands
- * them the value var itself, so comparisons lower with an empty path.
- */
 export const lowerElemFilter = (
   preds: readonly ElemFilterFragment[],
   attr: { readonly ident: string },
@@ -171,9 +136,6 @@ export const lowerElemFilter = (
     clauses.push(...collectBody(p(elem) as SubBody));
   }
 
-  // A pull-phase filter runs per element, after the row set is fixed: a var
-  // minted before the element var belongs to the enclosing build and cannot
-  // correlate here.
   const seen = new Set<number>();
   collectVarIds(clauses, seen);
   for (const id of seen) {
@@ -185,8 +147,6 @@ export const lowerElemFilter = (
   }
 
   const used = new Set<BClause>();
-  /** Vars already reached as an element — a second fact binding one would be
-   * a join, which a tree of paths cannot say. */
   const bound = new Set<number>([elem.id]);
 
   const predsOn = (v: AnyVar, list: readonly BClause[]): PullElemPred[] => {
@@ -199,9 +159,6 @@ export const lowerElemFilter = (
     return out;
   };
 
-  /** Translate a whole sub-list (an or-branch, a not body) relative to `v`;
-   * every clause must be consumed — a leftover neither constrains the
-   * element nor chains from it. */
   const predsOfList = (list: readonly BClause[], v: AnyVar): PullElemPred[] => {
     const out = predsOn(v, list);
     const leftover = list.find((c) => !used.has(c));
@@ -230,8 +187,6 @@ export const lowerElemFilter = (
     }
   };
 
-  /** One hop from `v` through `ident` to `target`: recurse into the
-   * target's own constraints and fold them onto the hop. */
   const hopPred = (
     ident: string,
     reverse: boolean,
@@ -288,13 +243,11 @@ export const lowerElemFilter = (
     const e: Position | undefined = c.eVar ?? c.e0;
     const val: Position | undefined = c.vVar ?? c.v0;
     if (isVar(e) && e.id === v.id) {
-      // forward hop: [elem ident val]
       if (isVar(val)) return hopPred(ident, false, val, list);
       if (val === undefined || isBlank(val)) return exists(ident, false);
       return { path: [ident], op: "=", value: lowerValue(val) };
     }
     if (isVar(val) && val.id === v.id) {
-      // reverse hop: [e ident elem] — who points at the element
       if (!isRefAttr(c.attr)) {
         err(
           `the where filter on ${attr.ident} walks ${ident} backwards — only a reference can be read from its target`,
@@ -327,7 +280,6 @@ export const lowerElemFilter = (
       );
     }
     if (op === "re-find?") {
-      // kernel spelling is matches(v, re): pattern first on the wire
       const [pattern, subject] = args;
       if (!(isVar(subject) && subject.id === v.id)) {
         err(

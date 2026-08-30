@@ -90,7 +90,6 @@ import {
 } from "./public-observation.ts";
 
 export interface ServerOptions {
-  /** Concrete route database -> exact private runnable catalog definition. */
   readonly operationCatalogs?: OperationCatalogs;
 }
 
@@ -130,13 +129,11 @@ const deploymentVersion = (env: RamoseEnv): string | undefined => {
 };
 
 export interface RequestInfo {
-  /** Trusted route database from the request path. Not a JWT claim. */
   db: string;
   path: string;
   route: Route;
 }
 
-/** Pure HTTP restatement used by the request boundary and unit tests. */
 export const respond = (
   err: RamoseError,
   request?: Request,
@@ -213,7 +210,6 @@ const decodeDatabaseName = (
     catch: () => new BadRequest({ message: "invalid database name" }),
   });
 
-/** Consume at most the public activation bound, even without Content-Length. */
 const readReplicationActivation = async (request: Request): Promise<string> => {
   const declared = request.headers.get("content-length");
   if (
@@ -367,9 +363,6 @@ export const handle = (
         stacks: env.RAMOSE_STAGE !== "prod",
       })));
     }
-    // Experimental agent surface (#484). Authentication has already happened
-    // above, so a missing or invalid credential is a challenge, never a tool
-    // result. Everything past this point is per-call authorization.
     if (rest === "/mcp" && request.method === "POST") {
       if (databaseBindings === undefined) {
         return yield* new Unauthorized({ status: 403 });
@@ -402,9 +395,6 @@ export const handle = (
         try: () => invokeAuthoritativeOperation(
           env,
           database,
-          // The public origin the opaque-handle scope is bound to. It comes
-          // from the request the caller was authenticated on, never from the
-          // body, and matches the origin logical replication derives (#475).
           new URL(request.url).origin,
           {
             catalogKey,
@@ -454,10 +444,6 @@ export const handle = (
               provision: (route, derivation) =>
                 provisionResolvedDatabase(env, route, derivation),
             }, (authorized) => Effect.succeed(authorized));
-            // Path resolution is a short, one-shot read lease. Once it has
-            // succeeded, the authoritative Transactor owns the operation's
-            // independent JWT-expiry fence; trusted bodies are not capped by
-            // the read lease merely because their database is nested.
             return yield* invoke(
               target.route.database,
               target.route.deployed.catalogKey,
@@ -465,9 +451,6 @@ export const handle = (
               target.derivation,
             );
           });
-      // The Transactor fences expiry before commit and acknowledgement. This
-      // final Worker checkpoint is after that awaited hop; once released, the
-      // exact-expiry check and response construction are synchronous.
       yield* Effect.tryPromise({
         try: () => boundaries?.checkpoint("operation.response") ?? Promise.resolve(),
         catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
@@ -477,8 +460,6 @@ export const handle = (
       if (!Number.isSafeInteger(caller.exp) || caller.exp * 1_000 <= Date.now()) {
         return yield* new Unauthorized({ status: 403 });
       }
-      // The shared receipt projection strips the internal writer position,
-      // scope, and digests. Codec-owned output stays exact JSON.
       const projected = publicOperationResult(ack);
       return new Response(JSON.stringify(
         projected.status === 200
@@ -535,17 +516,10 @@ export const handle = (
         catch: (cause) => new OneShotReadError({ cause }),
       });
       if (rest === "/live") {
-        // Admission remains an ordinary complete-path one-shot read. The body
-        // then watches target changes and reauthorizes that complete path on
-        // every wake and bounded idle renewal.
         const target = yield* executeAuthorizedGraphPathTarget(
           pathInput,
           (authorized) => readTarget(authorized).pipe(Effect.as(authorized)),
         ).pipe(Effect.mapError(mapReadError));
-        // One target wake socket is sufficient for result freshness. Ancestor
-        // changes are authoritative on the next complete-path renewal (and
-        // may use the optional early-invalidation seam); holding one socket
-        // per segment would exceed Cloudflare's connection limit on deep paths.
         const liveWatch = watchBasisChanges(
           env,
           target.route.database,
@@ -560,8 +534,6 @@ export const handle = (
             bypassBasisCache: true,
             authoritativeBasisFence: true,
           }),
-          // Admission already provisioned every authorized child. Renewal is
-          // authorization-only and must not create a per-lease write path.
           provision: () => Effect.void,
           basisChanges: liveWatch.changes,
           expectedLeaseIdentity: graphPathLeaseIdentity(target, parsed.path),

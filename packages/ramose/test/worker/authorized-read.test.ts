@@ -1,8 +1,3 @@
-/**
- * HTTP parse for one-shot reads — catalog proof, view, and read shape.
- * No Durable Objects; Request objects only.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { Unauthorized } from "../../src/db/Errors.ts";

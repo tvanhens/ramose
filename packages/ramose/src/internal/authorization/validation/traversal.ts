@@ -1,7 +1,3 @@
-/**
- * Path resolution and traversal constraints against the prepared catalog.
- */
-
 import * as Result from "effect/Result";
 import type { FieldDescriptor } from "../catalog.ts";
 import type { CanonicalRefTerm, CanonicalValueTerm } from "../expr.ts";

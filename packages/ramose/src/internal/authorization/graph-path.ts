@@ -1,14 +1,3 @@
-/**
- * Authenticated hierarchical Graph routing.
- *
- * Every segment is found through that database's ordinary filtered current
- * Db. Only after the row, protected concrete type, and path-name field are
- * visible does routing read the engine-owned catalog key from the exact
- * authorized entity and derive the sealed child route. Physical provisioning
- * is a narrow framework callback invoked after that authorization decision;
- * it is never part of an operation context.
- */
-
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -47,7 +36,6 @@ export class InvalidGraphPath extends Data.TaggedError("InvalidGraphPath")<{
   readonly reason: string;
 }> {}
 
-/** Missing and filtered-away rows deliberately share this internal shape. */
 export class GraphPathSegmentInaccessible extends Data.TaggedError(
   "GraphPathSegmentInaccessible",
 )<{
@@ -56,7 +44,6 @@ export class GraphPathSegmentInaccessible extends Data.TaggedError(
   readonly segment: string;
 }> {}
 
-/** A visible row carrying the path-name field does not implement Graph. */
 export class GraphPathSegmentWrongKind extends Data.TaggedError(
   "GraphPathSegmentWrongKind",
 )<{
@@ -66,7 +53,6 @@ export class GraphPathSegmentWrongKind extends Data.TaggedError(
   readonly graphEntity: number;
 }> {}
 
-/** The exact authorized Graph row lacks one valid protected catalog key. */
 export class GraphPathCatalogUnavailable extends Data.TaggedError(
   "GraphPathCatalogUnavailable",
 )<{
@@ -75,7 +61,6 @@ export class GraphPathCatalogUnavailable extends Data.TaggedError(
   readonly graphEntity: number;
 }> {}
 
-/** The database's deployed policy could not construct its filtered value. */
 export class GraphPathAuthorizationFailed extends Data.TaggedError(
   "GraphPathAuthorizationFailed",
 )<{
@@ -83,7 +68,6 @@ export class GraphPathAuthorizationFailed extends Data.TaggedError(
   readonly index: number;
 }> {}
 
-/** A real database acquisition or lookup failed while resolving the path. */
 export class GraphPathDatabaseUnavailable extends Data.TaggedError(
   "GraphPathDatabaseUnavailable",
 )<{
@@ -92,7 +76,6 @@ export class GraphPathDatabaseUnavailable extends Data.TaggedError(
   readonly cause: unknown;
 }> {}
 
-/** Authorized child storage could not be provisioned idempotently. */
 export class GraphPathProvisioningFailed extends Data.TaggedError(
   "GraphPathProvisioningFailed",
 )<{
@@ -111,28 +94,22 @@ export type GraphPathFailure =
   | GraphPathProvisioningFailed
   | DynamicDatabaseBindingFailure;
 
-/** Every authenticated path failure has the same caller-visible result. */
 export const opaqueGraphPathDenial = (
   _error: GraphPathFailure,
 ): Unauthorized => new Unauthorized({ status: 403 });
 
 export type AuthorizedGraphPathInput<R = never, EDb = unknown, EProvision = unknown> = {
   readonly bindings: DatabaseCatalogBindings;
-  /** Configured, opaque root route selected by server routing. */
   readonly root: ResolvedDatabaseRoute;
-  /** Caller-visible mutable Graph names, relative to the configured root. */
   readonly path: readonly string[];
   readonly currentDb: (database: DatabaseId) => Effect.Effect<Db, EDb, R>;
-  /** Idempotently ensure the already-authorized child route has storage. */
   readonly provision: (
     route: ResolvedDatabaseRoute,
     derivation: DatabaseRouteDerivation,
   ) => Effect.Effect<void, EProvision, R>;
-  /** Applies only to the target database; every path segment is current. */
   readonly view?: AuthorizedRequestView;
 };
 
-/** Stable lifecycle dependency for one authorized Graph path segment. */
 export type GraphPathLeaseDependency = {
   readonly parentDatabase: DatabaseId;
   readonly graphEntity: number;
@@ -144,11 +121,6 @@ export type GraphPathLeaseRouteIdentity = {
   readonly unitHash: CatalogUnitHash;
 };
 
-/**
- * Complete, opaque identity of the path authorized for one live stream.
- * Authorization is still the filtered-Db traversal above; this value only
- * prevents a renewed lease from silently moving to another path target.
- */
 export type GraphPathLeaseIdentity = {
   readonly rootDatabase: DatabaseId;
   readonly path: readonly string[];
@@ -160,9 +132,7 @@ export type AuthorizedGraphPathTarget = {
   readonly route: ResolvedDatabaseRoute;
   readonly derivation: DatabaseRouteDerivation;
   readonly context: AuthorizedRequestContext;
-  /** Configured root through target, in traversal order. */
   readonly routes: readonly ResolvedDatabaseRoute[];
-  /** Lifecycle/path invalidation keys, in segment order. */
   readonly dependencies: readonly GraphPathLeaseDependency[];
 };
 
@@ -224,11 +194,6 @@ export type CatalogProvisioningAttribute = {
   readonly ":db/doc"?: string;
 };
 
-/**
- * Definition-directed schema facts for a fresh dynamic database. This is
- * framework provisioning data, not database-resident catalog authority: the
- * installed unit, policy, operations, hashes, and binding remain in code.
- */
 export const catalogProvisioningAttributes = (
   definition: InstalledCatalogDefinition,
 ): readonly CatalogProvisioningAttribute[] =>
@@ -405,11 +370,6 @@ const lookupAuthorizedGraph = Effect.fn(
   });
 });
 
-/**
- * Resolve one authenticated path and retain rich failures for framework logs.
- * Callers should normally use {@link executeAuthorizedGraphPath}, which
- * collapses these details before an external response.
- */
 export const resolveAuthorizedGraphPath = Effect.fn(
   "Authorization.resolveAuthorizedGraphPath",
 )(function* <R, EDb, EProvision>(
@@ -481,7 +441,6 @@ export type ExecuteAuthorizedGraphPathInput<
   readonly interruptAfter?: import("effect/Duration").Input;
 };
 
-/** Authenticate once and retain the sealed target for framework routing. */
 export const executeAuthorizedGraphPathTarget = Effect.fn(
   "Authorization.executeAuthorizedGraphPathTarget",
 )(function* <A, E, R, EDb = unknown, EProvision = unknown>(
@@ -496,7 +455,6 @@ export const executeAuthorizedGraphPathTarget = Effect.fn(
   );
 });
 
-/** Authenticate once, resolve every boundary, then expose only target data. */
 export const executeAuthorizedGraphPath = Effect.fn(
   "Authorization.executeAuthorizedGraphPath",
 )(function* <A, E, R, EDb = unknown, EProvision = unknown>(

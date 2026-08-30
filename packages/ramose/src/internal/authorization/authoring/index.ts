@@ -1,10 +1,3 @@
-/**
- * Read-authorization authoring language (#406).
- *
- * Compiles to catalog-relative {@link import("../ir.ts").PolicyTemplateIR}.
- * Not a public `ramose` / `ramose/db` export.
- */
-
 export {
   allow,
   all,

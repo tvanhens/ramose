@@ -50,7 +50,7 @@ describe("documentation-free replica schema", () => {
       replicaAttributes(documented),
       replicaAttributes(undocumented),
     )).toBe(true);
-    // Ordering is canonical, so input order cannot change the comparison.
+
     expect(sameReplicaAttributes(
       replicaAttributes(documented),
       replicaAttributes([...documented].reverse()),
@@ -106,7 +106,7 @@ describe("documentation-free replica schema", () => {
     expect(() => replicaAttributes([
       { ident: ":item/name", valueType: ":db.type/string", unique: "sometimes" as "value" },
     ])).toThrow(/unknown uniqueness/);
-    // Documentation on a built-in attribute is accepted; a real disagreement is not.
+
     expect(replicaAttributes([
       { ident: ":ramose/type", valueType: ":db.type/string", index: true, doc: "rewritten" },
     ])).toHaveLength(1);

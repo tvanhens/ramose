@@ -1,15 +1,3 @@
-/**
- * The stack: providers and outputs.
- *
- * Run it with `bun alchemy dev examples/kv-style/alchemy.run.ts` (from the repo
- * root — the Worker's `main` is repo-relative), then curl the `url` output.
- *
- * Everything that touches the engine (`Alchemy.Stack`, `Cloudflare.providers()`)
- * stays in this file; the Worker that bundles itself with
- * `main: import.meta.url` lives in `app.ts`. See the note there for the
- * alchemy 2.0.0-beta.72 bundling issue that forces the split.
- */
-
 import * as Ramose from "ramose";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";

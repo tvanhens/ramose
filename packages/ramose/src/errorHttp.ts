@@ -1,15 +1,3 @@
-/**
- * Map a public {@link DbError} to HTTP status + JSON body.
- *
- * For app Workers / routes that proxy Ramose — one call instead of a
- * 9-arm `catchTags`. Does not live on `ramose/db`, so the browser graph
- * stays free of an HTTP helper. Import from `ramose` or `ramose/worker`.
- *
- * This helper and the peer Worker share the same public field/header
- * allowlist. Rich tagged errors remain useful inside trusted code, but their
- * engine and policy detail is not a public transport contract.
- */
-
 import { type DbError, InternalError, isDatabaseError } from "./db/Errors.ts";
 import {
   publicErrorBody,

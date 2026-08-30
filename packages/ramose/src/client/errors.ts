@@ -1,5 +1,3 @@
-/** Typed failures the public client surface raises. */
-
 import * as Data from "effect/Data";
 
 /**
@@ -30,13 +28,7 @@ export class ClientClosedError extends Data.TaggedError("ClientClosedError")<{
 
 /** Why `clearLocalData()` deleted nothing. */
 export type ClientLocalDataFailure =
-  /**
-   * No server/principal scope this client can name has ever been confirmed by
-   * an authenticated response — so there is nothing it is entitled to delete,
-   * and a guessed scope must never stand in for one.
-   */
   | "no-confirmed-scope"
-  /** Storage refused or failed the deletion; the prior state is intact. */
   | "storage";
 
 /**
@@ -52,27 +44,11 @@ export class ClientLocalDataError extends Data.TaggedError(
 
 /** Why a graph path does not name a database this client may read. */
 export type GraphPathFailure =
-  /**
-   * The path names no entity this client may read.
-   *
-   * Deliberately one answer for two causes: an entity that does not exist and
-   * an entity the read policy hides are indistinguishable here, and must stay
-   * that way — a distinguishable "hidden" would be a disclosure.
-   */
   | "unavailable"
-  /**
-   * The path matches more than one entity. Never resolved by picking one: an
-   * arbitrary selection would silently address the wrong database, and a
-   * mutation queued against it would be unrecoverable.
-   */
   | "ambiguous"
-  /** An ancestor's authorization was revoked, or its principal was replaced. */
   | "unauthorized"
-  /** This build cannot read an ancestor's current authorized view. */
   | "update-required"
-  /** An ancestor was closed, so nothing maintains the path any more. */
   | "closed"
-  /** The canonical resolution query could not run against the parent. */
   | "query";
 
 /**
@@ -89,19 +65,10 @@ export class GraphPathError extends Data.TaggedError("GraphPathError")<{
 
 /** Why an invocation could not be addressed to one stable database. */
 export type GraphReceiverFailure =
-  /** The path has not resolved, and terminated rather than resolving. */
   | "unresolved"
-  /** The path matches more than one entity, so there is no one receiver. */
   | "ambiguous"
-  /**
-   * The credential no longer opens this database, or its principal was
-   * replaced. A session keeps its prior identity while it fences the rows, so
-   * this is checked before that identity may address durable work.
-   */
   | "unauthorized"
-  /** This build cannot read this database's authorized view, or replay against it. */
   | "update-required"
-  /** The database was closed before its receiver was known. */
   | "closed";
 
 /**

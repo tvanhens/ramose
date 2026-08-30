@@ -1,7 +1,3 @@
-/**
- * Checkpoint registry is pure isolate state. Arming, waiting, throwing, and
- * the prod-stage gate do not need a Worker.
- */
 import { describe, expect, test } from "bun:test";
 import {
   armCheckpoint,
@@ -35,7 +31,7 @@ describe("test hooks", () => {
     armCheckpoint("transactor.commit", "throw", "induced");
     expect(testHooksArmed()).toBe(true);
     await expect(checkpoint("transactor.commit")).rejects.toThrow("induced");
-    // one-shot
+
     await checkpoint("transactor.commit");
   });
 

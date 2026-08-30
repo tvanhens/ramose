@@ -1,13 +1,3 @@
-/**
- * The deterministic speculative overlay (#476 slice 1).
- *
- * The committed value here is built exactly the way a restored replica is —
- * canonical replica attributes, the replica's own schema datoms, facts through
- * `replicaFactDatom`, roots over the engine's own node store — so the overlay
- * is exercised against a real `Db`, and the real query engine and pull answer
- * every question about it. Durability and the observation fence are slice 2.
- */
-
 import { beforeAll, describe, expect, test } from "bun:test";
 import {
   runProjection,
@@ -72,9 +62,9 @@ const handle = (fill: string): EntityId =>
 const ALPHA = handle("A");
 const BETA = handle("B");
 const USER = handle("C");
-/** Authoritative, but not in this replica yet. */
+
 const UNSEEN = handle("D");
-/** A handle this client has simply never been given. */
+
 const STRANGER = handle("E");
 
 let committed: Db;
@@ -159,14 +149,12 @@ const layer = (
   sequence: ++sequence,
   state: "queued",
   activation: null,
-  // Every ref the changeset names, unless a case is explicitly narrowing the
-  // declared set: slice 2's durable row carries exactly this list.
+
   declared: declaredIn(changeset),
   changeset,
   ...overrides,
 });
 
-/** The refs a changeset names, as the durable layer would have recorded them. */
 const declaredIn = (
   changeset: ProjectionChangeset,
 ): readonly MutationRef[] => {
@@ -245,7 +233,7 @@ describe("query membership", () => {
     expect(
       await query(db, `[:find [?e ...] :where [?e :issue/owner ?u]]`),
     ).toEqual([]);
-    // The issue itself survives; only the dangling reference is gone.
+
     expect(await titles(db)).toEqual(["alpha", "beta"]);
   });
 });
@@ -306,8 +294,7 @@ describe("values", () => {
 
 describe("layer order", () => {
   test("a second write inside one layer replaces the first", async () => {
-    // The fold is per operation: two sets of one cardinality-one field in the
-    // same projection must leave one value, exactly as two layers would.
+
     const db = await view([
       layer(authored((tx) => tx.set(ALPHA, title, "first").set(ALPHA, title, "second"))),
     ]);
@@ -443,7 +430,7 @@ describe("client-ref aliasing", () => {
       `[:find ?t ?r :where [?e :issue/title ?t] [?e :issue/rank ?r] :order [?r :asc]]`,
     );
     expect(rows).toEqual([[ "alpha", 1 ], [ "beta", 2 ], [ "gamma", 7 ]]);
-    // One speculative entity, keyed by the authoritative handle — not two.
+
     expect([...result.speculative]).toEqual([[UNSEEN, committed.nextEid]]);
   });
 
@@ -471,8 +458,7 @@ describe("rejection removes exactly one layer", () => {
     const rejected = layer(authored((tx) => tx.set(BETA, title, "two")));
     const third = layer(authored((tx) => tx.set(ALPHA, rank, 30)));
     expect(await titles(await view([first, rejected, third]))).toEqual(["one", "two"]);
-    // Removing the middle layer replays the third at its new position; the
-    // result is indistinguishable from never having queued the rejected one.
+
     const rebuilt = await view([first, third]);
     const fresh = await view([layer(first.changeset), layer(third.changeset)]);
     expect(await dump(rebuilt)).toEqual(await dump(fresh));
@@ -575,12 +561,6 @@ describe("slice-1 gate carry-forwards (#476 slice 2)", () => {
       `${refusal.index}:${refusal.reason}`
     );
 
-  /**
-   * N2. A committed value that applied a change since it was last flushed
-   * carries datoms in novelty that no tree root holds. Installing a fresh
-   * `Novelty` would drop them, and the overlay would answer from a *stale*
-   * committed basis while claiming the current one.
-   */
   test("seeds from the committed value's own novelty", async () => {
     const novelty = new Novelty();
     const attribute = committed.schema.attr(":issue/title")!.id;
@@ -617,13 +597,6 @@ describe("slice-1 gate carry-forwards (#476 slice 2)", () => {
     }
   });
 
-  /**
-   * N3. `replication.md` says a projection may create *or use* a `ClientRef`
-   * only through a declared slot; slice 1 enforced that on `create` alone. The
-   * durable layer now carries the refs the invocation was given, so the rule is
-   * closed on every verb — while the input-supplied case stays open, which is
-   * why `set` could not simply be narrowed to allocations.
-   */
   test("refuses a client ref the durable layer does not account for", async () => {
     const stray = clientRef();
     expect(
@@ -644,10 +617,7 @@ describe("slice-1 gate carry-forwards (#476 slice 2)", () => {
   });
 
   test("a ref one layer declared is not nameable by another", async () => {
-    // Nameability is per layer. The shared resolution map must not turn a ref
-    // the first layer legitimately owns into one the second may name — that is
-    // the closed rule's whole point, and it is only closed if the declaration
-    // is checked before the map is consulted.
+
     const mine = clientRef();
     const owner = layer(authored((tx) => tx.create("draft", Issue), { draft: mine }), {
       declared: [mine],
@@ -656,10 +626,10 @@ describe("slice-1 gate carry-forwards (#476 slice 2)", () => {
       declared: [],
     });
     expect(await refusalsOf([owner, foreign])).toEqual(["0:undeclared-ref"]);
-    // And the owning layer still resolves it, in the same view.
+
     expect((await overlay([owner, foreign])).db).toBeDefined();
     expect(await titles(await view([owner, foreign]))).toEqual(["alpha", "beta"]);
-    // Declared by both, it is nameable by both.
+
     const shared = layer(authored((tx) => tx.set(mine, title, "borrowed")), {
       declared: [mine],
     });
@@ -683,8 +653,7 @@ describe("slice-1 gate carry-forwards (#476 slice 2)", () => {
         }),
       ]),
     ).toEqual([]);
-    // Committed-mapped needs no declaration: the authoritative receipt that
-    // produced the mapping is itself the account of that ref.
+
     const mapped = clientRef();
     expect(
       await refusalsOf(
@@ -694,11 +663,6 @@ describe("slice-1 gate carry-forwards (#476 slice 2)", () => {
     ).toEqual([]);
   });
 
-  /**
-   * N4. Naming a mapped handle *before* the client ref that aliases it was an
-   * `unknown-entity` refusal, while naming it after resolved. Both orders
-   * express the same intent, so every alias is bound in one pass first.
-   */
   test("resolves a mapped handle whichever order the layers name it in", async () => {
     const ref = clientRef();
     const byHandleFirst: OverlayLayers = [
@@ -711,18 +675,11 @@ describe("slice-1 gate carry-forwards (#476 slice 2)", () => {
     ];
     expect(await refusalsOf(byHandleFirst, { [ref]: UNSEEN })).toEqual([]);
     expect(await refusalsOf(byRefFirst, { [ref]: UNSEEN })).toEqual([]);
-    // One entity, never two, in either order.
+
     expect((await overlay(byHandleFirst, { [ref]: UNSEEN })).speculative.size).toBe(1);
     expect((await overlay(byRefFirst, { [ref]: UNSEEN })).speculative.size).toBe(1);
   });
 
-  /**
-   * N5. `delete` retracts every datom the entity holds, `:ramose/type`
-   * included; a later `set` in the same layer then asserts an attribute datom
-   * on an entity that no longer claims a type. That is exactly what
-   * retract-then-assert means, and the intent is pinned here rather than left
-   * to be rediscovered.
-   */
   test("delete then set in one layer resurrects the attribute, not the type", async () => {
     const db = await view([layer(authored((tx) => {
       tx.delete(ALPHA).set(ALPHA, title, "resurrected");

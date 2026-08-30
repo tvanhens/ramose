@@ -4,9 +4,6 @@ import { wgslVitePlugin } from "vgpu/client";
 import { defineConfig } from "astro/config";
 import remarkExtractSnippets from "./scripts/remark-extract-snippets.mjs";
 
-// Public canonical origin. The Worker keeps its physical name (`ripple-docs`,
-// see alchemy.run.ts) and its workers.dev hostname; ramose.ai is the custom
-// domain the site is published under.
 const site = "https://ramose.ai";
 
 export default defineConfig({
@@ -17,10 +14,7 @@ export default defineConfig({
   markdown: {
     remarkPlugins: [remarkExtractSnippets],
   },
-  // Old URLs from before the docs overhaul. Astro emits a static
-  // meta-refresh page per entry; fragments are kept in the target URL.
-  // These stubs have no <html> element, so every build Pagefind logs
-  // "7 pages found without an <html> element" and skips them. Expected.
+
   redirects: {
     "/guides/auth/": "/reference/policy/",
     "/concepts/databases-are-names/": "/guides/workspaces/",
@@ -38,8 +32,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "Ramose",
-      // Default meta description for any page without its own (today: /404).
-      // Keep it under 160 characters — Google truncates around there.
+
       description:
         "One offline-first database for your app and its agents, with generated MCP tools and exactly the same permissions for both.",
       favicon: "/favicon.svg",
@@ -91,9 +84,7 @@ export default defineConfig({
         ThemeSelect: "./src/components/ThemeSelect.astro",
       },
       expressiveCode: {
-        // `vesper` gives us a restrained, near-monochrome base. Frame chrome
-        // is pinned to the brand's black / graphite / orange palette below so
-        // code blocks sit on the same surfaces as the rest of the page.
+
         themes: ["vesper"],
         styleOverrides: {
           borderRadius: "0.625rem",

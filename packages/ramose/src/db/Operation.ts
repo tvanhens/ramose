@@ -1,14 +1,3 @@
-/**
- * Explicitly defined, schema-checked operations — the typed write path.
- *
- * An operation is a named value: input/output are `effect/Schema`, the body
- * is an async function. Transaction verbs accumulate one authoritative
- * commit; `op.effect` is a server-side side-effect step.
- *
- * Portable: this module is on `ramose/db` and must not import the Worker
- * or the engine barrel.
- */
-
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
@@ -46,11 +35,6 @@ import {
   type UpdateMapAttrs,
 } from "./Tx.ts";
 
-/**
- * `true` when `C` is a concrete catalog (keys are entity names). The
- * `AnySchema` bound is `Record<string, …>` — `string extends keyof` — and
- * `TxValue` against that bound is `never`.
- */
 type ConcreteCatalog<C extends AnySchema> = string extends keyof C["entities"]
   ? false
   : true;
@@ -74,11 +58,6 @@ type OpUpdateMapAttrs<C extends AnySchema, E extends AnyEntity> =
     ? UpdateMapAttrs<C, E, TxHandle<C> | AnyOpHandle<C>>
     : Record<string, unknown>;
 
-/**
- * Field slot on the op handle. Same union as {@link TxField} once the
- * catalog is known. Against the open `AnySchema` bound: a field ref or
- * an ident string (`":user/name"`), matching `TxField`'s two spellings.
- */
 export type OpField<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? TxField<C>
   : { readonly ident: string } | string;
@@ -89,20 +68,10 @@ type FieldRefValue<C extends AnySchema, A> = A extends {
   ? T | (A extends { readonly valueType: "ref" } ? EntityRef<C, AnyEntity, TxHandle<C> | AnyOpHandle<C>> : never)
   : unknown;
 
-/**
- * Value correlated to an {@link OpField}. Delegates to {@link TxValue}
- * on a concrete catalog — ref fields use the shared {@link EntityRef}
- * vocabulary (no bare `string`). Against `AnySchema`, a field ref uses
- * its Schema type; an ident string is `unknown`.
- */
 export type OpValue<C extends AnySchema, A> = [ConcreteCatalog<C>] extends [true]
   ? TxValue<C, A, TxHandle<C> | AnyOpHandle<C>>
   : FieldRefValue<C, A>;
 
-/**
- * Entity slot on the op handle. Same bag as {@link TxEntity}, plus any
- * {@link OpHandle} — including contextual `self` (`Eid<N> | Tempid`).
- */
 export type OpEntity<C extends AnySchema> = TxEntity<C> | AnyOpHandle<C>;
 
 type OpPutSubject<C extends AnySchema, E extends AnyEntity> =
@@ -110,34 +79,18 @@ type OpPutSubject<C extends AnySchema, E extends AnyEntity> =
     ? PutSubject<C, E, TxHandle<C> | AnyOpHandle<C>>
     : OpEntity<C>;
 
-/**
- * A contextual operation's entity — the shared {@link EntityRef} vocabulary,
- * narrowed to `N`. A branded cell of the wrong entity is rejected. The
- * unbranded-number hatch remains (mint-by-id). Bare `string` does not —
- * pass {@link Tempid} (`op.tempid("ada")` / `tempid("ada")`).
- */
 export type RunEntity<C extends AnySchema, N extends AnyEntity> = EntityRef<
   C,
   N,
   TxHandle<C> | AnyOpHandle<C>
 >;
 
-/**
- * Distributes over a union `C` so every member must cover `OC`. A
- * `Movies | Alt` db therefore rejects a Movies-bound op; a superset db
- * (extra entity keys) accepts it.
- */
 type CatalogCovers<C extends AnySchema, OC extends AnySchema> = C extends AnySchema
   ? keyof OC["entities"] extends keyof C["entities"]
     ? true
     : false
   : false;
 
-/**
- * Whether operation catalog `OC` may run on db catalog `C`. A schema-less
- * op (open `AnySchema` bound) runs anywhere; a `schema:`-bound op runs on
- * a db that has at least that catalog's entity keys.
- */
 export type OpCatalogFitsDb<
   C extends AnySchema,
   OC extends AnySchema,
@@ -147,26 +100,11 @@ export type OpCatalogFitsDb<
     ? true
     : false;
 
-/** Parameter type when {@link OpCatalogFitsDb} is false — names the catalog. */
 export type OpCatalogMismatch = "operation schema does not match this db";
 
-/** `I` / entity argument, or {@link OpCatalogMismatch} when the catalogs diverge. */
 export type RunArg<C extends AnySchema, OC extends AnySchema, A> =
   OpCatalogFitsDb<C, OC> extends true ? A : OpCatalogMismatch;
 
-/**
- * Schema for an entity id in operation input / output.
- *
- * The decoded type is `number`, which is the *private* eid the authoritative
- * writer works in. A body may return a handle (or `{ id: handle }`) in an
- * `EntityId` slot; authoritative execution resolves it after the writer assigns
- * eids. What crosses the operation boundary is never that number: the public
- * projection seals every `EntityId` position of the result into the opaque
- * {@link EntityId} handle below. Sealing is deterministic per
- * `(root, scope, eid)`, so that is byte-identical to the handle an allocation
- * mapping returns and to the one logical replication binds to the same entity
- * in the same scope — one identity, three carriers (#475, #477).
- */
 export const EntityId: typeof untargetedRef = untargetedRef;
 
 /**
@@ -182,10 +120,6 @@ export type EntityId<Entity extends AnyEntity = AnyEntity> = OpaqueEntityId<
   Entity
 >;
 
-/**
- * What a body may return for output type `O`: a handle is legal
- * wherever the schema expects a number (an {@link EntityId} slot).
- */
 export type OutputDraft<O> = O extends number
   ? O | { readonly _tag: "TxHandle" }
   : O extends ReadonlyArray<infer U>
@@ -207,7 +141,6 @@ export interface OpPrincipal {
  * What an `op.effect` thunk receives during authoritative execution.
  */
 export interface OperationEffectContext {
-  /** Worker env (bindings, secrets). Opaque on the portable surface. */
   readonly env: unknown;
   readonly principal: OpPrincipal;
 }
@@ -216,18 +149,11 @@ export type EffectThunk<A = unknown> = (
   ctx: OperationEffectContext,
 ) => Promise<A> | A;
 
-/** Id a non-contextual handle names — unbranded so it is valid in any ref slot. */
 export type OpHandleId<C extends AnySchema = AnySchema> =
   | UnbrandedId
   | Tempid
   | LookupRef<C>;
 
-/**
- * Entity handle a body writes through. Promise-surface twin of
- * {@link TxHandle}: same field / value / entity slots, methods return
- * `void` instead of `Effect`. `Id` defaults to {@link OpHandleId};
- * contextual `self` specializes it to `Eid<N> | Tempid`.
- */
 export interface OpHandle<
   C extends AnySchema = AnySchema,
   Id = OpHandleId<C>,
@@ -239,10 +165,8 @@ export interface OpHandle<
   delete(): void;
 }
 
-/** Any handle, including contextual `self`. */
 export type AnyOpHandle<C extends AnySchema = AnySchema> = OpHandle<C, any>;
 
-/** Entity or trait that canonically owns an operation. */
 export type OperationOwner = AnyEntity | AnyTrait;
 
 /**
@@ -340,7 +264,6 @@ type EntityRefOf<Entity extends AnyEntity> = EntityRef<
   OwnedHandleRef<EntityIdentity<Entity>>
 >;
 
-/** Entity-specialized handle returned by definition-directed writes. */
 export type OwnedEntityHandle<Entity extends AnyEntity> = Omit<
   OpHandle<AnySchema>,
   "eid" | "set" | "remove"
@@ -356,7 +279,6 @@ export type OwnedEntityHandle<Entity extends AnyEntity> = Omit<
   ): void;
 };
 
-/** A targeted handle only accepts fields carried by its canonical owner. */
 export type OwnedTargetHandle<Owner extends OperationOwnerShape> = Omit<
   OpHandle<AnySchema>,
   "eid" | "set" | "remove"
@@ -481,7 +403,6 @@ type UpdateMapAttrsForEntity<Entity extends AnyEntity> = [
       UpsertKeys<Entity> & keyof MutableAttrsOf<Entity>
     >;
 
-/** Complete create input for an entity owner, including flattened trait fields. */
 type OwnerCreateAttrs<Owner extends OperationOwnerShape> = Owner extends {
   readonly _tag: "Entity";
   readonly fields: AnyEntity["fields"];
@@ -495,10 +416,6 @@ type OwnedEntityRef<Owner extends OperationOwnerShape> = EntityRef<
   OwnedHandleRef<OwnedInvocationEntity<Owner>>
 >;
 
-/**
- * Operation body surface after an owner map binds the definition.
- * Targetless entity operations gain `create`; targeted operations gain `self`.
- */
 export type OwnedOp<
   Owner extends OperationOwnerShape,
   Self extends boolean,
@@ -575,7 +492,6 @@ export type OwnedOp<
     : undefined;
 };
 
-/** Context available while an operation is still waiting for its owner map. */
 type UnboundOwnedOp<Self extends boolean> = Omit<Op<AnySchema, undefined>, "self"> & {
   readonly self: Self extends true ? unknown : undefined;
   readonly create: Self extends false
@@ -592,22 +508,14 @@ export interface Op<
   C extends AnySchema = AnySchema,
   N extends AnyEntity | undefined = undefined,
 > {
-  /**
-   * The entity a contextual operation is bound to (`on: Entity`).
-   * Absent on a non-contextual operation. `eid` is the `on` cell — an
-   * {@link Eid} or a {@link Tempid} supplied by the authoritative invocation.
-   */
   readonly self: [N] extends [AnyEntity]
     ? OpHandle<C, Eid<N> | Tempid>
     : undefined;
-  /** The authenticated caller. */
   readonly principal: OpPrincipal;
-  /** Database name this invocation is bound to. */
   readonly db: string;
 
   entity(): OpHandle<C>;
   entity(id: OpEntity<C>): OpHandle<C>;
-  /** Brand a string as a named tempid. Not a bare `string`. */
   tempid(name: string): Tempid;
   set<const A extends OpField<C>>(
     e: OpEntity<C>,
@@ -621,23 +529,6 @@ export interface Op<
   ): void;
   delete(e: OpEntity<C>): void;
 
-  /**
-   * Make this row so. Lowers to map form. `undefined` fields are
-   * omitted; cardinality-many takes an array. No subject allocates a
-   * new record and the map must carry every required field. A numeric
-   * subject names an existing record — a missing id is
-   * `TxRejected` `tx/missing-entity` (same as {@link Op.update}; naming
-   * never creates). A tempid / handle subject is a create.
-   *
-   * Including a `unique: "upsert"` field unifies with the existing row
-   * — insert-or-update, still with full required data on create.
-   * Partial writes to an existing row are {@link Op.update}.
-   *
-   * A two-element array whose first value is an ident (`":…"`) is a
-   * lookup on a ref field. On a cardinality-many scalar field, that
-   * shape is expanded to one value per element so `tags: [":a", "b"]`
-   * writes two strings.
-   */
   put<E extends OpKnownEntity<C>>(
     entity: E,
     attrs: OpPutCreateAttrs<C, E>,
@@ -648,13 +539,6 @@ export interface Op<
     attrs: OpPutAttrs<C, E>,
   ): OpHandle<C>;
 
-  /**
-   * Change what's there. Partial; never creates. Address by subject
-   * (eid / handle / branded cell / lookup) or by a map that contains
-   * at least one `unique: "upsert"` field. Missing row →
-   * `TxRejected` `tx/missing-entity`. Wrong-entity subject →
-   * `tx/wrong-entity`.
-   */
   update<E extends OpKnownEntity<C>>(
     entity: E,
     attrs: OpUpdateMapAttrs<C, E>,
@@ -672,10 +556,6 @@ export interface Op<
 
   pull(subject: unknown, pattern: unknown): Promise<unknown>;
 
-  /**
-   * A named authoritative side-effect step, executed with
-   * {@link OperationEffectContext}.
-   */
   effect<A>(name: string, run: EffectThunk<A>): Promise<A>;
 }
 
@@ -691,7 +571,6 @@ export interface Operation<
   readonly input: Schema.Codec<I, unknown>;
   readonly output: Schema.Codec<O, unknown>;
   readonly on: N | undefined;
-  /** Humans read this in the docs; later MCP uses it as the tool description. */
   readonly doc: string | undefined;
   readonly body: (op: Op<C, N>, input: I) => Promise<OutputDraft<O>> | OutputDraft<O>;
 }
@@ -726,7 +605,6 @@ type UnboundOwnedRun<
   input: CodecType<ICodec>,
 ) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
 
-/** Owner-map authoring form before Entity/Trait supplies canonical ownership. */
 export interface UnboundOperation<
   ICodec extends Schema.Top = Schema.Top,
   OCodec extends Schema.Top = Schema.Top,
@@ -736,25 +614,11 @@ export interface UnboundOperation<
   readonly _tag: "UnboundOperation";
   readonly input: ICodec;
   readonly output: OCodec;
-  /** `true` by default; `false` removes both the invocation target and `op.self`. */
   readonly self: Self;
-  /** Additional entity definitions made reachable and typed for authoring. */
   readonly writes: Writes;
-  /**
-   * Canonically ordered client-ref allocation slots (#475). Inert data: it
-   * names output positions an offline client may address before the server has
-   * committed them, and carries nothing executable.
-   */
   readonly allocations: AllocationSlots;
-  /** Author-declared executable revision; `1` when undeclared. */
   readonly revision: number;
-  /**
-   * The optional pure optimistic projection (#476). Trusted client-bundle
-   * code, never serialized, inferred, or interpreted; `undefined` when the
-   * operation declares none, in which case it still queues normally.
-   */
   readonly optimistic: AnyOptimisticProjection | undefined;
-  /** Author-declared projection revision; `1` when undeclared. */
   readonly optimisticRevision: number;
   readonly doc: string | undefined;
   readonly run: UnboundOwnedRun<ICodec, OCodec, Self>;
@@ -778,7 +642,6 @@ type OwnerAuthoredOperation<
   readonly [OwnedOperationAuthorToken]: object;
 };
 
-/** Public operation value after its enclosing owner and local map key bind it. */
 export interface OwnedOperation<
   Owner extends OperationOwner = OperationOwner,
   LocalName extends string = string,
@@ -794,19 +657,14 @@ export interface OwnedOperation<
   readonly output: OCodec;
   readonly self: Self;
   readonly writes: Writes;
-  /** Canonically ordered client-ref allocation slots (#475). */
   readonly allocations: AllocationSlots;
-  /** Author-declared executable revision; `1` when undeclared. */
   readonly revision: number;
-  /** The optional pure optimistic projection (#476); `undefined` when none. */
   readonly optimistic: AnyOptimisticProjection | undefined;
-  /** Author-declared projection revision; `1` when undeclared. */
   readonly optimisticRevision: number;
   readonly doc: string | undefined;
   readonly run: OwnedRun<Owner, ICodec, OCodec, Self, Writes>;
 }
 
-/** Erased owned operation used by registries without losing concrete assignability. */
 export type AnyOwnedOperation = {
   readonly _tag: "OwnedOperation";
   readonly owner: OperationOwner;
@@ -836,7 +694,6 @@ type BoundOwnedOperation<
   ? OwnedOperation<Owner, LocalName, ICodec, OCodec, Self, Writes>
   : never;
 
-/** Owner-map values after their enclosing Entity/Trait binds them. */
 export type BoundOwnerOperations<
   Owner extends OperationOwner,
   Ops extends Readonly<Record<string, AnyUnboundOperation>>,
@@ -848,7 +705,6 @@ type InvalidOperationName<K extends string> = {
   readonly [P in `invalid operation name ${K}`]: true;
 };
 
-/** Type-level operation-key and value validation for Entity/Trait options. */
 export type ValidOwnedOperationMap<
   Ops extends Readonly<Record<string, AnyUnboundOperation>>,
   Owner extends OperationOwnerShape,
@@ -869,13 +725,9 @@ export interface Operations<
 > {
   readonly _tag: "Operations";
   readonly operations: M;
-  /** Catalog this registry was bound to, when built with {@link defineOperations}. */
   readonly schema?: AnySchema;
-  /** Resolve by the operation's declared `name` (not the registry key). */
   get(name: string): AnyOperation | undefined;
-  /** Sorted unique wire ids (`issue/move`). */
   names(): readonly string[];
-  /** Id + doc + entity ns — the projection later MCP `learn` reads. */
   cards(): readonly OperationCard[];
 }
 
@@ -909,35 +761,22 @@ export interface OperationSchemas<
   readonly input: Schema.Codec<I, unknown>;
   readonly output?: Schema.Codec<O, unknown>;
   readonly on?: N;
-  /**
-   * Type-only: binds the body's write slots to this catalog, not carried
-   * at runtime.
-   */
   readonly schema?: C;
-  /** Humans read this in the docs; later MCP uses it as the tool description. */
   readonly doc?: string;
 }
 
-/** `on` must be an entity of `C` once `schema:` is a concrete catalog. */
 type OnEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? C["entities"][keyof C["entities"]] | undefined
   : AnyEntity | undefined;
 
-/** Concrete entity of `C` — {@link Operation.patch}'s `on` target. */
 type CatalogEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
   ? C["entities"][keyof C["entities"]]
   : AnyEntity;
 
 const emptyOutput = Schema.Struct({});
 
-/** Revision assumed when an operation declares none. */
 export const DEFAULT_OPERATION_REVISION = 1;
 
-/**
- * A declared projection is a function and nothing else. Refusing anything else
- * here — rather than at replay, on a device that is already offline — is what
- * keeps a durable layer's binding a lookup instead of a gamble.
- */
 const normalizeOptimistic = (value: unknown): AnyOptimisticProjection | undefined => {
   if (value === undefined) return undefined;
   if (typeof value !== "function") {
@@ -948,11 +787,6 @@ const normalizeOptimistic = (value: unknown): AnyOptimisticProjection | undefine
   return value as AnyOptimisticProjection;
 };
 
-/**
- * Normalize the author-declared executable revision. The operation-scoped
- * compatibility version excludes executable source, so this is the author's
- * explicit control for rotating a behavior-only change.
- */
 export const normalizeOperationRevision = (value: unknown): number => {
   if (value === undefined) return DEFAULT_OPERATION_REVISION;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
@@ -963,7 +797,6 @@ export const normalizeOperationRevision = (value: unknown): number => {
   return value;
 };
 
-/** Define one legacy standalone named operation. */
 const defineNamedOperation = <
   Name extends string,
   I,
@@ -996,44 +829,9 @@ type OwnedOperationSpec<
   readonly output: OCodec;
   readonly self?: Self;
   readonly writes?: ValidWriteDefinitions<Writes>;
-  /**
-   * Named client-ref allocation slots (#475), each bound to an
-   * entity-reference path in this operation's own declared output. Declare one
-   * for every entity an offline client must be able to address before the
-   * server has committed it; only entity-reference positions type-check, so a
-   * slot cannot be bound to a title or a count.
-   */
   readonly allocates?: AllocationDeclaration<OCodec>;
-  /**
-   * Author-declared executable revision (default `1`). The operation-scoped
-   * compatibility version (#487) excludes executable source, so bumping this
-   * is how an author rotates an operation whose declared input/output
-   * contract is unchanged but whose behavior is not.
-   */
   readonly revision?: number;
-  /**
-   * One optional pure optimistic projection (#476). It receives the validated
-   * invocation input, this invocation's own target, and a transaction builder
-   * — no local-database query, no Effect, no clock, and no server capability.
-   *
-   * It is a separate client-side declaration, never a serialized, inferred,
-   * restricted, or interpreted form of `run`: the authoritative body stays
-   * deployed server code and never crosses the client boundary.
-   *
-   * ```ts
-   * optimistic: ({ input, tx }) => tx.set(input.issue, Issue.status, input.status)
-   * ```
-   */
   readonly optimistic?: OptimisticProjection<CodecType<ICodec>>;
-  /**
-   * Author-declared projection revision (default `1`). Bump it when the
-   * projection no longer means what it meant; a durable layer minted under an
-   * older revision then becomes the typed update-required state instead of
-   * being replayed against incompatible code.
-   *
-   * It is independent of `revision` and of #487's `OperationVersion`, so
-   * editing a projection never revokes a queued invocation's right to submit.
-   */
   readonly optimisticRevision?: number;
   readonly doc?: string;
   readonly run: [Context] extends [never]
@@ -1075,11 +873,6 @@ type ValidWriteDefinitions<Writes extends readonly AnyEntity[]> =
       ? never
       : Writes;
 
-/**
- * Owner-bound constructor supplied to an Entity/Trait `operations` authoring
- * callback. Binding before the inner call is what lets TypeScript validate
- * `op.self` fields and complete entity creates against the canonical owner.
- */
 export interface OwnedOperationAuthor<Owner extends OperationOwnerShape> {
   <
     const ICodec extends Schema.Top,
@@ -1105,7 +898,6 @@ export interface OwnedOperationAuthor<Owner extends OperationOwnerShape> {
   readonly [OwnedOperationAuthorToken]: object;
 }
 
-/** Unbound form; Entity/Trait supply an owner-bound constructor when needed. */
 function defineOperation<
   const ICodec extends Schema.Top,
   const OCodec extends Schema.Top,
@@ -1119,7 +911,6 @@ function defineOperation<
 >(
   spec: OwnedOperationSpec<ICodec, OCodec, Self, Writes, never, Run>,
 ): UnboundOperation<ICodec, OCodec, NormalizeOwnedSelf<Self>, Writes>;
-/** Standalone form retained for the pre-authoritative local peer fixtures. */
 function defineOperation<
   Name extends string,
   I,
@@ -1198,12 +989,6 @@ const structOf = (entity: AnyEntity, keys: readonly string[]): Schema.Codec<any,
   return Schema.Struct(fields);
 };
 
-/**
- * A single-field (or few-field) contextual update. The low-ceremony
- * path for what used to be a three-line `transact` (`setTitle`).
- *
- * `Operation.patch("issue/set-title", Issue, ["title"])`.
- */
 const definePatch = <
   Name extends string,
   E extends AnyEntity,
@@ -1262,10 +1047,6 @@ type OperationFor<C extends AnySchema> = OperationDefine<C> & {
   readonly patch: OperationPatch<C>;
 };
 
-/**
- * Bind `schema:` once for a catalog so every op from the helper carries
- * the membership / ident checks. `Operation.for(Reef)("issue/move", …)`.
- */
 const operationFor = <C extends AnySchema>(schema: C): OperationFor<C> =>
   Object.assign(
     ((name, schemas, body) =>
@@ -1276,7 +1057,6 @@ const operationFor = <C extends AnySchema>(schema: C): OperationFor<C> =>
     },
   );
 
-/** Bind one owner-local map without registering anything globally. */
 export const bindOwnedOperations = <
   Owner extends OperationOwner,
   const Ops extends Readonly<Record<string, AnyUnboundOperation>>,
@@ -1348,7 +1128,6 @@ export const isOwnedOperation = (value: unknown): value is AnyOwnedOperation =>
   value !== null &&
   (value as { readonly _tag?: unknown })._tag === "OwnedOperation";
 
-/** @internal Build the owner-specialized constructor passed by Entity/Trait. */
 export const ownedOperationAuthor = <
   Owner extends OperationOwnerShape,
 >(): OwnedOperationAuthor<Owner> => {
@@ -1450,22 +1229,6 @@ type OpsFitCatalog<C extends AnySchema, M extends Record<string, AnyOperation>> 
     : M[K];
 };
 
-/**
- * Catalog-bound registry both the app and the peer entry import — one
- * source of truth for op ids, inputs, and outputs.
- *
- * ```ts
- * const Op = Operation.for(Reef);
- * export const setTitleOp = Op.patch("issue/set-title", Issue, ["title"]);
- * export const operations = defineOperations(Reef, { setTitleOp });
- * // peer: createServer({ operations })
- * // Server: Server("Ramose", { operations, main: import.meta.resolve("./peer.ts") })
- * ```
- *
- * Wire ids are each operation's declared `name`. Renaming an id is a
- * wire-contract change — add a new id rather than reuse one with a
- * different input or output.
- */
 export const defineOperations = <
   C extends AnySchema,
   const M extends Record<string, AnyOperation>,
@@ -1519,11 +1282,6 @@ export { OperationsCoverageError };
 
 export { asLookupRef, lowerEntityArg } from "./entityArg.ts";
 
-/**
- * Replace entity handles and tempid strings with resolved eids so an
- * operation's return value can be schema-encoded.
- */
-/** Decode operation input; schema failures are `InvalidRequest`. */
 export const decodeInput = <I>(
   schema: Schema.Codec<I, unknown>,
   input: unknown,
@@ -1537,7 +1295,6 @@ export const decodeInput = <I>(
     ),
   );
 
-/** Encode operation output for the wire. */
 export const encodeOutput = <O>(
   schema: Schema.Codec<O, unknown>,
   output: unknown,
@@ -1551,7 +1308,6 @@ export const encodeOutput = <O>(
     ),
   );
 
-/** Decode a wire output back into the operation's output type. */
 export const decodeOutput = <O>(
   schema: Schema.Codec<O, unknown>,
   output: unknown,

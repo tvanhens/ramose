@@ -1,9 +1,3 @@
-/**
- * The engine — pure TypeScript, no Cloudflare dependencies. Internal to the
- * `ramose` package: nothing public re-exports this barrel.
- *
- * Authorization and noninterference: `src/internal/design/authorization.md`.
- */
 export * from "./datom.ts";
 export * from "./bytes.ts";
 export * from "./segment.ts";

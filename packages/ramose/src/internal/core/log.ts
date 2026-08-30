@@ -1,12 +1,3 @@
-/**
- * Transaction log records and the (versioned) novelty wire format.
- *
- * - `LogEntry`: one committed transaction (t, txInstant, datoms).
- * - Binary chunk codec for `log/<t0>-<t1>` R2 objects (indexer input, replica catch-up).
- * - JSON wire format v1 for novelty frames pushed over WebSocket (Transactor → replicas
- *   → clients). Values are encoded so that every value type round-trips through JSON.
- */
-
 import { ByteReader, ByteWriter } from "./bytes.ts";
 import { type Datom, type DatomValue, ValueTag } from "./datom.ts";
 import { readValue, writeValue } from "./segment.ts";
@@ -17,7 +8,7 @@ export interface LogEntry {
   datoms: Datom[];
 }
 
-const LOG_MAGIC = 0x524c4731; // "RLG1"
+const LOG_MAGIC = 0x524c4731;
 
 export function encodeLogChunk(entries: readonly LogEntry[]): Uint8Array {
   const w = new ByteWriter();
@@ -59,11 +50,6 @@ export function decodeLogChunk(buf: Uint8Array): LogEntry[] {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// JSON wire format (v1)
-// ---------------------------------------------------------------------------
-
-/** Compact JSON datom: [e, a, vt, v, t, op] with bytes base64-encoded. */
 export type WireDatom = [number, number, number, string | number | boolean, number, 0 | 1];
 
 export function toWireDatom(d: Datom): WireDatom {
@@ -88,21 +74,17 @@ export interface NoveltyFrameV1 {
 export interface RootFrameV1 {
   v: 1;
   kind: "root";
-  /** new index root record */
   root: unknown;
 }
 export interface HelloFrameV1 {
   v: 1;
   kind: "hello";
-  /** transactor's current basis t */
   t: number;
-  /** current root record */
   root: unknown;
 }
 export interface GapFrameV1 {
   v: 1;
   kind: "gap";
-  /** subscriber asked to resume from a t we no longer hold in the DO log; fetch log/ chunks up to `from` */
   from: number;
 }
 export type WireFrame = NoveltyFrameV1 | RootFrameV1 | HelloFrameV1 | GapFrameV1;
@@ -126,7 +108,6 @@ export function base64ToBytes(s: string): Uint8Array {
   return out;
 }
 
-/** Root record as stored at root/current and roots/<t> (JSON). */
 export interface RootRecord {
   v: 1;
   t: number;
@@ -134,9 +115,7 @@ export interface RootRecord {
   aevt: { hash: string; kind: 0 | 1; count: number };
   avet: { hash: string; kind: 0 | 1; count: number };
   vaet: { hash: string; kind: 0 | 1; count: number };
-  /** highest t whose log chunk has been flushed to R2 */
   log_watermark: number;
-  /** next entity id to allocate (so a restored transactor never reuses ids) */
   next_eid: number;
   codec: string;
   created_at: number;

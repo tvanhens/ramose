@@ -1,5 +1,3 @@
-/** Literate pull map: keys are result names, values are attr refs / `.optional` / `.select`. */
-
 import type { PullElemOrder, PullElemPred } from "../internal/core/query/ast.ts";
 import type * as Schema from "effect/Schema";
 import type { AnyField } from "./Field.ts";
@@ -11,19 +9,6 @@ import type { AnyEntity, FieldMap } from "./Entity.ts";
 import type { AnyComposer } from "./Composer.ts";
 import { isSelfRefSchema, refTargetOf, type SelfMarker } from "./valueTypes.ts";
 
-// ── markers ────────────────────────────────────────────────────────────────
-
-/**
- * Pull-phase constraints on one nested collection, already lowered to the
- * engine's IR (`PullAttrSpec`'s `:where` / `:order` / `:offset` / `:limit`).
- *
- * The client builds them from the `{ where, orderBy, limit, offset }` options
- * record on a card-many ref's `.select(shape, opts)` — or `values(attr, opts)`
- * for a card-many scalar (see shapes.ts) — and lowers them there, eagerly;
- * this module only carries them onto the spec.
- * They are evaluated *inside* the pull, after the outer `:order` / `:offset` /
- * `:limit` slice, so they never change the row set.
- */
 export interface PullNestedConstraints {
   readonly where?: readonly PullElemPred[];
   readonly order?: readonly PullElemOrder[];
@@ -34,10 +19,6 @@ export interface PullNestedConstraints {
 export interface PullOptional<F = unknown> {
   readonly _tag: "optional";
   readonly field: F;
-  /**
-   * Nested pull, then maybe. Only on refs
-   * (`valueType: "ref"`). Prefer `attr.select(shape).optional`.
-   */
   readonly select: F extends { readonly valueType: "ref" }
     ? {
         <const N extends AnyEntity>(
@@ -50,12 +31,6 @@ export interface PullOptional<F = unknown> {
     : never;
 }
 
-/**
- * A card-one scalar with a stand-in for "no datom": the field reads as `value`
- * when the entity has none. It lowers to the pull-phase `:default`, so the
- * substitution is the *peer's* — the row is neither dropped nor invented, and
- * no datom is written. The result type is the attribute's, never `| undefined`.
- */
 export interface PullDefault<F = unknown> {
   readonly _tag: "default";
   readonly field: F;
@@ -66,22 +41,14 @@ export interface PullNested<A = unknown, P = unknown> {
   readonly _tag: "nested";
   readonly attr: A;
   readonly pattern: P;
-  /** Pull-phase `where` / `order` / `offset` / `limit` on a collection. */
   readonly constraints?: PullNestedConstraints;
-  /** The whole nested value is maybe (`T | undefined`). */
   readonly optional: PullOptional<PullNested<A, P>>;
 }
 
-/**
- * Literate pull methods stamped onto every attr ref (`User.name`).
- * Nested shapes use {@link AttrNav.select} from shapes.ts (same grammar as
- * `Query.select` / `Q.pull`); this type only carries `.optional`.
- */
 export type AttrPull<A> = {
   readonly optional: PullOptional<A>;
 };
 
-/** Internal: implements `attr.optional`. The result type is `T | undefined`. */
 export const optional = <const F>(field: F): PullOptional<F> => ({
   _tag: "optional",
   field,
@@ -89,17 +56,6 @@ export const optional = <const F>(field: F): PullOptional<F> => ({
     optional(nested(field as never, pattern))) as unknown as PullOptional<F>["select"],
 });
 
-/**
- * Internal: implements `attr.orDefault(value)`. The value travels verbatim —
- * `null` is a default like any other, which is why lowering asks *whether*
- * there is one rather than comparing against `undefined`.
- *
- * `undefined` is the one value that cannot be a default: it does not survive
- * the JSON the spec travels as (`{default: undefined}` is dropped) and the
- * peer's own gate is `spec.default !== undefined`, so the field would read as
- * `undefined` while its type promised a value. That is `.optional`, spelled
- * wrong — so it is an error rather than a silent lie.
- */
 export const pullDefault = <const F>(field: F, value: unknown): PullDefault<F> => {
   if (value === undefined) {
     throw new Error(
@@ -113,10 +69,6 @@ export const pullDefault = <const F>(field: F, value: unknown): PullDefault<F> =
   };
 };
 
-/**
- * Internal: nested pull field. Prefer `attr.select({ … })` on stamped attrs;
- * that returns a select-marker which {@link inspectPullField} understands.
- */
 export const nested = <
   const A extends { readonly valueType: "ref" },
   const P extends Record<string, unknown>,
@@ -154,8 +106,6 @@ export const pick = <
   };
 };
 
-// ── the wildcard ───────────────────────────────────────────────────────────
-
 /**
  * `Ramose.all(Todo)` — the peer's wildcard pull (`[*]`), as a client term.
  *
@@ -191,18 +141,11 @@ export const isAllShape = (value: unknown): value is AllShape =>
   (value as { _tag?: unknown })._tag === "all" &&
   "ns" in value;
 
-// ── recursive trees: `Ramose.again(n)` ─────────────────────────────────────
-
 /** Hop bound `again` accepts: a positive integer literal, 1 through 16. */
 export type RecurDepth = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
 
-/** Named so a runtime assert that somehow sees 17 can say what the cap is. */
 export const AGAIN_MAX_DEPTH = 16 as const;
 
-/**
- * `n` must be a positive integer literal `1..16`. A `number`, a param,
- * `"..."`, `0`, a negative, a non-integer, or `17+` is a type error.
- */
 export type ValidAgainDepth<D> = number extends D
   ? "Ramose.again(n) takes a positive integer literal 1..16 — not a number, a param, or \"...\""
   : D extends RecurDepth
@@ -261,8 +204,6 @@ export const isPullNested = (value: unknown): value is PullNested =>
   "attr" in value &&
   "pattern" in value;
 
-// ── result types ───────────────────────────────────────────────────────────
-
 type SchemaType<S> = S extends Schema.Top ? Schema.Schema.Type<S> : never;
 
 type ScalarResult<F> = F extends {
@@ -278,19 +219,12 @@ type FieldsResult<F> = {
   readonly [K in keyof F]: FieldResult<F[K], F>;
 };
 
-/**
- * The `:db/id` select cell. `N.id` carries its namespace as a phantom, so the
- * cell is the branded number `Eid<N>` — the raw id the peer answered, typed
- * as belonging to `N`, and a `db.pull` subject or `N.id.is(cell)` value with
- * no cast. An id attr without the phantom stays a plain `number`.
- */
 export type IdCell<F> = F extends { readonly _ns?: infer N }
   ? [NonNullable<N>] extends [AnyComposer]
     ? Eid<NonNullable<N>>
     : number
   : number;
 
-/** Decrement a literal hop bound. `Prev[1]` is unused: `again(1)` stubs the next hop. */
 type Prev = [never, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 type UnwrapField<F> = F extends {
@@ -300,7 +234,6 @@ type UnwrapField<F> = F extends {
   ? UnwrapField<I>
   : F;
 
-/** The key in `S` that selected `N.id` — the stub's only cell. */
 export type IdKey<S> = {
   [K in keyof S]-?: UnwrapField<S[K]> extends { readonly ident: ":db/id" }
     ? K
@@ -343,23 +276,12 @@ type AgainUnrollField<F, S, D extends number> = F extends {
       >
     : never;
 
-/**
- * The enclosing shape with `again` edges unrolled `D` hops: `Unroll<S, 1>`
- * is {@link FieldsResult} with those edges as {@link RecurStub} — one
- * full-shape hop, then stubs. Matches the engine (`recursion: N` applies
- * the parent pattern once, then `{":db/id"}`).
- */
 export type Unroll<S, D extends number> = {
   readonly [K in keyof S]: [IsAgainSelect<S[K]>] extends [true]
     ? AgainUnrollField<S[K], S, D>
     : FieldResult<S[K], S>;
 };
 
-/**
- * A nested `.select`: a named shape, `all(N)`, or `again(n)` — the
- * enclosing shape unrolled `n` hops. An array when the hop is
- * cardinality-many.
- */
 type NestedResult<A, P, Enclosing = unknown> = [P] extends [
   { readonly _tag: "again"; readonly depth: infer D extends number },
 ]
@@ -378,7 +300,7 @@ type FieldResult<F, Enclosing = unknown> = F extends {
   readonly _tag: "default";
   readonly field: infer Inner;
 }
-  ? // a default stands in for the missing datom, so the field always reads
+  ?
     FieldResult<Inner, Enclosing>
   : F extends {
         readonly _tag: "optional";
@@ -393,7 +315,7 @@ type FieldResult<F, Enclosing = unknown> = F extends {
             readonly shape: infer P;
           }
         ? NestedResult<A, P, Enclosing>
-        : // a filtered scalar collection reads as the attribute's own array
+        :
           F extends { readonly _tag: "collection"; readonly attr: infer A }
           ? A extends { readonly schema: infer S }
             ? readonly SchemaType<S>[]
@@ -402,10 +324,8 @@ type FieldResult<F, Enclosing = unknown> = F extends {
             ? IdCell<F>
             : ScalarResult<F>;
 
-/** Result shape of a fields object. */
 export type StructPullResult<P> = FieldsResult<P>;
 
-/** Is this field the `again` term itself (not `ref.select(again)`)? */
 export type IsAgainTerm<F> = F extends { readonly _tag: "again" }
   ? true
   : F extends { readonly _tag: "optional" | "default"; readonly field: infer I }
@@ -457,10 +377,6 @@ type AgainAttr<F> = F extends {
     ? A
     : never;
 
-/**
- * The namespace the recur edge lands on: self-ref / reverse → the attr's
- * own prefix; `Ref(() => N)` → `N.ns`.
- */
 export type AgainTargetNs<F> = AgainAttr<F> extends {
   readonly ident: `:${infer Own}/${string}`;
 }
@@ -493,12 +409,6 @@ export type AgainMissingId =
 export type TopLevelAgain =
   "again is not a top-level shape — write it on a self-ref: ref.select(Ramose.again(n))";
 
-// ── ident-keyed escape ─────────────────────────────────────────────────────
-
-/**
- * One slot in the keyword-soup pull. Attr ref (`User.name`), catalog
- * ident (`":user/name"`), or wildcard.
- */
 export type IdentPullAttr<C extends AnySchema> =
   | CatalogIdent<C>
   | { readonly ident: CatalogIdent<C> }
@@ -519,14 +429,6 @@ export type IdentPullIdents<
   P extends IdentPullPattern<C>,
 > = IdentOfPull<C, P[number]>;
 
-/**
- * One value in a pull result, from the attribute that carries it.
- *
- * A ref reads as the entity it points at — `{":db/id": n}` — not as the
- * number a `:db.type/ref` datom stores: with no nested pattern to expand, the
- * engine answers a ref (wildcard or named) with a one-key map. That is why
- * this is not `ReadAtIdent`, which is the *write* value of the same ident.
- */
 type PullValue<A> = A extends { readonly cardinality: "many" }
   ? readonly PullValueOne<A>[]
   : PullValueOne<A>;
@@ -537,7 +439,6 @@ type PullValueOne<A> = A extends { readonly valueType: "ref" }
     ? SchemaType<S>
     : never;
 
-/** {@link PullValue} at one catalog ident. */
 type PullReadAtIdent<C extends AnySchema, I extends string> = PullValue<
   AttrAtIdent<C, I>
 >;
@@ -580,14 +481,6 @@ export type AllRow<N extends AnyEntity> = {
   >]?: PullValue<N["fields"][A]>;
 };
 
-// ── catalog constraint ─────────────────────────────────────────────────────
-
-/**
- * Walk a pull pattern and collect every ident it names (attr refs,
- * ident strings, nested / optional wrappers). Used to reject attrs
- * that are not in the catalog without a recursive field union —
- * those blow the client type (`Type instantiation is excessively deep`).
- */
 type IdentsIn<P> = [P] extends [PullOptional<infer I>]
   ? IdentsIn<I>
   : [P] extends [PullDefault<infer I>]
@@ -616,7 +509,6 @@ type IdentsIn<P> = [P] extends [PullOptional<infer I>]
                 ? IdentsInFields<P>
                 : never;
 
-/** Ident strings are only idents in the array escape, not on attr objects. */
 type IdentsInArray<E> = [E] extends [string] ? E : IdentsIn<E>;
 
 type IdentsInFields<F> = F extends object
@@ -689,8 +581,6 @@ export type Pull<C extends AnySchema, P> = [P] extends [
       : never
     : StructPullResult<P>;
 
-// ── wire lowering ──────────────────────────────────────────────────────────
-
 const identOf = (field: unknown): string => {
   if (typeof field === "string") return field;
   if (isAttrRef(field)) return field.ident;
@@ -707,7 +597,6 @@ const unwrapAgainField = (field: unknown): unknown => {
   return current;
 };
 
-/** The hop-target namespace of a ref attr (self / reverse / `Ref(() => N)`). */
 export const refTargetNs = (attr: unknown): string | undefined => {
   if (isReverseCarrier(attr)) return nsOfIdent(identOf(attr));
   const schema = (attr as { schema?: unknown } | null)?.schema;
@@ -724,7 +613,6 @@ const tryIdentOf = (field: unknown): string | undefined => {
   }
 };
 
-/** The result key that selected `:db/id`, if the shape has one. */
 export const idKeyOf = (pattern: unknown): string | undefined => {
   if (isAgain(pattern) || isAllShape(pattern) || Array.isArray(pattern)) {
     return undefined;
@@ -760,10 +648,6 @@ export const assertAgainDepth = (depth: unknown): number => {
   return depth;
 };
 
-/**
- * `again` is a shape, not a field: there is no attribute to hang a recur
- * edge on. `ref.select(again(n))` is the nested form.
- */
 export const assertNotAgain = (shape: unknown, key?: string): void => {
   if (!isAgain(unwrapAgainField(shape))) return;
   throw new Error(
@@ -773,10 +657,6 @@ export const assertNotAgain = (shape: unknown, key?: string): void => {
   );
 };
 
-/**
- * A field map that contains `ref.select(again(n))` must select `N.id` and
- * the recur edge must land in the same namespace.
- */
 export const assertAgainInShape = (shape: Record<string, unknown>): void => {
   let hasAgain = false;
   let hasId = false;
@@ -819,10 +699,6 @@ const cardinalityOf = (field: unknown): "one" | "many" => {
   return card === "many" ? "many" : "one";
 };
 
-/**
- * A backlink node (`Todo.owner.reverse`). The marker is a plain property so
- * this module stays free of a shapes.ts import — pull is the lower layer.
- */
 const isReverseCarrier = (value: unknown): boolean =>
   typeof value === "object" &&
   value !== null &&
@@ -842,12 +718,6 @@ const isSelectNestedField = (
   "attr" in value &&
   "shape" in value;
 
-/**
- * The hop chain a nav carries: `Todo.owner.name` is `[":todo/owner",
- * ":user/name"]`, a bare `User.name` is one ident (or none, for an ident
- * string). Structural, like {@link isReverseCarrier} — pull stays free of
- * shapes.ts.
- */
 const hopsOf = (
   attr: unknown,
 ): { readonly path: readonly string[]; readonly revs: readonly boolean[] } => {
@@ -864,7 +734,6 @@ const hopsOf = (
   return { path, revs };
 };
 
-/** `:todo/owner` → `Todo.owner` — the attr spelled the way the caller wrote it. */
 const spellAttr = (ident: string): string => {
   const m = /^:([^/]+)\/(.+)$/.exec(ident);
   if (m === null) return ident;
@@ -875,7 +744,6 @@ const spellAttr = (ident: string): string => {
 const attrNameOf = (ident: string): string =>
   /^:[^/]+\/(.+)$/.exec(ident)?.[1] ?? ident;
 
-/** The whole path as one expression: `Todo.owner.reverse.title`. */
 const spellPath = (path: readonly string[], revs: readonly boolean[]): string =>
   path
     .map(
@@ -884,7 +752,6 @@ const spellPath = (path: readonly string[], revs: readonly boolean[]): string =>
     )
     .join(".");
 
-/** The same path as the nested select that does mean it. */
 const spellNested = (
   path: readonly string[],
   revs: readonly boolean[],
@@ -904,18 +771,9 @@ const spellNested = (
   return `{ ${out} }`;
 };
 
-/**
- * A select field names one attribute of the entity being pulled, so a nav
- * that walked a ref first (`Todo.owner.name`) cannot be one: the pull would
- * ask the *todo* for `:user/name` and the row would carry a value it never
- * had — or be dropped for a datom it was never meant to have. The nested
- * select is the shape that means what the path reads like, so say so instead
- * of quietly attaching the leaf ident to the parent.
- */
 export const assertDirectField = (
   as: string,
   attr: unknown,
-  /** The field carries a shape of its own, so the suggestion keeps one. */
   leafSelects = false,
 ): void => {
   const { path, revs } = hopsOf(attr);
@@ -925,10 +783,6 @@ export const assertDirectField = (
   );
 };
 
-/**
- * A constrained scalar collection (`values(User.tags, { where: [ … ] })`).
- * Structural, like {@link isReverseCarrier} — pull stays free of shapes.ts.
- */
 const isCollectionCarrier = (
   value: unknown,
 ): value is {
@@ -940,25 +794,15 @@ const isCollectionCarrier = (
   value !== null &&
   (value as { _tag?: unknown })._tag === "collection";
 
-/**
- * An element cursor (`User.tags.each`). It names one value of a collection
- * inside that collection's own constraints; as a *field* it would pull the
- * whole attribute under a name that promises one value.
- */
 const isElementCarrier = (value: unknown): boolean =>
   typeof value === "object" &&
   value !== null &&
   typeof (value as { __each?: unknown }).__each === "string";
 
-/** Inspect a literate pull field: optional / default / many / nested pattern. */
 export const inspectPullField = (
   field: unknown,
 ): {
   readonly optional: boolean;
-  /**
-   * The field carries a stand-in for the missing datom. Separate from
-   * {@link defaultValue} so `null` — a perfectly good default — is one.
-   */
   readonly hasDefault: boolean;
   readonly defaultValue: unknown;
   readonly many: boolean;
@@ -985,8 +829,6 @@ export const inspectPullField = (
     );
   }
   if (isCollectionCarrier(current)) {
-    // a scalar collection *is* the field: its elements are values, and a
-    // value has no shape to ask for. A ref one still needs its `.select`.
     if ((current.attr as { valueType?: unknown })?.valueType === "ref") {
       throw new Error(
         "ramose/schema: a filtered reference collection needs a shape — write `.select({ … }, { where: [ … ] })`",
@@ -1039,7 +881,6 @@ export const inspectPullField = (
   };
 };
 
-/** The `PullAttrSpec` fields a nested collection's constraints occupy. */
 const constraintFields = (
   c: PullNestedConstraints | undefined,
 ): Record<string, unknown> =>
@@ -1052,7 +893,6 @@ const constraintFields = (
         ...(c.limit !== undefined ? { limit: c.limit } : {}),
       };
 
-/** `.orDefault(v)` is the pull-phase `:default` — the peer's substitution. */
 const defaultField = (info: {
   readonly hasDefault: boolean;
   readonly defaultValue: unknown;
@@ -1082,20 +922,14 @@ const lowerField = (as: string, field: unknown): unknown => {
       as,
       ...defaultField(info),
       ...constraintFields(info.constraints),
-      // AllShape, an ident array, or a literate map — the same three
-      // `lowerPullPattern` already answers at the top of a pull
       sub: lowerPullPattern(info.nestedPattern),
     };
   }
   if (info.reverse) {
-    // the peer answers a bare backlink with `{":db/id": n}` — one of them for
-    // a component ref, an array of them otherwise — which is neither a scalar
-    // nor the selected shape, so ask for the shape you want
     throw new Error(
       `ramose/schema: ${identOf(info.attr)} backlinks need a shape — write \`.reverse.select({ … })\` for the key \`${as}\``,
     );
   }
-  // a card-many scalar carries its own `where` / `order` / `offset` / `limit`
   return {
     kind: "attr",
     attr: identOf(info.attr),
@@ -1119,13 +953,6 @@ const lowerIdentPull = (pattern: readonly unknown[]): unknown[] =>
     return a;
   });
 
-/**
- * Lower a literate pull map (or ident-keyed array escape) to a peer pull
- * pattern. Literate maps become AST specs with `:as` / nested `sub`.
- *
- * `all(N)` is the peer's own wildcard, so it lowers to exactly that — the
- * client never expands it into a map of the namespace's attributes.
- */
 export const lowerPullPattern = (pattern: unknown): unknown[] => {
   if (isAgain(pattern)) {
     throw new Error(
@@ -1137,36 +964,9 @@ export const lowerPullPattern = (pattern: unknown): unknown[] => {
   return lowerLiterateMap(pattern);
 };
 
-/**
- * Enforce required vs optional so the TypeScript type matches the value.
- *
- * A bare attr is required: missing / null / undefined drops the entity
- * (`null` at the top level). `.optional` may be missing (`undefined`), and
- * `.orDefault(v)` reads as `v` (the peer already substituted it; this is the
- * same answer for a result that arrived without one).
- * Required `.select` drops the parent when the ref is missing or the nested
- * object fails *its* required fields. Cardinality-many `.select` filters the
- * array (empty `[]` is still a valid many). Ident-keyed arrays and the
- * wildcard are left as the peer returned them (all optional in the type).
- */
-/**
- * A canonical description of what {@link reshapePullResult} will do.
- *
- * The lowered wire pattern is not enough to tell two pulls apart: a required
- * field and the same field `.optional` lower identically, because optionality
- * is enforced here rather than by the peer. Anything that reuses one execution
- * across two query values — a live subscription, a cache — has to compare this
- * as well, or a missing datom silently drops one caller's row or hands the
- * other an `undefined` where a required value belongs.
- *
- * It mirrors {@link filterPull}'s own walk, so a change to the reshaping rules
- * that this description missed would be a change to a branch it reads.
- */
 export const pullReshapeIdentity = (pattern: unknown): unknown => {
   if (isAllShape(pattern)) return "*";
   if (isAgain(pattern)) return "again";
-  // An ident-keyed escape is returned exactly as the peer sent it, so the
-  // lowered pattern already describes it completely.
   if (Array.isArray(pattern)) return "idents";
   const fields = fieldsOf(pattern);
   return Object.entries(fields).map(([key, field]) => {
@@ -1174,15 +974,12 @@ export const pullReshapeIdentity = (pattern: unknown): unknown => {
     const nested = info.nestedPattern === undefined
       ? null
       : isAgain(info.nestedPattern)
-        // `again` re-applies the enclosing shape; recursing would not
-        // terminate, and the marker is what the reshaping branches on.
         ? "again"
         : pullReshapeIdentity(info.nestedPattern);
     return [
       key,
       info.optional,
       info.hasDefault,
-      // Tagged by type so a `1` default and a `"1"` default are two plans.
       info.hasDefault ? [typeof info.defaultValue, info.defaultValue] : null,
       info.many,
       info.reverse,
@@ -1201,11 +998,6 @@ export const reshapePullResult = (pattern: unknown, result: unknown): unknown =>
 const isPresent = (value: unknown): boolean =>
   value !== undefined && value !== null;
 
-/**
- * The engine's cycle / budget stub: a one-key `{":db/id": n}` map. Nav
- * remaps it to the shape's id alias so the stub survives required-field
- * filtering and the row key is the one the author wrote.
- */
 const isIrStub = (value: unknown): value is { readonly ":db/id": number } => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -1227,17 +1019,8 @@ const remapStub = (
   return { [key]: stub[":db/id"] };
 };
 
-/**
- * `undefined` means this entity failed a required field and should be dropped.
- *
- * For a query, `requiredClauses` lowers every top-level required field into a
- * `where` clause, so the drop is the peer's and the top-level `undefined` is
- * unreachable; what stays here is per-element work that cannot change the row
- * count — filtering a cardinality-many array, and `db.pull` of one subject.
- */
 const filterPull = (pattern: unknown, result: unknown): unknown => {
   if (!isPresent(result)) return undefined;
-  // a wildcard row has no required field to fail: every key is optional
   if (isAllShape(pattern) || Array.isArray(pattern) || isAgain(pattern)) {
     return result;
   }
@@ -1255,7 +1038,6 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
     const raw = rec[key];
     const missing = !isPresent(raw);
     const recur = isAgain(info.nestedPattern);
-    // `again` re-applies this enclosing shape — the engine's parent pattern
     const childPattern = recur ? pattern : info.nestedPattern;
 
     if (childPattern !== undefined) {
@@ -1274,8 +1056,6 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
         continue;
       }
       if (missing) {
-        // a tree can end before the hop bound; missing card-one again
-        // must not delete the parent the way a required nested select would
         if (info.optional || recur) {
           out[key] = undefined;
           continue;
@@ -1295,9 +1075,6 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
     }
 
     if (missing) {
-      // the peer already substituted the default; this is the same answer for
-      // a result that reached here without one (`db.pull` of a stale cache,
-      // an ident-keyed reply reshaped by hand)
       if (info.hasDefault) {
         out[key] = info.defaultValue;
         continue;

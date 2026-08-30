@@ -1,11 +1,3 @@
-/**
- * Static ES256 public JWK and compiled policy for the local auth peers.
- *
- * The matching private key lives in `packages/ramose/test/sign-local-token.ts`
- * so `jose` resolves from the package that depends on it. The public JWK is
- * here so the JWKS Worker bundle does not import `jose`.
- */
-
 export const ISS = "https://auth.acme.test";
 export const AUD = "ramose:peer:test";
 export const SHARED_TOKEN = "s3cret";
@@ -30,7 +22,6 @@ const eq = (attr: string, operand?: unknown) => ({
 const ref = (attr: string, target: unknown) => ({ _tag: "ref", attr, target });
 const inOrg = ref(":doc/project", ref(":project/org", eq(":org/members")));
 
-/** Doc/project policy used by the public auth contract. */
 export const POLICY = {
   version: 1,
   principal: ":user/sub",

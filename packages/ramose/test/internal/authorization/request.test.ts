@@ -1,10 +1,3 @@
-/**
- * executeAuthorizedRequest — authenticated caller + deployed unit → filtered Db.
- *
- * Real Connection + schemaTx + transact. Locally signed JWTs through JwtVerifier.
- * No mocks or fabricated stores.
- */
-
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";

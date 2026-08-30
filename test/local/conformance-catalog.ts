@@ -1,5 +1,3 @@
-/** Deployed catalog for the real-stack filtered-Db conformance gate. */
-
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
 import * as Result from "effect/Result";
@@ -232,8 +230,6 @@ export const conformanceCatalogDeployment = Object.freeze({
   deployments: CONFORMANCE_DATABASES.map((database) => ({ database })),
 });
 
-// The local client and Worker independently derive the same deployment-free
-// compatibility proof from the shared canonical installed metadata.
 const compatibilityDefinitions = await Effect.runPromise(assembleCatalogDefinitions({
   root: conformanceCatalog,
   artifactHash: DigestHex.make("0".repeat(64)),

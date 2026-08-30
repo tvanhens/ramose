@@ -12,7 +12,6 @@ import {
 } from "../../../src/internal/replication/replica-gc.ts";
 import { replicaPartitionScopeKey } from "../../../src/internal/replication/replica-lifecycle.ts";
 
-/** Drive a whole walk over a plain reference graph. */
 const walkAll = (
   roots: readonly string[],
   graph: Readonly<Record<string, readonly string[]>>,
@@ -60,8 +59,7 @@ describe("reachability", () => {
   test("a node that cannot be read leaves the walk incomplete", () => {
     const walk = walkAll(["r"], { r: ["a", "b"], a: [], b: [] }, new Set(["b"]));
     expect(walk.complete).toBe(false);
-    // Everything it did reach is still reported, but the caller must not use it
-    // as a live set: the unread node's subtree is unknown.
+
     expect(walk.reachable.has("r")).toBe(true);
   });
 
@@ -99,7 +97,7 @@ describe("staging", () => {
 
   test("staging still opened against the committed base is left alone", () => {
     expect(stagingIsSweepable({ baseRevision: "r1" }, "r1")).toBe(false);
-    // A first snapshot into an empty partition: absent base, absent committed.
+
     expect(stagingIsSweepable({ baseRevision: null }, null)).toBe(false);
   });
 
@@ -118,7 +116,7 @@ describe("quota classification", () => {
     for (const name of ["NS_ERROR_DOM_QUOTA_REACHED", "QUOTA_EXCEEDED_ERR"]) {
       expect(classifyReplicaStorageFailure(new DOMException("full", name))).toBe("quota");
     }
-    // Older engines set only the numeric code on the exception they raise.
+
     expect(classifyReplicaStorageFailure({ name: "Error", code: 22 })).toBe("quota");
     expect(classifyReplicaStorageFailure({ name: "Error", code: 1014 })).toBe("quota");
   });
@@ -172,17 +170,13 @@ describe("keys", () => {
   test("one prefix covers every sweep record under a partition prefix", () => {
     const prefix = replicaSweepPrefix("ramose-replica-v3:s:p:");
     expect(prefix).toBe("ramose-replica-sweep-v3:ramose-replica-v3:s:p:");
-    // Exactly the records a clear or an eviction removes alongside those
-    // partitions, and nothing belonging to another principal.
+
     expect(replicaSweepKey("ramose-replica-v3:s:p:d:v:h").startsWith(prefix)).toBe(true);
     expect(replicaSweepKey("ramose-replica-v3:s:q:d:v:h").startsWith(prefix)).toBe(false);
   });
 
   test("a partition key names the scope that owns it", () => {
     expect(replicaPartitionScopeKey("ramose-replica-v3:s:p:d:v:h"))
-      // The scope key is versioned independently of the manifest: a partition
-      // that moved to storage version 3 still names a version-2 lifecycle key,
-      // because outbox rows and generation records carry that spelling.
       .toBe("ramose-replica-scope-v2:s:p");
   });
 

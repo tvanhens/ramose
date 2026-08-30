@@ -1,5 +1,3 @@
-/** Permanently keyed runnable catalog definitions. */
-
 import * as Effect from "effect/Effect";
 import type { CodeDefinition } from "./db/Binding.ts";
 import type { AnySchema } from "./db/Schema.ts";
@@ -12,7 +10,6 @@ export type CatalogPolicy =
 
 export interface CatalogProps<S extends AnySchema = AnySchema> {
   readonly schema: S;
-  /** Catalog-relative policy data or a `Policy.compileReadAuthorization` result. */
   readonly policy: CatalogPolicy;
 }
 

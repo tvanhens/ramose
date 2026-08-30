@@ -1,5 +1,3 @@
-/** Pure Analytics Engine column mapping and failure-isolation decisions. */
-
 import { describe, expect, test } from "bun:test";
 import {
   TxMetrics,

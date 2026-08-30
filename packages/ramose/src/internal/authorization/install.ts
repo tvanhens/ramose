@@ -1,18 +1,3 @@
-/**
- * Core-v1 installed-IR assembly.
- *
- * The only production path from {@link CatalogBindingInput} to
- * {@link InstalledAuthorizationIRV2}. Binding and semantic validation
- * run through their Effect shells (hashed / verified). Plan derivation
- * and table normalization stay pure. The policy hash is recomputed
- * through the #357 RFC 8785 / Web Crypto contract and domain-separated
- * by authorization language version.
- *
- * Unhashed tables never leave this module and are not
- * {@link InstalledAuthorizationIR}. Structural decode output is not
- * {@link InstalledAuthorizationIRV2}; only this module seals the brand.
- */
-
 import * as Brand from "effect/Brand";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -87,10 +72,6 @@ const requireLanguageVersion = (
   return Result.succeed(undefined);
 };
 
-/**
- * Private pure assembly. Returns tables without `_tag` or `policyHash`
- * so the result is not runtime-acceptable installed IR.
- */
 const assembleUnhashedTables = (
   validated: ValidatedAuthorizationIR,
   descriptor: CatalogDescriptor,
@@ -151,11 +132,6 @@ const sealInstalledAuthorization = Effect.fn("Authorization.sealInstalledAuthori
   },
 );
 
-/**
- * One auditable binder entry point: catalog binding input → installed v1 IR.
- * Bind and validate run as Effect so unhashed or unverified intermediates
- * cannot reach assembly.
- */
 export const installAuthorization = Effect.fn("Authorization.installAuthorization")(
   function* (
     input: CatalogBindingInput,

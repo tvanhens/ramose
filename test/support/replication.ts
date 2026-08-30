@@ -1,9 +1,3 @@
-/**
- * Thin consumer for the real replication response used by local acceptance
- * tests. It decodes the frozen public codec and applies the pure client state
- * machine; it does not implement a peer or substitute any infrastructure.
- */
-
 import * as Result from "effect/Result";
 import {
   MAX_REPLICATION_FRAME_BYTES,
@@ -50,7 +44,6 @@ const splitDecoded = (
   return { lines, unfinished: next };
 };
 
-/** Decode arbitrary transport chunks while bounding each NDJSON frame alone. */
 export async function* decodeReplicationNdjson(
   chunks: AsyncIterable<Uint8Array>,
 ): AsyncGenerator<ObservedReplicationFrame, void, undefined> {
@@ -68,30 +61,11 @@ export async function* decodeReplicationNdjson(
     if (wire.length > 0) yield decodeLine(wire);
   }
   if (final.unfinished.trim().length > 0) {
-    // The Worker writes every frame newline-terminated
-    // (`src/worker/authorized-replication.ts`), and the product decoder in
-    // `internal/replication/transport.ts` fails an unterminated tail with
-    // "replication stream ended without a newline". A leftover fragment is
-    // therefore a truncated transport, never a frame. Decoding it produced a
-    // `ReplicationProtocolError { reason: "malformed" }` that read as a
-    // protocol violation by the product when the connection had merely been
-    // cut mid-frame. Report the truncation so `malformed` keeps meaning
-    // exactly one thing: a complete frame the product got wrong.
+
     throw new Error("replication stream ended without a newline");
   }
 }
 
-/**
- * A live replication response, plus the one escape hatch a stalled read
- * needs.
- *
- * Abandoning `iterator.next()` is not enough to unstick a stalled stream:
- * the read stays pending inside the generator, and a later
- * `iterator.return()` queues *behind* it, so cleanup hangs and the test
- * still burns its whole timeout. Cancelling the body reader settles the
- * pending read, which lets the generator's own `finally` run and the queued
- * `return()` resolve.
- */
 export type ObservedReplicationStream =
   & AsyncGenerator<ObservedReplicationFrame, void, undefined>
   & { readonly cancelTransport: () => Promise<void> };
@@ -99,8 +73,7 @@ export type ObservedReplicationStream =
 export const readReplicationNdjson = (
   response: Response,
 ): ObservedReplicationStream => {
-  // Assigned once the generator body starts; until the first read there is
-  // nothing pending that could need settling.
+
   let cancelReader: () => Promise<void> = async () => {};
   const frames = (async function* (): AsyncGenerator<
     ObservedReplicationFrame,
@@ -113,9 +86,7 @@ export const readReplicationNdjson = (
     cancelReader = async () => {
       try {
         await reader.cancel();
-      } catch {
-        // A stalled or already-errored reader needs no further cancellation.
-      }
+      } catch {}
     };
     const chunks = (async function* (): AsyncGenerator<Uint8Array> {
       try {
@@ -137,9 +108,7 @@ export const readReplicationNdjson = (
     } finally {
       try {
         await chunks.return?.(undefined);
-      } catch {
-        // The adapter's finally already released the reader lock.
-      }
+      } catch {}
     }
   })();
   return Object.assign(frames, {
@@ -177,15 +146,6 @@ export type CollectedSnapshot = {
   readonly frames: readonly ObservedReplicationFrame[];
 };
 
-/**
- * Every other read in these suites is bounded (`withTimeout(next, 7_000)`).
- * This one was not, so a stalled transport spent the caller's whole 90s
- * default test budget and then reported only "timed out after 90000ms" with
- * no indication of where. Bound the whole collection instead: a snapshot for
- * these fixtures commits in milliseconds, so the deadline never fires on a
- * healthy stack, and when the transport does stall the failure names itself
- * with time left for the rest of the file.
- */
 const SNAPSHOT_DEADLINE_MS = 20_000;
 
 export const collectCommittedSnapshot = async (
@@ -209,12 +169,7 @@ export const collectCommittedSnapshot = async (
     try {
       next = await withDeadline(pending, remaining, expired);
     } catch (error) {
-      // Stopping the await is not enough: the read is still pending inside
-      // the generator, so the caller's `closeIterator` would queue its
-      // `return()` behind it and hang to the 90s default anyway — the exact
-      // cascade this bound exists to prevent. Cancel the reader so the
-      // pending read settles, and swallow its late outcome, which nobody is
-      // waiting for any more.
+
       void pending.catch(() => undefined);
       await cancelTransport?.();
       throw error;

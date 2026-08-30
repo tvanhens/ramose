@@ -1,15 +1,3 @@
-/**
- * In-memory `Connection`: the single-writer state machine over a `NodeStore`.
- *
- *   conn.transact(txData) → TxReport      (validates, assigns t, appends to novelty)
- *   conn.db()             → Db            (immutable snapshot)
- *   conn.index()          → Roots         (merge novelty into the trees; structural sharing)
- *
- * The Transactor DO reuses exactly this logic on top of its SQLite log and
- * the R2-backed store; the QueryReplica/peer use `Db` directly with roots +
- * novelty received over the wire.
- */
-
 import { type Datom, ALL_INDEXES, COMPARATORS, type IndexId, Index } from "./datom.ts";
 import { Db, type Roots } from "./db.ts";
 import { Novelty } from "./novelty.ts";
@@ -25,7 +13,6 @@ export interface TxReport {
   t: number;
   txEid: number;
   txData: Datom[];
-  /** Per-datom engine provenance; excludes the transaction instant. */
   txOps: ExpandedOp[];
   tempids: Record<string, number>;
 }
@@ -38,13 +25,10 @@ export interface ValidatedTxReport<A> {
 export interface ConnectionOptions {
   store?: NodeStore;
   build?: BuildOptions;
-  /** clock for :db/txInstant */
   now?: () => number;
-  /** Deployed type-to-trait lookup used by processTx. */
   composition?: CompositionIndex;
 }
 
-/** Sort + dedup datoms for the given index. */
 export function sortForIndex(index: IndexId, datoms: readonly Datom[]): Datom[] {
   const cmp = COMPARATORS[index];
   const arr = datoms.slice().sort(cmp);
@@ -60,10 +44,6 @@ export async function emptyRoots(store: NodeStore, build?: BuildOptions): Promis
   return { t: 0, eavt, aevt, avet, vaet };
 }
 
-/**
- * Build roots from a full datom set (bootstrap / bulk load). `schema` decides
- * AVET/VAET membership. `t` = max t in the set.
- */
 export async function buildRoots(
   store: NodeStore,
   schema: Schema,
@@ -81,11 +61,6 @@ export async function buildRoots(
   return { t, eavt, aevt, avet, vaet };
 }
 
-/**
- * Re-derive the schema from indexed datoms: every entity with a `:db/ident`
- * is loaded from EAVT (attribute entities are few, so this is cheap) and
- * projected through `Schema.apply`.
- */
 export async function deriveSchema(store: NodeSource, roots: Roots): Promise<Schema> {
   const schema = Schema.bootstrap();
   const tmp = new Db({ store, roots, novelty: new Novelty(), basisT: roots.t, schema, nextEid: 0 });
@@ -95,7 +70,6 @@ export async function deriveSchema(store: NodeSource, roots: Roots): Promise<Sch
   return schema.apply(all);
 }
 
-/** Merge novelty into existing roots (the indexer's core step). */
 export async function mergeRoots(
   store: NodeStore,
   roots: Roots,
@@ -122,7 +96,6 @@ export class Connection {
   private readonly now: () => number;
   private composition: CompositionIndex | undefined;
   private txQueue: Promise<unknown> = Promise.resolve();
-  /** all roots ever published, by t (for as-of from an old root; GC keeps these) */
   readonly rootHistory: Roots[] = [];
 
   private constructor(opts: ConnectionOptions) {
@@ -132,7 +105,6 @@ export class Connection {
     this.composition = opts.composition;
   }
 
-  /** Create an empty database (bootstrap schema installed at t = 1). */
   static async create(opts: ConnectionOptions = {}): Promise<Connection> {
     const c = new Connection(opts);
     c.roots = await emptyRoots(c.store, c.build);
@@ -143,12 +115,6 @@ export class Connection {
     return c;
   }
 
-  /**
-   * Restore a connection from persisted state (roots + un-indexed datoms).
-   * `schemaDatoms` are not needed separately: the schema is re-derived by
-   * scanning the attribute range of EAVT — cheap because attribute entities
-   * are few and sort first.
-   */
   static async restore(
     store: NodeStore,
     roots: Roots,
@@ -166,7 +132,6 @@ export class Connection {
     return c;
   }
 
-  /** Bulk-load a database from a datom set (bench/bootstrap): builds trees directly. */
   static async fromDatoms(datoms: readonly Datom[], opts: ConnectionOptions = {}): Promise<Connection> {
     const c = new Connection(opts);
     const schema = Schema.bootstrap().apply(datoms);
@@ -209,7 +174,6 @@ export class Connection {
     return this.nextEid;
   }
 
-  /** Bind deployed composition after restore; recataloging is not supported. */
   bindComposition(composition: CompositionIndex): void {
     if (this.composition !== undefined && this.composition !== composition) {
       throw new Error("connection already has deployed composition");
@@ -217,10 +181,8 @@ export class Connection {
     this.composition = composition;
   }
 
-  /** Apply already-processed datoms (log replay / follower). */
   applyDatoms(datoms: readonly Datom[]): void {
     if (datoms.length === 0) return;
-    // schema first so AVET/VAET membership of new attrs is right for later datoms in the same batch
     this.schema = this.schema.clone().apply(datoms);
     this.novelty.add(datoms, (a) => this.schema.isAvet(a), (a) => this.schema.isVaet(a));
     let maxT = this.basisT;
@@ -233,11 +195,6 @@ export class Connection {
     this.nextEid = maxE + 1;
   }
 
-  /**
-   * Stage, validate, then apply one transaction. The callback receives an
-   * immutable provisional `dbAfter`; a failure leaves connection state
-   * untouched. Serialized with ordinary transactions on the same writer.
-   */
   transactValidated<A>(
     txData: TxData,
     validate: (report: TxReport) => Promise<A> | A,
@@ -287,9 +244,6 @@ export class Connection {
         tempids: res.tempids,
       };
       const value = await validate(report);
-      // Deliberately synchronous: callers with an expiring authorization
-      // lease can make one final decision with no awaited gap before state is
-      // applied to this serialized writer.
       beforeApply();
       this.nextEid = res.nextEid;
       this.schema = schemaAfter;
@@ -302,20 +256,14 @@ export class Connection {
     return p;
   }
 
-  /** Transact. Serialized: concurrent callers are queued (single writer). */
   transact(txData: TxData): Promise<TxReport> {
     return this.transactValidated(txData, () => undefined).then(({ report }) => report);
   }
 
-  /**
-   * Index: merge all novelty (t <= basisT) into new trees, publish new roots,
-   * and drop merged novelty. Old Db values keep the old novelty object.
-   */
   async index(upToT: number = this.basisT): Promise<Roots> {
     const maxT = Math.min(upToT, this.basisT);
     if (this.novelty.count === 0 || maxT <= this.roots.t) return this.roots;
     const roots = await mergeRoots(this.store, this.roots, this.novelty, maxT, this.build);
-    // new novelty object (old snapshots keep the old one)
     const remaining = new Novelty();
     remaining.add(
       this.novelty.byIndex[Index.EAVT].all().filter((d) => d.t > maxT),
@@ -328,7 +276,6 @@ export class Connection {
     return roots;
   }
 
-  /** Db value as of an old root (uses only that root; novelty ignored). */
   dbAtRoot(roots: Roots): Db {
     return new Db({
       store: this.store,

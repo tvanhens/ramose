@@ -1,10 +1,3 @@
-/**
- * Catalog-binding kernel tests.
- *
- * Structural decode is out of scope. Semantic expression validation
- * and installed-IR assembly live in sibling suites.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -1029,9 +1022,9 @@ describe("type distinction at the installed boundary", () => {
   test("template and bound values are not installed IR", () => {
     const template = fullTemplate();
     const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
-    // @ts-expect-error — template is not installed IR
+    // @ts-expect-error
     requireInstalled(template);
-    // @ts-expect-error — bound intermediate is not installed IR
+    // @ts-expect-error
     requireInstalled(bound);
     expect(template._tag).toBe("PolicyTemplateIR");
     expect(bound._tag).toBe("BoundAuthorizationIR");

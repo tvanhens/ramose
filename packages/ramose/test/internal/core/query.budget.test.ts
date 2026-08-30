@@ -1,9 +1,3 @@
-/**
- * M7: planner memory guardrail. Intermediate relations are budgeted in cells
- * (rows × columns); an over-budget query aborts early with a tagged
- * QueryBudgetError instead of exhausting the 128 MB Worker, and a normal
- * query is unchanged.
- */
 import { describe, expect, test } from "bun:test";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { DEFAULT_QUERY_MAX_CELLS, QueryBudgetError, QueryError, query, type QueryStats } from "../../../src/internal/core/query/engine.ts";
@@ -24,7 +18,7 @@ async function setup(n = 2000) {
 describe("query memory budget (M7)", () => {
   test("a query that would blow the budget fails cleanly with a tagged error, before allocating the relation", async () => {
     const db = await setup(2000);
-    // cross product (no shared variable): 2000 × 2000 = 4M rows × 4 cols = 16M cells > default 1.5M cells
+
     const t0 = performance.now();
     let err: unknown;
     try {
@@ -39,7 +33,7 @@ describe("query memory budget (M7)", () => {
     expect(be.limit).toBe(DEFAULT_QUERY_MAX_CELLS);
     expect(be.cells).toBeGreaterThan(be.limit);
     expect(be.message).toMatch(/memory budget/);
-    // it refused up front rather than after building 4M rows
+
     expect(performance.now() - t0).toBeLessThan(2000);
   });
 
@@ -57,9 +51,9 @@ describe("query memory budget (M7)", () => {
     expect(err).toBeInstanceOf(QueryBudgetError);
     expect((err as QueryBudgetError).clause).toMatch(/\[\?e :p\/friend \?f\]|\[\?f :p\/name \?fn\]|\[\?e :p\/city/);
     expect((err as QueryBudgetError).limit).toBe(120);
-    // hash-join path and seek-join path both honour it
+
     await expect(query(db, `[:find ?e ?f :in $ [?e ...] :where [?e :p/friend ?f]]`, [Array.from({ length: 200 }, (_, i) => 1000 + i)], { maxCells: 50 })).rejects.toBeInstanceOf(QueryBudgetError);
-    // function bindings that fan out are bounded too
+
     await expect(query(db, `[:find ?e ?x :where [?e :p/city "c3"] [(range 0 100) [?x ...]]]`, [], { maxCells: 200, functions: { range: (a: number, b: number) => Array.from({ length: b - a }, (_, i) => a + i) } })).rejects.toBeInstanceOf(QueryBudgetError);
   });
 
@@ -77,7 +71,7 @@ describe("query memory budget (M7)", () => {
     expect(stats.budget!.maxCells).toBe(DEFAULT_QUERY_MAX_CELLS);
     expect(stats.budget!.peakCells).toBeGreaterThan(0);
     expect(stats.budget!.peakCells).toBeLessThan(10_000);
-    // exact scalar / aggregate shapes still work under a tight-but-sufficient budget
+
     expect(await query(db, `[:find (count ?e) . :where [?e :p/city "c3"]]`, [], { maxCells: 1000 })).toBe(100);
   });
 });

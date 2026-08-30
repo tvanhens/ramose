@@ -1,11 +1,3 @@
-/**
- * Compile-time pin: reserved keys, bad ident names, and Schema key / ns
- * drift are type errors at Entity() / Schema() (issue #184).
- *
- * `bun run typecheck` compiles this file. A mismatch turns `Expect<Equal<…>>`
- * into a type error, or leaves a `@ts-expect-error` unused.
- */
-
 import {
   Entity,
   Schema,
@@ -31,38 +23,38 @@ export type _sameTodo = Expect<
   Equal<(typeof ByArray)["entities"]["todo"], typeof Todo>
 >;
 
-// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
+// @ts-expect-error
 Entity("post", { id: string() });
-// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
+// @ts-expect-error
 Entity("post", { ns: string() });
-// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
+// @ts-expect-error
 Entity("post", { fields: string() });
-// @ts-expect-error reserved field name — id, ns, fields, _tag, and traits are Entity / Trait metadata
+// @ts-expect-error
 Entity("post", { _tag: string() });
-// @ts-expect-error reserved field name — Entity / Trait metadata
+// @ts-expect-error
 Entity("post", { traits: string() });
 const DocField = Entity("postWithDoc", { doc: string() }, { doc: "Entity docs." });
 DocField.doc.ident;
 const OperationsField = Entity("postWithOperations", { operations: string() });
 OperationsField.operations.ident;
 
-// @ts-expect-error invalid name — must match IDENT_NAME_RE
+// @ts-expect-error
 Entity("my ns/x", { title: string() });
-// @ts-expect-error invalid name — must match IDENT_NAME_RE
+// @ts-expect-error
 Entity("1todo", { title: string() });
-// @ts-expect-error invalid name — must match IDENT_NAME_RE
+// @ts-expect-error
 Entity("todo", { "a b": string() });
-// @ts-expect-error invalid name — must match IDENT_NAME_RE
+// @ts-expect-error
 Entity("todo", { "has/slash": string() });
 
-// @ts-expect-error Schema key must equal the Entity name
+// @ts-expect-error
 Schema({ todos: Todo });
 
 const OtherTodo = Entity("todo", { done: string() });
-// @ts-expect-error duplicate entity name
+// @ts-expect-error
 Schema([Todo, OtherTodo]);
 
-// @ts-expect-error duplicate entity name
+// @ts-expect-error
 merge(ByObject, Schema({ todo: OtherTodo }));
 
 declare const anyLeft: AnySchema;

@@ -1,10 +1,3 @@
-/**
- * Test-only storage exercises over the real Worker R2 and Cache API bindings.
- *
- * The forwarding recorders below never substitute for either binding. This
- * module is reachable only through the gated `/__test__/*` admin route.
- */
-
 import {
   Connection,
   Db,

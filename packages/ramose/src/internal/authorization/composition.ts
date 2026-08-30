@@ -1,10 +1,3 @@
-/**
- * Type-to-trait lookup derived from a validated catalog descriptor or unit.
- *
- * Indexes are computed at the validation/assembly boundary and frozen.
- * They are not persisted as application datoms.
- */
-
 import * as Result from "effect/Result";
 import {
   makeCompositionIndex,
@@ -27,7 +20,6 @@ const traitSetRows = (
   return out;
 };
 
-/** Freeze the prepared catalog's entity/trait closure as a lookup index. */
 export const compositionFromPrepared = (
   index: PreparedAuthorizationCatalog,
 ): CompositionIndex =>
@@ -38,10 +30,6 @@ export const compositionFromPrepared = (
     traitTraits: traitSetRows(index.traitTraits),
   });
 
-/**
- * Derive composition from catalog tables. Direct edges are closed the same
- * way {@link prepareAuthorizationCatalog} already validated.
- */
 export const compositionFromDescriptor = (
   descriptor: CatalogDescriptor,
 ): Result.Result<CompositionIndex, ValidateFailure> =>
@@ -58,7 +46,6 @@ export const compositionFromDescriptor = (
     return compositionFromPrepared(prepared);
   });
 
-/** Same lookup as {@link compositionFromDescriptor} for a sealed unit. */
 export const compositionFromUnit = (
   unit: InstalledCatalogUnitV2,
 ): Result.Result<CompositionIndex, ValidateFailure> =>

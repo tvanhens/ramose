@@ -1,8 +1,3 @@
-/**
- * Compile-time contract for entity- and trait-owned operations (#317).
- * `bun run typecheck` compiles this file.
- */
-
 import * as Schema from "effect/Schema";
 import type { Eid } from "../../src/db/Eid.ts";
 import type { AnyEntity } from "../../src/db/Entity.ts";
@@ -34,7 +29,7 @@ const GloballyAuthored = Operation({
   },
 });
 Entity("escapedOperationAuthor", {}, {
-  // @ts-expect-error owned maps must use their supplied owner-bound author
+  // @ts-expect-error
   operations: (_Operation) => ({
     escaped: GloballyAuthored,
   }),
@@ -50,9 +45,9 @@ const BoundOperations = Trait(
         input: Schema.Struct({}),
         output: Schema.Struct({}),
         run(op) {
-          // @ts-expect-error bind-supplied values are fixed on trait operations
+          // @ts-expect-error
           op.self.set(BoundOperations.catalog, "forged");
-          // @ts-expect-error bindable trait operations retain their exact owner
+          // @ts-expect-error
           op.self.set(Other.note, "wrong owner");
           return {};
         },
@@ -62,7 +57,7 @@ const BoundOperations = Trait(
 );
 type BoundInspect = typeof BoundOperations[typeof OwnedOperations]["inspect"];
 declare const boundInspectContext: Parameters<BoundInspect["run"]>[0];
-// @ts-expect-error the public bound operation retains the fixed field contract
+// @ts-expect-error
 boundInspectContext.self.set(BoundOperations.catalog, "forged");
 
 const definition = { key: "child", schema: CatalogSchema({}) };
@@ -84,7 +79,7 @@ const UnionBoundOperations = Trait(
         input: Schema.Struct({}),
         output: Schema.Struct({}),
         run(op) {
-          // @ts-expect-error any union branch that binds a value makes it fixed
+          // @ts-expect-error
           op.self.set(UnionBoundOperations.catalog, "forged");
           return {};
         },
@@ -102,17 +97,17 @@ const BoundEntity = Entity(
         input: Schema.Struct({ title: Schema.String }),
         output: Schema.Struct({}),
         run(op, { title }) {
-          // @ts-expect-error anonymous handles cannot omit required owner fields
+          // @ts-expect-error
           op.entity();
           op.self.set(BoundEntity.title, title);
           op.set(BoundEntity, op.self, BoundEntity.title, title);
           op.put(BoundEntity, { title });
           op.update(BoundEntity, op.self.eid, { title });
-          // @ts-expect-error engine-owned binding fields are not mutable
+          // @ts-expect-error
           op.self.set(BoundEntity.catalog, "forged");
-          // @ts-expect-error inherited update cannot bypass fixed fields
+          // @ts-expect-error
           op.update(BoundEntity, op.self.eid, { catalog: "forged" });
-          // @ts-expect-error inherited put cannot supply fixed fields
+          // @ts-expect-error
           op.put(BoundEntity, { title, catalog: "forged" });
           return {};
         },
@@ -145,13 +140,13 @@ Entity(
       escaped: Operation({
         input: Schema.Struct({}),
         output: Schema.Struct({}),
-        // @ts-expect-error extracted callbacks must retain the exact owned context
+        // @ts-expect-error
         run: extractedBroadRun,
       }),
       optionalEscape: Operation({
         input: Schema.Struct({}),
         output: Schema.Struct({}),
-        // @ts-expect-error optional parameters cannot widen the owned context
+        // @ts-expect-error
         run: extractedOptionalBroadRun,
       }),
     }),
@@ -169,7 +164,7 @@ const Taggable = Trait(
         output: Schema.Struct({}),
         run(op, { tag }) {
           op.self.set(Taggable.tags, tag);
-          // @ts-expect-error trait operations cannot write an unrelated owner field
+          // @ts-expect-error
           op.self.set(Other.note, tag);
           return {};
         },
@@ -203,7 +198,7 @@ const Relation = Trait(
         output: Schema.Struct({}),
         run(op) {
           op.self.set(Relation.target, classifiedId);
-          // @ts-expect-error trait refs only accept entity composers of that trait
+          // @ts-expect-error
           op.self.set(Relation.target, unclassifiedId);
           op.self.set(Relation.parent, 1);
           return {};
@@ -223,7 +218,7 @@ const Link = Entity(
         output: Schema.Struct({}),
         run(op) {
           op.self.set(Link.target, classifiedId);
-          // @ts-expect-error entity-owned trait refs reject non-composers
+          // @ts-expect-error
           op.self.set(Link.target, unclassifiedId);
           op.self.set(Link.parent, 1);
           return {};
@@ -264,7 +259,7 @@ export type _traitOmittedTraitsAreEmpty = Expect<
 
 const invalidOperationKey = Symbol("invalidOperationKey");
 Entity("symbolOperationKey", {}, {
-  // @ts-expect-error operation-map keys must be strings
+  // @ts-expect-error
   operations: (Operation) => ({
     [invalidOperationKey]: Operation({
       input: Schema.Struct({}),
@@ -276,7 +271,7 @@ Entity("symbolOperationKey", {}, {
   }),
 });
 Entity("numberOperationKey", {}, {
-  // @ts-expect-error operation-map keys must be strings
+  // @ts-expect-error
   operations: (Operation) => ({
     1: Operation({
       input: Schema.Struct({}),
@@ -288,7 +283,7 @@ Entity("numberOperationKey", {}, {
   }),
 });
 Entity("openOperationMap", {}, {
-  // @ts-expect-error owned operation maps must retain literal keys
+  // @ts-expect-error
   operations: (Operation) => {
     const spec = Operation({
       input: Schema.Struct({}),
@@ -316,7 +311,7 @@ declare const conditionalWrites:
 Entity("invalidWriteDependencies", {}, {
   operations: (Operation) => ({
     widened: Operation({
-      // @ts-expect-error write dependencies must be a concrete tuple
+      // @ts-expect-error
       writes: widenedWrites,
       input: Schema.Struct({}),
       output: Schema.Struct({}),
@@ -325,7 +320,7 @@ Entity("invalidWriteDependencies", {}, {
       },
     }),
     conditional: Operation({
-      // @ts-expect-error conditional tuples do not guarantee either dependency
+      // @ts-expect-error
       writes: conditionalWrites,
       input: Schema.Struct({}),
       output: Schema.Struct({}),
@@ -348,7 +343,7 @@ const Issue = Entity(
         input: Schema.Struct({ title: Schema.String, slug: Schema.String }),
         output: Schema.Struct({ id: EntityId }),
         run(op, input) {
-          // @ts-expect-error targetless create requires every entity field
+          // @ts-expect-error
           op.create({ slug: input.slug });
           const issue = op.create({ title: input.title, slug: input.slug });
           issue.set(Issue.title, input.title);
@@ -357,21 +352,21 @@ const Issue = Entity(
             user: userId,
             role: "owner",
           });
-          // @ts-expect-error undeclared external entities are not write dependencies
+          // @ts-expect-error
           op.put(User, { name: input.title });
           const writeTarget = Math.random() > 0.5 ? Membership : Other;
-          // @ts-expect-error a union definition cannot erase required create fields
+          // @ts-expect-error
           op.put(writeTarget, {});
-          // @ts-expect-error attrs for one branch are not safe until the target narrows
+          // @ts-expect-error
           op.put(writeTarget, { note: input.title });
           if (writeTarget.ns === "other") {
             op.put(writeTarget, { note: input.title });
           }
           membership.set(Membership.issue, issue);
           membership.set(Membership.role, "admin");
-          // @ts-expect-error a Membership handle cannot fill its User ref slot
+          // @ts-expect-error
           membership.set(Membership.user, membership);
-          // @ts-expect-error an Issue handle cannot fill a User ref slot
+          // @ts-expect-error
           issue.set(Issue.assignee, issue);
           return { id: issue };
         },
@@ -382,9 +377,9 @@ const Issue = Entity(
         run(op, { title }) {
           op.self.set(Issue.title, title);
           op.self.set(Issue.assignee, userId);
-          // @ts-expect-error targeted refs reject a branded eid of another entity
+          // @ts-expect-error
           op.self.set(Issue.assignee, otherId);
-          // @ts-expect-error entity operations cannot write an unrelated owner field
+          // @ts-expect-error
           op.self.set(Other.note, title);
           return {};
         },
@@ -427,9 +422,9 @@ export type _entityTargetless = Expect<Equal<Create["self"], false>>;
 export type _createNeedsEntityField = Expect<Extends<"title", keyof CreateAttrs>>;
 export type _createNeedsTransitiveTraitField = Expect<Extends<"slug", keyof CreateAttrs>>;
 const _completeCreate: CreateAttrs = { title: "Fix auth", slug: "fix-auth" };
-// @ts-expect-error title is a required entity field
+// @ts-expect-error
 const _missingEntityField: CreateAttrs = { slug: "fix-auth" };
-// @ts-expect-error slug is a required transitive-trait field
+// @ts-expect-error
 const _missingTraitField: CreateAttrs = { title: "Fix auth" };
 
 type Rename = typeof Issue[typeof OwnedOperations]["rename"];
@@ -449,7 +444,7 @@ Operation({
   input: Schema.Struct({ target: RefSchema.self }),
   output: Schema.Struct({}),
   run(op, _input) {
-    // @ts-expect-error a targetless operation cannot access a target resource
+    // @ts-expect-error
     op.self.set(Issue.title, "x");
     return {};
   },
@@ -459,7 +454,7 @@ Operation({
   input: Schema.Struct({ title: Schema.String }),
   output: Schema.Struct({}),
   run(op, _input) {
-    // @ts-expect-error targeted operations do not expose the entity-create helper
+    // @ts-expect-error
     op.create({});
     return {};
   },

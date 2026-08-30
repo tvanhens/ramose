@@ -1,19 +1,3 @@
-/**
- * Two-stage authorization IR plus the internal bound intermediate.
- *
- * {@link PolicyTemplateIR} is catalog-relative compiler output. It is not
- * executable runtime policy. {@link BoundAuthorizationIR} is the catalog-bound
- * intermediate for semantic validation. {@link ValidatedAuthorizationIR} is the
- * post-validation form with recomputed metadata for access-plan derivation
- * (#386). {@link InstalledAuthorizationIR} is the Schema-decoded structural
- * document. {@link InstalledAuthorizationIRV2} is the verified/sealed brand
- * runtime accepts. The four pipeline types are distinct: a template, bound,
- * validated, or structural installed document is not assignable where
- * verified installed IR is required.
- *
- * Effect Schema is the source of truth. Binding lives in `bind.ts`.
- */
-
 import type * as Brand from "effect/Brand";
 import * as Schema from "effect/Schema";
 import { CatalogDescriptor, RuleAccessPlan } from "./catalog.ts";
@@ -72,12 +56,6 @@ export const RuleFocus = <
     Schema.TaggedStruct("operation", { operation: ids.operation }),
   ]);
 
-/**
- * Derived flags are part of the document shape. The semantic validator
- * recomputes them; parsers must not trust author-supplied values.
- * V1 omits metadata that can only be constant or empty (`usesInput`,
- * `existsDepth`, named-rule `dependencies`).
- */
 export const AuthorizationRule = <
   Entity extends Schema.Top,
   Trait extends Schema.Top,
@@ -98,10 +76,6 @@ export const AuthorizationRule = <
     traversalDepth: Schema.Natural,
   });
 
-/**
- * `.allow(a, b)` is OR. Explicit deny wins. Missing decision is deny (POL-4).
- * Keys are identities, never wire names alone.
- */
 export const Decision = Schema.Struct({
   allow: Schema.Array(RuleId),
   deny: Schema.Array(RuleId),
@@ -129,11 +103,6 @@ export const AuthorizationDecisions = <
     operations: Schema.Array(DecisionEntry(ids.operation)),
   });
 
-/**
- * Catalog-relative, data-only template. Contains no functions, closures,
- * symbols, prototypes, Effects, or executable callbacks. The read
- * authorizer must not accept this form.
- */
 export const PolicyTemplateIR = Schema.TaggedStruct("PolicyTemplateIR", {
   version: PolicyTemplateIRVersion,
   languageVersion: AuthorizationLanguageVersion,
@@ -145,12 +114,6 @@ export const PolicyTemplateIR = Schema.TaggedStruct("PolicyTemplateIR", {
 });
 export type PolicyTemplateIR = typeof PolicyTemplateIR.Type;
 
-/**
- * Catalog-bound intermediate for #385. Identities are canonical and scoped
- * to the requested database/catalog/version. This form is not executable
- * and must not be accepted by runtime authorization: it has no policy hash,
- * identity table, operation table, trait-composition table, or access plans.
- */
 export const BoundAuthorizationIR = Schema.TaggedStruct("BoundAuthorizationIR", {
   version: BoundAuthorizationIRVersion,
   languageVersion: AuthorizationLanguageVersion,
@@ -166,13 +129,6 @@ export const BoundAuthorizationIR = Schema.TaggedStruct("BoundAuthorizationIR", 
 });
 export type BoundAuthorizationIR = typeof BoundAuthorizationIR.Type;
 
-/**
- * Semantically validated bound document for #386. Usage flags and
- * traversal depth are recomputed from the expression and catalog
- * metadata — never taken from the template or bound input. Still
- * non-executable: no policy hash, identity table, operation table,
- * trait-composition table, or access plans.
- */
 export const ValidatedAuthorizationIR = Schema.TaggedStruct("ValidatedAuthorizationIR", {
   version: ValidatedAuthorizationIRVersion,
   languageVersion: AuthorizationLanguageVersion,
@@ -188,24 +144,12 @@ export const ValidatedAuthorizationIR = Schema.TaggedStruct("ValidatedAuthorizat
 });
 export type ValidatedAuthorizationIR = typeof ValidatedAuthorizationIR.Type;
 
-/** Input the semantic validator consumes. */
 export const AuthorizationValidationInput = Schema.Struct({
   bound: BoundAuthorizationIR,
   descriptor: CatalogDescriptor,
 });
 export type AuthorizationValidationInput = typeof AuthorizationValidationInput.Type;
 
-/**
- * Schema-decoded structural installed policy. Stores only policy-owned
- * data: language version, principal/class/claim configuration, canonical
- * rules, decisions, access plans, and the policy hash. Catalog identity,
- * schema tables, and derived identity/operation/composition indexes live
- * on {@link CatalogDescriptor}. Decode checks shape and identity
- * collisions only — not policy hash, rule hashes, decision semantics, or
- * access-plan completeness. This is not runtime authority.
- * Stored-document revalidation belongs to #368; until then, only
- * {@link installAuthorization} may seal {@link InstalledAuthorizationIRV2}.
- */
 export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizationIR", {
   version: InstalledAuthorizationIRVersion,
   languageVersion: AuthorizationLanguageVersion,
@@ -219,7 +163,6 @@ export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizat
 });
 export type InstalledAuthorizationIR = typeof InstalledAuthorizationIR.Type;
 
-/** Exact persisted policy shape embedded by catalog-unit v1. Migration only. */
 const LegacyCanonicalIdentitySchemasV1 = {
   ...CanonicalIdentitySchemas,
   operation: Schema.Never,
@@ -250,19 +193,9 @@ export const LegacyInstalledAuthorizationIRV1 = Schema.TaggedStruct(
 export type LegacyInstalledAuthorizationIRV1 =
   typeof LegacyInstalledAuthorizationIRV1.Type;
 
-/**
- * Verified/sealed runtime-acceptable v1 artifact. Distinct from the
- * Schema-decoded structural document: #361 must consume this brand, not
- * decoder output. Only {@link installAuthorization} produces it today.
- * #368's authoritative load/revalidate path will be the other producer.
- */
 export type InstalledAuthorizationIRV2 = InstalledAuthorizationIR &
   Brand.Brand<"InstalledAuthorizationIRV2">;
 
-/**
- * Requested install identity the binder must match against the descriptor.
- * Database is not derivable from catalog id.
- */
 export const CatalogBindingTarget = Schema.Struct({
   database: DatabaseId,
   catalog: CatalogId,
@@ -271,7 +204,6 @@ export const CatalogBindingTarget = Schema.Struct({
 });
 export type CatalogBindingTarget = typeof CatalogBindingTarget.Type;
 
-/** Input the catalog binder consumes. */
 export const CatalogBindingInput = Schema.Struct({
   target: CatalogBindingTarget,
   descriptor: CatalogDescriptor,

@@ -1,11 +1,3 @@
-/**
- * Auth-path construction for the read-authorization language (#406).
- *
- * `$()` / `path()` / field stamps exist only before compile. They accumulate
- * hops; compile lowers each hop to {@link import("../identities.ts").RelativeFieldId}.
- * Real Entity / Field objects are never mutated.
- */
-
 import type { PathCarrier } from "../../../db/shapes.ts";
 import { isSelfRefSchema, refTargetOf } from "../../../db/valueTypes.ts";
 import { contains, eq } from "./expr.ts";
@@ -106,10 +98,6 @@ const navigate = (owner: FieldOwner, steps: readonly AuthPathStep[]): AuthPathPr
   }) as unknown as AuthPathProxy;
 };
 
-/**
- * Auth-path proxy over an Entity or Trait. Property access accumulates
- * hops; `.eq` / `.contains` are the only terminals.
- */
 export const $ = <N extends { readonly fields: object; readonly ns?: string; readonly id?: unknown }>(
   root: N,
 ): AuthPathProxy<N["fields"]> =>
@@ -136,7 +124,6 @@ const hopToSteps = (hop: AuthPathLike | { readonly ident: string }): readonly Au
   ];
 };
 
-/** Concatenate stamped fields and AuthPaths into one AuthPath. */
 export const path = (...hops: ReadonlyArray<AuthPathLike | { readonly ident: string }>): AuthPath => {
   const steps: AuthPathStep[] = [];
   for (const hop of hops) {
@@ -145,13 +132,6 @@ export const path = (...hops: ReadonlyArray<AuthPathLike | { readonly ident: str
   return new AuthPath(steps);
 };
 
-/**
- * Wrap a stamped field in the same callable {@link navigate} proxy `$()` uses.
- * Steps start with that field. Self-refs seed the owning row from
- * {@link parseIdent} (`:issue/parent` → `issue`) so further hops stay
- * qualified; targeted refs hop via `refTargetOf`; untargeted refs have no
- * next owner.
- */
 export const seededPath = (field: PathCarrier): AuthPathProxy => {
   const parsed = parseIdent(field.ident);
   const ownerFromField: FieldOwner =

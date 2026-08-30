@@ -1,12 +1,3 @@
-/**
- * The hooks themselves — `useSyncExternalStore` over the client's own
- * subscriptions, and nothing more.
- *
- * There is no cache, no fetcher, no retry, no revalidation and no reconciler in
- * here. The client already owns every one of those, and a second copy living in
- * React would be a second answer to the same question.
- */
-
 import {
   createContext,
   createElement,
@@ -29,7 +20,6 @@ import { queryStore } from "./store.ts";
 const ClientContext = createContext<Client | undefined>(undefined);
 
 export type RamoseProviderProps = {
-  /** The client every hook under this provider reads. */
   readonly client: Client;
   readonly children?: ReactNode;
 };
@@ -50,7 +40,6 @@ export type RamoseProviderProps = {
 export const RamoseProvider = (props: RamoseProviderProps): ReactElement =>
   createElement(ClientContext.Provider, { value: props.client }, props.children);
 
-/** The client bound by the nearest {@link RamoseProvider}. */
 const useClient = (): Client => {
   const client = useContext(ClientContext);
   if (client === undefined) {
@@ -74,7 +63,6 @@ const useClient = (): Client => {
  */
 export const useDb = (): ClientDatabase => useClient().open();
 
-/** `getServerSnapshot` for a query: there is no server-rendered answer. */
 const pendingOnServer = (): QueryState<never> => PENDING;
 
 /**
@@ -104,7 +92,6 @@ export const useQuery = <Row, Out>(
   query: QueryObject<Row, Out>,
   database?: ClientDatabase,
 ): QueryState<Out> => {
-  // Unconditional, so the hook order never depends on which form was used.
   const provided = useContext(ClientContext);
   const db = database ?? provided?.open();
   if (db === undefined) {
@@ -112,34 +99,11 @@ export const useQuery = <Row, Out>(
       "ramose/react: useQuery needs a <RamoseProvider> or an explicit database",
     );
   }
-  // Lowered once per render, exactly as `observe()` would have. The canonical
-  // key is what makes the store cache hit, so the observation, the subscription
-  // and the narrowed snapshot are all built only the first time.
   const key = queryObservationKey(query);
   const store = queryStore<Out>(db, key, () => db.observe(query));
   return useSyncExternalStore(store.subscribe, store.getSnapshot, pendingOnServer);
 };
 
-/**
- * The synchronization state of one client, or of one database.
- *
- * ```tsx
- * const sync = useSyncState();
- * if (sync.status === "offline") return <OfflineBadge />;
- * ```
- *
- * The client publishes a frozen singleton per status, so this re-renders on a
- * status change and on nothing else — an equal status is the same object, and
- * React stops there.
- *
- * `authentication-required` and `closed` are terminal for the client instance:
- * there is nothing to retry, and an application recovers by constructing a new
- * client. `update-required` has two halves — a server-rotated authorized view
- * publishes nothing at all, while a build that cannot replay its own durable
- * optimistic layers keeps its committed rows readable with the pending work
- * left out — so a component may report it without also hiding what
- * {@link useQuery} is still answering.
- */
 export const useSyncState = (source?: Client | ClientDatabase): SyncState => {
   const provided = useContext(ClientContext);
   const sync: Subscription<SyncState> | undefined = (source ?? provided)?.sync;
@@ -148,7 +112,5 @@ export const useSyncState = (source?: Client | ClientDatabase): SyncState => {
       "ramose/react: useSyncState needs a <RamoseProvider> or an explicit client",
     );
   }
-  // The client's own pair, unwrapped: `getSnapshot` reads a published value, so
-  // it is as valid on a server render as anywhere else.
   return useSyncExternalStore(sync.subscribe, sync.getSnapshot, sync.getSnapshot);
 };

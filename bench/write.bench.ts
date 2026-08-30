@@ -1,10 +1,3 @@
-/**
- * Core write-path bench: transact throughput of the pure engine (no DO, no
- * storage). This is the upper bound the Transactor DO can approach; M2's
- * DO bench (`test/e2e`) measures the real thing with group commit.
- *
- *   bun run bench/write.bench.ts [txs=5000]
- */
 import { Connection } from "../packages/ramose/src/internal/core/index.ts";
 import { fmt } from "./lib.ts";
 

@@ -1,21 +1,3 @@
-/**
- * QueryReplica Durable Object (M5) — N per database, sharded by region/tenant.
- *
- * - Holds a WebSocket to the Transactor (resume-from-watermark on reconnect,
- *   gap detection via `t` continuity, catch-up from the transactor's /log or
- *   from R2 `log/` chunks). A read with `x-ramose-min-t` also pulls `/log`
- *   when the subscription is open but behind the fence.
- * - Keeps novelty since the current root sorted in memory and spilled to
- *   SQLite (survives eviction/restart without a full resync).
- * - Caches hot segments in SQLite (`segcache`) in front of R2.
- * - Serves `GET /basis` → { t, root, novelty } to Workers, and executes
- *   reads itself (`POST /query`: datalog / pull / entity) — the Worker's
- *   read path forwards here instead of running datalog in the Worker.
- * - Drops novelty ≤ new root on root flip.
- *
- * Workers never talk to the Transactor for reads (invariant §1.5).
- */
-
 import { DurableObject } from "cloudflare:workers";
 import {
   type LogEntry,
@@ -81,14 +63,12 @@ type BasisWatchAttachment = {
   readonly healthUrl: string;
 };
 
-/** Client read fence (`x-ramose-min-t` or `?minT=`). */
 export function requestedMinT(raw: string | null | undefined): number | undefined {
   if (raw === null || raw === undefined || raw === "") return undefined;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
-/** SQLite-backed byte tier for segment bodies (bounded by row count, LRU-ish by insertion). */
 class SqliteTier implements ByteTier {
   constructor(private readonly sql: SqlStorage, private readonly maxRows = 2000) {
     sql.exec(`CREATE TABLE IF NOT EXISTS segcache (k TEXT PRIMARY KEY, body BLOB NOT NULL, ts INTEGER NOT NULL)`);
@@ -112,11 +92,10 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
   protected store!: R2NodeStore;
   protected dbName: string | undefined;
   protected root: RootRecord | undefined;
-  protected entries: LogEntry[] = []; // novelty since root, ascending t
+  protected entries: LogEntry[] = [];
   protected ws: WebSocket | undefined;
   private connecting: Promise<void> | undefined;
   private syncing: Promise<void> | undefined;
-  /** In-order apply of upstream frames; `sync` drains this before serving a basis. */
   private applyChain: Promise<void> = Promise.resolve();
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectDelayMs = 0;
@@ -129,10 +108,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     super(ctx, env);
     this.sql = ctx.storage.sql;
   }
-
-  // ---------------------------------------------------------------------------
-  // Boot / persistence
-  // ---------------------------------------------------------------------------
 
   protected init(): Promise<void> {
     if (!this.ready) this.ready = this.boot();
@@ -160,7 +135,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     }
   }
 
-  /** Per-database view of the bucket (all keys under db/<name>/). */
   private bucket!: R2Like;
   private bindStore(db: string): void {
     this.bucket = prefixedBucket(this.env.STORE, dbPrefix(db));
@@ -179,20 +153,14 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     return this.entries.length ? this.entries[this.entries.length - 1].t : (this.root?.t ?? 0);
   }
 
-  // ---------------------------------------------------------------------------
-  // Novelty protocol
-  // ---------------------------------------------------------------------------
-
   private appendEntry(e: LogEntry): void {
     this.entries.push(e);
     const body = encodeLogChunk([e]);
     this.sql.exec(`INSERT OR REPLACE INTO novelty (t, tx_instant, datoms) VALUES (?, ?, ?)`, e.t, e.txInstant, body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength));
   }
 
-  /** Optional source-only testing boundary before a novelty entry is applied. */
   protected async beforeApplyDatoms(_entry: LogEntry): Promise<void> {}
 
-  /** Notify the production basis watches after an entry is durable locally. */
   protected async notifyAppliedEntry(entry: LogEntry): Promise<void> {
     this.notifyBasisWatches(entry.t);
   }
@@ -208,7 +176,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     const beforeT = this.basisT;
     this.root = rec;
     this.setMeta("root", rec);
-    // drop novelty absorbed by the new root
     const before = this.entries.length;
     this.entries = this.entries.filter((e) => e.t > rec.t);
     this.sql.exec(`DELETE FROM novelty WHERE t <= ?`, rec.t);
@@ -224,7 +191,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         const rec = frame.root as RootRecord;
         if (!this.root || rec.t > this.root.t) this.adoptRoot(rec);
         if (frame.t > this.basisT + 0) {
-          // transactor is ahead; it will send catch-up frames (or a gap frame) right after hello
         }
         break;
       }
@@ -245,16 +211,15 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
       case "tx": {
         const e = entryFromFrame(frame);
         const expected = this.basisT + 1;
-        if (e.t < expected) return; // duplicate / already applied
+        if (e.t < expected) return;
         if (e.t > expected) {
-          // gap: fill from the transactor's log (or R2), then apply this frame
           this.stats.gaps++;
           this.log.warn("replica.gap", { db: this.dbName, expected, got: e.t });
           await withAbortTimeout(
             LIVE_UPSTREAM_CATCHUP_TIMEOUT_MS,
             (signal) => this.fillGap(this.basisT, e.t - 1, signal),
           );
-          if (e.t !== this.basisT + 1) return; // still inconsistent; a resume will fix it
+          if (e.t !== this.basisT + 1) return;
         }
         if (!this.root || e.t > this.root.t) await this.applyDatoms(e);
         break;
@@ -262,7 +227,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     }
   }
 
-  /** Fetch (from, to] from the transactor's HTTP /log, falling back to R2 chunks. */
   private async fillGap(from: number, to: number, signal?: AbortSignal): Promise<void> {
     if (!this.dbName) return;
     try {
@@ -291,7 +255,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     if (signal?.aborted) throw new Error("upstream catch-up timed out");
   }
 
-  /** Read log/ chunks from R2 for t in (from, to] and apply in order. */
   private async catchUpFromR2(from: number, to = Number.MAX_SAFE_INTEGER): Promise<void> {
     if (!this.root) {
       const rec = await readCurrentRoot(this.bucket);
@@ -301,9 +264,8 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     for (const e of entries) if (e.t === this.basisT + 1) await this.applyDatoms(e);
   }
 
-  /** Establish (or re-establish) the WS subscription to the Transactor. */
   private async ensureConnected(): Promise<void> {
-    if (this.ws && (this.ws.readyState === 1 /* OPEN */ || this.ws.readyState === 0)) return;
+    if (this.ws && (this.ws.readyState === 1  || this.ws.readyState === 0)) return;
     if (this.connecting) return this.connecting;
     this.connecting = this.connectUpstream().finally(() => (this.connecting = undefined));
     return this.connecting;
@@ -330,14 +292,11 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
       if (this.ws !== ws) return;
       this.ws = undefined;
       this.closeBasisWatches("upstream disconnected");
-      // Listening sessions never call `sync()`. Retry with backoff until the
-      // socket is back or every attached session is gone.
       this.scheduleReconnect();
     };
     ws.addEventListener("close", drop);
     ws.addEventListener("error", drop);
     if (this.listening()) this.armWatch();
-    // give the hello + catch-up a moment so the first basis is fresh
     await new Promise((r) => setTimeout(r, 20));
     await this.drainFrames();
   }
@@ -346,7 +305,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     return this.ctx.getWebSockets().length > 0;
   }
 
-  /** Retry `ensureConnected` with backoff while live sessions are attached. */
   private scheduleReconnect(): void {
     if (this.ws && (this.ws.readyState === 1 || this.ws.readyState === 0)) return;
     if (this.connecting || this.reconnectTimer !== undefined) return;
@@ -367,11 +325,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     }, delay);
   }
 
-  /**
-   * Ping the transactor while sessions are attached. A pong carries `t` and
-   * runs `catchUpTo` so an open-but-silent novelty socket still wakes live
-   * subscribers. No pong for a few ticks → drop and reconnect.
-   */
   protected armWatch(): void {
     if (this.watchTimer !== undefined) return;
     this.watchTimer = setTimeout(() => {
@@ -395,7 +348,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
       try {
         this.ws.close(1000, "stale");
       } catch {
-        /* already gone */
       }
       this.ws = undefined;
       this.scheduleReconnect();
@@ -410,12 +362,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     }
   }
 
-  /**
-   * Run `work` after every previously queued apply, without letting a
-   * rejection become the permanent `applyChain` value (later frames would
-   * skip their callbacks). The returned promise still rejects so a fenced
-   * read can fail the request.
-   */
   private enqueue(work: () => Promise<void>): Promise<void> {
     const next = this.applyChain.then(work);
     this.applyChain = next.then(
@@ -429,7 +375,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     void this.onUpstreamData(String(ev.data));
   }
 
-  /** Transactor novelty frames, or a `pong` that fences catch-up for live sessions. */
   private async onUpstreamData(data: string): Promise<void> {
     let raw: unknown;
     try {
@@ -465,17 +410,10 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     });
   }
 
-  /** Wait for the apply-chain tail captured now — do not chase later frames. */
   private async drainFrames(): Promise<void> {
     await this.applyChain;
   }
 
-  /**
-   * Pull `(basisT, minT]` from the transactor SQL log when the WS
-   * subscription is open-but-stale (broadcasts dropped under load).
-   * Enqueued on `applyChain` so a live frame cannot double-apply the same t.
-   * Fenced HTTP reads and upstream `pong` (live-session watch) both call this.
-   */
   protected async catchUpTo(minT: number | undefined, signal?: AbortSignal): Promise<void> {
     if (minT === undefined || this.basisT >= minT) return;
     const target = minT;
@@ -486,7 +424,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     });
   }
 
-  /** Make sure we are connected and caught up (bounded wait). */
   protected async sync(): Promise<void> {
     if (this.syncing) return this.syncing;
     this.syncing = (async () => {
@@ -494,7 +431,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         await this.ensureConnected();
         await this.drainFrames();
       } catch (err) {
-        // transactor unreachable: serve from R2 (root + log chunks) — stale but consistent
         this.log.warn("replica.connect.failed", { db: this.dbName, error: String(err), basisT: this.basisT });
         await this.catchUpFromR2(this.basisT).catch(() => undefined);
         if (this.listening()) this.scheduleReconnect();
@@ -515,7 +451,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         return raw as BasisWatchAttachment;
       }
     } catch {
-      /* malformed attachments are not accepted as production basis watches */
     }
     return undefined;
   }
@@ -554,7 +489,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         try {
           ws.close(1011, "basis notification failed");
         } catch {
-          /* already gone */
         }
       }
     }
@@ -565,7 +499,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
       try {
         ws.close(1011, reason);
       } catch {
-        /* already gone */
       }
     }
   }
@@ -624,7 +557,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     try {
       ws.close(1008, "unsupported socket");
     } catch {
-      /* already gone */
     }
   }
 
@@ -632,16 +564,9 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     try {
       ws.close(code, "bye");
     } catch {
-      /* already gone */
     }
   }
 
-  /**
-   * Deployment probes run as separate Durable Object alarm invocations, so a
-   * long-lived Worker response never accumulates one subrequest per lease.
-   * Any failed or mismatched probe closes the internal watch and therefore
-   * fails the live response closed before its next five-second lease.
-   */
   override async alarm(): Promise<void> {
     await this.init();
     const watches = this.basisWatches();
@@ -663,8 +588,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     await Promise.all([...byHealthUrl].map(async ([healthUrl, group]) => {
       let currentDeployment: string | undefined;
       try {
-        // One bounded probe per distinct public route fences every subscriber
-        // on that route without charging the long-lived Worker invocation.
         currentDeployment = await withAbortTimeout(
           LIVE_DEPLOYMENT_TIMEOUT_MS,
           async (signal) => {
@@ -676,9 +599,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
                 "cache-control": "no-cache",
                 ...internalHeaders(this.env),
               },
-              // Cloudflare fetch does not implement `redirect: "error"`.
-              // Manual mode is equivalently fail-closed here: redirects are
-              // non-ok and cannot carry the required deployment header.
               redirect: "manual",
               signal,
             });
@@ -687,33 +607,23 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
           },
         );
       } catch {
-        /* an ambiguous deployment probe fails this route's watches closed */
       }
       for (const [ws, watch] of group) {
         if (currentDeployment === watch.expectedDeployment) continue;
         try {
           ws.close(1000, "deployment changed");
         } catch {
-          /* already gone */
         }
       }
     }));
     if (this.basisWatches().length > 0) await this.armDeploymentWatch();
   }
 
-  // ---------------------------------------------------------------------------
-  // HTTP
-  // ---------------------------------------------------------------------------
-
   override async fetch(request: Request): Promise<Response> {
-    // reachable only from the peer Worker
     const gate = internalGate(this.env, request);
     if (gate) return gate;
     await this.init();
     const url = new URL(request.url);
-    // The identity/sealing root lives in one fixed-name instance of this
-    // namespace and is deliberately not a database-scoped resource, so it is
-    // served before any `?db=` binding.
     if (url.pathname === "/server-identity") {
       return this.serveServerIdentityRoot(request);
     }
@@ -725,9 +635,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
       this.bindStore(dbParam);
     }
     if (!this.dbName) return json({ error: "missing ?db=" }, 400);
-    // Route dispatch as an Effect program: the routes stay plain async/await,
-    // failures are classified into tagged errors (errors.ts) and mapped back to
-    // exactly the statuses/bodies this endpoint returned before.
     return Effect.runPromise(
       Effect.tryPromise({ try: () => this.route(request, url, this.dbName as string), catch: toReplicaError }).pipe(
         Effect.catchTags({
@@ -744,18 +651,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     );
   }
 
-  /**
-   * Create-once, never-regenerate server identity/sealing root.
-   *
-   * Read and write happen in one synchronous turn, so the Durable Object's
-   * single-threaded execution is the whole mutual exclusion: two concurrent
-   * Workers cannot both mint a root.
-   *
-   * Only a genuinely absent record is initialized. A record this build cannot
-   * read — a newer version reached by rolling back, or corruption — fails
-   * closed, because replacing it would destroy the only key that reproduces
-   * every existing identity and revision.
-   */
   private serveServerIdentityRoot(request: Request): Response {
     if (request.method !== "GET" && request.method !== "POST") {
       return json({ error: "method not allowed" }, 405);
@@ -774,19 +669,12 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     return json({ root: created, created: true });
   }
 
-  /**
-   * Revisions persisted under one sealing root are unreachable under another.
-   * A replaced or lost root quarantines them explicitly instead of letting a
-   * derived-name collision decide.
-   */
   private serverIdentityQuarantine(keyId: string): Response | undefined {
     const decision = decideServerIdentityBinding(
       this.getMeta<string>("server-identity-key"),
       keyId,
     );
     if (decision.type !== "incompatible") return undefined;
-    // The key id is a public name, not key material, and this route is
-    // already behind the internal capability.
     return json(
       { error: SERVER_IDENTITY_INCOMPATIBLE, persisted: decision.persisted },
       409,
@@ -825,8 +713,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         ) {
           return json({ error: "invalid replication revision request" }, 400);
         }
-        // Refused before any row is read or written, so state sealed under a
-        // replaced root is neither reused nor corrupted.
         const quarantined = this.serverIdentityQuarantine(body.keyId);
         if (quarantined !== undefined) return quarantined;
         if (body.action === "resolve") {
@@ -857,8 +743,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         if (storedBinding === undefined) {
           this.setMeta("replication-binding", body.binding);
         }
-        // This store now belongs to one identity/sealing root; a later root
-        // finds it quarantined above rather than adopting it.
         if (this.getMeta<string>("server-identity-key") === undefined) {
           this.setMeta("server-identity-key", body.keyId);
         }
@@ -925,7 +809,6 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
   }
 }
 
-/** Production replica class: no admin routes, sessions, or runtime hooks. */
 export class QueryReplicaDO extends QueryReplicaDOBase {
   constructor(ctx: DurableObjectState, env: RamoseEnv) {
     super(ctx, env);

@@ -1,12 +1,3 @@
-/**
- * `:db/cas` through the real Transactor / Replica DOs.
- *
- * Public `/db/*` is fail-closed. These cases go through
- * `POST /__test__/db/:name/transact|query` so a write hits
- * `Transactor.handleRequest` → real SQLite/R2, and a read hits Replica
- * `/query`. Storage faults use the existing checkpoint / abort admin.
- */
-
 import { describe, expect, test } from "bun:test";
 import { attr, testAdmin, uniqueDb, type LocalUrls } from "./fixtures.ts";
 
@@ -81,7 +72,6 @@ const tryTransact = async (
   }
 };
 
-/** Replica entity read with a brief reconnect window after isolate abort. */
 const queryEntity = async (
   url: string,
   db: string,
@@ -108,11 +98,6 @@ const queryFindId = async (
   );
 };
 
-/**
- * Prefer a replica read. If the replica is still reconnecting, a redundant
- * CAS on the transactor proves the durable value (match ⇒ survived;
- * `tx/cas-conflict` / `tx/lookup-ref` ⇒ it did not).
- */
 const assertDurableV = async (
   url: string,
   db: string,
@@ -124,9 +109,7 @@ const assertDurableV = async (
     try {
       const q = await queryEntity(url, db, eid, minT);
       if (q.status === 200 && q.body?.entity?.[":k/v"] === expected) return;
-    } catch {
-      // replica isolate may still be reconnecting after transactor abort
-    }
+    } catch {}
     await Bun.sleep(50 * (attempt + 1));
   }
   const probe = await testAdmin(url, db, "/transact", {
@@ -138,12 +121,6 @@ const assertDurableV = async (
   );
 };
 
-/**
- * Prove a sibling `:k/n` add did not land. Replica 200 with `:k/n` set fails
- * immediately. If the replica never answers, a transactor CAS expected=1 on
- * `:k/n` is the fallback: 200 means the sibling landed; 409 `tx/cas-conflict`
- * means absent. Anything else cannot prove absence.
- */
 const assertSiblingNAbsent = async (
   url: string,
   db: string,
@@ -161,7 +138,6 @@ const assertSiblingNAbsent = async (
       }
     } catch (err) {
       if (err instanceof Error && err.message.startsWith("sibling :k/n landed")) throw err;
-      // replica isolate may still be reconnecting after transactor abort
     }
     await Bun.sleep(50 * (attempt + 1));
   }
@@ -189,9 +165,7 @@ const assertIdAbsent = async (
       if (find.status === 200 && Array.isArray(find.body?.result) && find.body.result.length === 0) {
         return;
       }
-    } catch {
-      // reconnecting
-    }
+    } catch {}
     await Bun.sleep(50 * (attempt + 1));
   }
   const probe = await testAdmin(url, db, "/transact", {

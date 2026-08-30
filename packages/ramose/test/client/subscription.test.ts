@@ -1,5 +1,3 @@
-/** The framework-neutral subscription primitives (#477 slice 1). */
-
 import { describe, expect, test } from "bun:test";
 import { Store, sameResult } from "../../src/client/subscription.ts";
 import { aggregateSyncStatus, syncState } from "../../src/client/sync.ts";
@@ -79,8 +77,7 @@ describe("sync state", () => {
     expect(aggregateSyncStatus(["offline", "update-required"])).toBe("update-required");
     expect(aggregateSyncStatus(["update-required", "authentication-required"]))
       .toBe("update-required");
-    // A database whose session was closed under it is terminal, and no live
-    // sibling softens that.
+
     expect(aggregateSyncStatus(["closed", "live"])).toBe("closed");
     expect(aggregateSyncStatus(["closed", "update-required"])).toBe("closed");
   });

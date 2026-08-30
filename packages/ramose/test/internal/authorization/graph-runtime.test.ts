@@ -1,5 +1,3 @@
-/** Built-in Graph semantics through the authoritative deployed operation path. */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";

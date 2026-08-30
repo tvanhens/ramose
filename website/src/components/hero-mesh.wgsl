@@ -89,9 +89,7 @@ fn addNodeEdges(p: vec2f, id: vec2f, time: f32) -> vec4f {
   let downRightId = id + vec2f(parity, 1.0);
   let downLeft = nodePosition(downLeftId, time);
   let downRight = nodePosition(downRightId, time);
-  // Horizontal chains guarantee degree >= 2. Staggered closed triangles join
-  // every row to the next, making one connected graph without filling every
-  // possible edge in the underlying triangular lattice.
+
   let rightPresence = 1.0;
   let leftPresence = bridgeTriangle(id - vec2f(1.0, 0.0), time);
   let downPresence = bridgeTriangle(id, time);
@@ -108,8 +106,7 @@ fn addNodeEdges(p: vec2f, id: vec2f, time: f32) -> vec4f {
 @fragment
 fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
   let time = params.time;
-  // An affine tilt keeps every connection straight; only its endpoint nodes
-  // move, each with independent direction, speed, and phase.
+
   var world = vec2f(
     (uv.x - 0.5) * params.aspect * 6.36 + (uv.y - 0.5) * 0.32,
     uv.y * 5.37 - 0.15
@@ -121,8 +118,6 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
   let baseColumn = floor(world.x - rowParity(baseRow) * 0.5);
   var graphData = vec4f(0.0);
 
-  // Neighboring ownership keeps straight segments seamless even as endpoints
-  // wander across their nominal triangular cells.
   for (var rowIndex: i32 = -1; rowIndex <= 1; rowIndex = rowIndex + 1) {
     for (var columnIndex: i32 = -2; columnIndex <= 2; columnIndex = columnIndex + 1) {
       let id = vec2f(

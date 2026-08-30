@@ -1,13 +1,4 @@
 import "./env.ts";
-/**
- * Alchemy local-mode stack for Ramose integration tests.
- *
- * `Test.make({ dev: true })` deploys this once per file with the normal
- * sidecar topology (workerd, R2, both Durable Objects). Each test uses a
- * unique database name instead of resetting DO/R2 state.
- *
- *   bun run test:local
- */
 
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -45,8 +36,7 @@ export const Stack = Alchemy.Stack(
   },
   Effect.gen(function* () {
     const open = yield* Open;
-    // workerName is an Output; Worker env classification unwraps it
-    // when the App resource applies (RuntimeContext is ambient there).
+
     const empty = yield* Empty;
     const token = yield* Token;
     const transactorTest = yield* TransactorTest;

@@ -1,19 +1,3 @@
-/**
- * The experimental MCP transport surface (#484 S1).
- *
- * One stateless Streamable HTTP endpoint served by the official TypeScript
- * SDK's web-standard handler. No sessions, no resumability, no server-initiated
- * stream: every request stands alone, which is what lets the same Worker answer
- * it without holding state across the edge.
- *
- * Failure classes are kept apart deliberately. Malformed envelopes, unknown
- * methods, and unknown tool names are **protocol** errors; missing or invalid
- * credentials are an **HTTP challenge** raised before this module is reached;
- * everything recoverable — validation, sealing, conflicts, refusals — is a
- * *completed* tool result with `isError: true` carrying the shared envelope,
- * because the agent that made the call is the party that can act on it.
- */
-
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -30,7 +14,6 @@ import {
   type ErrorEnvelopeV1,
 } from "./contract.ts";
 
-/** Tool bodies. Each resolves a public value or throws {@link McpToolFailure}. */
 export type KernelTools = {
   readonly describe: (args: unknown) => Promise<unknown>;
   readonly query: (args: unknown) => Promise<unknown>;
@@ -163,12 +146,6 @@ const TOOLS = Object.freeze([
   },
 ]);
 
-/**
- * The SDK constructs an Ajv validator eagerly, and Ajv compiles schemas with
- * `new Function`, which Workers forbid. Nothing on this surface declares an
- * elicitation form — the only place the SDK consults it — so an inert provider
- * is both correct and the only one that can be constructed here.
- */
 const INERT_VALIDATOR: jsonSchemaValidator = {
   getValidator: () => () => ({
     valid: false,
@@ -187,10 +164,6 @@ const failedResult = (envelope: ErrorEnvelopeV1) => ({
   isError: true,
 });
 
-/**
- * Answer one MCP request. `tools` closes over the verified principal and the
- * authorized root, so nothing about identity is read from the JSON-RPC body.
- */
 export const handleMcpRequest = async (
   request: Request,
   tools: KernelTools,
@@ -214,14 +187,9 @@ export const handleMcpRequest = async (
     } catch (cause) {
       if (cause instanceof McpToolFailure) return failedResult(cause.envelope);
       if (cause instanceof McpError) throw cause;
-      // Nothing else may reach the wire: an unclassified failure could carry
-      // storage, catalog, or codec detail.
       return failedResult(errorEnvelope("internal_error", "the request failed"));
     }
   });
-  // No `sessionIdGenerator` is stateless mode: no session id is minted, none
-  // is validated, and nothing survives the request. One transport per request
-  // is required in that mode and is also what the edge can honestly provide.
   const transport = new WebStandardStreamableHTTPServerTransport({
     enableJsonResponse: true,
   });

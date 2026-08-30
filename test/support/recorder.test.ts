@@ -1,8 +1,3 @@
-/**
- * The recorder's contract: wrap an implementation, record, forward.
- * The echo server is the implementation under test for the wrapper, not
- * a Ramose peer substitute.
- */
 import { describe, expect, test } from "bun:test";
 import { recordingFetch, recordingTransport } from "./recorder.ts";
 

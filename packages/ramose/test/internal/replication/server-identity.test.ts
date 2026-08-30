@@ -54,9 +54,7 @@ describe("durable server identity/sealing root", () => {
     expect(readServerIdentityRootRecord(undefined)).toEqual({ type: "absent" });
     expect(readServerIdentityRootRecord(minted))
       .toEqual({ type: "existing", root: minted });
-    // A record from a newer build (reached by rolling back) or a corrupt one
-    // must never be replaced: replacing it destroys the only key that
-    // reproduces every existing identity and revision.
+
     for (const unreadable of [null, {}, { ...minted, version: 2 }, "garbage"]) {
       expect(readServerIdentityRootRecord(unreadable))
         .toEqual({ type: "unreadable" });
@@ -78,16 +76,14 @@ describe("durable server identity/sealing root", () => {
     const minted = root();
     const entity = await makeEntityIdentity(sealingKeyOf(minted), "db", 42);
     expect(entity).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    // Same durable record read again by a cold isolate: same identity.
+
     const reread = decodeServerIdentityRoot(JSON.parse(JSON.stringify(minted)))!;
     expect(await makeEntityIdentity(sealingKeyOf(reread), "db", 42)).toBe(entity);
-    // A replaced root cannot reproduce it, so state sealed under the old key
-    // is unreachable rather than silently reinterpreted.
+
     const replaced = root();
     expect(await makeEntityIdentity(sealingKeyOf(replaced), "db", 42))
       .not.toBe(entity);
-    // The cached-key lookup is keyed by key id; a distinct id with the same
-    // material must still produce the same identity.
+
     expect(
       await makeEntityIdentity(
         { keyId: replaced.keyId, material: minted.key },

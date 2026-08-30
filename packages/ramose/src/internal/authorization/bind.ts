@@ -1,22 +1,3 @@
-/**
- * Catalog-binding kernel.
- *
- * Resolves every catalog-relative authorization identity against one
- * supplied {@link CatalogDescriptor}. No ambient lookup, global registry,
- * wire-name matching, inference, or caller-supplied canonical metadata
- * becomes authority. Each identity resolves exactly once.
- *
- * Pure where possible. Effect wraps the typed failure boundary and an
- * optional authoritative catalog capability. Failures stay
- * {@link InvalidIR} / {@link CatalogMismatch} — this layer does not
- * convert them to {@link import("./failures.ts").AuthorizationDenied}.
- *
- * The result is {@link BoundAuthorizationIR}: non-executable, not
- * accepted by runtime authorization, and structurally distinct from
- * {@link PolicyTemplateIR} and {@link InstalledAuthorizationIR}.
- * Installed IR is assembled only by {@link import("./install.ts").installAuthorization}.
- */
-
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -617,10 +598,6 @@ const bindPrincipal = (
     return { subjectClaim: principal.subjectClaim, entity };
   });
 
-/**
- * Deep-copy JSON-shaped data so later freeze cannot seal caller-owned
- * template, descriptor, or identity objects the result still names.
- */
 const clonePlain = <T>(value: T): T => {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) {
@@ -649,13 +626,6 @@ const freezePlain = <T>(value: T): T => {
 
 const freezeBound = <T>(value: T): T => freezePlain(clonePlain(value));
 
-/**
- * Pure catalog-binding kernel. Resolves every relative identity in the
- * template against `input.descriptor` and produces canonical rule
- * material. Does not hash, remap rule IDs, recompute derived flags, or
- * assemble {@link import("./ir.ts").InstalledAuthorizationIR}. The Effect
- * shell hashes that material and remaps decision references.
- */
 export const bindPolicyTemplateResult = (
   input: CatalogBindingInput,
 ): Result.Result<BoundAuthorizationIRType, BindFailure> =>
@@ -728,20 +698,11 @@ export const bindPolicyTemplate = Effect.fn("Authorization.bindPolicyTemplate")(
 });
 
 export interface AuthoritativeCatalogService {
-  /**
-   * Resolve the catalog for this exact install target. Implementations
-   * must key by database + catalog + version + fingerprint. A catalog
-   * name alone is not authority.
-   */
   readonly resolve: (
     target: CatalogBindingTarget,
   ) => Effect.Effect<CatalogDescriptor, BindFailure>;
 }
 
-/**
- * Authoritative catalog capability. Fetched once per bind, never per
- * expression node. Not a global registry.
- */
 export class AuthoritativeCatalog extends Context.Service<
   AuthoritativeCatalog,
   AuthoritativeCatalogService

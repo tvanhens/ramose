@@ -1,11 +1,3 @@
-/**
- * #415 — leased live queries over the filtered Db from executeAuthorizedRequest.
- *
- * Real Connection + schemaTx + transact. Locally signed JWTs. Thin NDJSON
- * consumer. Checkpoints + Scope/Clock at orchestration boundaries. No
- * frontend runtime and no fabricated transport peer.
- */
-
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";

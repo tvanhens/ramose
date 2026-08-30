@@ -1,5 +1,3 @@
-/** Trait binding metadata: fixed values, composition defaults, dependencies. */
-
 import type { AnyField, CreationDefault, ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
 
@@ -28,11 +26,8 @@ export type BindingDefaults<Fields extends Record<string, AnyField>> = {
 export interface TraitBindingSpec<
   Fields extends Record<string, AnyField> = Record<string, AnyField>,
 > {
-  /** Engine-owned values. Callers can never supply or mutate these fields. */
   readonly values?: BindingValues<Fields>;
-  /** Defaults with precedence over field defaults, used only on creation. */
   readonly defaults?: BindingDefaults<Fields>;
-  /** Code definitions needed by deployment assembly. Never database facts. */
   readonly dependencies?: readonly CodeDefinitionRef[];
 }
 
@@ -61,7 +56,6 @@ type BoundField<F, K extends PropertyKey, B> = K extends KeysOfUnion<ValuesOf<B>
     ? F & { readonly compositionDefault: true }
     : F;
 
-/** Apply one bind result to a field map at the type boundary. */
 export type BoundFieldMap<Fields extends Readonly<Record<string, AnyField>>, B> = {
   readonly [K in keyof Fields]: BoundField<Fields[K], K, B>;
 };
@@ -112,7 +106,6 @@ export interface ResolvedTraitBinding {
   readonly dependencies: readonly CodeDefinition[];
 }
 
-/** @internal Normalize supported stored-value forms without retaining input containers. */
 export const cloneBindingValue = (
   value: unknown,
   seen = new WeakSet<object>(),
@@ -211,7 +204,6 @@ const plainRecord = (
   return value as Readonly<Record<string, unknown>>;
 };
 
-/** Resolve and structurally validate one inert authoring binding. */
 export const resolveTraitBinding = (
   runtime: TraitBindingRuntime,
 ): ResolvedTraitBinding => {
@@ -261,7 +253,6 @@ export const resolveTraitBinding = (
 export const isBindableTrait = (value: unknown): boolean =>
   typeof value === "function" && TRAIT_BIND_FACTORY in value;
 
-/** Stable owner definition, independent of a binding wrapper or thunk. */
 export const traitDefinitionOf = (value: TraitLike): TraitLike =>
   bindingOf(value)?.trait ?? value;
 
@@ -278,7 +269,6 @@ export const makeTraitBinding = <T extends TraitLike, B extends TraitBind>(
   },
 }) as unknown as TraitBinding<T, B>;
 
-/** Make one trait value both a stable query/ref root and a binding factory. */
 export const makeBindableTrait = <T extends TraitLike, B extends TraitBind>(
   trait: T,
   bind: B,

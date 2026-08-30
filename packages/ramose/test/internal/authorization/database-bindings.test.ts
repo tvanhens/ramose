@@ -1,5 +1,3 @@
-/** Dynamic Graph database bindings over real catalog units and Connections. */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";

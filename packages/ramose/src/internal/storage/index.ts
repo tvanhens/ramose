@@ -1,16 +1,3 @@
-/**
- * Cloudflare-side storage adapters. Internal to the `ramose` package.
- *
- *  - R2NodeStore: content-addressed segment/dir-node store
- *      peek → in-memory LRU
- *      load → memory → optional SQLite tier (DOs) → optional Cache API (Workers) → R2
- *      put  → encode + gzip + sha256 → R2 (immutable headers), populate caches
- *  - root records: `root/current` (mutable, no-store) and `roots/<t>` (immutable)
- *  - log chunks: `log/<t0>-<t1>` (immutable)
- *
- * R2 layout (spec §2/§5): seg/<hash>, n/<hash>, log/<t0>-<t1>, roots/<t>, root/current
- */
-
 import {
   type Codec,
   type IndexId,
@@ -31,15 +18,8 @@ import {
 
 export const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
-/**
- * Every logical database lives under its own key prefix in the shared bucket
- * (`db/<name>/seg/…`, `db/<name>/root/current`, …). Segments are still
- * content-addressed *within* a database; not sharing them across databases
- * keeps per-database GC (mark & sweep against that database's roots) safe.
- */
 export const dbPrefix = (db: string) => `db/${db}/`;
 
-/** View of `bucket` where every key is under `prefix` (list results are un-prefixed). */
 export function prefixedBucket(bucket: R2Like, prefix: string): R2Like {
   const k = (key: string) => prefix + key;
   return {
@@ -55,7 +35,6 @@ export function prefixedBucket(bucket: R2Like, prefix: string): R2Like {
 }
 export const ROOT_CACHE_CONTROL = "no-store";
 
-/** Minimal structural type for an R2 bucket binding (avoids a hard dep on workers-types at type level). */
 export interface R2Like {
   get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer>; text(): Promise<string>; httpMetadata?: any } | null>;
   put(key: string, value: ArrayBuffer | Uint8Array | string, options?: any): Promise<unknown>;
@@ -64,13 +43,11 @@ export interface R2Like {
   list(options?: { prefix?: string; cursor?: string; limit?: number }): Promise<{ objects: { key: string; size: number }[]; truncated: boolean; cursor?: string }>;
 }
 
-/** Optional durable byte tier (DO SQLite): hash → body. */
 export interface ByteTier {
   get(key: string): Uint8Array | undefined | Promise<Uint8Array | undefined>;
   put(key: string, body: Uint8Array): void | Promise<void>;
 }
 
-/** Optional Cache API tier (Workers). */
 export interface CacheTier {
   match(key: string): Promise<Uint8Array | undefined>;
   put(key: string, body: Uint8Array): Promise<void>;
@@ -90,11 +67,9 @@ export interface R2StoreStats {
 
 export interface R2NodeStoreOptions {
   codec?: Codec;
-  /** max decoded nodes held in memory */
   maxNodes?: number;
   tier?: ByteTier;
   cache?: CacheTier;
-  /** if true, `put` skips objects that already exist (one HEAD instead of a PUT) — cheaper for big segments */
   headBeforePut?: boolean;
 }
 
@@ -121,7 +96,7 @@ export class R2NodeStore implements NodeStore {
     if (n !== undefined) {
       this.stats.peekHits++;
       this.mem.delete(hash);
-      this.mem.set(hash, n); // LRU refresh
+      this.mem.set(hash, n);
     }
     return n;
   }
@@ -149,9 +124,6 @@ export class R2NodeStore implements NodeStore {
 
   private async loadUncached(ref: NodeRef): Promise<TreeNode> {
     const key = objectKey(ref.kind, ref.hash);
-    // Lower tiers first; a body that fails to decode there is treated as a
-    // miss (corrupt/truncated cache entry) and we fall through to R2 —
-    // content addressing means R2 is always authoritative.
     let body: Uint8Array | undefined;
     if (this.tier) {
       body = await this.tier.get(key);
@@ -162,7 +134,6 @@ export class R2NodeStore implements NodeStore {
           this.remember(ref.hash, node);
           return node;
         } catch {
-          /* fall through */
         }
       }
     }
@@ -175,7 +146,6 @@ export class R2NodeStore implements NodeStore {
           this.remember(ref.hash, node);
           return node;
         } catch {
-          /* fall through */
         }
       }
     }
@@ -185,8 +155,6 @@ export class R2NodeStore implements NodeStore {
     this.stats.r2Gets++;
     this.stats.bytesRead += body.length;
     const node = await deserializeNode(body, this.codec);
-    // populate lower tiers (best effort, don't await failures). Hand them a
-    // copy: a Response/SQL binding may detach or retain the buffer.
     if (this.cache) this.cache.put(key, body.slice()).catch(() => undefined);
     if (this.tier) await Promise.resolve(this.tier.put(key, body.slice())).catch(() => undefined);
     this.remember(ref.hash, node);
@@ -208,25 +176,18 @@ export class R2NodeStore implements NodeStore {
     return ref;
   }
 
-  /** Drop the in-memory node cache (tests / memory pressure). */
   clearMemory(): void {
     this.mem.clear();
   }
 }
 
-// ---------------------------------------------------------------------------
-// Cache API tier for Workers
-// ---------------------------------------------------------------------------
-
-/** Wrap the Workers Cache API as a byte tier keyed by a synthetic URL. */
-export function cacheApiTier(cache: any /* Cache */, origin = "https://ramose-cache.invalid"): CacheTier {
+export function cacheApiTier(cache: any , origin = "https://ramose-cache.invalid"): CacheTier {
   return {
     async match(key) {
       const req = new Request(`${origin}/${key}`);
       const res = await cache.match(req);
       if (!res) return undefined;
       const body = new Uint8Array(await res.arrayBuffer());
-      // Guard against a truncated/empty cached body (seen with the local emulator): treat as a miss.
       const declared = Number(res.headers.get("content-length") ?? body.length);
       if (body.length === 0 || (Number.isFinite(declared) && declared !== body.length)) {
         Promise.resolve(cache.delete(req)).catch(() => undefined);
@@ -242,10 +203,6 @@ export function cacheApiTier(cache: any /* Cache */, origin = "https://ramose-ca
     },
   };
 }
-
-// ---------------------------------------------------------------------------
-// Root records
-// ---------------------------------------------------------------------------
 
 export const ROOT_CURRENT_KEY = "root/current";
 export const rootKey = (t: number) => `roots/${String(t).padStart(12, "0")}`;
@@ -283,14 +240,12 @@ export async function readRootAt(bucket: R2Like, t: number): Promise<RootRecord 
   return JSON.parse(await obj.text()) as RootRecord;
 }
 
-/** Publish: immutable roots/<t> first, then flip root/current. */
 export async function publishRoot(bucket: R2Like, rec: RootRecord): Promise<void> {
   const body = JSON.stringify(rec);
   await bucket.put(rootKey(rec.t), body, { httpMetadata: { cacheControl: IMMUTABLE_CACHE_CONTROL, contentType: "application/json" } });
   await bucket.put(ROOT_CURRENT_KEY, body, { httpMetadata: { cacheControl: ROOT_CACHE_CONTROL, contentType: "application/json" } });
 }
 
-/** List retained root records (all `roots/<t>` keys), ascending by t. */
 export async function listRoots(bucket: R2Like): Promise<number[]> {
   const ts: number[] = [];
   let cursor: string | undefined;
@@ -301,10 +256,6 @@ export async function listRoots(bucket: R2Like): Promise<number[]> {
   } while (cursor);
   return ts.sort((a, b) => a - b);
 }
-
-// ---------------------------------------------------------------------------
-// Log chunks
-// ---------------------------------------------------------------------------
 
 export const logKey = (t0: number, t1: number) => `log/${String(t0).padStart(12, "0")}-${String(t1).padStart(12, "0")}`;
 
@@ -344,7 +295,6 @@ export async function readLogChunk(bucket: R2Like, key: string, codec: Codec = g
   return decodeLogChunk(await codec.decompress(new Uint8Array(await obj.arrayBuffer())));
 }
 
-/** Read all log entries with t in (sinceT, untilT]. */
 export async function readLogSince(bucket: R2Like, sinceT: number, untilT = Infinity, codec: Codec = gzipCodec): Promise<LogEntry[]> {
   const chunks = await listLogChunks(bucket, sinceT);
   const out: LogEntry[] = [];
@@ -355,10 +305,6 @@ export async function readLogSince(bucket: R2Like, sinceT: number, untilT = Infi
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// GC: mark & sweep against retained roots
-// ---------------------------------------------------------------------------
-
 export interface GcResult {
   retainedRoots: number[];
   reachable: number;
@@ -366,11 +312,6 @@ export interface GcResult {
   scanned: number;
 }
 
-/**
- * Delete every seg/ and n/ object unreachable from the retained roots.
- * `retain` decides which roots (by t) to keep — the current root is always kept.
- * Objects newer than `graceMs` are never deleted (in-flight index runs).
- */
 export async function gcSweep(
   bucket: R2Like,
   store: NodeStore & { load(ref: NodeRef): Promise<TreeNode> },
@@ -411,7 +352,6 @@ export async function gcSweep(
   return { retainedRoots: [...keep].sort((a, b) => a - b), reachable: marked.size, deleted, scanned };
 }
 
-/** Default retention: keep the newest `n` roots plus every root newer than `maxAgeT` transactions ago. */
 export function retainNewest(n: number): (ts: number[]) => number[] {
   return (ts) => ts.slice(-n);
 }

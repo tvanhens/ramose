@@ -1,16 +1,3 @@
-/**
- * Shared authoring schema, catalog descriptor, and semantic scenarios.
- *
- * Compile lowers structurally. Trait composition, self-ref / ref-target,
- * equality, membership, and path reachability are asserted here by
- * compile → bind → validate against the extracted catalog — not by a
- * second compiler kernel.
- *
- * `validate.test.ts` / `bind.test.ts` / `install.test.ts` keep their own
- * descriptors: those copies are not a mechanical extract of this catalog
- * (orphaned trait, tag-grant, aliases/labels).
- */
-
 import { expect } from "bun:test";
 import * as Result from "effect/Result";
 import {
@@ -155,7 +142,6 @@ const refField = (
   owned: false,
 });
 
-/** Extracted from the former authoring-test catalog — do not invent a new one. */
 export const catalogDescriptor = (): CatalogDescriptor => ({
   id: catalog,
   database,

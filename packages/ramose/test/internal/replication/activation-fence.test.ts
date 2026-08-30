@@ -1,12 +1,3 @@
-/**
- * The post-commit activation fence as ordinary values (#475 slice 3).
- *
- * Everything here is a pure decision: which frames may satisfy the fence, which
- * receipts one activation covers, and what the durable rows say about a receipt
- * that is still waiting. The durable half — the counter, the fence transaction,
- * and every crash cut — is proven against real IndexedDB in the browser lane.
- */
-
 import { describe, expect, test } from "bun:test";
 import { invocationId } from "../../../src/db/refs.ts";
 import {
@@ -60,7 +51,6 @@ const cursor = (overrides: Partial<QueueCursorRecord> = {}): QueueCursorRecord =
   ...overrides,
 });
 
-/** Every frame type the wire contract defines, so the table cannot go stale. */
 const FRAMES: readonly ReplicationFrame["type"][] = [
   "SnapshotStart",
   "SnapshotChunk",
@@ -79,8 +69,7 @@ describe("satisfiesActivationFence", () => {
   });
 
   test("staging, liveness, and terminals never fence", () => {
-    // The caller has already established that the frame settled; these are
-    // refused on their type alone, whatever the session did with them.
+
     for (const frame of ["Reset", "SnapshotStart", "SnapshotChunk", "KeepAlive", "TerminalError"] as const) {
       expect(satisfiesActivationFence(frame)).toBe(false);
     }
@@ -90,12 +79,10 @@ describe("satisfiesActivationFence", () => {
 describe("fencedByActivation", () => {
   test("covers exactly the markers durable before that activation began", () => {
     const stamped = receipt({ activation: 3 });
-    // A receipt acknowledged *during* activation 3 carries 3 and waits for 4:
-    // activation 3's own output cannot prove the server's stream reached a
-    // commit that happened after activation 3 opened.
+
     expect(fencedByActivation(stamped, 3)).toBe(false);
     expect(fencedByActivation(stamped, 4)).toBe(true);
-    // Coalescing: one later activation covers every earlier stamp at once.
+
     expect(fencedByActivation(receipt({ activation: 0 }), 4)).toBe(true);
     expect(fencedByActivation(receipt({ activation: 1 }), 4)).toBe(true);
   });
@@ -146,8 +133,7 @@ describe("unobservedReceiptOf", () => {
 
 describe("durable activation stamps", () => {
   test("a row written before the counter existed reads as zero", () => {
-    // Exactly what such a row means: durable before any activation this build
-    // began. No migration, and no queue orphaned by one.
+
     const { activation: _, ...legacyReceipt } = receipt({ activation: 0 });
     expect(decodeReceipt(legacyReceipt)?.activation).toBe(0);
     const { activation: __, ...legacyCursor } = cursor();
@@ -162,8 +148,7 @@ describe("durable activation stamps", () => {
   });
 
   test("a receipt with no marker may not carry a stamp", () => {
-    // A row that claimed one would be selected by a comparison that means
-    // nothing for it.
+
     expect(
       decodeReceipt({
         ...receipt({ state: "queued", observation: null, activation: 0 }),
@@ -188,7 +173,7 @@ describe("requiresActivationFence", () => {
     });
     const invocation = invocationId();
     expect(requiresActivationFence(progress({ _tag: "Committed", invocation }))).toBe(true);
-    // A rejection needs no observation fence: nothing committed.
+
     expect(
       requiresActivationFence(
         progress({ _tag: "Rejected", invocation, code: "operation_rejected" }),

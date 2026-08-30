@@ -1,5 +1,3 @@
-/** Same-secret Worker deployment over the primary auth D1 database. */
-
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import {

@@ -3,9 +3,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
-    // Bundled code: Vite, Bun and the Workers build own module transformation,
-    // so tsc is a type-checker only and keeps `preserve` + `bundler` rather
-    // than the `NodeNext` rules that apply when tsc is the compiler.
+
     "module": "preserve",
     "moduleResolution": "bundler",
     "moduleDetection": "force",
@@ -26,13 +24,7 @@
     "jsx": "react-jsx",
     "isolatedModules": true,
     "types": ["bun", "@cloudflare/workers-types"],
-    // The one published package maps to its source here, so `typecheck` reads
-    // the source of truth and never needs a build first: `exports` resolves
-    // `types` to `dist/*.d.ts` for consumers, so without these mappings tsc
-    // would look there and find nothing until `bun run build` had run. The
-    // named entries are the public `exports` map in packages/ramose/package.json
-    // — no wildcard. Engine internals are reached with workspace-relative
-    // paths, not `ramose/internal/*`.
+
     "paths": {
       "ramose": ["./packages/ramose/src/index.ts"],
       "ramose/db": ["./packages/ramose/src/db/index.ts"],
@@ -44,14 +36,7 @@
     "plugins": [
       {
         "name": "@effect/language-service",
-        // Every rule the language service ships at `warning` is raised to
-        // `error` so it fails `bun run typecheck` instead of scrolling past in
-        // CI. Only `multipleEffectProvide` and `unknownInEffectCatch` had live
-        // findings when this was turned on; the rest are standing guards.
-        // `duplicatePackage` earns its place — it is what caught two copies of
-        // `alchemy` resolving at once, which for an Effect-based package means
-        // two distinct service identities and a Layer that silently does not
-        // satisfy the requirement it looks like it satisfies.
+
         "diagnosticSeverity": {
           "duplicatePackage": "error",
           "effectFnIife": "error",
@@ -68,7 +53,7 @@
           "promiseInEffectSuccess": "error",
           "scopeInLayerEffect": "error",
           "unknownInEffectCatch": "error",
-          // Suggestion-level rules, also raised to `error`.
+
           "abortControllerInEffect": "error",
           "catchAllToMapError": "error",
           "catchChainToFirstSuccessOf": "error",
@@ -124,8 +109,7 @@
     "node_modules",
     ".alchemy",
     "dist",
-    // Frozen during the authorization redesign (#335 / #351). Rebuild is #350.
-    // Do not typecheck Reef until then — later auth PRs must not have to edit it.
+
     "examples/reef"
   ]
 }

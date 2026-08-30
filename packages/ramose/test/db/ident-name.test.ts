@@ -1,11 +1,3 @@
-/**
- * Ident-name rule and Entity / Schema definition-time validation (#184).
- *
- * Reserved keys, bad names, catalog-key / ns drift, and duplicate entities
- * used to install silently. These tests pin the throw and the exported
- * predicate — type-level rejection lives in `entity-schema-types.ts`.
- */
-
 import { describe, expect, test } from "bun:test";
 import {
   Entity,
@@ -193,7 +185,7 @@ describe("merge()", () => {
     const A = Entity("todo", { title: string() });
     const B = Entity("todo", { done: string() });
     expect(() =>
-      // @ts-expect-error duplicate entity name
+      // @ts-expect-error
       merge(Schema({ todo: A }), Schema({ todo: B })),
     ).toThrow(/duplicate entity name "todo"/);
   });

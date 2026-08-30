@@ -1,5 +1,3 @@
-/** Runtime-bound proof used only to form requests against the real local Worker. */
-
 import type { OperationCatalogProof } from "ramose/worker";
 import { catalogProof } from "./fixtures.ts";
 import { OPERATION_DATABASES } from "./operation-catalog.ts";

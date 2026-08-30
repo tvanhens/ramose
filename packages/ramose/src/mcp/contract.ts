@@ -1,56 +1,20 @@
-/**
- * The experimental MCP wire contract (#484 S1).
- *
- * Pure, transport-free vocabulary shared by the kernel tools: the public
- * error envelope, the opaque public projection of the merged operation-scoped
- * `OperationVersion` (#487), and validation of the three tools' arguments
- * including the minimal query document.
- *
- * ## Experimental
- *
- * This surface makes no compatibility promise. Codes may be added, shapes may
- * change, and clients must not switch exhaustively on either. What is *not*
- * negotiable at any point: nothing here mints an identity, a digest, or a
- * receipt of its own, and no internal id, digest, catalog key, unit hash, or
- * transaction id may appear in any value this module produces.
- */
-
 import { MAX_INVOCATION_ID_LENGTH } from "../internal/authorization/invocation-receipts.ts";
 import { OperationVersion } from "../internal/authorization/identities.ts";
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-/**
- * Recoverable public failure codes. The set is **open** while the surface is
- * experimental — a client should treat an unknown code as a plain failure.
- */
 export const ERROR_CODES = Object.freeze([
-  /** The query document is not a well-formed, in-bound query. */
   "invalid_query",
-  /** Tool arguments failed the published input schema or a bound. */
   "invalid_input",
-  /** Hidden, missing, or unauthorized — deliberately indistinguishable. */
   "inaccessible",
-  /** The pinned operation version is not the deployed one. No effect occurred. */
   "operation_changed",
-  /** This invocationId already names a different invocation. */
   "invocation_conflict",
-  /** A pre-correction receipt exists; mint a fresh invocationId. */
   "invocation_update_required",
-  /** The invocation's effect is not yet decidable. Retry the same id. */
   "invocation_indeterminate",
-  /** The operation itself refused: a precondition or policy said no. */
   "operation_rejected",
-  /** The request exceeded a declared read budget. Nothing was truncated. */
   "query_budget_exceeded",
-  /** Something on the server failed. No public detail is available. */
   "internal_error",
 ] as const);
 export type ErrorCodeV1 = (typeof ERROR_CODES)[number];
 
-/** Whether attempting the same intent again can succeed. A hint, never authority. */
 const RETRYABLE: Readonly<Record<ErrorCodeV1, boolean>> = Object.freeze({
   invalid_query: false,
   invalid_input: false,
@@ -64,7 +28,6 @@ const RETRYABLE: Readonly<Record<ErrorCodeV1, boolean>> = Object.freeze({
   internal_error: true,
 });
 
-/** The one structured failure shape every kernel tool shares. */
 export type ErrorEnvelopeV1 = {
   readonly code: ErrorCodeV1;
   readonly message: string;
@@ -83,10 +46,6 @@ export const errorEnvelope = (
     retryable: RETRYABLE[code],
   });
 
-/**
- * A recoverable tool failure. Thrown inside a tool body and restated as a
- * completed `isError: true` result; it never becomes a protocol error.
- */
 export class McpToolFailure extends Error {
   readonly envelope: ErrorEnvelopeV1;
   constructor(envelope: ErrorEnvelopeV1) {
@@ -101,24 +60,10 @@ export const toolFailure = (
   message: string,
 ): McpToolFailure => new McpToolFailure(errorEnvelope(code, message));
 
-// ---------------------------------------------------------------------------
-// The public operation version token
-// ---------------------------------------------------------------------------
-
 const PREFIX = "ov_";
 const HEX_DIGEST = /^[0-9a-f]{64}$/;
-/** 32 bytes as unpadded base64url is exactly 43 characters. */
 const TOKEN = /^ov_[A-Za-z0-9_-]{43}$/;
 
-/**
- * Project the merged {@link OperationVersion} into its opaque public token.
- *
- * This is a re-encoding of one existing value, never a second digest: an
- * `ov_`-prefixed unpadded base64url string is structurally not a hex digest,
- * so it cannot be confused with — or substituted for — an internal identifier
- * on the wire. It is a bijection, which is what makes `operation_changed`
- * decidable at the boundary.
- */
 export const encodeOperationVersionToken = (version: string): string => {
   if (!HEX_DIGEST.test(version)) {
     throw new TypeError("ramose/mcp: not a canonical operation version");
@@ -136,7 +81,6 @@ export const encodeOperationVersionToken = (version: string): string => {
   return `${PREFIX}${base64}`;
 };
 
-/** Recover the pinned {@link OperationVersion}, or `undefined` if malformed. */
 export const decodeOperationVersionToken = (
   token: string,
 ): OperationVersion | undefined => {
@@ -154,26 +98,17 @@ export const decodeOperationVersionToken = (
   for (let index = 0; index < 32; index++) {
     hex += binary.charCodeAt(index).toString(16).padStart(2, "0");
   }
-  // Base64 leaves four unused trailing bits. Requiring the token to be the
-  // exact encoding of what it decoded to rejects the non-canonical spellings,
-  // so no two tokens can ever name one version.
   return encodeOperationVersionToken(hex) === token
     ? OperationVersion.make(hex)
     : undefined;
 };
 
-// ---------------------------------------------------------------------------
-// Tool arguments
-// ---------------------------------------------------------------------------
-
-/** Bounds. Deliberately small: this slice has no pagination to fall back on. */
 export const MAX_AT_SEGMENTS = 16;
 export const MAX_SEGMENT_LENGTH = 256;
 export const MAX_WHERE_KEYS = 16;
 export const MAX_SELECT_FIELDS = 64;
 export const MAX_QUERY_LIMIT = 200;
 export const DEFAULT_QUERY_LIMIT = 50;
-/** Fixed cap on every `describe` list. Honest truncation, not pagination. */
 export const MAX_DESCRIBE_ITEMS = 200;
 
 export type QueryScalar = string | number | boolean;
@@ -213,7 +148,6 @@ const invalidQuery = (message: string): never => {
 export const requireArgs = (value: unknown): Record<string, unknown> =>
   isRecord(value) ? value : invalidInput("arguments must be an object");
 
-/** `at` is the caller-visible graph path relative to their authorized root. */
 export const parseAt = (value: unknown): readonly string[] => {
   if (value === undefined) return Object.freeze([]);
   if (!Array.isArray(value) || value.length > MAX_AT_SEGMENTS) {
@@ -245,11 +179,6 @@ const parseScalar = (value: unknown, key: string): QueryScalar => {
   return invalidQuery(`where.${key} must be a string, number, or boolean`);
 };
 
-/**
- * The minimal query document: an entity root, equality filters on visible
- * fields, a field projection, and a row limit. No expressions, bindings,
- * ordering, cursors, aggregates, or nested projections in this slice.
- */
 export const parseQueryDocument = (value: unknown): QueryDocumentV1 => {
   if (!isRecord(value)) return invalidQuery("query must be an object");
   if (value.version !== 1) return invalidQuery("query.version must be 1");
@@ -269,10 +198,6 @@ export const parseQueryDocument = (value: unknown): QueryDocumentV1 => {
     if (entries.length > MAX_WHERE_KEYS) {
       return invalidQuery("query.where exceeds the clause bound");
     }
-    // `Object.fromEntries` creates every key as an *own* data property.
-    // Assigning into a plain `{}` would instead hit the inherited `__proto__`
-    // setter, which silently swallows that key — and a swallowed filter is an
-    // unfiltered query, so the caller would get back every visible row.
     where = Object.fromEntries(
       entries.map(([key, entry]) => [key, parseScalar(entry, key)] as const),
     );
@@ -348,7 +273,6 @@ export const parseMutateArgs = (value: unknown): MutateArgsV1 => {
     return invalidInput("invocationId must be a bounded, non-empty string");
   }
   if (!isRecord(args.input)) {
-    // Non-object operation inputs are a later slice; refusing is honest.
     return invalidInput("input must be an object");
   }
   return Object.freeze({

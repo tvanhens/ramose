@@ -1,10 +1,3 @@
-/**
- * Public auth behavior against a real local (or remote) peer.
- *
- * External `/db/*` is fail-closed until verified JWT admission, an
- * installed catalog, and a filtered `Db`. `/health` stays open.
- */
-
 import { describe, expect, test } from "bun:test";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { SHARED_TOKEN } from "../local/auth-keys.ts";

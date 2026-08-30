@@ -1,5 +1,3 @@
-/** Lower a schema to ident-datom maps. Ensure is a separate, idempotent schema tx. */
-
 import { fieldIdentOf } from "./compose.ts";
 import { isOptionalField, type AnyField } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
@@ -66,5 +64,4 @@ const attributeMaps = (schema: AnySchema): SchemaAttrTx[] => {
   return out;
 };
 
-/** One map form per field, in schema / entity / key order. */
 export const schemaTx = (schema: AnySchema): SchemaTxOp[] => attributeMaps(schema);

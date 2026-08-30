@@ -1,37 +1,3 @@
-/**
- * The v1 expression standard-library manifest (#507).
- *
- * This file is the single source of truth. Validation, capability cards,
- * `describe`, the documentation site, and — once #486 lands — compiler
- * dispatch all read it; none of them restate a signature of their own.
- *
- * The manifest is plain data with no function values in it, so a card is
- * JSON-projectable as written and cannot smuggle an implementation reference
- * to a caller. Implementations live in `./implementations.ts` and are joined
- * to these cards by public name in `./registry.ts`.
- *
- * What is deliberately absent, and stays absent in v1: `now`, `rand`, any
- * clock or randomness, caller-supplied regular expressions, lambdas and
- * higher-order functions, recursion, environment/filesystem/network access,
- * database- or catalog-aware functions, and any function that produces query
- * rows. A function may *return* a collection as one value; it can never fan
- * one row out into several.
- *
- * Two commitments run through the `text.*` cards and are stated once here.
- * Case mapping is ASCII only and whitespace is a pinned set, because the
- * host's Unicode tables move with the engine's Unicode version and a v1
- * document must mean the same thing wherever it runs; a wider mapping can
- * arrive later under its own name. And text is well-formed Unicode: a string
- * carrying an unpaired surrogate is outside the value domain, which is what
- * makes the code-point indices in `length`, `slice` and `indexOf` total.
- *
- * The value domain also bounds nesting depth, and membership is checked over
- * the whole argument. That is why every card taking a `collection` or an
- * `any` declares at least linear cost: validating such an argument is a pass
- * over it, and a card that claimed constant cost would be advertising a
- * budget it could not honour.
- */
-
 import type {
   ExpressionContext,
   FunctionCard,
@@ -40,28 +6,11 @@ import type {
 import { QUERY_STDLIB_VERSION } from "./types.ts";
 import { MAX_PRODUCED_TEXT_UNITS } from "./values.ts";
 
-/**
- * Admitted everywhere an expression is admitted. Only for calls whose
- * declared result type is totally ordered, so the value can be a sort key.
- */
 const ANY_CONTEXT: readonly ExpressionContext[] = ["let", "where", "select", "orderBy"];
 
-/**
- * Everywhere except `orderBy`. Collections have no total order, so a call
- * that can yield one is rejected as a sort key at validation time rather than
- * producing an arbitrary ordering at execution time.
- *
- * This covers two cases, not one. A call declaring `collection` obviously
- * qualifies. So does a call declaring `any`, because `any` cannot statically
- * exclude a collection — `logic.coalesce(null, [])` and `collection.first`
- * over a collection of collections both return one. Keeping them out now is
- * the two-way door: admitting a context later is additive, withdrawing a
- * published one is a language break.
- */
 const NOT_ORDER_BY: readonly ExpressionContext[] = ["let", "where", "select"];
 
 const functions: readonly FunctionCard[] = [
-  // ── logic ────────────────────────────────────────────────────────────────
   {
     name: "logic.and",
     namespace: "logic",
@@ -233,7 +182,6 @@ const functions: readonly FunctionCard[] = [
     ],
   },
 
-  // ── number ───────────────────────────────────────────────────────────────
   {
     name: "number.add",
     namespace: "number",
@@ -539,7 +487,6 @@ const functions: readonly FunctionCard[] = [
     ],
   },
 
-  // ── text ─────────────────────────────────────────────────────────────────
   {
     name: "text.lower",
     namespace: "text",
@@ -731,8 +678,6 @@ const functions: readonly FunctionCard[] = [
     cost: "linear",
     nulls: "propagate",
     doc: "Compare in code-unit order: -1, 0, or 1. Not a locale collation.",
-    // Code-unit order is fixed by the language, not by a Unicode table, so
-    // this ordering is the same on every engine and every version of one.
     examples: [
       { args: ["a", "b"], result: -1 },
       { args: ["b", "a"], result: 1 },
@@ -853,7 +798,6 @@ const functions: readonly FunctionCard[] = [
     outputLimit: MAX_PRODUCED_TEXT_UNITS,
   },
 
-  // ── collection ───────────────────────────────────────────────────────────
   {
     name: "collection.size",
     namespace: "collection",
@@ -980,12 +924,6 @@ const functions: readonly FunctionCard[] = [
     contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "collection",
-    // Superlinear, and the card says so rather than the implementation
-    // pretending otherwise. Deduplication canonicalizes each element, and an
-    // object element is canonicalized by sorting its keys so that key order
-    // cannot change the answer - k log k in that element's key count. Scalar
-    // and array elements are linear. Budget accounting reads this field, so
-    // it has to describe the worst case the function actually admits.
     cost: "superlinear",
     nulls: "propagate",
     doc: "Remove structural duplicates, keeping first-occurrence order.",
@@ -1041,7 +979,6 @@ const functions: readonly FunctionCard[] = [
     examples: [{ args: [["a"], ["b"]], result: ["a", "b"] }],
   },
 
-  // ── time ─────────────────────────────────────────────────────────────────
   {
     name: "time.before",
     namespace: "time",
@@ -1136,7 +1073,6 @@ const functions: readonly FunctionCard[] = [
   },
 ];
 
-/** The v1 manifest. Additive growth only; never edit a published entry. */
 export const standardLibraryManifestV1: StdlibManifest = {
   version: QUERY_STDLIB_VERSION,
   functions,

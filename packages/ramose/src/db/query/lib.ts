@@ -1,17 +1,3 @@
-/**
- * The pipeable standard library — every combinator here bootstraps from the
- * kernel (`fact`, comparisons, `or`/`not`, rules), which is the test of the
- * kernel's completeness: a userland combinator is indistinguishable from a
- * shipped one.
- *
- * A fragment is a rule with modes: bound head vars are the function's
- * arguments, the free var is its return — exactly the dataflow that makes
- * `pipe` thread. Each shipped combinator is dual-natured: applied to a
- * pipeline it appends itself as a stage, applied to a bound handle it is
- * the plain generator fragment (`yield* is(Issue.done, false)(issue)`), so
- * one vocabulary serves both spellings.
- */
-
 import type { Eid } from "../Eid.ts";
 import { isComposer, type AnyComposer } from "../Composer.ts";
 import type { UnbrandedId } from "../idents.ts";
@@ -38,8 +24,6 @@ import {
 } from "./kernel.ts";
 import { isPipeline, type Pipeline, type PipeStage, type SelectExtra } from "./query.ts";
 
-// ── the pipeline value ──────────────────────────────────────────────────────
-
 const addStage = <Row, N extends AnyComposer>(
   p: Pipeline<unknown, N>,
   stage: PipeStage,
@@ -52,8 +36,6 @@ const makePipeline = <Row, N extends AnyComposer>(
   _tag: "Pipeline",
   ns,
   stages,
-  // in a generator body the same value is a clause source: `yield*
-  // entities(Team)` mints the branded focus var via a membership command
   [Symbol.iterator]() {
     let state = 0;
     const cmd = { _tag: "member" as const, ns };
@@ -81,14 +63,6 @@ export const entities = <N extends AnyComposer>(ns: N): Pipeline<IdRow<N>, N> =>
   return makePipeline(ns, []);
 };
 
-// ── the dual stage adapter ──────────────────────────────────────────────────
-
-/**
- * Dual stage output: a pipeline keeps its row and focus namespace;
- * anything else is the generator fragment. One generic (not an
- * overload) so `pipe` infers `N` from the argument instead of
- * defaulting it to the wide composer type.
- */
 type FilterOut<X> = [X] extends [never]
   ? QueryGen<void>
   : [X] extends [Pipeline<infer Row, infer N>]
@@ -97,11 +71,6 @@ type FilterOut<X> = [X] extends [never]
       : QueryGen<void>
     : QueryGen<void>;
 
-/**
- * A filter's argument: a pipeline is accepted only when `A` is a member
- * of the focus field map (`A = void` is namespace-generic — `byId`,
- * `updatedSince`). One generic so `pipe` infers `N` from the argument.
- */
 type FilterParam<X, A> = [X] extends [Pipeline<any, infer N>]
   ? [A] extends [void]
     ? X
@@ -161,10 +130,6 @@ type TraversalOut<A, X> = [X] extends [never]
       : Pipeline<HatchIdRow, OwnerOf<A>>
     : QueryGen<Var<EidCell>>;
 
-/**
- * A reverse-ref argument: the attr must point at the current focus
- * (`backlink(Comment.issue)` on an Issue pipeline).
- */
 type ReverseParam<X, A> = [X] extends [Pipeline<any, infer N>]
   ? [A] extends [void]
     ? X
@@ -204,8 +169,6 @@ export const stage: {
   ((x: unknown) =>
     isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar))) as never;
 
-// ── filters ─────────────────────────────────────────────────────────────────
-
 type ValueIn<A> = AttrValue<A> | AnyVar | { readonly id: number };
 
 /** `is(A, v)`: `p(e) := [e A v]`. `is(N.id, v)` is the same filter as {@link byId}. */
@@ -241,14 +204,6 @@ export const missing = <A extends AttrLike>(attr: A): FilterStage<AnyComposer, A
     yield* Q.not(has(attr)(e));
   });
 
-/**
- * `matching(A, (v) => cmp)`: bind the attr's value and constrain it —
- * `matching(Issue.title, (t) => Q.startsWith(t, "re:", { ignoreCase: true }))`.
- * The callback may return one comparison or a whole generator of clauses.
- *
- * Renamed from `where` so the general filter is `.where` / object-literal
- * equality on the fluent chain (#204, #208).
- */
 export const matching = <A extends AttrLike>(
   attr: A,
   pred: (v: Var<AttrValue<A>>) => Iterable<unknown>,
@@ -258,7 +213,6 @@ export const matching = <A extends AttrLike>(
     yield* pred(f.v as Var<AttrValue<A>>) as QueryGen<unknown>;
   });
 
-/** The attr brand a filter stage carries — unioned across `any` / `not`. */
 type StageAttr<S> = S extends FilterStage<any, infer A> ? A : void;
 
 const asFrag = (stage: FilterStage<AnyComposer, any>, e: AnyVar): QueryGen<unknown> =>
@@ -321,8 +275,6 @@ export const includes = <A extends AttrLike>(
 ): FilterStage<AnyComposer, A> =>
   matching(attr, (v) => Q.includes(v as Var<string>, needle, opts));
 
-// ── traversals ──────────────────────────────────────────────────────────────
-
 /** `follow(A)`: `p(e) → other := [e A other]` — refocus on the target. */
 export const follow = <A extends AttrLike>(attr: A): FollowStage<A> =>
   traversal(function* (e) {
@@ -334,8 +286,6 @@ export const backlink = <A extends AttrLike>(attr: A): TraversalStage<A> =>
   traversal<A>(function* (other) {
     return (yield* Q.fact(Q._, attr, other)).e as Var<EidCell>;
   });
-
-// ── quantifiers over a reverse ref ──────────────────────────────────────────
 
 type ElemPred = (focus: AnyVar) => Iterable<unknown>;
 
@@ -387,8 +337,6 @@ export const every = <A extends AttrLike>(
     });
   });
 
-// ── time — generic over every namespace ─────────────────────────────────────
-
 /** Some fact about the focus was asserted at basis `t >= since`. */
 export const updatedSince = (since: number): FilterStage =>
   filter<void>(function* (e) {
@@ -403,8 +351,6 @@ export const assertedBy = <A extends AttrLike>(attr: A, who: ValueIn<A>): Filter
     const f = yield* Q.fact(e);
     yield* Q.fact(f.tx, attr, who);
   });
-
-// ── terminals: they close the query, not compose it ─────────────────────────
 
 const assertPipeline = <N extends AnyComposer = AnyComposer>(
   x: unknown,

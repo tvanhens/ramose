@@ -1,10 +1,3 @@
-/**
- * Primary Better Auth Worker for the local integration suite.
- *
- * Mapping callbacks are native trusted functions in this deployed module;
- * no executable representation crosses HTTP.
- */
-
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";

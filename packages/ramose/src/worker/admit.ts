@@ -20,13 +20,11 @@ const bearer = (
 const isWebSocketUpgrade = (request: Request): boolean =>
   request.headers.get("upgrade")?.trim().toLowerCase() === "websocket";
 
-/** Documented handshake: GET `/db/:name/session` with `Upgrade: websocket`. */
 const isWebSocketSession = (request: Request, url: URL): boolean =>
   request.method === "GET" &&
   isWebSocketUpgrade(request) &&
   /^\/db\/[^/]+\/session$/.test(url.pathname);
 
-/** Extract the one external credential allowed for this transport. */
 export const requestCredential = (
   request: Request,
 ): Result.Result<Redacted.Redacted<string>, Unauthorized> => {
@@ -49,7 +47,6 @@ export const requestCredential = (
   return Result.succeed(Redacted.make(queryTokens[0]!));
 };
 
-/** Verify the request credential without consulting database or catalog state. */
 export const authenticateRequest = Effect.fn("authenticateRequest")(function* (
   request: Request,
 ): Effect.fn.Return<VerifiedPrincipal, Unauthorized, JwtVerifier> {

@@ -1,11 +1,3 @@
-/**
- * Read-authorization authoring language (#406 / #431).
- *
- * Compile lowers `read` / `$` / `path` into Schema-decoded PolicyTemplateIR.
- * Semantic compatibility is asserted via shared fixtures against bind →
- * validate — not by a second compiler kernel.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";

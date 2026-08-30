@@ -1,5 +1,3 @@
-/** Principal-only evaluation for one sealed operation decision. */
-
 import type { OperationDescriptor } from "./catalog.ts";
 import type {
   CanonicalAuthorizationExpr,
@@ -9,13 +7,6 @@ import type { InstalledCatalogUnitV2 } from "./catalog-unit.ts";
 import type { AuthenticatedCaller } from "./request.ts";
 import { operationKey } from "./validation/common.ts";
 
-/**
- * One value term seen from the principal alone.
- *
- * `invalid` means the term is *row-relative* — it cannot be settled without
- * the row being tested. Consumers decide what that means for them: operation
- * grants fail closed on it, while a read pre-filter treats it as "cannot say".
- */
 export type PrincipalProjection =
   | { readonly _tag: "present"; readonly value: unknown }
   | { readonly _tag: "absent" }
@@ -28,7 +19,6 @@ const present = (value: unknown): PrincipalProjection => ({
   value,
 });
 
-/** Value equality as authorization rules compare it: scalars, then arrays. */
 export const principalValuesEqual = (left: unknown, right: unknown): boolean => {
   if (Object.is(left, right)) return true;
   if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
@@ -37,13 +27,6 @@ export const principalValuesEqual = (left: unknown, right: unknown): boolean => 
   return left.every((value, index) => Object.is(value, right[index]));
 };
 
-/**
- * Project one canonical value term against the principal.
- *
- * Shared so every principal-only reading of a rule — the operation grant here
- * and the read pre-filter in the MCP kernel — interprets terms identically
- * instead of growing a parallel rule language.
- */
 export const projectPrincipalTerm = (
   term: CanonicalValueTerm,
   caller: AuthenticatedCaller,
@@ -58,7 +41,6 @@ export const projectPrincipalTerm = (
       return Object.hasOwn(caller.claims, term.key)
         ? present(caller.claims[term.key])
         : absent;
-    // Row-relative: nothing about the principal settles these.
     case "me":
     case "ref":
       return invalid;
@@ -66,8 +48,6 @@ export const projectPrincipalTerm = (
 };
 
 const equal = principalValuesEqual;
-// Operation grants are validated at assembly as principal-only. Keep the
-// runtime fail-closed if an unsealed/corrupt expression reaches this seam.
 const project = projectPrincipalTerm;
 
 const evaluate = (
@@ -104,7 +84,6 @@ const evaluate = (
   }
 };
 
-/** Explicit deny wins; at least one explicit allow must pass. */
 export const operationGrantAllows = (
   unit: InstalledCatalogUnitV2,
   descriptor: OperationDescriptor,

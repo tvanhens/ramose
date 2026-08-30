@@ -1,5 +1,3 @@
-/** Pure client transition machine for the v1 replication contract. */
-
 import * as Data from "effect/Data";
 import * as Result from "effect/Result";
 import type {
@@ -11,13 +9,6 @@ import type {
   SnapshotLogicalValue,
 } from "./protocol.ts";
 
-/**
- * The wire identity → sealed `EntityId` binding a committed value carries.
- *
- * One entry per entity the value names. The wire identity rotates with the
- * partition; the sealed handle does not, which is exactly why both are kept:
- * the first addresses the datoms, the second addresses a mutation.
- */
 export type EntityHandles = ReadonlyMap<string, string>;
 
 export const emptyEntityHandles: EntityHandles = new Map();
@@ -32,7 +23,6 @@ export type SnapshotStaging = {
   readonly snapshot: string;
   readonly revision: string;
   readonly chunks: ReadonlyMap<number, readonly SnapshotDatom[]>;
-  /** Accumulated across chunks; a snapshot binds each entity exactly once. */
   readonly handles: EntityHandles;
 };
 
@@ -92,22 +82,6 @@ const requireIdentity = (
     ? Result.succeed(undefined)
     : fail("frame identity does not match the active partition");
 
-/**
- * Merge one frame's bindings into an accumulating set.
- *
- * The binding is a bijection within a partition, and both directions are
- * enforced. Sealing is deterministic per `(root, scope, eid)` and injective in
- * the eid within one scope, and the wire identity is a PRF of the same eid — so
- * one identity carries exactly one handle, and one handle names exactly one
- * identity.
- *
- * Violating either direction is a protocol error rather than a later truth: two
- * handles for one identity would mean two entities share a wire name, and one
- * handle for two identities would mean two rows share a mutation target. In
- * both cases the honest answer is to refuse the frame, because the persisted
- * manifest declares the same bijection and would refuse the value afterwards
- * anyway — better here, where the committed value is still untouched.
- */
 const mergeHandles = (
   prior: EntityHandles,
   bindings: readonly EntityHandleBinding[],
@@ -119,8 +93,6 @@ const mergeHandles = (
     const existing = current().get(binding.entity);
     if (existing === binding.handle) continue;
     if (existing !== undefined) return undefined;
-    // The reverse direction, built lazily: a frame that binds nothing new pays
-    // nothing, and one that does pays it once for the whole merge.
     claimed ??= new Set(current().values());
     if (claimed.has(binding.handle)) return undefined;
     claimed.add(binding.handle);
@@ -130,13 +102,6 @@ const mergeHandles = (
   return merged ?? prior;
 };
 
-/**
- * The bindings a committed value keeps: exactly the entities its datoms name.
- *
- * Pruned rather than accumulated, for the same reason the overlay is recomputed
- * rather than patched — a binding that outlives the entity it names is a
- * mutation target for a row this replica no longer holds.
- */
 const retainHandles = (
   handles: EntityHandles,
   datoms: readonly LogicalDatom[],
@@ -188,9 +153,6 @@ const commitSnapshot = (
     staging.snapshot !== frame.snapshot ||
     staging.revision !== frame.revision
   ) {
-    // A reordered commit cannot expose a partial value. Ordered transports
-    // will resend through reconnect; retaining the previous complete value is
-    // the conservative transition.
     return Result.succeed(state);
   }
   if (staging.chunks.size !== frame.chunks) return Result.succeed(state);
@@ -284,9 +246,6 @@ const commitSnapshot = (
       missing.add(datom.value.value);
     }
   }
-  // Every replicated entity arrives with its sealed handle, so a snapshot that
-  // completes without one for some entity it names is an incomplete value — and
-  // installing it would leave a row an application can read but cannot address.
   if (missing.size > 0) return fail("snapshot names an entity with no sealed handle");
   return Result.succeed({
     identity: frame.identity,
@@ -331,11 +290,6 @@ const applyChange = (
     else facts.set(key, datom);
   }
   const datoms = Object.freeze([...facts.values()]);
-  // Subjects *and* reference targets, exactly as the snapshot commit checks
-  // them. A reference is a way to reach an entity, so a target the value cannot
-  // address is the same hole as an unaddressable subject — and the persisted
-  // manifest requires a binding for both, so an asymmetric check here would
-  // install a value the next restore refuses.
   for (const datom of datoms) {
     if (!handles.has(datom.entity)) {
       return fail("change leaves an entity with no sealed handle");
@@ -355,18 +309,10 @@ const applyChange = (
   });
 };
 
-/**
- * Apply exactly one decoded frame. Failures and ignored stale/reordered frames
- * return without mutating the prior state, so only a complete snapshot commit
- * or one complete committed change can replace the queryable value.
- */
 export const applyReplicationFrame = (
   state: ClientReplicationState,
   frame: ReplicationFrame,
 ): Result.Result<ClientReplicationState, ReplicationTransitionError> => {
-  // Terminal means terminal for this transport instance. Reconnection creates
-  // a new transition session (optionally seeded with the prior committed
-  // value); trailing bytes can never reopen a closed stream.
   if (state.closed) return Result.succeed(state);
   switch (frame.type) {
     case "Reset": {
@@ -411,8 +357,6 @@ export const applyReplicationFrame = (
       if (staging === undefined || staging.snapshot !== frame.snapshot) {
         return Result.succeed(state);
       }
-      // Merged before the duplicate check, so a resend that rebinds an entity's
-      // handle is refused rather than quietly losing to the first copy.
       const handles = mergeHandles(staging.handles, frame.handles);
       if (handles === undefined) {
         return fail("snapshot chunks disagree on an entity's sealed handle");
@@ -448,8 +392,6 @@ export const applyReplicationFrame = (
       if (state.committed?.revision !== frame.revision) {
         return fail("resume-ready revision does not match the committed value");
       }
-      // The frame authenticates freshness for the transport consumer. It does
-      // not install data, advance the committed revision, or disturb staging.
       return Result.succeed(state);
     }
     case "KeepAlive": {

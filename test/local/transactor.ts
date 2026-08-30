@@ -1,9 +1,3 @@
-/**
- * Transactor/indexer coverage through the real Worker, Transactor DO, DO
- * SQLite, R2, alarms, and hibernating WebSockets. Test admin routes only
- * forward to those resources or arm checkpoints in the real isolate.
- */
-
 import { describe, expect, test } from "bun:test";
 import {
   recordingTransport,
@@ -406,9 +400,7 @@ export function registerTransactor(target: { urls: () => LocalUrls }): void {
         const response = await testAdmin(base, db, "/info", {});
         return response.status === 200 && response.body.metrics.queueDepth === 2;
       }, "failed batch queued requests");
-      // Releasing reaches the armed sync throw before the admin response can
-      // leave the isolate, so this request may observe the expected abort.
-      // The three transaction results below are the authoritative outcome.
+
       await testAdmin(base, db, "/checkpoint", {
         scope: "transactor",
         action: "release",

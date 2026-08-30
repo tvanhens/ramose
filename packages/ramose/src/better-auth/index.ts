@@ -1,42 +1,3 @@
-/**
- * `ramose/better-auth` — the Better Auth server plugin that mints the
- * deployment-global identity JWTs a Ramose peer verifies
- * (https://ramose.ai/guides/sign-in/).
- *
- * Ramose verifies tokens and never issues them, so every app repeats the
- * same mint route: read the Better Auth session, decide the caller's
- * deployment-global policy class, build the payload with `Ramose.claims`,
- * sign it with `signJWT`. {@link ramoseToken} is that route as a plugin —
- * the app keeps exactly one decision, {@link ClassOf}.
- *
- * Minting does not take a database, route, or org slug. A JWT is identity
- * and global claims only. Database-specific owner/member status is a
- * protected membership fact in that database, resolved through its
- * deployed policy and `me`. Do not emit `ramose.db`.
- *
- * It requires Better Auth's `jwt` plugin and signs with the same JWKS key,
- * so the peer's `RAMOSE_JWKS_URL` (the jwt plugin's `/jwks` endpoint) reads
- * the matching public half with no extra key management.
- *
- * ```typescript
- * betterAuth({
- *   plugins: [
- *     jwt({ jwt: { issuer: AUTH.issuer, audience: AUTH.audience,
- *                  expirationTime: `${AUTH.ttl}s` } }),
- *     ramoseToken({ auth: AUTH, policy: compiledPolicy, classOf }),
- *   ],
- * });
- * ```
- *
- * The route is `POST {basePath}/ramose/token → { token, class, exp }`
- * — the shape `Ramose.token.jwt` accepts unchanged.
- *
- *
- * This entry needs the optional peers `better-auth` and `zod`.
- */
-
-// Auth.ts is alchemy-free. The deploy barrel (`../index.ts`) value-exports
-// Server, which pulls `alchemy/*` into every auth Worker that adds this plugin.
 import { type AuthConfig, claims } from "../Auth.ts";
 import type { ClaimsPolicy } from "../Auth.ts";
 import {
@@ -59,20 +20,13 @@ export interface SessionInfo {
 
 /** What {@link ClassOf} decides: a class, optionally with `ramose.attrs`. */
 export interface ClassGrant {
-  /** The policy class the token selects (`ramose.class`). */
   readonly class: string;
-  /** App claims (`ramose.attrs`), decoded by the policy's `claims` struct. */
   readonly attrs?: Readonly<Record<string, unknown>> | undefined;
 }
 
 /** What {@link ClassOf} receives: the caller and the endpoint. */
 export interface ClassOfInput {
-  /** The authenticated Better Auth session (the mint route requires one). */
   readonly session: SessionInfo;
-  /**
-   * The Better Auth endpoint context — `ctx.context.adapter` for lookups,
-   * `ctx.headers` / `ctx.request` for anything request-scoped.
-   */
   readonly ctx: GenericEndpointContext;
 }
 
@@ -88,29 +42,9 @@ export type ClassOf = (
 ) => string | ClassGrant | null | Promise<string | ClassGrant | null>;
 
 export interface RamoseTokenOptions {
-  /**
-   * The verifier/minter contract — the same `AuthConfig` the peer's
-   * `Server({ auth: { jwt } })` pins, so a minted lifetime can never exceed
-   * the verifier's cap.
-   */
   readonly auth: AuthConfig;
-  /**
-   * Resolves the caller's deployment-global class from the session.
-   * Must not depend on a requested database; see {@link ClassOf}.
-   */
   readonly classOf: ClassOf;
-  /**
-   * The policy value, its compiled JSON, or the parsed AST.
-   * Optional; when given, a class the policy does not declare fails the mint
-   * instead of minting a token that grants nothing. Passing the policy
-   * value also narrows `Ramose.claims`' `class`.
-   */
   readonly policy?: ClaimsPolicy;
-  /**
-   * Where the route lives under Better Auth's `basePath`.
-   * @default "/ramose/token" — which Better Auth's client proxy exposes as
-   * `authClient.ramose.token`.
-   */
   readonly path?: string;
 }
 
@@ -267,21 +201,12 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
               options.policy,
             );
           } catch (cause) {
-            // What `claims` rejects here is deploy configuration: a class
-            // the policy does not declare, or a bad ttl. The caller cannot
-            // fix either.
             throw new APIError("INTERNAL_SERVER_ERROR", {
               message: cause instanceof Error ? cause.message : String(cause),
             });
           }
-          // Sign with the jwt plugin's own options so the key (JWKS row,
-          // alg, encryption) is exactly the one /jwks publishes. Heal first
-          // so a reminted Better Auth secret does not 500 the mint (the
-          // before-hook covers HTTP; `auth.api.ramoseToken` hits this too).
           const jwtOptions = jwtOptionsOf(ctx);
           await ensureDecryptableJwks(ctx, jwtOptions);
-          // Spread: `signJWT` wants jose's index-signed `JWTPayload`, which
-          // a named interface is not assignable to.
           const token = await signJWT(ctx, {
             options: jwtOptions,
             payload: { ...payload } as Record<string, unknown>,
@@ -292,15 +217,6 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
     },
   } satisfies BetterAuthPlugin;
 };
-
-// ── leftover role mapping; not a mint default ─────────────────────────────
-// classOfRole stays as a pure role→class helper. It is not a mint default.
-// Do not feed a Better Auth organization membership through it and emit
-// the result as an unscoped JWT class — that is the cross-database
-// escalation hole. Database-local owner/member status belongs in that
-// database as protected facts, resolved by its deployed policy and `me`.
-// A later scoped-proof mechanism may reintroduce org membership; do not
-// smuggle it into the initial global class vocabulary.
 
 /**
  * The org-role → policy-class mapping Reef established: `owner` and `admin`

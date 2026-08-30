@@ -1,5 +1,3 @@
-/** Canonical client/server agreement for materializing and querying a read replica. */
-
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -89,7 +87,6 @@ const readRefTarget = (target: FieldRefTarget): typeof ReadRefTarget.Type => {
   }
 };
 
-/** Normalize installed read tables and deliberately erase non-read metadata. */
 export const readCompatibilityDescriptor = (
   catalog: Pick<CatalogDescriptor, "entities" | "traits" | "fields" | "traitComposition">,
 ): Result.Result<ReadCompatibilityDescriptor, InvalidIR> =>
@@ -138,7 +135,6 @@ export const canonicalizeReadCompatibility = (
   Schema.encodeUnknownSync(ReadCompatibilityDescriptor)(descriptor) as JsonValue,
 );
 
-/** Full, untruncated, unpadded base64url SHA-256 with explicit domain separation. */
 export const hashReadCompatibility = Effect.fn("Authorization.hashReadCompatibility")(
   function* (
     catalog: Pick<CatalogDescriptor, "entities" | "traits" | "fields" | "traitComposition">,
@@ -177,7 +173,6 @@ const withoutCatalogIdentity = (value: unknown): unknown => {
   return output;
 };
 
-/** Canonical installed authorization semantics reachable from read decisions only. */
 export const canonicalizeReadPolicy = (policy: InstalledAuthorizationIR): string => {
   const decisions = {
     entities: policy.decisions.entities,

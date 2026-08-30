@@ -1,13 +1,3 @@
-/**
- * The deploy-time artifacts, checked at test time: the policy compiles
- * against the catalog, carries exactly the rules the demo narrates, and the
- * app's pull shapes survive the masked-read check.
- *
- * `parsePolicy` comes from the engine via a workspace-relative import —
- * example test suites keep that access without the public package promising
- * it. An app never imports it.
- */
-
 import { describe, expect, test } from "bun:test";
 import { parsePolicy } from "../../../packages/ramose/src/internal/core/policy/ast.ts";
 import { allowsOperation, operationClassAllows } from "../../../packages/ramose/src/internal/core/policy/eval.ts";
@@ -61,8 +51,7 @@ describe("reef policy", () => {
     const ops = parsed.operations!;
     expect(ops["workspace/provision"]).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
     expect(ops["issue/create"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
-    // `on` is the issue, so a rule here would be ownIssue — class-only keeps
-    // any owner/member able to comment, matching the old comment.create arm.
+
     expect(ops["issue/add-comment"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
     expect(ops["workspace/seed-sample"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
     expect(ops["issue/set-private-note"]).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
@@ -134,9 +123,6 @@ describe("reef policy", () => {
     expect((await checkTx([{ ":label/name": "Bug", ":label/color": "#f00" }], db, compiled, ada)).ok).toBe(false);
   });
 
-  // `RAMOSE_POLICY` is a Cloudflare plain-text binding, capped at 5.1 kB —
-  // over it the peer Worker cannot be deployed at all, which is a failure only
-  // a real deploy surfaces (miniflare enforces no such limit).
   test("compiles small enough to bind on Cloudflare", () => {
     const bytes = new TextEncoder().encode(compiledPolicy()).length;
     expect(bytes).toBeLessThan(5 * 1024);
@@ -173,8 +159,6 @@ describe("reef policy", () => {
   });
 });
 
-// The mapping lives in `ramose/better-auth` now (the mint plugin's
-// default); pinned here so it stays in step with what the policy declares.
 describe("role → class mapping", () => {
   test("owner and admin mint the owner class", () => {
     expect(classOfRole("owner")).toBe("owner");

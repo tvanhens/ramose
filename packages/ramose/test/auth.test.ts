@@ -1,10 +1,3 @@
-/**
- * The verifier/minter contract: `claims` builds the payload the peer
- * verifies (https://ramose.ai/guides/sign-in/) from one `AuthConfig`, and
- * `authEnv({ jwt })` accepts that same config in place of the three loose
- * keys — so the minted lifetime equals the verifier's cap by construction.
- */
-
 import { describe, expect, test } from "bun:test";
 import { claims, type AuthConfig } from "../src/Auth.ts";
 import { AUTH_ENV_KEYS, authEnv } from "../src/Server.ts";
@@ -15,7 +8,6 @@ const AUTH: AuthConfig = {
   ttl: 900,
 };
 
-/** Declared class vocabulary — only `classes` matters to `claims`. */
 const POLICY = { classes: ["admin", "member", "viewer"] as const };
 
 describe("claims", () => {
@@ -56,7 +48,7 @@ describe("claims", () => {
 
   test("an undeclared class throws when a policy is given…", () => {
     expect(() =>
-      // @ts-expect-error — "superuser" is not in POLICY.classes
+      // @ts-expect-error
       claims(AUTH, { sub: "u", class: "superuser" }, POLICY),
     ).toThrow(/"superuser" is not declared/);
   });
@@ -76,7 +68,7 @@ describe("claims", () => {
       claims(AUTH, { sub: "u", class: "member" }, policyValue).ramose?.class,
     ).toBe("member");
     expect(() =>
-      // @ts-expect-error — "viewer" is not in this policy value's classes
+      // @ts-expect-error
       claims(AUTH, { sub: "u", class: "viewer" }, policyValue),
     ).toThrow(/"viewer" is not declared/);
   });

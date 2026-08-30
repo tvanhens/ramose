@@ -1,5 +1,3 @@
-/** Reachable two-level Graph catalog used by the real local path contract. */
-
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
 import * as Result from "effect/Result";
@@ -27,11 +25,6 @@ export const GRAPH_PATH_ROOT_DATABASE = "graph-path-root";
 let childCatalog!: ReturnType<typeof Catalog>;
 let leafCatalog!: ReturnType<typeof Catalog>;
 
-/**
- * A transitive diamond used by the real-stack gate. The only data fields
- * belong to the base trait, so a successful deployment and read prove that
- * flattening preserves the defining namespace and reaches the base once.
- */
 export const GateTagged = Trait("localGateTagged", {
   label: string({ optional: true }),
   tags: Field.many(string()),

@@ -1,12 +1,3 @@
-/**
- * `createClient` — one server origin, one configured root route, one installed
- * catalog, one refreshable credential.
- *
- * Constructing a client is synchronous and inert: nothing is opened, fetched,
- * read, or hashed until the first query is observed. That is what makes it safe
- * to build one at module scope and to construct handles during rendering.
- */
-
 import { isCatalogDefinition, type CatalogDefinition } from "../Catalog.ts";
 import { IndexedDbReplicaStorage } from "../internal/replication/indexeddb.ts";
 import type { ReplicationIdentity } from "../internal/replication/protocol.ts";
@@ -46,83 +37,26 @@ export type AuthCredential = {
 export type AuthProvider = () => AuthCredential | Promise<AuthCredential>;
 
 export type ClientOptions = {
-  /** The canonical server origin, e.g. `https://data.example.com`. */
   readonly url: string;
-  /**
-   * The configured public root route `/db/:root/*` uses.
-   *
-   * Immutable client configuration, never a stable database identity, and never
-   * accepted by `open()`. There is no server-default-root discovery.
-   */
   readonly root: string;
-  /** The installed client catalog — the same authored value the server deploys. */
   readonly catalog: CatalogDefinition;
   readonly auth: AuthProvider;
-  /**
-   * The browser storage this client's replicas live in. Defaults to the shared
-   * store, which is what lets one application's clients reuse one replica.
-   * Sharing it safely across tabs is #478's barrier, not a client option.
-   */
   readonly storageName?: string;
 };
 
 export interface Client {
-  /**
-   * The configured root database, as one interned handle.
-   *
-   * Argument-free by contract: the root route is configuration, so there is
-   * nothing to select. Every call returns the same handle, and the call itself
-   * activates nothing.
-   */
   readonly open: () => ClientDatabase;
-  /** This client's synchronization state, aggregated over its databases. */
   readonly sync: Subscription<SyncState>;
-  /**
-   * Release every network scope and in-process observer, deterministically.
-   *
-   * Durable work is never discarded: queued invocations, receipts, client refs,
-   * committed replicas, and optimistic layers all survive. Clearing a principal
-   * is {@link Client.clearLocalData}, not this.
-   */
   readonly close: () => Promise<void>;
-  /**
-   * Delete every trace of this client's server/principal scope from local
-   * storage: replicas, selectors, outbox, receipts, client refs and mappings,
-   * optimistic layers, and observation markers — atomically, and only for a
-   * scope an authenticated response has confirmed.
-   *
-   * Other principals and other application storage are untouched. Affected
-   * sessions are generation-fenced and closed first, so nothing repopulates
-   * what was just deleted.
-   *
-   * The clearing client is terminal afterwards: it cannot repopulate storage,
-   * and the application constructs a new one.
-   *
-   * When no response has confirmed a scope *yet*, this waits for the root's
-   * first activation to settle — offline that resolves through an exact prior
-   * bearer binding, and otherwise through the server's own answer.
-   *
-   * @throws ClientLocalDataError with `no-confirmed-scope` when no authenticated
-   * response has ever confirmed a scope this client could name.
-   */
   readonly clearLocalData: () => Promise<void>;
 }
 
 const nonEmpty = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
 
-/** A status that will not change without new input, so a caller may wait on it. */
 const settled = (status: SyncStatus): boolean =>
   status !== "idle" && status !== "connecting";
 
-/**
- * How long `clearLocalData()` waits for an activation to name its scope.
- *
- * A server that accepts the connection and then sends nothing would otherwise
- * hang the one destructive entry point indefinitely, while every other one
- * fails fast. The deadline does not invent a scope: it gives up waiting, and
- * the ordinary typed `no-confirmed-scope` failure is what the caller sees.
- */
 const SCOPE_CONFIRMATION_TIMEOUT_MS = 10_000;
 
 class RamoseClient implements Client {
@@ -135,10 +69,6 @@ class RamoseClient implements Client {
   private storageHandle: Promise<IndexedDbReplicaStorage> | undefined;
   private confirmed: ReplicationIdentity | undefined;
   private terminal: "closed" | "cleared" | "fenced" | undefined;
-  /**
-   * Set while this client's own clear is running, so the session its clear
-   * closes is attributed to the clear rather than reported as a stranger's.
-   */
   private clearing = false;
 
   constructor(
@@ -161,7 +91,6 @@ class RamoseClient implements Client {
     return root;
   }
 
-  /** Everything every database of this client shares, root or resolved child. */
   private databaseContext(): Omit<DatabaseContext, "graphPath"> {
     return {
       server: this.server,
@@ -182,12 +111,6 @@ class RamoseClient implements Client {
     };
   }
 
-  /**
-   * The resolved child databases, interned by stable graph identity.
-   *
-   * Built lazily, so a client whose application never constructs a graph handle
-   * carries nothing for one.
-   */
   private graphRegistry(): GraphRegistry {
     this.graph ??= new GraphRegistry(
       ({ graphPath, graphLineage, onConfirmed }) =>
@@ -197,15 +120,9 @@ class RamoseClient implements Client {
           graphLineage,
           onConfirmed: (identity) => {
             onConfirmed(identity);
-            // Every database of one client shares one server/principal scope,
-            // so a child's confirmation names the scope a clear would act on
-            // just as the root's does.
             this.confirmed ??= identity;
           },
         }),
-      // A database this client no longer has cannot go on deciding its
-      // aggregate: a closing handle publishes only to its own store, so the
-      // recomputation has to be driven from the membership change itself.
       () => this.refreshSync(),
     );
     return this.graph;
@@ -229,7 +146,6 @@ class RamoseClient implements Client {
     return this.storageHandle;
   }
 
-  /** Resolve one atomic `{ token, cacheKey }` pair, refusing a partial one. */
   private async credential(): Promise<AuthCredential> {
     const credential = await this.options.auth();
     if (
@@ -248,8 +164,6 @@ class RamoseClient implements Client {
       this.syncStore.publish(syncState("closed"));
       return;
     }
-    // Every activated database of this client, root and resolved children
-    // alike: a client is only as synchronized as its least synchronized one.
     const statuses = [
       ...(this.root === undefined ? [] : [this.root.syncStatus()]),
       ...(this.graph?.statuses() ?? []),
@@ -274,20 +188,11 @@ class RamoseClient implements Client {
       await storage.clearScope(replicaScopeOf(identity));
     } catch (cause) {
       this.clearing = false;
-      // The clear is atomic: a failure leaves the scope exactly as it was, so
-      // this client stays usable and the call may be retried.
       throw new ClientLocalDataError({ reason: "storage", cause });
     }
     await this.terminate("cleared");
   }
 
-  /**
-   * Give the root one chance to obtain a confirmed identity.
-   *
-   * Offline this succeeds only through an exact prior bearer binding, which is
-   * the same rule that governs reading: a scope no authenticated response ever
-   * produced is not one this client may delete.
-   */
   private async confirmScope(): Promise<void> {
     const root = this.rootHandle();
     void root.activate();
@@ -318,14 +223,8 @@ class RamoseClient implements Client {
   ): Promise<void> {
     if (this.terminal !== undefined) return;
     this.terminal = reason;
-    // Children first: closing the root releases the paths hanging off it, and a
-    // path released before its database would leave that database's session
-    // open with nothing holding it.
     await this.graph?.close();
     await this.root?.close();
-    // Closing the storage handle releases every pin, retention and enrolment it
-    // still holds. A cleared scope is terminal for the handle as well, so a
-    // fresh client is the only way back to that scope.
     await this.storageHandle?.then(
       (storage) => storage.close(),
       () => undefined,
@@ -359,9 +258,6 @@ export const createClient = (options: ClientOptions): Client => {
   }
   let server: string;
   try {
-    // Canonicalized here so a malformed origin or a path-shaped root is a
-    // construction-time error rather than a failure inside the first
-    // activation, where an application would read it as being offline.
     server = replicationActivationAddress({
       server: options.url,
       root: options.root,

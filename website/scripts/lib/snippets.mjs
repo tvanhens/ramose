@@ -1,22 +1,3 @@
-// Shared snippet extraction for the docs site.
-//
-// A fence `title` may cite source as:
-//   path#marker                  named region in that file
-//   path:N                       one line
-//   path:N-M                     inclusive line range
-//   path#a · other.ts:10-12      several citations, stitched
-//
-// A later citation may be relative to the first path's directory
-// (`app.ts:131` after `examples/kv-style/app.ts#worker-app`).
-// Trailing notes in parentheses (`(annotated)`) are ignored.
-//
-// Named regions in source:
-//   // docs:name
-//   …lines…
-//   // enddocs:name
-// JSX/block-comment form `{/* docs:name */}` / `{/* enddocs:name */}`
-// is accepted too. Marker lines are not part of the extract.
-
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,12 +7,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const SITE = resolve(HERE, "../..");
 export const REPO = resolve(SITE, "..");
 
-// Exact paths of known-deleted client files still cited from MDX. Missing
-// citations are errors by default; only these paths may skip the body
-// check. Shrink-only — do not glob, and do not add a general missing-file
-// escape. Removal of entries is owned by #416 / #442.
-// Imported so the Astro/Vite build embeds the list instead of looking for a
-// sibling JSON in dist/.
 const DELETED_CITATION_ALLOWLIST = new Set(deletedCitationAllowlist);
 
 const isAllowlistedDeleted = (relPath) =>
@@ -73,9 +48,7 @@ const walkRepo = () => {
       try {
         if (statSync(p).isDirectory()) out = out.concat(collect(p));
         else out.push(p);
-      } catch {
-        /* unreadable */
-      }
+      } catch {}
     }
     return out;
   };
@@ -119,7 +92,7 @@ const markerBounds = (lines, name) => {
   for (let i = start; i < lines.length; i++) {
     for (const re of END_RES) {
       const m = lines[i].match(re);
-      if (m?.[1] === name) return { start, end: i }; // end exclusive
+      if (m?.[1] === name) return { start, end: i };
     }
   }
   return null;
@@ -136,7 +109,7 @@ export const extractCitation = (cite, hintDir) => {
   }
   const rel = relative(REPO, found).replaceAll("\\", "/");
   const lines = readFileSync(found, "utf8").split("\n");
-  // Drop a trailing empty line from the split so "last line" is honest.
+
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
 
   if (cite.marker) {
@@ -215,10 +188,7 @@ export const extractTitle = (title) => {
     labels.push(got.label);
     any = true;
   }
-  // Allowlisted-deleted citations are not errors. The fence stays as
-  // written (`extracted: false`) so docs-check and the Astro remark
-  // plugin skip replacement instead of failing the build. A
-  // non-allowlisted missing path already returned as an error above.
+
   if (skippedSome) {
     return { ok: true, extracted: false, skipped: true, text: parts.join("\n\n"), labels };
   }
@@ -226,7 +196,6 @@ export const extractTitle = (title) => {
   return { ok: true, extracted: true, text: parts.join("\n\n"), labels };
 };
 
-/** Lines that participate in a provenance comparison. */
 export const comparableLines = (src) =>
   src
     .split("\n")

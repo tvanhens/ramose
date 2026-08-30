@@ -1,12 +1,3 @@
-/**
- * The optimistic projection authoring contract (#476 slice 1).
- *
- * Everything here is a pure transformation of an authored call into plain
- * changeset data: which values a declared field admits, which client refs a
- * projection may name, and what happens when an author gets it wrong. No
- * source is read anywhere — {@link runProjection} calls the function.
- */
-
 import { describe, expect, test } from "bun:test";
 import { Operation } from "../../src/db/Operation.ts";
 import * as Schema from "effect/Schema";
@@ -314,10 +305,7 @@ describe("operation declaration", () => {
   });
 
   test("the projection revision does not touch anything OperationVersion covers", () => {
-    // #487 hashes the catalog key, owner, local name, target, `revision`,
-    // input/output contracts, composers, writes, and allocations. None of them
-    // may move because a projection was edited, or every queued invocation
-    // would lose its right to submit.
+
     const before = Operation({ ...spec, optimistic: () => {}, optimisticRevision: 1 });
     const after = Operation({ ...spec, optimistic: () => {}, optimisticRevision: 9 });
     expect(after.revision).toBe(before.revision);

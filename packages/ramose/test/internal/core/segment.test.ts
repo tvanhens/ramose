@@ -69,7 +69,7 @@ describe("segment codec", () => {
       expect(node.refs).toEqual(refs);
       for (let i = 0; i < ds.length; i++) expect(datomEquals(node.keys[i], ds[i])).toBe(true);
     }
-    // leaf via encodeNode
+
     const leaf = decodeNode(encodeNode(Index.EAVT, { kind: NodeKind.Leaf, datoms: ds }));
     expect(leaf.node.kind).toBe(NodeKind.Leaf);
   });

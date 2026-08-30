@@ -1,5 +1,3 @@
-/** Logical authorized-datom projection, state hashing, and bounded diffs. */
-
 import type { Datom, DatomValue } from "../core/datom.ts";
 import {
   Index,
@@ -29,8 +27,6 @@ import {
 const utf8 = new TextEncoder();
 const HASH_BLOCK_BYTES = 65_536;
 const MAX_ENTITY_CACHE = 1_024;
-// A UTF-16 code unit needs at most three UTF-8 bytes when encoded on its own.
-// Fixed code-unit boundaries also preserve lone surrogates through JSON.
 const MAX_STRING_PART_CODE_UNITS = Math.floor(
   MAX_REPLICATION_STRING_BYTES / 3,
 );
@@ -42,18 +38,9 @@ const throwIfAborted = (signal: AbortSignal | undefined): void => {
 export type LogicalEntry = {
   readonly raw: Datom;
   readonly datom: SnapshotDatom;
-  /** The sealed handle of every entity {@link LogicalEntry.datom} names. */
   readonly handles: readonly EntityHandleBinding[];
 };
 
-/**
- * The two identities one replicated entity travels under.
- *
- * `identity` is the one-way per-stream wire name the datoms use; `handle` is
- * the reversible sealed `EntityId` bound to the stable scope. Minted together
- * and cached together, because every frame that carries the first must carry
- * the second.
- */
 export type LogicalEntityIdentity = {
   readonly identity: OpaqueReplicationId;
   readonly handle: SealedEntityId;
@@ -92,7 +79,6 @@ export const makeLogicalIdentityEncoder = (
   };
 };
 
-/** Merge one entity's binding into a frame's set, deduplicated by identity. */
 const bind = (
   into: Map<string, EntityHandleBinding>,
   entity: LogicalEntityIdentity,
@@ -104,7 +90,6 @@ const bind = (
   );
 };
 
-/** Every distinct binding a set of entries carries, in first-appearance order. */
 export const entryHandles = (
   entries: Iterable<LogicalEntry>,
 ): readonly EntityHandleBinding[] => {
@@ -155,7 +140,6 @@ const utf16Bytes = (value: string): Uint8Array => {
   return out;
 };
 
-/** A bounded-memory digest for grouping fragments of one logical value. */
 const valuePartIdentity = async (
   type: "string" | "bytes",
   parts: Iterable<Uint8Array>,
@@ -170,15 +154,9 @@ const valuePartIdentity = async (
   return opaqueDigest(`ramose:replication:${type}-value:v1`, prior);
 };
 
-/**
- * Project one stored value through the production wire path. Large native
- * strings and byte arrays become independently bounded snapshot-only parts;
- * a change involving any such value takes the existing Reset + snapshot path.
- */
 export async function* projectLogicalValueParts(
   datom: Datom,
   encoder: LogicalIdentityEncoder,
-  /** Notified of the referenced entity, so its handle reaches the frame. */
   collect?: (entity: LogicalEntityIdentity) => void,
 ): AsyncGenerator<SnapshotLogicalValue, void, undefined> {
   switch (datom.vt) {
@@ -271,7 +249,6 @@ export async function* projectLogicalValueParts(
   }
 }
 
-/** One projected fact and the handle bindings the frame carrying it needs. */
 export type ProjectedDatom = {
   readonly datom: SnapshotDatom;
   readonly handles: readonly EntityHandleBinding[];
@@ -288,8 +265,6 @@ export async function* projectLogicalDatoms(
   }
   const entity = await encoder.entity(raw.e);
   const field = boundedText(attribute.ident);
-  // One binding set per datom, shared by every part a fragmented value yields:
-  // the parts describe one fact, and they name the same entities.
   const bindings = new Map<string, EntityHandleBinding>();
   bind(bindings, entity);
   for await (
@@ -311,7 +286,6 @@ export async function* projectLogicalDatoms(
   }
 }
 
-/** Current asserted authorized facts in stable physical scan order. */
 export async function* logicalEntries(
   db: Db,
   encoder: LogicalIdentityEncoder,
@@ -399,24 +373,15 @@ export type LogicalDelta = {
   readonly previousStateDigest: OpaqueReplicationId;
   readonly stateDigest: OpaqueReplicationId;
   readonly datoms: readonly LogicalDatom[];
-  /** One binding per distinct entity {@link LogicalDelta.datoms} names. */
   readonly handles: readonly EntityHandleBinding[];
   readonly overflow: boolean;
 };
 
-/**
- * Whether one candidate chunk fits the wire bound.
- *
- * Measured over the *entries*, not their datoms alone: the bindings the entries
- * carry travel in the same frame, so a predicate that could not see them would
- * pass a chunk the encoder then has to refuse.
- */
 export type SnapshotChunkFits = (
   entries: readonly LogicalEntry[],
   index: number,
 ) => boolean;
 
-/** Merge two immutable authorized values without retaining either full value. */
 export const diffLogicalDbs = async (
   previous: Db,
   current: Db,
@@ -438,10 +403,6 @@ export const diffLogicalDbs = async (
       overflow = true;
       return;
     }
-    // The bindings travel in the same frame, so they are measured against the
-    // same bound. Counting only the datoms would let a change that fits by that
-    // measure exceed the wire limit once its handles were attached, and the
-    // emitter would then have to drop a frame it had already committed to.
     const added = entry.handles.filter((binding) => !handles.has(binding.entity));
     const size = encodedBytes(change) + encodedBytes(added);
     if (
@@ -503,7 +464,6 @@ export const diffLogicalDbs = async (
   });
 };
 
-/** Snapshot chunks retain only the current bounded chunk. */
 export async function* snapshotEntryChunks(
   db: Db,
   encoder: LogicalIdentityEncoder,
@@ -530,7 +490,6 @@ export async function* snapshotEntryChunks(
   if (chunk.length > 0) yield Object.freeze(chunk);
 }
 
-/** Re-check a delayed chunk against the newest complete authorized value. */
 export const chunkStillAuthorized = async (
   current: Db,
   chunk: readonly LogicalEntry[],

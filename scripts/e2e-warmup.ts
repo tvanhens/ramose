@@ -1,14 +1,3 @@
-/**
- * Post-deploy wait used by `scripts/e2e-cloudflare.sh`.
- *
- * `/health` is the Worker fetch handler. External `/db/*` is fail-closed
- * until verified JWT + catalog + filtered `Db` land — a 401 on that surface means the Worker
- * is serving the data-plane close, not that Durable Objects are ready.
- *
- * Bun `fetch` and curl can land on different colos; a fresh workers.dev
- * host often 404s on one edge while another already answers. Retry until
- * both surfaces agree.
- */
 const url = process.env.RAMOSE_URL;
 if (url === undefined || url === "") {
   console.error("error: RAMOSE_URL is not set");

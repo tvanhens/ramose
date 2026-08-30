@@ -1,12 +1,3 @@
-/**
- * The pure halves of the reconciliation driver (#476 slice 2).
- *
- * The `.local` pending sidecar is a function of the ordered layers, and the
- * interruption taxonomy is a function of one thrown value. The driver's durable
- * behavior — the fence transaction, the crash cuts, and the session join — is
- * proven against real IndexedDB in an actual browser.
- */
-
 import { describe, expect, test } from "bun:test";
 import type { ProjectionChangeset } from "../../../src/db/Projection.ts";
 import { clientRef, invocationId, unsafeEntityId } from "../../../src/db/refs.ts";

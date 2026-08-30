@@ -1,16 +1,3 @@
-/**
- * One Effectful request constructor: deployment-global authenticated
- * caller + trusted route database + that database's deployed catalog
- * unit → one filtered immutable {@link Db}, then the caller-supplied
- * request against only that value.
- *
- * Catalog lookup is DatabaseId-first (#453). `Db.filter` is the sole
- * authorization primitive. The `execute` callback is the only sanctioned
- * consumer of the request `Db`. JWT, catalog proof, and predicate
- * compile stay fail-closed. `currentDb` failures are infrastructure and
- * pass through so retryable replica/storage errors keep their status.
- */
-
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
@@ -50,7 +37,6 @@ import { prepareAuthorizationCatalog } from "./validation/catalog.ts";
 export type AuthenticatedCaller = {
   readonly claims: Readonly<Record<string, JsonValue>>;
   readonly classes: readonly string[];
-  /** JWT NumericDate expiration, in whole seconds. */
   readonly exp: number;
 };
 
@@ -72,21 +58,15 @@ export type AuthorizedRequestInput<R = never, EDb = unknown> = {
   readonly routeDatabase: DatabaseId;
   readonly catalogKey: CatalogId;
   readonly unitHash: CatalogUnitHash;
-  /** Trusted route-database snapshot. Failures stay infrastructure errors. */
   readonly currentDb: (database: DatabaseId) => Effect.Effect<Db, EDb, R>;
   readonly view?: AuthorizedRequestView;
   readonly interruptAfter?: Duration.Input;
 };
 
-/**
- * Request input for an already resolved configured-root or dynamic-child
- * route. No database, catalog key, or unit hash can be independently paired.
- */
 export type AuthorizedResolvedRequestInput<R = never, EDb = unknown> = {
   readonly authenticate: Effect.Effect<AuthenticatedCaller, Unauthorized, R>;
   readonly bindings: DatabaseCatalogBindings;
   readonly route: ResolvedDatabaseRoute;
-  /** Real database acquisition keyed only by the validated sealed route. */
   readonly currentDb: (database: DatabaseId) => Effect.Effect<Db, EDb, R>;
   readonly view?: AuthorizedRequestView;
   readonly interruptAfter?: Duration.Input;
@@ -94,12 +74,6 @@ export type AuthorizedResolvedRequestInput<R = never, EDb = unknown> = {
 
 const deny = (): Unauthorized => new Unauthorized({});
 
-/**
- * Map a verified JWT principal to the authorization caller.
- * Structural: no worker import. JWT `sub` is authoritative for the
- * `sub` key; app claims come from `attrs`. Classes fall back to the
- * single `class`. Authentication does not select a database.
- */
 export const callerFromVerified = (verified: {
   readonly exp: number;
   readonly principal: {
@@ -265,7 +239,6 @@ const admitCatalogCaller = (
     return { unit, subject };
   }).pipe(Effect.catchCause(() => Effect.fail(deny())));
 
-/** Catalog proof and caller claims. Defects collapse to Unauthorized. */
 const admitDeployedCaller = <R, EDb>(
   input: AuthorizedRequestInput<R, EDb>,
   caller: AuthenticatedCaller,
@@ -281,7 +254,6 @@ const admitDeployedCaller = <R, EDb>(
     return yield* admitCatalogCaller(deployed.unit, caller);
   }).pipe(Effect.catchCause(() => Effect.fail(deny())));
 
-/** Principal bind + predicate compile. Defects collapse to Unauthorized. */
 const bindReadPredicate = (
   unit: InstalledCatalogUnitV2,
   subject: string,
@@ -326,10 +298,6 @@ const constructFilteredContext = (
     };
   });
 
-/**
- * Admit the caller, acquire the route database, then filter that value.
- * `currentDb` errors are infrastructure and pass through unchanged.
- */
 export const constructAuthorizedRequestContext = <R, EDb>(
   input: AuthorizedRequestInput<R, EDb>,
   caller: AuthenticatedCaller,
@@ -340,11 +308,6 @@ export const constructAuthorizedRequestContext = <R, EDb>(
     return yield* constructFilteredContext(admitted, caller, current, input.view);
   });
 
-/**
- * Authorize and acquire a configured root or dynamic child only through its
- * opaque server-owned binding. Invalid/foreign/stale routes deny before the
- * real acquisition callback runs.
- */
 export const constructAuthorizedResolvedRequestContext = <R, EDb>(
   input: AuthorizedResolvedRequestInput<R, EDb>,
   caller: AuthenticatedCaller,

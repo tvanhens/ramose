@@ -1,14 +1,3 @@
-/**
- * Immutable deployed-catalog registry.
- *
- * Assembled once at startup from reachable code definitions. The registry
- * is `DatabaseId -> DeployedCatalog`: each database has exactly one
- * request-addressable sealed {@link InstalledCatalogUnitV2}. Lookup starts
- * from the trusted database; a request may then prove catalog-key and
- * unit-hash agreement with that unit. Not a module-global mutable map and
- * not import-order registration.
- */
-
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { Unauthorized } from "../../db/Errors.ts";
@@ -36,7 +25,6 @@ export type DeployedCatalog = {
   readonly catalogKey: CatalogId;
   readonly unitHash: CatalogUnitHash;
   readonly unit: InstalledCatalogUnitV2;
-  /** Frozen type-to-trait lookup derived from the sealed unit. */
   readonly composition: CompositionIndex;
 };
 
@@ -51,7 +39,6 @@ export type CatalogAssemblyUnit = {
   readonly catalog: CatalogId;
   readonly database: DatabaseId;
   readonly version: CatalogVersion;
-  /** Reachable child catalog keys. Missing child fails assembly. */
   readonly children?: readonly CatalogId[];
   readonly descriptor: CatalogDescriptor;
   readonly policy: PolicyTemplateIR;
@@ -159,7 +146,6 @@ const buildRegistry = (
   });
 };
 
-/** Exact catalog-key agreement with a database-selected unit. Pure Result. */
 export const requireCatalogKey = (
   actual: CatalogId,
   expected: CatalogId,
@@ -174,7 +160,6 @@ export const requireCatalogKey = (
   );
 };
 
-/** Exact unit-hash agreement. Pure Result; no Effect or Context lookup. */
 export const requireUnitHash = (
   actual: CatalogUnitHash,
   expected: CatalogUnitHash,
@@ -184,10 +169,6 @@ export const requireUnitHash = (
   return Result.fail(new CatalogVersionMismatch({ catalog, expected, actual }));
 };
 
-/**
- * Database-first contract: `requireDatabase` then catalog-key and unit-hash
- * agreement with that unit. Composes the primitives; does not allocate Effects.
- */
 export const resolveDeployedCatalog = (
   catalogs: DeployedCatalogs,
   ref: CatalogBoundRef,
@@ -199,7 +180,6 @@ export const resolveDeployedCatalog = (
     return deployed;
   });
 
-/** Collapse internal mismatch/missing failures to opaque Unauthorized. No catalog/version details. */
 export const opaqueCatalogDenial = (
   _error: CatalogMismatch | CatalogVersionMismatch,
 ): Unauthorized => new Unauthorized({});

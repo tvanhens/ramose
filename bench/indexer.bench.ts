@@ -1,14 +1,3 @@
-/**
- * Timed incremental-index bench (M4/M7): merge a delta of D transactions into
- * a database of N people (≈3N datoms + schema) and report run time, objects
- * written vs objects in the tree, and objects per touched tx.
- *
- *   bun run bench/indexer.bench.ts [people=300000] [deltaTxs=10000] [leafSize=3000] [fanout=1024]
- *
- * Runs in-process (Transactor over an in-memory R2 + bun:sqlite) — the numbers
- * are the merge cost itself (structural-sharing rewrite of touched paths, gzip
- * + sha256 per new object), not R2 round trips.
- */
 import { Schema, type Datom, ValueTag, FIRST_USER_EID, attributeDatoms, bootstrapDatoms, buildRoots, gzipCodec, reachable, treeDepth } from "../packages/ramose/src/internal/core/index.ts";
 import { R2NodeStore, dbPrefix, prefixedBucket, publishRoot, recordToRoots, rootsToRecord } from "../packages/ramose/src/internal/storage/index.ts";
 import { MemoryBucket } from "../packages/ramose/src/internal/storage/memory.ts";
@@ -23,7 +12,6 @@ const fanout = Number(process.argv[5] ?? 1024);
 const NAME = FIRST_USER_EID, AGE = FIRST_USER_EID + 1, CITY = FIRST_USER_EID + 2, FRIEND = FIRST_USER_EID + 3;
 const FIRST_PERSON = FIRST_USER_EID + 100;
 
-// ---- seed
 let t0 = performance.now();
 const datoms: Datom[] = [
   ...attributeDatoms(NAME, { ident: ":p/name", valueType: ":db.type/string", index: true }, 2),
@@ -47,14 +35,13 @@ const seedMs = performance.now() - t0;
 const treeObjects = raw.objects.size;
 console.log(`seed: ${datoms.length.toLocaleString()} datoms → ${treeObjects} objects in ${fmt(seedMs, 0)} ms (leaf ${leafSize}, fan-out ${fanout})`);
 
-// ---- transactor over the seeded root; write the delta
 const h = new BenchHarness({ dbName: "bench", config: { indexTxThreshold: 1e9, indexIntervalMs: 1e9, indexMaxTxsPerRun: 1e9, logKeepTxs: 100 } }, raw);
 const tx = h.transactor;
 await tx.init();
 t0 = performance.now();
 const ops: Promise<unknown>[] = [];
 for (let i = 0; i < deltaTxs; i++) {
-  const e = FIRST_PERSON + ((i * 104729) % people); // scattered entities
+  const e = FIRST_PERSON + ((i * 104729) % people);
   if (i % 4 === 0) ops.push(tx.transact([{ ":p/name": `new${i}`, ":p/age": 1, ":p/city": `c${i % 100}` }]));
   else if (i % 4 === 1) ops.push(tx.transact([[":db/add", e, ":p/age", 100 + (i % 50)]]));
   else if (i % 4 === 2) ops.push(tx.transact([[":db/add", e, ":p/friend", FIRST_PERSON + ((i * 31) % people)]]));
@@ -69,7 +56,6 @@ const writeMs = performance.now() - t0;
 const novelty = tx.connection.noveltyCount;
 console.log(`delta: ${deltaTxs.toLocaleString()} txs (${novelty.toLocaleString()} novelty datoms) written in ${fmt(writeMs, 0)} ms → ${fmt((deltaTxs / writeMs) * 1000, 0)} tx/s`);
 
-// ---- index run (timed)
 const store = tx.nodeStore;
 const oldRoots = recordToRoots(tx.currentRootRecord);
 const putsBefore = store.stats.r2Puts;

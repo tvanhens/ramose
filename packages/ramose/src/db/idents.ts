@@ -1,5 +1,3 @@
-/** Ident derivation (`:ns/attr`) and value-type lookup against a catalog. */
-
 import type { Eid } from "./Eid.ts";
 import type { AnyEntity } from "./Entity.ts";
 import type { Tempid } from "./entityArg.ts";
@@ -9,11 +7,6 @@ import type { AnyTrait } from "./Trait.ts";
 
 export type Ident<Ns extends string, Attr extends string> = `:${Ns}/${Attr}`;
 
-/**
- * Stamped field ident when it is a literal (`:taggable/tag`); reconstruct
- * `:${ns}/${key}` when the ident is a wide `string` so `CatalogIdent<AnySchema>`
- * stays a template literal and does not collapse to `string`.
- */
 export type IdentOfFieldIn<F, Ns extends string, A extends string> = F extends {
   readonly ident: infer I extends string;
 }
@@ -22,10 +15,6 @@ export type IdentOfFieldIn<F, Ns extends string, A extends string> = F extends {
     : I
   : Ident<Ns, A>;
 
-/**
- * Every ident in a catalog, as a union of string literals.
- * `CatalogIdent<typeof Movies>` → `":user/name" | ":movie/title" | …`
- */
 export type CatalogIdent<C extends AnySchema> = {
   [K in keyof C["entities"]]: {
     [A in keyof C["entities"][K]["fields"] & string]: IdentOfFieldIn<
@@ -36,10 +25,6 @@ export type CatalogIdent<C extends AnySchema> = {
   }[keyof C["entities"][K]["fields"] & string];
 }[keyof C["entities"]];
 
-/**
- * The attribute at ident `I`. `never` when the ident is not in the catalog
- * — that is what turns an unknown attr into a type error.
- */
 export type AttrAtIdent<C extends AnySchema, I extends string> = {
   [K in keyof C["entities"]]: {
     [A in keyof C["entities"][K]["fields"] & string]: IdentOfFieldIn<
@@ -59,14 +44,6 @@ export type ValueAtIdent<C extends AnySchema, I extends string> = ValueOf<
 export type CardAtIdent<C extends AnySchema, I extends string> =
   AttrAtIdent<C, I>["cardinality"];
 
-/**
- * Write value for an ident: a single decoded Schema type, or a readonly
- * array of them when the attribute is cardinality-many.
- *
- * List-form `:db/add` always takes one value (one datom), even for many.
- * Map-form `put` takes this shape — an array for many, omitted when
- * `undefined`.
- */
 export type WriteAtIdent<C extends AnySchema, I extends string> =
   CardAtIdent<C, I> extends "many"
     ? ReadonlyArray<ValueAtIdent<C, I>>
@@ -75,11 +52,6 @@ export type WriteAtIdent<C extends AnySchema, I extends string> =
 export type ReadAtIdent<C extends AnySchema, I extends string> =
   WriteAtIdent<C, I>;
 
-/**
- * Entity-level write bag for `put`: each key is a field of `N`, typed
- * through {@link WriteAtIdent}. Cardinality-many is an array; a missing
- * or `undefined` key is omitted at runtime (not written as a nil datom).
- */
 export type WriteAtEntity<C extends AnySchema, N extends { readonly ns: string; readonly fields: object }> = {
   [K in keyof N["fields"] & string]?:
     | WriteAtIdent<C, IdentOfFieldIn<N["fields"][K], N["ns"], K>>
@@ -101,7 +73,6 @@ export type LookupRef<C extends AnySchema> = {
         | readonly [{ readonly ident: I }, ValueAtIdent<C, I>];
 }[CatalogIdent<C>];
 
-/** Unique lookups whose ident is on `N` — own namespace or a flattened trait. */
 export type OnIdent<N extends AnyEntity> =
   | `:${N["ns"]}/${string}`
   | {
@@ -118,11 +89,9 @@ export type LookupRefFor<C extends AnySchema, N extends AnyEntity> = Extract<
   | readonly [{ readonly ident: OnIdent<N> }, unknown]
 >;
 
-/** Namespaces of `C` — the default `N` for a catalog-wide {@link EntityRef}. */
 export type CatalogEntity<C extends AnySchema> = C["entities"][keyof C["entities"]] &
   AnyEntity;
 
-/** Unbranded id — a bare `number`, not `Eid<Other>`. Documented mint-by-id hatch. */
 export type UnbrandedId = number & { readonly _ns?: never };
 
 /**
@@ -144,7 +113,6 @@ export type EntityRef<
   | UnbrandedId
   | H;
 
-/** Target entity of a `Ref(User)` field; `never` for `Ref.self` / untargeted. */
 export type FieldTargetEntity<F> = F extends {
   readonly schema: { readonly _target?: infer T };
 }
@@ -169,7 +137,6 @@ type EntityComposes<N extends AnyEntity, T extends AnyTrait> = T extends TraitCl
   ? true
   : false;
 
-/** Concrete catalog entities known statically to compose `T`, directly or transitively. */
 export type TraitComposer<C extends AnySchema, T extends AnyTrait> = {
   [K in keyof C["entities"]]: C["entities"][K] extends infer N extends AnyEntity
     ? EntityComposes<N, T> extends true
@@ -178,7 +145,6 @@ export type TraitComposer<C extends AnySchema, T extends AnyTrait> = {
     : never;
 }[keyof C["entities"]];
 
-/** The entity that owns ident `I` in `C`. */
 export type EntityOfIdent<C extends AnySchema, I extends string> = {
   [K in keyof C["entities"]]: {
     [A in keyof C["entities"][K]["fields"] & string]: IdentOfFieldIn<
@@ -191,10 +157,6 @@ export type EntityOfIdent<C extends AnySchema, I extends string> = {
   }[keyof C["entities"][K]["fields"] & string];
 }[keyof C["entities"]];
 
-/**
- * Ref write target: `Ref(User)` → `User`; `Ref.self` / untargeted → the
- * enclosing entity of the ident.
- */
 export type RefWriteTarget<C extends AnySchema, I extends string> = [
   DeclaredRefTarget<AttrAtIdent<C, I>>,
 ] extends [AnyEntity]
@@ -203,10 +165,6 @@ export type RefWriteTarget<C extends AnySchema, I extends string> = [
     ? TraitComposer<C, Extract<DeclaredRefTarget<AttrAtIdent<C, I>>, AnyTrait>>
     : EntityOfIdent<C, I>;
 
-/**
- * Write value for a ref-typed ident: {@link EntityRef} of the declared
- * target. A Label eid is not assignable to `Issue.creator`.
- */
 export type RefWriteValue<
   C extends AnySchema,
   I extends string,

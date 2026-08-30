@@ -1,28 +1,3 @@
-/**
- * `Ramose.Server` — a Ramose peer Worker, and every database it serves.
- *
- * The resource owns the peer: it declares the Worker, both Durable Object
- * classes, the pinned compat date, and the fixed binding names. The user
- * names storage and options.
- *
- * The explicit `worker:` form is the escape hatch (extra bindings, a
- * user-owned entry). It is validated at deploy: binding names, DO classes,
- * `main` resolution, and `auth` against the Worker env.
- *
- * @resource
- * @product Ramose
- * @category Storage & Databases
- * @section Creating a Server
- * @example The owned form
- * ```typescript
- * export const Server = Ramose.Server("Ramose", {
- *   main: import.meta.resolve("./peer.ts"),
- *   auth: { jwt: AUTH },
- * });
- * ```
- *
- */
-
 import type { Worker } from "alchemy/Cloudflare/Workers";
 import type { InputProps } from "alchemy/Input";
 import * as ProviderLayer from "alchemy/Local/ProviderLayer";
@@ -44,15 +19,9 @@ import {
 import type { Providers } from "./Providers.ts";
 import type { RamoseEnv } from "./RamoseEnv.ts";
 
-/** @internal */
 export const isServer = (value: unknown): value is Server =>
   isResourceOfType(value, "Ramose.Server");
 
-/**
- * @internal The Worker that serves this server: a `Cloudflare.Worker` (the
- * resource, or the Effect that declares it), an explicit `{ url }`, or a bare
- * base URL. The escape hatch — omit it and Server declares the peer.
- */
 export type ServerWorker =
   | Worker
   | {
@@ -63,29 +32,13 @@ export type ServerWorker =
 
 const trimSlashes = (value: string): string => value.replace(/\/+$/, "");
 
-/**
- * @internal Deploy-time liveness probe of the server.
- *
- * Both providers run it. A server that never answers is not a hypothetical:
- * under `alchemy dev` the local Worker's proxy binds its port and reports
- * "ready" *before* the bundle is served, so a Worker that never finishes
- * bundling leaves a socket that accepts connections and answers nothing. Every
- * attempt is therefore bounded by {@link timeoutMs} and the whole ladder by
- * {@link deadlineMs} — without those, "unreachable" and "silent" are the same
- * thing to `fetch`, and the deploy hangs forever with no error to print.
- */
 export interface ServerProbe {
-  /** Total attempts before failing the deploy. @default 30 live, 60 local */
   readonly attempts?: number;
-  /** Delay between attempts (ms). @default 2000 live, 250 local */
   readonly delayMs?: number;
-  /** Cap on one attempt (ms) — a socket that accepts and never answers. @default 10000 live, 2000 local */
   readonly timeoutMs?: number;
-  /** Cap on the whole ladder (ms), retries and sleeps included. @default 120000 live, 30000 local */
   readonly deadlineMs?: number;
 }
 
-/** @internal The probe's defaults, per mode. Exported for the tests. */
 export const PROBE_DEFAULTS = {
   live: { attempts: 30, delayMs: 2_000, timeoutMs: 10_000, deadlineMs: 120_000 },
   local: { attempts: 60, delayMs: 250, timeoutMs: 2_000, deadlineMs: 30_000 },
@@ -106,76 +59,30 @@ export type AuthEnvValue = string | object;
  * fail the deploy on divergence — do not configure auth only on the Worker.
  */
 export interface ServerAuth {
-  /**
-   * Where the issuer's public keys live. Reserved for #412 verified
-   * principals. External `/db/*` is fail-closed until that lands.
-   */
   readonly jwksUrl?: AuthEnvValue | undefined;
-  /** Literal JWK Set for offline / test verification; mutually exclusive with {@link jwksUrl}. */
   readonly jwksJson?: AuthEnvValue | undefined;
-  /**
-   * Name of a service binding on the server Worker to fetch `jwksUrl`
-   * through. Required when the issuer is another Worker on the same account.
-   */
   readonly jwksService?: string | undefined;
-  /**
-   * Accepted `iss` values — one, or a comma-separated set.
-   */
   readonly issuers?: readonly string[] | AuthEnvValue | undefined;
-  /**
-   * The `aud` every token must carry.
-   */
   readonly aud?: string | undefined;
-  /** Cap on `exp - iat`, in seconds. @default 900 */
   readonly maxTtl?: number | undefined;
-  /**
-   * The pinned verifier/minter contract ({@link import("./Auth.ts").claims}
-   * builds the matching payload). Stands in for `issuers`, `aud` and
-   * `maxTtl`.
-   */
   readonly jwt?: AuthConfig | undefined;
-  /** Origins the server answers CORS for. */
   readonly allowedOrigins?: readonly string[] | AuthEnvValue | undefined;
 }
 
-/** @internal The public spelling is the argument of {@link Server}. */
 export type ServerProps = {
-  /**
-   * Escape hatch: a user-owned Worker (operations registry, extra bindings).
-   * Validated at deploy (STORE / TRANSACTOR / REPLICA, DO class names, `main`).
-   * Omit it and Server declares the peer.
-   */
   worker?: ServerWorker;
-  /** R2 bucket, or the logical id to declare. @default `"Store"` */
   storage?: PeerStorage;
-  /** Peer entry. Defaults to `ramose/worker`. A `createServer({ operations })` module goes here. */
   main?: string;
-  /** Extra env bindings on the owned Worker (ANALYTICS, AUTH, tuning, …). */
   env?: Record<string, unknown>;
-  /** Physical Worker name override. */
   name?: string;
-  /** Local-dev port for the owned peer. */
   dev?: { readonly port?: number };
-  /** Alchemy logical id of the owned Worker. @default `"Peer"` */
   peer?: string;
-  /** Zone routes on the owned Worker (`/db/*` on a custom hostname). */
   routes?: PeerRoute[];
-  /** Override the URL resolved from `worker` — a custom domain, say. */
   url?: string;
-  /**
-   * Source of truth for Worker auth env. Owned form applies it; hatch
-   * form compares it and fails the deploy on divergence.
-   */
   auth?: ServerAuth;
-  /**
-   * Liveness probe before anything binds to the URL; `false` skips it.
-   */
   probe?: ServerProbe | false;
 };
 
-/**
- * @internal Env keys the auth fields lower onto. Values are `keyof RamoseEnv`.
- */
 export const AUTH_ENV_KEYS = {
   jwksUrl: "RAMOSE_JWKS_URL",
   jwksJson: "RAMOSE_JWKS_JSON",
@@ -222,11 +129,6 @@ const list = (value: unknown): unknown => {
   return value;
 };
 
-/**
- * @internal The server Worker's auth env, as bindings. Unset fields emit no
- * key. Output / Effect values pass through (Reef's JWKS URL and origins).
- * The Worker-to-DO capability is owned separately by the peer declaration.
- */
 const bindAuthFields = (
   peerAuth: ServerAuth | undefined,
 ): Record<string, unknown> => {
@@ -247,17 +149,10 @@ const bindAuthFields = (
   return env;
 };
 
-/**
- * @internal The server Worker's auth env, as bindings. Unset fields emit no
- * key.
- */
 export const authEnv = (
   peerAuth: ServerAuth | undefined,
 ): Record<string, unknown> => bindAuthFields(peerAuth);
 
-/**
- * @internal Completeness: `maxTtl` must be a positive number of seconds.
- */
 export const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined => {
   if (peerAuth === undefined) return undefined;
   const auth = withAuthConfig(peerAuth);
@@ -297,10 +192,6 @@ const sameBinding = (expected: unknown, actual: unknown): boolean => {
   return normalizeBinding(a) === normalizeBinding(b);
 };
 
-/**
- * @internal Hatch form: `auth` must match the Worker env.
- * URL workers have no env and are skipped.
- */
 export const compareAuthToWorker = (
   peerAuth: ServerAuth | undefined,
   worker: unknown,
@@ -328,9 +219,7 @@ export type Server = Resource<
   "Ramose.Server",
   ServerProps,
   {
-    /** Base URL, no trailing slash. */
     url: string;
-    /** The server Worker's script name, or `""` when it was given as a URL. */
     workerName: string;
   },
   never,
@@ -339,25 +228,10 @@ export type Server = Resource<
 
 const ServerResource = Resource<Server>("Ramose.Server");
 
-/**
- * Declare a Ramose server.
- *
- * Without `worker`, Server declares the peer (R2, both DO classes, the
- * Worker, {@link import("./peer.ts").PEER_COMPAT}, fixed bindings) and
- * applies `auth` onto its env. With `worker`, that
- * form is validated — bindings (including version metadata), compatibility,
- * DO classes, `main`, and `auth`
- * against the Worker env — and kept as the escape hatch.
- */
 const ownedPeers = new WeakSet<object>();
 
 export const Server = Object.assign(
   (id: string, props: InputProps<ServerProps>) => {
-    // Durable Object declarations must be created here — at the stack
-    // module's `Ramose.Server(…)` call — so Alchemy registers them as
-    // top-level `TransactorDO` / `QueryReplicaDO` resources. Creating
-    // them inside `Worker({ env })` nests them as `[Worker/TRANSACTOR]`
-    // bindings and never gives the namespaces their own logical ids.
     const durableObjects =
       props.worker === undefined ? ownedPeerDurableObjects() : undefined;
     return ServerResource(
@@ -390,7 +264,6 @@ export const Server = Object.assign(
   ServerResource,
 ) as typeof ServerResource;
 
-/** @internal `{ url, workerName }` out of whichever Worker form was given. */
 export const resolveWorker = (
   worker: ServerWorker,
 ): { url: string | undefined; workerName: string } => {
@@ -402,16 +275,6 @@ export const resolveWorker = (
   return { url: resolved?.url, workerName: resolved?.workerName ?? "" };
 };
 
-/**
- * @internal One `GET {url}/health`; a non-2xx is a failure so the retry policy
- * sees it, and so is silence past `timeoutMs`.
- *
- * The timeout is the load-bearing part. `fetch` has no deadline of its own, so
- * a socket that completes its TCP handshake and then answers nothing — a local
- * Worker whose bundle never landed, a hung isolate — parks the whole deploy on
- * one unresolved promise. Bounding the attempt turns that into an ordinary
- * failure the ladder can retry and, eventually, report.
- */
 export const healthOnce = (url: string, timeoutMs: number) =>
   Effect.tryPromise({
     try: (signal) => fetch(`${trimSlashes(url)}/health`, { method: "GET", signal }),
@@ -443,9 +306,6 @@ export const healthOnce = (url: string, timeoutMs: number) =>
     }),
   );
 
-/**
- * @internal Probe the server, with retries.
- */
 export const probeHealth = (
   url: string,
   probe: ServerProbe | false | undefined,
@@ -514,31 +374,12 @@ const ProviderLive = () =>
       return yield* attributes(news, PROBE_DEFAULTS.live);
     }),
     read: Effect.fn(function* ({ output }) {
-      // Virtual: the persisted state row is the source of truth.
       return output ?? undefined;
     }),
     delete: Effect.fn(function* () {
-      // Ramose databases are append-only and immutable; destroying the
-      // resource forgets the *server*, it does not erase any log, the segments
-      // in R2, or the Durable Objects. Deleting the data is a separate,
-      // deliberate act (empty the bucket, delete the DO namespaces).
     }),
   });
 
-/**
- * @internal Local provider (`alchemy dev`): the same attributes, and the same
- * probe on a tighter ladder.
- *
- * It used to skip the probe on the reasoning that a local Worker the engine
- * already ordered us after must be up. It need not be. `alchemy dev` binds the
- * Worker's proxy port and logs "ready" before the first bundle is served, so a
- * peer whose bundle never lands — a `main` the bundler cannot resolve, a syntax
- * error in user code — leaves a socket that accepts connections and answers
- * nothing. Skipping the probe here handed that server to `Ramose.Database`,
- * whose install then blocked on an unresolvable `fetch` until the run was torn
- * down and printed a bare `fail` with no reason. Probing puts the failure on
- * the resource that owns the URL, with the URL in the message.
- */
 const ProviderLocal = () =>
   Provider.succeed(Server, {
     reconcile: Effect.fn(function* ({ news }) {
@@ -550,11 +391,6 @@ const ProviderLocal = () =>
     delete: Effect.fn(function* () {}),
   });
 
-/** @internal Registered by `providers()`. */
-// Kept as a zero-argument factory rather than a bare Layer value: as a
-// value the whole provider graph would be constructed at module load,
-// on every import, instead of when a stack actually asks for it. It is
-// also the shape alchemy uses in every provider package it ships.
 // @effect-diagnostics-next-line lazyEffect:off
 export const ServerProvider = () =>
   ProviderLayer.dual(Server, {

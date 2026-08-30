@@ -1,20 +1,3 @@
-/**
- * Pull: declarative, nested entity projection.
- *
- *   [*]                                     every attribute (+ :db/id); refs as {:db/id n}
- *   [:user/name :user/email]                selected attributes
- *   [{:user/friends [:user/name]}]          nested pull through refs
- *   [:user/_friends]                        reverse refs (entities pointing here)
- *   [(:user/name :as "name") (limit :user/friends 5) (default :user/age 0)]
- *   [{:user/friends ...}]                    recursive (cycle-safe), or a depth number
- *
- * A cardinality-many attribute (forward ref, backlink or scalar) may also
- * carry `where` / `order` / `offset` / `limit` — see {@link PullElemPred}.
- * They run in that order, on the collection only: a nested collection that
- * filters to nothing is omitted (or takes its `default`); it never removes the
- * entity the pull is rooted at, so an outer `:limit` still returns its rows.
- */
-
 import { type Datom, Index, ValueTag } from "../datom.ts";
 import { Db, datomJsValue } from "../db.ts";
 import type { PullAttrSpec, PullElemOp, PullElemOrder, PullElemPred, PullPattern } from "./ast.ts";
@@ -43,9 +26,6 @@ export async function pullMany(
 function normalizePattern(p: PullPattern | string | unknown[]): PullPattern {
   if (typeof p === "string") return parsePullPattern(p);
   if (Array.isArray(p) && p.length > 0 && typeof p[0] === "object" && p[0] !== null && "kind" in (p[0] as any)) {
-    // already-lowered AST: still parse a `sub` that is not itself a pattern
-    // (`["*"]` from `ref.select(all(N))`). Re-parsing a parsed wildcard
-    // (`{kind: "wildcard"}`) would fail, so leave those alone.
     return (p as PullPattern).map((spec) => {
       if (spec.kind !== "attr" || spec.sub === undefined || !subNeedsParse(spec.sub)) {
         return spec;
@@ -56,7 +36,6 @@ function normalizePattern(p: PullPattern | string | unknown[]): PullPattern {
   return parsePullPattern(p);
 }
 
-/** `["*"]` / ident strings / maps still need `parsePullPattern`; a kinded spec does not. */
 const subNeedsParse = (sub: unknown): boolean =>
   !Array.isArray(sub) ||
   sub.some(
@@ -103,11 +82,10 @@ async function pullOne(
       continue;
     }
     const attr = db.attr(spec.attr);
-    if (!attr) continue; // unknown attribute → omitted (Datomic throws; be lenient)
+    if (!attr) continue;
     const outName = spec.as ?? (spec.reverse ? reverseName(spec.attr) : spec.attr);
-    const limit = spec.limit === undefined ? DEFAULT_LIMIT : spec.limit; // null → unlimited
+    const limit = spec.limit === undefined ? DEFAULT_LIMIT : spec.limit;
 
-    // recursion handling
     let subPattern: PullPattern | undefined = spec.sub;
     let nextDepth = depthLeft;
     if (spec.recursion !== undefined) {
@@ -128,13 +106,9 @@ async function pullOne(
         subPattern = pattern;
       }
       if (spec.recursion !== "..." && subPattern === undefined) {
-        // depth exhausted: emit refs as {:db/id}
       }
     }
 
-    // Collect the whole collection first, then filter → order → offset →
-    // limit, and only then resolve the survivors: `limit` must count the
-    // elements `where`/`order` kept, not the head of the index.
     let elems: Elem[];
     let cardMany: boolean;
     if (!spec.reverse) {
@@ -185,22 +159,12 @@ async function pullOne(
   return res;
 }
 
-// --- nested collections: where / order --------------------------------------
-
-/**
- * One element of a cardinality-many collection, before it is resolved into the
- * pull result: the datom it came from, the entity `where`/`order` paths walk
- * from (a ref target, or the referring entity of a backlink), and the value a
- * zero-length path compares — the scalar itself, or the entity id for a ref.
- */
 interface Elem {
-  /** absent on a sub-element a quantifier's path reached, which is no datom */
   datom?: Datom;
   eid?: number;
   value: unknown;
 }
 
-/** `op(elementValue, spec.value)` for every operator that takes an operand. */
 const ELEM_OPS: Record<Exclude<PullElemOp, "exists" | "missing">, (v: unknown, arg: unknown) => boolean> = {
   "=": (v, x) => vkey(v) === vkey(x),
   "!=": (v, x) => vkey(v) !== vkey(x),
@@ -212,16 +176,10 @@ const ELEM_OPS: Record<Exclude<PullElemOp, "exists" | "missing">, (v: unknown, a
   "starts-with?": (v, x) => PREDICATES["starts-with?"](v, x) as boolean,
   "ends-with?": (v, x) => PREDICATES["ends-with?"](v, x) as boolean,
   "includes?": (v, x) => PREDICATES["includes?"](v, x) as boolean,
-  // the engine's regex predicates take the pattern first
   "re-find?": (v, x) => PREDICATES["re-find?"](x, v) as boolean,
   "re-matches?": (v, x) => PREDICATES["re-matches?"](x, v) as boolean,
 };
 
-/**
- * Every value `path` reaches from `el`. An empty path is the element itself; a
- * hop that lands on several values fans out (so a predicate over the result is
- * existential), and `:db/id` is the current entity id.
- */
 async function elemValues(db: Db, el: Elem, path: readonly string[], reverse: readonly boolean[] | undefined): Promise<unknown[]> {
   if (path.length === 0) return el.value === undefined || el.value === null ? [] : [el.value];
   let current: unknown[] = el.eid === undefined ? [] : [el.eid];
@@ -248,11 +206,6 @@ async function elemValues(db: Db, el: Elem, path: readonly string[], reverse: re
   return current;
 }
 
-/**
- * The elements one quantified hop reaches, each as an element in its own
- * right: an entity when the hop lands on refs (so the sub-predicate can walk
- * on), the value itself when it lands on scalars (so `path: []` compares it).
- */
 async function elemsAt(db: Db, el: Elem, path: readonly string[], reverse: readonly boolean[] | undefined): Promise<Elem[]> {
   const vals = await elemValues(db, el, path, reverse);
   const last = path.length - 1;
@@ -272,7 +225,6 @@ async function testElem(db: Db, el: Elem, p: PullElemPred): Promise<boolean> {
   }
   if ("not" in p) return !(await testElem(db, el, p.not));
   if ("every" in p) {
-    // no reached element fails — and nothing fails when nothing is reached
     for (const sub of await elemsAt(db, el, p.every.path, p.every.reverse)) {
       if (!(await testElem(db, sub, p.every.pred))) return false;
     }
@@ -301,7 +253,6 @@ async function filterElems(db: Db, elems: Elem[], where: readonly PullElemPred[]
   return out;
 }
 
-/** Sort by the same rules as the query's `:order` — see {@link sortRows}. */
 async function orderElems(db: Db, elems: Elem[], order: readonly PullElemOrder[]): Promise<Elem[]> {
   const rows: unknown[][] = [];
   for (let i = 0; i < elems.length; i++) {
@@ -329,7 +280,7 @@ async function refOrValue(
   if (d.vt !== ValueTag.Ref) return datomJsValue(d);
   const target = d.v as number;
   if (!sub) return { ":db/id": target };
-  if (recursive && path.has(target)) return { ":db/id": target }; // cycle
+  if (recursive && path.has(target)) return { ":db/id": target };
   const r = await pullOne(db, target, sub, cache, path, depth);
   return r ?? { ":db/id": target };
 }

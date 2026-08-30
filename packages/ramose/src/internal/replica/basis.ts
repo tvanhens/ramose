@@ -1,9 +1,3 @@
-/**
- * Basis: what a peer needs to build a `Db` value without talking to the
- * Transactor — the current root record plus the novelty since that root.
- * Served by QueryReplica DOs (`GET /basis`), consumed by Workers.
- */
-
 import {
   Db,
   type LogEntry,
@@ -21,14 +15,10 @@ import { recordToRoots } from "../storage/index.ts";
 
 export interface Basis {
   v: 1;
-  /** logical database name */
   db: string;
-  /** basis t = last novelty t (or root.t) */
   t: number;
   root: RootRecord;
-  /** transactions with t > root.t, ascending */
   novelty: NoveltyFrameV1[];
-  /** replica id that served this basis */
   replica?: string;
 }
 
@@ -37,10 +27,8 @@ export function makeBasis(db: string, root: RootRecord, entries: readonly LogEnt
   return { v: 1, db, t, root, novelty: entries.map(txFrame), ...(replica !== undefined && { replica }) };
 }
 
-/** Per-isolate cache of derived schemas keyed by root (EAVT hash). */
 const schemaCache = new Map<string, Promise<Schema>>();
 
-/** Build an immutable Db value from a basis over the given segment source. */
 export async function dbFromBasis(store: NodeSource, basis: Basis, opts: { asOf?: number; history?: boolean } = {}): Promise<Db> {
   const roots: Roots = recordToRoots(basis.root);
   const key = roots.eavt.hash;
@@ -48,7 +36,6 @@ export async function dbFromBasis(store: NodeSource, basis: Basis, opts: { asOf?
   if (!sp) {
     sp = deriveSchema(store, roots);
     schemaCache.set(key, sp);
-    // never cache a failure (a transient read error would poison every db sharing this root hash)
     sp.catch(() => schemaCache.delete(key));
     if (schemaCache.size > 32) schemaCache.delete(schemaCache.keys().next().value as string);
   }

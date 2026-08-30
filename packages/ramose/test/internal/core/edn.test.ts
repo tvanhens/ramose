@@ -22,7 +22,7 @@ describe("edn reader", () => {
     expect(readEdn('#uuid "123E4567-E89B-12D3-A456-426614174000"')).toEqual({ vt: ValueTag.Uuid, v: "123e4567-e89b-12d3-a456-426614174000" });
     expect(readEdn("[1 ; comment\n 2]")).toEqual([1, 2]);
     expect(readEdn("[#_ 1 2]")).toEqual([2]);
-    // strings that look like symbols are protected
+
     const c = readEdn('"?notavar"');
     expect(c).toBeInstanceOf(EdnConst);
     expect((c as EdnConst).value).toBe("?notavar");

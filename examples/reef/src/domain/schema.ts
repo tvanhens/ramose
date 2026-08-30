@@ -1,16 +1,5 @@
-/**
- * Reef — the catalog one workspace runs on.
- *
- * Every workspace is its own Ramose database (`ramose.db(slug, Reef)`), so
- * this catalog is installed once per workspace at creation time, from the
- * browser, under the creator's owner-class JWT. Refs are targeted
- * (`Ramose.Ref(User)`) so navigational queries can join through them
- * (`Issue.assignee.name`).
- */
-
 import * as Ramose from "ramose/db";
 
-/** One row per human who has entered the workspace. `sub` is the JWT subject. */
 // docs:user-entity
 export const User = Ramose.Entity("user", {
   sub: Ramose.Field.unique(Ramose.string(), "upsert", {
@@ -43,13 +32,13 @@ export const Issue = Ramose.Entity("issue", {
   description: Ramose.string({ optional: true }),
   status: Ramose.Enum(["backlog", "todo", "doing", "done"]),
   priority: Ramose.Enum(["none", "low", "medium", "high", "urgent"]),
-  /** Fractional order inside a column; drag-and-drop writes midpoints. */
+
   rank: Ramose.float(),
   createdAt: Ramose.timestamp(),
   creator: Ramose.Ref(User),
   assignee: Ramose.Ref(User, { optional: true }),
   labels: Ramose.Field.many(Ramose.Ref(Label)),
-  /** Owner-only field — the policy narrows its `read` (see policy.ts). */
+
   privateNote: Ramose.string({
     optional: true,
     doc: "visible to the owner class only",
@@ -75,8 +64,6 @@ export type Reef = typeof Reef;
 
 export type Status = Ramose.ValueOf<typeof Issue.status>;
 export type Priority = Ramose.ValueOf<typeof Issue.priority>;
-
-// ── shared vocabulary ────────────────────────────────────────────────────────
 
 export const STATUS_LABELS: Record<Status, string> = {
   backlog: "Backlog",

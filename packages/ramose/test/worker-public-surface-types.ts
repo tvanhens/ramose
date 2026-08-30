@@ -1,5 +1,3 @@
-/** Typechecked as an external consumer: no `src/internal` import is required. */
-
 import * as Effect from "effect/Effect";
 import { Catalog, Policy } from "ramose";
 import { Schema } from "ramose/db";

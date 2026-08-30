@@ -1,14 +1,3 @@
-/**
- * Server-owned concrete database bindings for configured roots and dynamic
- * Graph children.
- *
- * The immutable definition registry is reusable code. A binding resolver owns
- * the separate `DatabaseId -> DeployedCatalog` decision for concrete storage.
- * Dynamic child identity depends only on the sealed parent route and stable
- * graph entity id; readable names never enter storage identity. Callers cannot
- * manufacture a route or supply an independently pairable unit hash.
- */
-
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -36,34 +25,22 @@ const DatabaseCatalogBindingsTypeId: unique symbol = Symbol(
   "ramose/internal/DatabaseCatalogBindings",
 );
 
-/**
- * Opaque server-owned pairing consumed by database acquisition and request
- * authorization. The private symbol prevents ordinary structural creation;
- * runtime provenance is checked as well.
- */
 export interface ResolvedDatabaseRoute {
   readonly [ResolvedDatabaseRouteTypeId]: typeof ResolvedDatabaseRouteTypeId;
   readonly database: DatabaseId;
   readonly deployed: DeployedCatalog;
 }
 
-/** Protected Graph-row inputs after the caller's path segment was authorized. */
 export type DynamicGraphBinding = {
   readonly graphEntity: number;
   readonly catalogKey: CatalogId;
 };
 
-/**
- * Server-to-server recipe for deterministically recovering one resolved
- * route. It is produced only after filtered Graph-path authorization and is
- * never accepted from an external request or exposed to operation code.
- */
 export type DatabaseRouteDerivation = {
   readonly rootDatabase: DatabaseId;
   readonly graphs: readonly DynamicGraphBinding[];
 };
 
-/** Reachable code did not deploy the Graph row's protected permanent key. */
 export class DynamicCatalogDefinitionMissing extends Data.TaggedError(
   "DynamicCatalogDefinitionMissing",
 )<{
@@ -72,7 +49,6 @@ export class DynamicCatalogDefinitionMissing extends Data.TaggedError(
   readonly catalogKey: CatalogId;
 }> {}
 
-/** One derived concrete database was already sealed to a different source/unit. */
 export class DatabaseCatalogBindingConflict extends Data.TaggedError(
   "DatabaseCatalogBindingConflict",
 )<{
@@ -83,12 +59,10 @@ export class DatabaseCatalogBindingConflict extends Data.TaggedError(
   readonly actualUnitHash: CatalogUnitHash;
 }> {}
 
-/** A forged, stale, or foreign route reached a concrete acquisition boundary. */
 export class InvalidResolvedDatabaseRoute extends Data.TaggedError(
   "InvalidResolvedDatabaseRoute",
 )<{ readonly message: string }> {}
 
-/** The Graph identity cannot name an application entity. */
 export class InvalidDynamicGraphIdentity extends Data.TaggedError(
   "InvalidDynamicGraphIdentity",
 )<{ readonly graphEntity: number }> {}
@@ -100,18 +74,15 @@ export type DynamicDatabaseBindingFailure =
   | InvalidDynamicGraphIdentity
   | InvalidIR;
 
-/** External graph routing collapses every internal binding diagnostic. */
 export const opaqueDatabaseBindingDenial = (
   _error: DynamicDatabaseBindingFailure | CatalogMismatch,
 ): Unauthorized => new Unauthorized({});
 
 export interface DatabaseCatalogBindings {
   readonly [DatabaseCatalogBindingsTypeId]: typeof DatabaseCatalogBindingsTypeId;
-  /** Resolve only a configured deployment root. Dynamic ids are not roots. */
   readonly root: (
     database: DatabaseId,
   ) => Result.Result<ResolvedDatabaseRoute, CatalogMismatch>;
-  /** Seal the child database/unit derived from one authorized Graph row. */
   readonly child: (
     parent: ResolvedDatabaseRoute,
     graph: DynamicGraphBinding,
@@ -214,10 +185,6 @@ const boundRoute = (
     return routed;
   });
 
-/**
- * Stable, valid Cloudflare storage identity. The complete SHA-256 hex digest
- * fits the existing 64-character database-name contract without truncation.
- */
 export const deriveDynamicChildDatabaseId = Effect.fn(
   "Authorization.deriveDynamicChildDatabaseId",
 )(function* (
@@ -237,11 +204,6 @@ export const deriveDynamicChildDatabaseId = Effect.fn(
   return DatabaseIdSchema.make(digest);
 });
 
-/**
- * Build the concrete binding capability from definitions and the configured
- * root deployment. Neither registry is mutated; dynamic bindings live only in
- * this server-owned resolver and are deterministically recoverable.
- */
 export const deployDatabaseCatalogBindings = (
   definitions: CatalogDefinitions,
   roots: DeployedCatalogDefinitions,
@@ -325,7 +287,6 @@ export const deployDatabaseCatalogBindings = (
     return bindings;
   });
 
-/** Validate route provenance and recover its exact private runnable definition. */
 export const resolveBoundCatalogDefinition = (
   bindings: DatabaseCatalogBindings,
   route: ResolvedDatabaseRoute,
@@ -335,10 +296,6 @@ export const resolveBoundCatalogDefinition = (
     definition: bound.definition,
   }));
 
-/**
- * The sole concrete acquisition adapter for a resolved route. Validation
- * happens before the caller-provided real database boundary is invoked.
- */
 export const acquireResolvedDatabase = <A, E, R>(
   bindings: DatabaseCatalogBindings,
   route: ResolvedDatabaseRoute,
@@ -349,11 +306,6 @@ export const acquireResolvedDatabase = <A, E, R>(
     return yield* acquire(route.database);
   });
 
-/**
- * Rebuild a server-authorized route inside another trusted isolate (notably a
- * Transactor Durable Object). The recipe carries stable Graph entity ids and
- * protected catalog keys discovered by the Worker; callers cannot submit it.
- */
 export const deriveResolvedDatabaseRoute = Effect.fn(
   "Authorization.deriveResolvedDatabaseRoute",
 )(function* (

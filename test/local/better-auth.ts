@@ -1,5 +1,3 @@
-/** Better Auth token and JWKS contracts against local Workers and D1. */
-
 import { describe, expect, test } from "bun:test";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { json, type LocalUrls } from "./fixtures.ts";

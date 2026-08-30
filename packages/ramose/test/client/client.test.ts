@@ -1,12 +1,3 @@
-/**
- * Client construction, interning and terminality (#477 slice 1).
- *
- * Everything asserted here is deliberately reachable with no browser at all:
- * that is the point. `createClient` and `open()` must perform no storage,
- * network, authorization, or query work, so they run in an ordinary process
- * where `indexedDB` and the server both simply do not exist.
- */
-
 import { describe, expect, test } from "bun:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,9 +34,7 @@ const options = (overrides: Partial<ClientOptions> = {}): ClientOptions => ({
 describe("createClient", () => {
   test("binds one origin, root, catalog and auth provider, inertly", () => {
     const client = createClient(options());
-    // Nothing was opened, fetched or hashed: the process has no `indexedDB`
-    // and no server, and constructing a client and its root handle is still
-    // total.
+
     expect(client.sync.getSnapshot().status).toBe("idle");
     expect(typeof client.open().query.from).toBe("function");
     expect(client.sync.getSnapshot().status).toBe("idle");
@@ -55,8 +44,7 @@ describe("createClient", () => {
     const client = createClient(options());
     const root = client.open();
     expect(client.open()).toBe(root);
-    // The root route is configuration, so `open` takes nothing that could
-    // select another database.
+
     expect(client.open.length).toBe(0);
   });
 
@@ -75,7 +63,7 @@ describe("createClient", () => {
       .toThrow(ClientConfigurationError);
     expect(() => createClient(options({ auth: undefined as never })))
       .toThrow(ClientConfigurationError);
-    // localhost is the one non-HTTPS origin a client may bind.
+
     expect(() => createClient(options({ url: "http://localhost:1337" }))).not.toThrow();
   });
 
@@ -83,7 +71,7 @@ describe("createClient", () => {
     const client = createClient(options());
     const db = client.open();
     const query = db.query.from(Note).where({ title: "offline" });
-    // The portable language, unchanged: an inert value, not a client DSL.
+
     expect(typeof query.orderBy).toBe("function");
     expect(client.sync.getSnapshot().status).toBe("idle");
   });
@@ -91,11 +79,7 @@ describe("createClient", () => {
 
 describe("the ramose/client bundle", () => {
   test("bundles for browsers without the deploy engine", async () => {
-    // `client.ts`, not the barrel: the barrel is re-exports, and bundling it
-    // emits a hundred-byte stub that would pass this assertion with the deploy
-    // engine sitting one import away. This is the module that actually pulls
-    // the client's whole graph — the catalog install, the replication session,
-    // the storage, the query engine.
+
     const built = await Bun.build({
       entrypoints: [resolve(dirname(fileURLToPath(import.meta.url)), "../../src/client/client.ts")],
       target: "browser",
@@ -103,11 +87,9 @@ describe("the ramose/client bundle", () => {
     });
     expect(built.success).toBe(true);
     const bundle = await built.outputs[0]!.text();
-    // Proof that the graph is really in here, so the assertion below is about
-    // what the bundle contains rather than about how little of it was built.
+
     expect(bundle.length).toBeGreaterThan(200_000);
-    // The client is a browser package: Alchemy, the peer Worker, and the
-    // Cloudflare bindings must not be reachable from it.
+
     expect(bundle).not.toContain("alchemy");
   });
 });
@@ -124,20 +106,19 @@ describe("queryObservationKey", () => {
     const base = db.query.from(Note).orderBy(Note.title);
     const keys = [
       queryObservationKey(base),
-      // Same `limit: 1` on the wire, a row rather than an array in the answer.
+
       queryObservationKey(base.limit(1)),
       queryObservationKey(base.one()),
       queryObservationKey(base.oneOrFail()),
-      // Same `:find` on the wire, a page rather than an array in the answer.
+
       queryObservationKey(base.after(null)),
       queryObservationKey(db.query.from(Note).orderBy(Note.title).where({ title: "a" })),
       queryObservationKey(base.select({ title: Note.title })),
-      // Same `:find` on the wire, a different output key in the answer.
+
       queryObservationKey(base.select({ heading: Note.title })),
-      // Same pull pattern on the wire; optionality is enforced client-side, so
-      // one of these drops a row where the other reports `undefined`.
+
       queryObservationKey(base.select({ title: Note.title.optional })),
-      // The whole-entity default row is itself a top-level pull.
+
       queryObservationKey(db.query.from(Note)),
       queryObservationKey(db.query.from(Note).ids()),
     ];
@@ -160,13 +141,11 @@ describe("terminality", () => {
   test("clearLocalData() refuses a scope no response ever confirmed", async () => {
     const client = createClient(options());
 
-    // No storage and no server: nothing has confirmed a server/principal scope
-    // this client could name, so it deletes nothing and says why.
     await expect(client.clearLocalData()).rejects.toThrow(ClientLocalDataError);
     await expect(client.clearLocalData()).rejects.toMatchObject({
       reason: "no-confirmed-scope",
     });
-    // A refused clear is not terminal: the client is exactly as it was.
+
     expect(() => client.open()).not.toThrow();
   });
 });

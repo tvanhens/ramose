@@ -1,58 +1,9 @@
-/**
- * Tagged failures for the Ramose database capabilities — the one shared
- * error module. The peer Worker and the Transactor import the public
- * classes from here (`Unauthorized`, `OperationRejected`,
- * `QueryBudgetExceeded`, `TxRejected`) instead of declaring a second copy.
- * Worker-only HTTP tags (`NotFound`, `BadRequest`, `Internal`,
- * `UpstreamError`) and the transactor-internal `TransactorDead` stay at
- * those boundaries and map onto this union on the way out.
- *
- * Boundaries preserve the class itself: `_tag` intact, `instanceof` works,
- * and `.name` / `.message` remain stable. `isDatabaseError` guards the union.
- *
- * ## `DbError` — nine request errors
- *
- * Members are named for the condition they report (`TxRejected`,
- * `Unavailable`, `Unauthorized`, `OperationRejected`, `InvalidRequest`,
- * `DatabaseNotFound`, `QueryBudgetExceeded`). `InternalError` and
- * `NetworkError` keep the `-Error` suffix because the bare words are too
- * generic. That is the convention; do not mix a third pattern into this
- * union.
- *
- * | tag                   | means                                      |
- * | --------------------- | ------------------------------------------ |
- * | `TxRejected`          | write refused by validation / unique / policy (409) |
- * | `Unavailable`         | writer restarting; retry after `retryAfterMs` (503) |
- * | `InvalidRequest`      | malformed request (400)                    |
- * | `DatabaseNotFound`    | no such route (404)                        |
- * | `Unauthorized`        | missing/wrong credential, or a policy denial (401 / 403) |
- * | `QueryBudgetExceeded` | planner memory budget (413)                |
- * | `InternalError`       | anything else the server reported (500)    |
- * | `NetworkError`        | the request never produced a response      |
- * | `OperationRejected`   | named operation refused (409)              |
- *
- * Not in this union: {@link NotOne} (`.oneOrFail()` cardinality),
- * {@link IncompatibleSchema} (`install()` refused a data-model split).
- * A runtime authorization denial is {@link Unauthorized}. A query that
- * cannot lower is {@link InvalidRequest}.
- *
- * Wire shapes the classifier understands:
- *
- *   worker's own errors      { error, code?, clause?, cells?, limit?, stack? }   (no `tag`)
- *   DO errors passed through { error, tag, message, code?, retryAfterMs? }
- *
- * `NetworkError` is the only failure with no server side: the request never
- * produced a response (DNS, service binding down, aborted body).
- * `TransactorDead` on the wire becomes {@link Unavailable} here.
- */
-
 import * as Data from "effect/Data";
 
 /** A transaction was rejected by validation / tempid / unique / policy (409). */
 export class TxRejected extends Data.TaggedError("TxRejected")<{
   readonly message: string;
   readonly code: string;
-  /** Field ident a policy denial tripped on — never the value. */
   readonly attr?: string;
 }> {}
 
@@ -80,7 +31,6 @@ export class DatabaseNotFound extends Data.TaggedError("DatabaseNotFound")<{
  */
 export class Unauthorized extends Data.TaggedError("Unauthorized")<{
   readonly message?: string;
-  /** 403 when the caller is known but the policy refused; omit for 401. */
   readonly status?: 401 | 403;
   readonly code?: string;
   readonly attr?: string;
@@ -107,12 +57,10 @@ export class InternalError extends Data.TaggedError("InternalError")<{
   readonly message: string;
 }> {}
 
-/** The request never produced a response during deploy-time server setup. */
 export class NetworkError extends Data.TaggedError("NetworkError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
-
 
 /**
  * `.oneOrFail()` promised exactly one row and the peer answered zero or two
@@ -136,7 +84,6 @@ export class NotOne extends Data.TaggedError("NotOne")<{
  */
 export class OperationRejected extends Data.TaggedError("OperationRejected")<{
   readonly message: string;
-  /** The operation id (`user/create`). Not `Error.name` — that stays the tag. */
   readonly operation: string;
   readonly step?: string;
   readonly reason?: string;
@@ -151,7 +98,6 @@ export class OperationsCoverageError extends Data.TaggedError(
   "OperationsCoverageError",
 )<{
   readonly message: string;
-  /** Wire ids the client ships that the peer did not register. */
   readonly missing: readonly string[];
 }> {}
 
@@ -183,7 +129,6 @@ export const isDatabaseError = (value: unknown): value is DbError =>
   value !== null &&
   TAGS.has((value as { _tag?: string })._tag ?? "");
 
-/** Minimal read-only view of the response headers (`Headers`, or a plain map in tests). */
 export interface HeaderLike {
   get(name: string): string | null;
 }
@@ -194,21 +139,12 @@ const str = (value: unknown, fallback: string): string =>
 const num = (value: unknown, fallback: number): number =>
   typeof value === "number" && Number.isFinite(value) ? value : fallback;
 
-/** An optional string field: absent stays absent, never `""`. */
 const opt = (
   key: string,
   value: unknown,
 ): Record<string, string> =>
   typeof value === "string" && value.length > 0 ? { [key]: value } : {};
 
-/**
- * Classify a non-2xx response into a tagged failure.
- *
- * The `tag` field (present only on errors the Transactor/QueryReplica DOs
- * produced and the peer passed through verbatim) wins over the status code,
- * because it is the stable discriminator; the peer's own errors carry no tag
- * and are classified by status.
- */
 export const fromResponse = (
   status: number,
   body: unknown,
@@ -269,9 +205,6 @@ export const fromResponse = (
       return new InvalidRequest({ message });
     case 401:
     case 403:
-      // `{ error, code: "policy", attr: ":doc/owner" }` surfaces typed.
-      // Keep `status` so `errorToHttp` can round-trip a 403 that is not
-      // `code: "policy"` (an admin-only route, a known caller refused).
       return new Unauthorized({
         message,
         status,
@@ -279,9 +212,6 @@ export const fromResponse = (
         ...opt("attr", b.attr),
       });
     case 404:
-      // Application misses are JSON `{ error }`. Cloudflare's workers.dev
-      // miss is an HTML "Page not found" — treat as Unavailable so callers
-      // (and {@link send}'s retries) can wait it out under parallel CI.
       if (isCloudflarePlatform(message)) {
         return new Unavailable({
           message: "ramose: workers.dev edge returned HTML 404 (transient)",
@@ -311,9 +241,6 @@ export const fromResponse = (
         retryAfterMs: num(b.retryAfterMs, Number(headers?.get("retry-after") ?? 0) * 1000 || 0),
       });
     default:
-      // 1042 / 1104 / "Worker not found" / "Handler does not export a fetch()
-      // function." from a fresh workers.dev host or a Durable Object
-      // namespace that has not finished converging on the new deploy yet.
       if (
         isCloudflarePlatform(message) ||
         /Worker not found|Handler does not export a fetch/i.test(message)

@@ -1,5 +1,3 @@
-/** Browser transport primitives for the versioned replication stream. */
-
 import * as Result from "effect/Result";
 import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import { localDigest } from "./digest.ts";
@@ -36,15 +34,6 @@ export class ReplicationTransportError extends Error {
   override readonly name: string = "ReplicationTransportError";
 }
 
-/**
- * The server refused the credential.
- *
- * Distinct from every other transport failure on purpose: an unreachable server
- * says nothing about authorization and leaves a confirmed replica readable,
- * while a refusal is the server's own answer and must fence the partition that
- * credential used to open. Without the distinction, a revoked or expired
- * principal keeps reading its cached rows indefinitely.
- */
 export class ReplicationUnauthorizedError extends ReplicationTransportError {
   override readonly name = "ReplicationUnauthorizedError";
 }
@@ -56,7 +45,6 @@ const fail = (message: string): never => {
 const localhost = (url: URL): boolean =>
   url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
 
-/** Canonicalize every client-selected dimension of one activation. */
 export const replicationActivationAddress = (
   input: ReplicationActivationInput,
 ): ReplicationActivationAddress => {
@@ -86,12 +74,6 @@ export const replicationActivationAddress = (
   });
 };
 
-/**
- * Full SHA-256 binding for an exact credential, server scope, and stable local
- * route slot. Mutable path text is not part of the material, so renaming a
- * Graph the client has already confirmed keeps the same exact binding. The raw
- * credential is used only as digest input and is never returned or persisted.
- */
 export const replicationCredentialFingerprint = async (
   credential: string,
   activation: ReplicationActivationAddress,
@@ -106,11 +88,6 @@ export const replicationCredentialFingerprint = async (
     },
   });
 
-/**
- * Stable local candidate selector for one account-shaped cache namespace.
- * The raw key is digest input only and route slots remain separate lookup
- * slots, so neither value can become replica authority.
- */
 export const replicationCacheSelector = async (
   cacheKey: string,
   activation: ReplicationActivationAddress,
@@ -129,7 +106,6 @@ export type OpenReplicationInput = {
   readonly signal: AbortSignal;
 };
 
-/** Open only the production endpoint; redirects cannot receive the credential. */
 export const openReplicationResponse = (
   input: OpenReplicationInput,
 ): Promise<Response> => fetch(input.activation.endpoint, {
@@ -190,10 +166,6 @@ const decodeLine = (bytes: Uint8Array): ReplicationFrame => {
   return decoded.success;
 };
 
-/**
- * Decode one newline-terminated frame at a time. The next body read occurs
- * only after the consumer has finished processing the previous frame.
- */
 export async function* readReplicationFrames(
   response: Response,
   signal?: AbortSignal,
@@ -230,7 +202,6 @@ export async function* readReplicationFrames(
       if (terminal === undefined) {
         fail("replication conflict must contain exactly one allowed terminal frame");
       }
-      // Do not expose even the terminal until EOF proves that no data frame follows it.
       yield terminal as ReplicationFrame;
       return;
     }
@@ -239,22 +210,12 @@ export async function* readReplicationFrames(
     try {
       await reader.cancel();
     } catch {
-      // A fetch abort commonly errors the reader before cleanup.
     } finally {
       reader.releaseLock();
     }
   }
 }
 
-/**
- * The real `/op` submission (#475 slice 2).
- *
- * A transport failure is not a status: it becomes `Unreachable`, so the queue
- * holds its head and retries instead of interpreting a network error as an
- * authoritative answer. A body this build cannot parse is reported as an
- * unparsed answer under its real status, and the pure classifier decides — it
- * is never read as a commit.
- */
 export const submitMutation: MutationTransport = async (request, signal) => {
   const { endpoint } = request;
   let response: Response;
@@ -263,8 +224,6 @@ export const submitMutation: MutationTransport = async (request, signal) => {
       `${endpoint.origin}/db/${encodeURIComponent(endpoint.database)}/op`,
       {
         method: "POST",
-        // A redirect must never carry the credential, and an operation is not
-        // idempotent to re-issue at another origin.
         redirect: "error",
         headers: {
           authorization: `Bearer ${endpoint.credential}`,
@@ -287,7 +246,6 @@ export const submitMutation: MutationTransport = async (request, signal) => {
   return { _tag: "Response", status: response.status, body };
 };
 
-/** Pure bounded decoder for arbitrary transport byte chunks. */
 export async function* decodeReplicationNdjson(
   chunks: AsyncIterable<Uint8Array>,
   signal?: AbortSignal,

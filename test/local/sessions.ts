@@ -1,9 +1,3 @@
-/**
- * Replica sessions over the real local Worker, Durable Objects, SQLite, R2,
- * and WebSockets. The `/__test__` upgrade only forwards the real Replica DO
- * session endpoint; every frame and close below comes from that endpoint.
- */
-
 import { describe, expect, test } from "bun:test";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { recordingTransport, type RecordingTransport } from "../support/recorder.ts";

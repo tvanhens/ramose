@@ -1,5 +1,3 @@
-/** Authoritative native execution for deployed owned operations (#417). */
-
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -104,82 +102,30 @@ export type OperationInvocation = {
   readonly unitHash: CatalogUnitHash;
   readonly owner: OwnerRef;
   readonly localName: string;
-  /**
-   * Optional caller expectation: the operation-scoped version this invocation
-   * was minted against (#487). A mismatch with the deployed operation is an
-   * `OperationChanged` outcome with no effect, never a silent execution
-   * against a different contract.
-   */
   readonly operationVersion?: OperationVersion;
   readonly target?: EntityRef;
-  /**
-   * An opaque sealed `EntityId` naming this invocation's target (#475).
-   * Mutually exclusive with {@link OperationInvocation.target}: the
-   * authoritative edge resolves it under {@link entityIdScope} and *replaces*
-   * `target` with the private eid before anything else runs, so every ordinary
-   * visibility, type, and admission check sees a numeric target exactly as it
-   * always did.
-   */
   readonly sealedTarget?: string;
-  /**
-   * The stable `{ server, principal, database }` scope the Worker derived from
-   * the authenticated request. Required to open a sealed target and to seal
-   * allocation mappings; it never comes from the request body.
-   */
   readonly entityIdScope?: EntityIdScope;
-  /**
-   * The sealing key epoch {@link entityIdScope} was derived under.
-   *
-   * Every scope component is a PRF of the durable root, so a handle sealed
-   * under a different epoch but bound to these scope strings could never be
-   * opened again — and the client would already have stored the mapping
-   * durably. The Worker and the writer cache the root in separate isolates, so
-   * a root replacement can leave them briefly disagreeing; the writer compares
-   * this and refuses rather than minting an unopenable handle.
-   */
   readonly entityIdKeyId?: string;
-  /**
-   * The caller's `{ slot, clientRef }` allocation binding, canonically ordered
-   * by slot name. Covered by the canonical invocation digest (#475).
-   */
   readonly allocations?: readonly InvocationAllocation[];
   readonly input: unknown;
   readonly caller: AuthenticatedCaller;
-  /** Trusted Worker-to-Transactor derivation for a nested dynamic database. */
   readonly routeDerivation?: DatabaseRouteDerivation;
 };
 
 export type OperationExecution = {
   readonly report: TxReport;
   readonly output: unknown;
-  /** Private data-only replay exemption captured from the staged dbAfter. */
   readonly replayFence: InvocationReplayFenceV1;
-  /**
-   * The exact `{ slot, clientRef, entityId }` mappings for this invocation's
-   * bound allocation slots, already sealed (#475).
-   *
-   * Read *and sealed* inside the pre-commit validator, so a numeric eid never
-   * leaves this boundary and so a sealing failure aborts the staged
-   * transaction instead of leaving the in-memory writer holding a commit the
-   * durable log will never receive.
-   */
   readonly allocations: readonly SealedAllocationMapping[];
-  /** Private lease fence retained by the serialized Transactor only. */
   readonly assertFresh: () => void;
 };
 
 export type OperationRuntime = {
   readonly catalogs: DeployedCatalogDefinitions;
-  /** Dynamic routes are rebuilt independently inside the Transactor isolate. */
   readonly bindings?: DatabaseCatalogBindings;
   readonly environment: unknown;
   readonly now: () => number;
-  /**
-   * The durable server sealing root, isolate-cached by the runtime that
-   * supplies it. Only invocations that carry a sealed target or bind an
-   * allocation slot ever ask for it, so the ordinary operation path never
-   * pays for the lookup (#475).
-   */
   readonly sealing?: () => Promise<ServerSealingKey>;
 };
 
@@ -190,11 +136,6 @@ export type ResolvedOperationCatalog = {
 
 const OPERATION_ADMISSION: unique symbol = Symbol("ramose.operation-admission");
 
-/**
- * Opaque, request-local proof that the deployed operation, caller, target,
- * input references, and authorization lease passed on the writer's current
- * basis. It contains private runnable capabilities and is never serialized.
- */
 export type CatalogOperationAdmission = {
   readonly [OPERATION_ADMISSION]: {
     readonly connection: Connection;
@@ -211,11 +152,6 @@ export type CatalogOperationAdmission = {
   readonly target?: { readonly eid: number; readonly type: string };
 };
 
-/**
- * Resolve the exact runnable definition before operation admission. Dynamic
- * derivations arrive only over the internal Worker→DO channel and are checked
- * against the final database/key/hash carried by the invocation.
- */
 export const resolveOperationCatalog = Effect.fn(
   "Authorization.resolveOperationCatalog",
 )(function* (
@@ -255,7 +191,6 @@ export const resolveOperationCatalog = Effect.fn(
   return Object.freeze({ deployed, route });
 });
 
-/** Private operation defect: the public HTTP boundary sees only `message`. */
 export class OperationRuntimeFault extends Error {
   readonly stage: string;
   readonly detail: unknown;
@@ -290,7 +225,6 @@ type ReferenceWrite = {
   readonly source: unknown;
   readonly field: FieldDescriptor & { readonly valueType: "ref" };
   readonly target: unknown;
-  /** Adds/updates require a live compatible target; retractions only validate their value codec. */
   readonly requireTarget: boolean;
 };
 
@@ -299,7 +233,6 @@ type DeferredFieldWrite = {
   readonly field: FieldDescriptor;
 };
 
-/** Ordinary typed-helper intent, retained until tempids/lookups resolve. */
 type DeferredSubjectCheck = {
   readonly source: unknown;
   readonly owner: OwnerRef;
@@ -313,7 +246,6 @@ type Collector = {
   readonly subjectChecks: readonly DeferredSubjectCheck[];
 };
 
-/** Opaque denial shared by every authenticated operation-admission failure. */
 export const opaqueOperationDenial = (): Unauthorized =>
   new Unauthorized({ status: 403 });
 
@@ -366,12 +298,6 @@ const bindingFor = (
     descriptorKey(owner, localName)
 );
 
-/**
- * The operation-scoped compatibility version of the currently deployed
- * operation, or `undefined` when this deployment has no such operation.
- * Callers must treat `undefined` as the ordinary sealed denial (#419) — it
- * is the same answer an unauthorized caller gets.
- */
 export const deployedOperationVersion = (
   resolved: ResolvedOperationCatalog,
   owner: OwnerRef,
@@ -379,12 +305,6 @@ export const deployedOperationVersion = (
 ): OperationVersion | undefined =>
   bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.version;
 
-/**
- * The deployed output shape, which is what decides where an operation's result
- * holds entity references (#475). The shape is part of the pinned
- * {@link OperationVersion}, so a receipt this build replays was written against
- * exactly this shape.
- */
 export const deployedOperationOutputShape = (
   resolved: ResolvedOperationCatalog,
   owner: OwnerRef,
@@ -392,13 +312,6 @@ export const deployedOperationOutputShape = (
 ): OperationInputShape | undefined =>
   bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.output;
 
-/**
- * The deployed operation's declared input shape.
- *
- * The authoritative edge needs it before admission, to find the positions a
- * sealed `EntityId` may be opened at (**WR-17**). `undefined` is the same
- * sealed denial {@link deployedOperationVersion} answers with.
- */
 export const deployedOperationInputShape = (
   resolved: ResolvedOperationCatalog,
   owner: OwnerRef,
@@ -523,7 +436,6 @@ const sameTransportValue = (
     );
 };
 
-/** Capture exactly the stored-data vocabulary without retaining body values. */
 const snapshotStoredValue = (
   descriptor: OperationDescriptor,
   value: unknown,
@@ -662,10 +574,6 @@ const createCollector = (args: {
   const requireOwnerField = (argument: unknown): FieldDescriptor => {
     const concrete = args.target?.type ??
       (descriptor.id.owner.kind === "entity" ? descriptor.id.owner.name : undefined);
-    // A targetless trait handle does not know its concrete composer until the
-    // staged transaction resolves its eid. Validate trait ownership here and
-    // defer concrete composition/fixed-value checks to the authoritative
-    // resulting transaction report.
     const field = concrete === undefined
       ? deployedFieldFromArgument(definition, argument, descriptor)
       : fieldFromArgument(definition, concrete, argument, descriptor);
@@ -698,9 +606,6 @@ const createCollector = (args: {
       ? snapshotStoredValue(descriptor, loweredValue)
       : undefined;
     if (deferConcreteField) {
-      // A targetless trait handle has no concrete composer until its subject
-      // resolves on the staged basis. Retain this helper intent so ordinary
-      // composer field/fixed-binding semantics can be checked before commit.
       deferredFields.push({ source: capturedEid, field });
     }
     if (hasValue && field.valueType !== "ref") {
@@ -977,12 +882,6 @@ const createCollector = (args: {
   return { op, tx, refs, deferredFields, subjectChecks };
 };
 
-/**
- * Encode operation-owned output without interpreting plain `{ vt, v }`
- * records as Ramose's internal tagged values. A null-prototype result also
- * preserves an own `__proto__` key. Native platform values retain the same
- * Date/bytes/bigint/Set/Map transport vocabulary as the rest of Ramose.
- */
 const toOperationOutputJson = (value: unknown): unknown => {
   if (value === null || value === undefined) return value ?? null;
   if (value instanceof Date || value instanceof Uint8Array) return toJson(value);
@@ -1004,11 +903,6 @@ const toOperationOutputJson = (value: unknown): unknown => {
   return value;
 };
 
-/**
- * Materialize exactly the JSON transport value before commit. The round-trip
- * comparison rejects values JSON would silently omit or coerce (functions,
- * symbols, non-finite numbers), while recursive encoding rejects cycles.
- */
 const materializeOutputTransport = (value: unknown): unknown => {
   const wire = toOperationOutputJson(value);
   const text = JSON.stringify(wire);
@@ -1022,7 +916,6 @@ const materializeOutputTransport = (value: unknown): unknown => {
   return materialized;
 };
 
-/** Resolve current lookup meaning first, then the pre-write subject it named. */
 const resolveReportLookup = async (
   report: TxReport,
   lookup: [string, unknown],
@@ -1066,9 +959,6 @@ const resolveOutputHandles = async (
       typeof current === "object" && current !== null && !Array.isArray(current)
     ) {
       const fields = new Map(currentShape.fields.map((field) => [field.key, field.shape] as const));
-      // Decoded Effect schemas may be prototype-bearing classes. Preserve
-      // their runtime representation while recursively replacing actual ref
-      // slots; the deployed encoder is authoritative for the final value.
       const out: Record<string, unknown> = Object.create(Object.getPrototypeOf(current));
       for (const [key, item] of Object.entries(current)) {
         const fieldShape = fields.get(key);
@@ -1325,11 +1215,6 @@ const authorizationReadSetDigest = async (
   await Promise.all(readSet.map((key) => readAuthorizationObservation(db, key))),
 );
 
-/**
- * Re-evaluate one target's filtered visibility while recording the immutable
- * database facts actually consulted by the read policy. The durable receipt
- * stores only the domain-separated digest, never hidden datoms themselves.
- */
 const targetAuthorizationState = async (
   definition: InstalledCatalogDefinition,
   principal: AuthorizationPrincipal,
@@ -1355,9 +1240,6 @@ const targetAuthorizationState = async (
   const visibleEid = typeof targetRef === "number"
     ? targetRef
     : await filtered.entid(targetRef);
-  // Always evaluate the originally fenced eid. A self-commit may remove the
-  // lookup value while leaving a hidden row whose policy dependencies still
-  // have to be bound into the durable witness.
   const resourceVisible = await filtered.exists(eid);
   const visible = visibleEid === eid && resourceVisible;
   const observed = Object.freeze([...observations.entries()]
@@ -1431,9 +1313,6 @@ const captureInvocationReplayFence = async (
         );
       }
       const authorizationReadSet = Object.freeze(before.observations
-        // The target's disappearance is fenced separately. Keep consumed-ref
-        // observations: sampling them as absent after this exact commit lets
-        // an exact retry pass while any later resurrection changes the digest.
         .filter((observation) => observation.eid !== admission.target!.eid)
         .map(observationReadKey));
       const authorizationDigest = await authorizationReadSetDigest(
@@ -1502,10 +1381,6 @@ const validateReferenceWrites = async (
     if (target === undefined) {
       throw new InvalidRequest({ message: `operation ref for ${ident} does not resolve` });
     }
-    // Handles/tempids/lookups become the stored numeric value only after the
-    // staged transaction resolves. Run the original deployed ref-field codec
-    // on that exact value before the commit, with the same public/private
-    // exception split as every other field.
     validateOperationFieldValue(definition, ident, target);
     if (!ref.requireTarget) continue;
     const source = await resolveReportEntity(report, ref.source);
@@ -1579,13 +1454,6 @@ const validateSubjectChecks = async (
   }
 };
 
-/**
- * Everything admission checks before it looks at this invocation's target or
- * input: the deployment fence, the deployed binding, the authorization lease,
- * the request context, and the operation grant. It is the exact prefix that
- * stays valid when the operation itself has moved, which is why a
- * compatibility answer may be disclosed once it passes.
- */
 const admitOperationGrantOnDb = async (
   runtime: OperationRuntime,
   invocation: OperationInvocation,
@@ -1593,16 +1461,11 @@ const admitOperationGrantOnDb = async (
   resolvedCatalog?: ResolvedOperationCatalog,
 ) => {
   const authorizationCaller = invocation.caller;
-  // Admission finishes before native code runs. Keep the later lease fences
-  // on this primitive snapshot; body-visible claims are intentionally ordinary
-  // trusted application data and are never consulted for post-body policy.
   const expiresAtSeconds = authorizationCaller.exp;
   const resolved = resolvedCatalog ?? await Effect.runPromise(
     resolveOperationCatalog(runtime, invocation),
   );
   const deployed = resolved.deployed;
-  // Defense in depth: the read adapter and runnable definition must remain
-  // the exact same deployment-owned unit.
   if (Result.isFailure(requireCatalogKey(
     invocation.catalogKey,
     deployed.definition.catalogKey,
@@ -1654,11 +1517,6 @@ const admitOperationGrantOnDb = async (
   });
 };
 
-/**
- * Re-run every current-basis admission check without invoking the native
- * operation body. Completed receipts use this before replay, so a receipt is
- * never an authorization cache after a target or data-derived view is revoked.
- */
 const authorizeCatalogOperationOnDb = async (
   connection: Connection,
   runtime: OperationRuntime,
@@ -1682,11 +1540,6 @@ const authorizeCatalogOperationOnDb = async (
     resolvedCatalog,
   );
 
-  // A binding for a slot this operation does not declare can never produce a
-  // mapping, so it is refused before the body runs rather than after a commit.
-  // When the caller pinned an `operationVersion` this is unreachable — the
-  // declaration is part of that digest — so it is the answer for an unpinned
-  // caller whose slot names are simply wrong.
   for (const allocation of invocation.allocations ?? []) {
     if (
       !(descriptor.allocations ?? []).some(
@@ -1725,9 +1578,6 @@ const authorizeCatalogOperationOnDb = async (
         )
       ) throw deny();
 
-      // Always inspect the originally resolved eid directly. A lookup that no
-      // longer resolves or now resolves to the exact post-commit replacement
-      // must not substitute that row as the operation subject.
       const fencedExists = await context.currentDb.exists(fenced.eid);
       switch (fenced.postCommit.kind) {
         case "visible": {
@@ -1824,15 +1674,6 @@ const authorizeCatalogOperationOnDb = async (
   });
 };
 
-/**
- * Admission up to and including the operation grant, and no further.
- *
- * A compatibility answer (`OperationChanged` / `UpdateRequired`) is only
- * disclosable to a caller who would be allowed to invoke the operation as it
- * stands now, so every effect-free compatibility outcome runs this first and
- * lets its sealed denial win (#419). It deliberately skips the target and
- * input checks, because those are exactly what a changed operation moves.
- */
 export const authorizeCatalogOperationGrant = async (
   connection: Connection,
   runtime: OperationRuntime,
@@ -1861,7 +1702,6 @@ export const authorizeCatalogOperation = async (
     resolvedCatalog,
   );
 
-/** Current-basis, no-body admission for an exact completed receipt replay. */
 export const authorizeCatalogOperationReplay = async (
   connection: Connection,
   runtime: OperationRuntime,
@@ -1879,12 +1719,6 @@ export const authorizeCatalogOperationReplay = async (
   );
 };
 
-/**
- * The sealing root and scope an invocation that binds allocation slots must
- * have. The Transactor establishes both before the invocation is queued, so a
- * missing one is an engine defect — and raising it here, inside the pre-commit
- * validator, aborts the staged transaction rather than stranding it.
- */
 const requireSealing = (
   sealing: ServerSealingKey | undefined,
 ): ServerSealingKey => {
@@ -1907,14 +1741,12 @@ const requireEntityIdScope = (invocation: OperationInvocation): EntityIdScope =>
   return invocation.entityIdScope;
 };
 
-/** Execute one invocation while the Transactor's serialized writer owns the basis. */
 export const executeCatalogOperation = async (
   connection: Connection,
   runtime: OperationRuntime,
   invocation: OperationInvocation,
   resolvedCatalog?: ResolvedOperationCatalog,
   admitted?: CatalogOperationAdmission,
-  /** Required only when this invocation binds allocation slots (#475). */
   sealing?: ServerSealingKey,
 ): Promise<OperationExecution> => {
   const admission = admitted ?? await authorizeCatalogOperation(
@@ -2003,11 +1835,6 @@ export const executeCatalogOperation = async (
         admission,
         report.dbAfter,
       );
-      // Read the bound allocation slots out of the exact JSON the deployed
-      // codec just materialized, at the entity-reference positions the
-      // *descriptor* declares. Before the commit, so a declaration the
-      // operation's own output does not deliver refuses the invocation
-      // instead of committing an entity no client ref can ever name.
       const requested = invocation.allocations ?? [];
       const extraction = extractAllocations(
         descriptor.allocations ?? [],
@@ -2024,10 +1851,6 @@ export const executeCatalogOperation = async (
           extraction.slot,
         );
       }
-      // And it has to survive its own transaction. A client cannot be handed a
-      // durable, immutable identity for an entity this very commit removed —
-      // every later invocation depending on that ref would be admitted against
-      // a row that is already gone.
       for (const slot of extraction.slots) {
         if (!(await report.dbAfter.exists(slot.eid))) {
           throw rejected(
@@ -2038,10 +1861,6 @@ export const executeCatalogOperation = async (
           );
         }
       }
-      // Sealed here, still before the commit. Doing it after `transactValidated`
-      // returns would mean a WebCrypto failure left this writer's in-memory
-      // state advanced past a transaction the durable log never receives, and
-      // every later commit would run on phantom state.
       const allocations = extraction.slots.length === 0
         ? []
         : await sealAllocationMappings(
@@ -2053,8 +1872,6 @@ export const executeCatalogOperation = async (
       return { output: encoded, replayFence, allocations };
     },
     authoritativeNowMs,
-    // Synchronous Connection pre-apply hook: every body/effect/read/output
-    // await is complete, and no further await can intervene before commit.
     () => requireFreshAuthorization(runtime, expiresAtSeconds, descriptor),
   );
   return {

@@ -1,15 +1,3 @@
-/**
- * Schema-backed installed catalog unit and the only seal path.
- *
- * One immutable document nests the canonical {@link CatalogDescriptor}
- * and a lean installed read policy. Catalog identity, schema tables, and
- * trait composition live only on the descriptor. Type-to-trait lookup
- * indexes are derived at validation and assembly — they are not persisted
- * as application datoms. Structural decode of {@link InstalledCatalogUnit}
- * is not {@link InstalledCatalogUnitV2}; only {@link sealInstalledCatalogUnit}
- * and verified load may produce the brand.
- */
-
 import * as Brand from "effect/Brand";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -79,11 +67,6 @@ export const INSTALLED_CATALOG_UNIT_VERSION = 2 as const;
 export const InstalledCatalogUnitVersion = Schema.Literal(INSTALLED_CATALOG_UNIT_VERSION);
 export type InstalledCatalogUnitVersion = typeof InstalledCatalogUnitVersion.Type;
 
-/**
- * Complete installed catalog document. Decode checks shape and identity
- * collisions only — not {@link unitHash} or component completeness at
- * the storage boundary. This is not a publishable brand.
- */
 export const InstalledCatalogUnit = Schema.TaggedStruct("InstalledCatalogUnit", {
   version: InstalledCatalogUnitVersion,
   catalog: CatalogDescriptor,
@@ -92,11 +75,6 @@ export const InstalledCatalogUnit = Schema.TaggedStruct("InstalledCatalogUnit", 
 });
 export type InstalledCatalogUnit = typeof InstalledCatalogUnit.Type;
 
-/**
- * Read-only decoder shape for persisted v1 units. V1 operation rows carried
- * only identity and input shape, so a nonempty v1 table cannot be upgraded
- * without the deployed definitions and must be rebuilt by deployment.
- */
 const LegacyOperationDescriptorV1 = Schema.Struct({
   id: OperationId,
   input: OperationInputShape,
@@ -126,11 +104,6 @@ export const LegacyInstalledCatalogUnitV1 = Schema.TaggedStruct(
 export type LegacyInstalledCatalogUnitV1 =
   typeof LegacyInstalledCatalogUnitV1.Type;
 
-/**
- * Verified/sealed v2 catalog unit. Distinct from Schema-decoded
- * structural output. Only {@link sealInstalledCatalogUnit} and the
- * hash-verified load path produce this brand.
- */
 export type InstalledCatalogUnitV2 = InstalledCatalogUnit &
   Brand.Brand<"InstalledCatalogUnitV2">;
 
@@ -305,10 +278,6 @@ const boundAuthorizationFromPolicy = (
   decisions: policy.decisions,
 });
 
-/**
- * Normalize catalog-owned tables into install-canonical order. Nested
- * trait sets and operation input keys are sorted with the tables.
- */
 const normalizeCatalogDescriptor = (
   descriptor: CatalogDescriptorType,
 ): Result.Result<CatalogDescriptorType, ValidateFailure> =>
@@ -366,11 +335,6 @@ const requireCatalogAlreadyCanonical = (
     );
   });
 
-/**
- * Revalidate the embedded policy against the one normalized catalog.
- * Stored classes, claims, rules, and decisions must already be in
- * install-canonical order. Access plans are re-derived and must match.
- */
 const requirePolicyReferences = (
   catalog: CatalogDescriptorType,
   policy: InstalledAuthorizationIRType,
@@ -412,20 +376,9 @@ const requirePolicyReferences = (
   });
 
 export type NormalizeCatalogUnitOptions = {
-  /**
-   * When true (verify), stored catalog tables must already be in
-   * install-canonical order. Seal passes false so permuted descriptor
-   * input can normalize inside this kernel.
-   */
   readonly requireCatalogAlreadyCanonical?: boolean;
 };
 
-/**
- * Shared normalize-and-validate kernel used by assemble/seal and verify.
- * Structural versions, catalog normalization, semantic catalog
- * validation, and policy-reference checks live here. Hash and
- * fingerprint digests stay in the Effect shells.
- */
 export const normalizeAndValidateCatalogUnit = (
   catalog: CatalogDescriptorType,
   policy: InstalledAuthorizationIRType,
@@ -456,11 +409,6 @@ export const normalizeAndValidateCatalogUnit = (
     });
   });
 
-/**
- * Private-shaped pure assembly. Returns tables without `_tag` or
- * `unitHash` so the result is not a runtime-acceptable catalog unit.
- * Permuted catalog tables are normalized inside the shared kernel.
- */
 export const assembleInstalledCatalogUnit = (
   descriptor: CatalogDescriptorType,
   policy: InstalledAuthorizationIRType,
@@ -475,11 +423,6 @@ export const assembleInstalledCatalogUnit = (
     );
   });
 
-/**
- * Bind `catalog.fingerprint` to the digest of the normalized
- * catalog-owned schema tables. Verify cannot take a live catalog, so the
- * claimed fingerprint must be recomputed from the stored tables.
- */
 const requireBoundSchemaFingerprint = Effect.fn("Authorization.requireBoundSchemaFingerprint")(
   function* (
     catalog: CatalogDescriptorType,
@@ -519,10 +462,6 @@ const requireEmbeddedPolicyHashes = Effect.fn("Authorization.requireEmbeddedPoli
   },
 );
 
-/**
- * Hash and fingerprint checks shared by seal and verify. The semantic
- * kernel does not hash; these Effect steps consume its normalized output.
- */
 const requireCatalogUnitDigests = Effect.fn("Authorization.requireCatalogUnitDigests")(
   function* (
     tables: UnhashedCatalogUnitTables,
@@ -532,11 +471,6 @@ const requireCatalogUnitDigests = Effect.fn("Authorization.requireCatalogUnitDig
   },
 );
 
-/**
- * The only producer of {@link InstalledCatalogUnitV2} besides verified
- * load. Bind the complete descriptor to a sealed policy, hash the
- * canonical document minus `unitHash`, and freeze the brand.
- */
 export const sealInstalledCatalogUnit = Effect.fn("Authorization.sealInstalledCatalogUnit")(
   function* (
     descriptor: CatalogDescriptorType,
@@ -563,11 +497,6 @@ export const sealInstalledCatalogUnit = Effect.fn("Authorization.sealInstalledCa
   },
 );
 
-/**
- * Hash-verify a structural catalog unit and brand it. Structural decode
- * alone is not {@link InstalledCatalogUnitV2}. The shared kernel, hash,
- * and an encode/decode round-trip must all succeed before the brand.
- */
 export const verifyInstalledCatalogUnit = Effect.fn("Authorization.verifyInstalledCatalogUnit")(
   function* (
     document: InstalledCatalogUnit,

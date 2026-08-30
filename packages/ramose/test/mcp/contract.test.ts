@@ -1,9 +1,3 @@
-/**
- * Pure contract tests for the experimental MCP surface (#484 S1):
- * argument validation, the public operation-version projection, and the
- * restatement of authoritative invocation outcomes.
- */
-
 import { describe, expect, test } from "bun:test";
 import {
   McpToolFailure,
@@ -27,7 +21,6 @@ import type { AuthoritativeInvocationResult } from "../../src/internal/authoriza
 
 const digest = (byte: string) => byte.repeat(32);
 
-/** The code a rejected argument or document reports. */
 const codeOf = (run: () => unknown): string => {
   try {
     run();
@@ -64,8 +57,7 @@ describe("operation version token", () => {
     expect(decodeOperationVersionToken(digest("9c"))).toBeUndefined();
     expect(decodeOperationVersionToken("ov_short")).toBeUndefined();
     expect(decodeOperationVersionToken(`ov_${"!".repeat(43)}`)).toBeUndefined();
-    // Base64's unused trailing bits must be zero, or two tokens would name
-    // one version and `operation_changed` would stop being decidable.
+
     const token = encodeOperationVersionToken(digest("00"));
     expect(decodeOperationVersionToken(`${token.slice(0, 45)}B`)).toBeUndefined();
   });
@@ -119,8 +111,7 @@ describe("minimal query document", () => {
   });
 
   test("keeps a __proto__ filter as a real own-property clause", () => {
-    // Assigning into a plain object would hit the inherited setter and drop
-    // the clause, turning a filtered query into an unfiltered one.
+
     const document = parseQueryDocument({
       version: 1,
       from: { entity: "issue" },
@@ -129,7 +120,7 @@ describe("minimal query document", () => {
     const where = document.where!;
     expect(Object.hasOwn(where, "__proto__")).toBe(true);
     expect(Object.entries(where)).toEqual([["__proto__", "x"], ["status", "open"]]);
-    // The clause is data, never a prototype mutation.
+
     expect(Object.getPrototypeOf(where)).toBe(Object.prototype);
     expect((Object.prototype as Record<string, unknown>).status).toBeUndefined();
   });
@@ -216,8 +207,7 @@ describe("publishable output contracts", () => {
   });
 
   test("a contract that proves nothing is not publishable", () => {
-    // An `Unknown` output lowers to `opaque` and then carries whatever the
-    // operation returned, storage ids included, so it cannot be published.
+
     expect(publishableWithoutReferences({ _tag: "opaque" })).toBe(false);
     expect(publishableWithoutReferences(ref)).toBe(false);
     expect(publishableWithoutReferences({ _tag: "array", items: ref })).toBe(false);
@@ -225,7 +215,7 @@ describe("publishable output contracts", () => {
       _tag: "struct",
       fields: [field("title", scalar), field("id", ref)],
     })).toBe(false);
-    // Opacity anywhere inside is enough to lose the proof.
+
     expect(publishableWithoutReferences({
       _tag: "struct",
       fields: [field("anything", { _tag: "opaque" })],
@@ -233,8 +223,7 @@ describe("publishable output contracts", () => {
   });
 
   test("withholds the whole outcome for any unprovable contract", () => {
-    // No codec trick can move a reference somewhere this rule does not look,
-    // because it does not look at the value at all.
+
     const shape: OperationInputShape = {
       _tag: "struct",
       fields: [field("id", ref), field("count", scalar)],
@@ -242,9 +231,9 @@ describe("publishable output contracts", () => {
     for (
       const output of [
         { id: 4_099, count: 2 },
-        // A codec that renamed the key...
+
         { wire_id: 4_099, count: 2 },
-        // ...or relocated the id into a slot declared as an ordinary scalar.
+
         { count: 4_099 },
       ]
     ) {
@@ -252,7 +241,7 @@ describe("publishable output contracts", () => {
       expect(projected).toBe(OUTCOME_WITHHELD);
       expect(JSON.stringify(projected)).not.toContain("4099");
     }
-    // And an opaque contract hiding an id behind a plain-looking key.
+
     expect(projectOperationOutcome({ _tag: "opaque" }, { principalEid: 4_099 }))
       .toBe(OUTCOME_WITHHELD);
   });
@@ -274,8 +263,7 @@ describe("implicit projection bound", () => {
   });
 
   test("refuses a wider one rather than silently truncating the row", () => {
-    // A truncated projection would be indistinguishable from a row that
-    // simply lacks the rest, so the request is refused instead.
+
     expect(codeOf(() => requireBoundedImplicitProjection(65))).toBe("invalid_query");
     const failure = (() => {
       try {
@@ -299,7 +287,7 @@ describe("query read failures", () => {
       code: "query_budget_exceeded",
       retryable: true,
     });
-    // The engine's own message names clauses and cell counts; none of it rides.
+
     expect(failure?.envelope.message).not.toContain("5,000,000");
   });
 
@@ -353,7 +341,7 @@ describe("invocation outcome projection", () => {
         committedT: 9,
         output,
       }, referenceOutput);
-      // The invocation committed, so the status stays truthful.
+
       expect(result).toEqual({
         invocationId: "01K",
         status: "completed",

@@ -1,20 +1,4 @@
 /**
- * The ident-name rule — public on `ramose/db` (issue #184).
- *
- * Entity names and field keys become the two sides of a `:ns/attr` ident.
- * A space or slash in either side used to install `":my ns/x/a b"`; a
- * catalog key that did not match `entity.ns` silently split policy
- * (`ns.todos`) from the wire (`:todo/*`). The same character class is
- * therefore checked at `Entity()` / `Schema()` definition time, and the
- * regex is exported so an app that generates a schema can check first.
- *
- * Contrast `DATABASE_NAME_RE`: a database name is a route segment (digits
- * and `.` allowed). An ident part is a keyword: it starts with a letter,
- * and `/` `.` `:` and whitespace are rejected so `:ns/attr` stays exactly
- * one slash.
- */
-
-/**
  * One side of a `:ns/attr` ident — entity names and field keys.
  * Letter, then up to 63 letters / digits / `_` / `-` (64 characters total).
  */
@@ -37,7 +21,6 @@ export const RESERVED_FIELD_KEYS = [
   "traits",
 ] as const;
 
-/** A field key that collides with {@link Entity} metadata. */
 export type ReservedFieldKey = (typeof RESERVED_FIELD_KEYS)[number];
 
 const RESERVED = new Set<string>(RESERVED_FIELD_KEYS);
@@ -45,8 +28,6 @@ const RESERVED = new Set<string>(RESERVED_FIELD_KEYS);
 /** Whether `name` is {@link Entity} metadata and cannot be a field key. */
 export const isReservedFieldKey = (name: string): name is ReservedFieldKey =>
   RESERVED.has(name);
-
-// ── type-level mirrors (string literals only; wide `string` defers) ────────
 
 type Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
 type Lower =
@@ -112,7 +93,6 @@ type IsIdentRest<S extends string> = S extends ""
     ? IsIdentRest<Rest>
     : false;
 
-/** `true` when `S` is a valid ident part, or is wide `string` (runtime checks). */
 export type IsIdentName<S extends string> = string extends S
   ? true
   : S extends `${Letter}${infer Rest}`
@@ -132,7 +112,6 @@ const SCHEMA_KEY_MSG =
   "Schema key must equal the Entity name" as const;
 const DUPLICATE_ENTITY_MSG = "duplicate entity name" as const;
 
-/** Entity / field name: the literal if valid, else a brand that fails assignability. */
 export type ValidIdentName<S extends string> =
   IsIdentName<S> extends true ? S : NameError<S, typeof IDENT_NAME_MSG>;
 
@@ -147,11 +126,6 @@ type BadNamedIn<F> = {
     : never;
 }[keyof F];
 
-/**
- * Field map: unchanged when every key is a non-reserved ident part; otherwise
- * branded so the object literal is not assignable (same shape as
- * `InferableSchema`).
- */
 export type ValidFieldMap<F> = [ReservedIn<F>] extends [never]
   ? [BadNamedIn<F>] extends [never]
     ? F
@@ -170,7 +144,6 @@ type KeyMatchesNs<K extends string, N extends string> = string extends N
         : false
       : false;
 
-/** Object-form schema: each key must be that entity's `ns`. */
 export type ValidEntityMap<Es extends Record<string, { readonly ns: string }>> =
   {
     [K in keyof Es]: K extends string
@@ -197,13 +170,11 @@ type HasDuplicate<
         : HasDuplicate<R, Seen>
   : false;
 
-/** Array-form schema: two entries with the same `ns` are a type error. */
 export type ValidEntityList<Es extends readonly { readonly ns: string }[]> =
   HasDuplicate<NsTuple<Es>> extends true
     ? NameError<Es, typeof DUPLICATE_ENTITY_MSG>
     : Es;
 
-/** `{ [entity.ns]: entity }` from `Schema([User, Label])`. */
 export type EntitiesFromArray<
   Es extends readonly { readonly ns: string }[],
 > = {
@@ -212,11 +183,6 @@ export type EntitiesFromArray<
 
 type Overlap<A, B> = keyof A & keyof B;
 
-/**
- * `merge` right-hand schema: no entity name already present on the left.
- * Wide `EntityMap` (`string` keys — `Schema.Any`) defers to the runtime
- * check, matching `IsIdentName` / `KeyMatchesNs` / `HasDuplicate`.
- */
 export type ValidMerge<
   A extends Record<string, unknown>,
   B extends Record<string, unknown>,
@@ -227,8 +193,6 @@ export type ValidMerge<
     : [Overlap<A, B>] extends [never]
       ? B
       : NameError<B, typeof DUPLICATE_ENTITY_MSG>;
-
-// ── runtime failures (definition time — throws, not DbError) ───────────────
 
 export const invalidIdentName = (
   kind: "entity" | "field" | "trait" | "operation",
@@ -242,8 +206,6 @@ export const reservedFieldName = (name: string): Error =>
   new Error(
     `ramose/schema: field name ${JSON.stringify(name)} is reserved — id, ns, fields, _tag, and traits are Entity / Trait metadata`,
   );
-
-// ── trait composition (type-level) ─────────────────────────────────────────
 
 type FieldIdent<F> = F extends { readonly ident: infer I extends string }
   ? I
@@ -275,7 +237,6 @@ type NestedTraits<H> = H extends {
   ? T
   : [];
 
-/** Already-stamped fields of `Traits`, merged transitively (diamonds ok). */
 export type FlattenedTraitFields<Traits extends readonly unknown[]> =
   Traits extends readonly [infer H, ...infer R]
     ? H extends { readonly fields: infer F extends object }
@@ -298,10 +259,6 @@ type HasFieldCollision<T> = [CollisionBrandKey<T>] extends [never]
   ? false
   : true;
 
-/**
- * Options bag: unchanged when flattened names are unique or diamonds;
- * branded so a colliding `traits: […]` literal is not assignable.
- */
 export type ValidTraitCompose<
   Fields,
   Traits extends readonly unknown[],

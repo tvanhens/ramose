@@ -1,10 +1,3 @@
-/**
- * Schema-aware cursor codec — a `Cursor` is raw sort-key values, and a
- * `Date` that JSON-stringifies as an ISO string sorts as a string. Encode
- * through the query that minted the cursor so Instant / bytes / branded
- * keys come back as the values `:after` compares.
- */
-
 import { fromJson, toJson } from "../../internal/core/json.ts";
 import { inspectPullField } from "../Pull.ts";
 import {
@@ -69,7 +62,6 @@ const kindOfKey = (key: unknown, pipe: Pipeline | undefined): CursorKeyKind => {
 const pagedQuery = (q: AnyQueryObject): AnyQueryObject =>
   q.seek !== undefined ? q : q.after(null);
 
-/** How many sort-key cells a cursor of `q` carries (tie-breaker included). */
 const cursorKeyCount = (q: AnyQueryObject): number => {
   const order = lowerQueryObject(pagedQuery(q)).query.order as unknown[] | undefined;
   if (order === undefined || order.length === 0) {

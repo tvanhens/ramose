@@ -1,75 +1,37 @@
-/**
- * Canonical and catalog-relative authorization identities.
- *
- * Binding (#384) turns relative names into catalog-scoped identities.
- * Runtime decisions are never keyed by a wire name alone (CAT-1).
- *
- * Rule / policy hashes are identity *types* here. #357 requires the
- * serialized digest representation; semantic recomputation is #358.
- *
- * Effect Schema is the source of truth. Types are `typeof Model.Type`.
- */
-
 import * as Schema from "effect/Schema";
 
-/** Installed catalog identity. Distinct from a local entity/trait name. */
 export const CatalogId = Schema.String.pipe(Schema.brand("CatalogId"));
 export type CatalogId = typeof CatalogId.Type;
 
-/** Database the installed catalog is bound to. */
 export const DatabaseId = Schema.String.pipe(Schema.brand("DatabaseId"));
 export type DatabaseId = typeof DatabaseId.Type;
 
-/** Catalog generation the IR was validated against (CAT-5). */
 export const CatalogVersion = Schema.String.pipe(Schema.brand("CatalogVersion"));
 export type CatalogVersion = typeof CatalogVersion.Type;
 
-/** Fingerprint of the authoritative schema/catalog the IR was bound to. */
 export const SchemaFingerprint = Schema.String.pipe(Schema.brand("SchemaFingerprint"));
 export type SchemaFingerprint = typeof SchemaFingerprint.Type;
 
-/** Full canonical base64url SHA-256 of the local read/query metadata contract. */
 export const ReadCompatibilityHash = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9_-]{43}$/),
 ).pipe(Schema.brand("ReadCompatibilityHash"));
 export type ReadCompatibilityHash = typeof ReadCompatibilityHash.Type;
 
-/**
- * SHA-256 digest as exactly 64 lowercase hexadecimal characters.
- * `RuleId` and `PolicyHash` are collision-resistant identities; this
- * schema requires the serialized digest representation. Semantic
- * recomputation and comparison of those digests is #358.
- */
 export const DigestHex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 export type DigestHex = typeof DigestHex.Type;
 
-/** Policy document identity. Canonical serialized form is {@link DigestHex}. */
 export const PolicyHash = DigestHex.pipe(Schema.brand("PolicyHash"));
 export type PolicyHash = typeof PolicyHash.Type;
 
-/** Installed catalog-unit identity. Canonical serialized form is {@link DigestHex}. */
 export const CatalogUnitHash = DigestHex.pipe(Schema.brand("CatalogUnitHash"));
 export type CatalogUnitHash = typeof CatalogUnitHash.Type;
 
-/**
- * Operation-scoped compatibility version (#487). Canonical serialized form is
- * {@link DigestHex} — the full SHA-256 of one operation's canonical
- * descriptor. It rotates only when that operation's own public contract or
- * its author-declared revision changes; deployments, catalog units, and
- * unrelated definitions never enter it. See `operation-version.ts`.
- */
 export const OperationVersion = DigestHex.pipe(Schema.brand("OperationVersion"));
 export type OperationVersion = typeof OperationVersion.Type;
 
-/**
- * Rule identity. Canonical serialized form is {@link DigestHex}.
- * One identity mapping to two different canonical bodies is an error;
- * silent interning overwrite is forbidden.
- */
 export const RuleId = DigestHex.pipe(Schema.brand("RuleId"));
 export type RuleId = typeof RuleId.Type;
 
-/** Entity or trait that owns a field or operation. Ownerless ops are unsupported. */
 export const OwnerKind = Schema.Literals(["entity", "trait"]);
 export type OwnerKind = typeof OwnerKind.Type;
 
@@ -79,10 +41,6 @@ export const OwnerRef = Schema.Struct({
 });
 export type OwnerRef = typeof OwnerRef.Type;
 
-/**
- * Target presence is independent of ownership.
- * `none` comes from `self: false`, not from a missing owner.
- */
 export const OperationTarget = Schema.Literals(["required", "none"]);
 export type OperationTarget = typeof OperationTarget.Type;
 
@@ -102,10 +60,6 @@ export const RelativeFieldId = Schema.TaggedStruct("RelativeFieldId", {
 });
 export type RelativeFieldId = typeof RelativeFieldId.Type;
 
-/**
- * Catalog-relative operation identity. `owner` and `target` are both
- * required and independent — an owned targetless op is valid.
- */
 export const RelativeOperationId = Schema.TaggedStruct("RelativeOperationId", {
   owner: OwnerRef,
   localName: Schema.String,
@@ -132,10 +86,6 @@ export const FieldId = Schema.TaggedStruct("FieldId", {
 });
 export type FieldId = typeof FieldId.Type;
 
-/**
- * Canonical operation identity. Encodes catalog, owner, local name, and
- * target independently. Runtime must not key decisions by wire name alone.
- */
 export const OperationId = Schema.TaggedStruct("OperationId", {
   catalog: CatalogId,
   owner: OwnerRef,
@@ -155,7 +105,6 @@ export const RelativeIdentity = Schema.Union([
 ]);
 export type RelativeIdentity = typeof RelativeIdentity.Type;
 
-/** Identity flavor used to parameterize expressions, rules, and decisions. */
 export interface IdentitySpace {
   readonly entity: RelativeEntityId | EntityId;
   readonly trait: RelativeTraitId | TraitId;
@@ -177,7 +126,6 @@ export interface CanonicalIdentities extends IdentitySpace {
   readonly operation: OperationId;
 }
 
-/** Identity-schema bag a factory can instantiate while preserving each schema. */
 export type AnyIdentitySchemaSpace<
   Entity extends Schema.Top = Schema.Top,
   Trait extends Schema.Top = Schema.Top,
@@ -190,7 +138,6 @@ export type AnyIdentitySchemaSpace<
   readonly operation: Operation;
 };
 
-/** Schema space a factory uses to build relative or canonical IR. */
 export type IdentitySchemaSpace<
   Entity extends Schema.Top = typeof RelativeEntityId | typeof EntityId,
   Trait extends Schema.Top = typeof RelativeTraitId | typeof TraitId,

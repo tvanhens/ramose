@@ -78,10 +78,6 @@ test("a stream cut mid-frame is a truncation, not a malformed frame", async () =
     }
   };
 
-  // The Worker writes every frame newline-terminated, so an unterminated tail
-  // can only be a dropped connection. Reporting it as the product's own
-  // `malformed` protocol error would blame a real transport failure on the
-  // frame codec.
   await expect(consume()).rejects.toThrow(
     "replication stream ended without a newline",
   );
@@ -89,9 +85,7 @@ test("a stream cut mid-frame is a truncation, not a malformed frame", async () =
 });
 
 test("a stalled snapshot cancels its reader so cleanup does not queue behind it", async () => {
-  // A body that opens and then never produces a chunk — the shape a wedged
-  // transport presents. `ReadableStream`/`Response` are platform primitives,
-  // not substitutes for any Ramose component.
+
   const stalled = new ReadableStream<Uint8Array>({ start() {} });
   const stream = readReplicationNdjson(new Response(stalled));
 
@@ -99,8 +93,6 @@ test("a stalled snapshot cancels its reader so cleanup does not queue behind it"
   await expect(collectCommittedSnapshot(stream, undefined, 100))
     .rejects.toThrow("replication snapshot did not commit within 100ms");
 
-  // The point of the cancel: `return()` resolves instead of queueing behind
-  // the read that is still notionally pending inside the generator.
   await expect(
     Promise.race([
       stream.return(undefined).then(() => "closed" as const),

@@ -1,5 +1,3 @@
-/** Pure authoritative creation-value resolution. */
-
 import * as Schema from "effect/Schema";
 import {
   bindingOf,
@@ -96,7 +94,6 @@ export type CompiledBindingIdentity = {
   readonly dependencies: readonly string[];
 };
 
-/** Caller-free creation runtime plan and the exact records hashed beside it. */
 export type CompiledCreationPlan = {
   readonly entity: string;
   readonly fields: readonly CompiledCreationField[];
@@ -114,13 +111,6 @@ export type PairedCreationDefaults = {
   ) => CreationDefault<unknown>;
 };
 
-/**
- * Explicit ref values may name handles, tempids, or lookups that become a
- * concrete stored eid only on the staged transaction basis. The authoritative
- * operation collector lowers and snapshots those values now, then runs the
- * original deployed field codec against the resolved numeric eid before
- * commit.
- */
 export type CompiledCreationOptions = {
   readonly deferredReferenceKeys?: ReadonlySet<string>;
 };
@@ -209,7 +199,6 @@ const sameValue = (
   return false;
 };
 
-/** Every binding use, including equivalent diamond paths. */
 export const bindingUsesOf = (composer: ComposerLike): readonly ResolvedBindingUse[] => {
   const out: ResolvedBindingUse[] = [];
   const stack: TraitLike[] = [];
@@ -253,7 +242,6 @@ export const compositionValueMetadata = (
     bindingUsesOf(entity as ComposerLike),
   );
 
-/** Build creation metadata from binding callbacks already resolved once. */
 export const compositionValueMetadataFromBindings = (
   entity: AnyEntity,
   bindings: readonly ResolvedBindingUse[],
@@ -326,7 +314,6 @@ export const compositionValueMetadataFromBindings = (
   return Object.freeze({ bindings, fixed, defaults, encoders });
 };
 
-/** Compile one entity into copied field records and trusted capabilities. */
 export const compileCreationPlan = (
   entity: AnyEntity,
   metadata: CompositionValueMetadata,
@@ -401,11 +388,6 @@ const sameDefaultDescriptor = (
   sameValue(left.revision, right.revision) &&
   sameValue(left.path, right.path);
 
-/**
- * Pair inert creation-default descriptors with the native callbacks captured
- * from the same deployed build. Exact pairing is validated before startup
- * exposes an installed catalog definition.
- */
 export const pairDeployedCreationDefaults = (
   plans: readonly CompiledCreationPlan[],
   bindings: readonly DeployedCreationDefaultBinding[],
@@ -512,7 +494,6 @@ const snapshotDeferredReference = (
   }
 };
 
-/** Resolve creation values without consulting an authoring entity or binding. */
 export const resolveCompiledCreationValues = (
   plan: CompiledCreationPlan,
   input: Readonly<Record<string, unknown>>,

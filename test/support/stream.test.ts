@@ -5,8 +5,7 @@ import { closeObservedStream, withRequestDeadline } from "./stream.ts";
 
 test("a request that never answers fails at its deadline, naming itself", async () => {
   const started = Date.now();
-  // The shape `test/local/fixtures.ts` guards: an exchange whose promise never
-  // settles, exactly as a `/op` parked behind a mid-read stream presented.
+
   const failure = await withRequestDeadline(
     () => new Promise<Response>(() => {}),
     "POST /db/graph-path-root/op",
@@ -33,8 +32,7 @@ test("the deadline aborts the exchange so the socket is released", async () => {
 });
 
 test("an exchange that honours the signal still reports the deadline", async () => {
-  // Bun's `fetch` rejects with its own `AbortError` when it does honour the
-  // signal; the caller must still learn which request ran out of time.
+
   const failure = await withRequestDeadline(
     (signal) =>
       new Promise<Response>((_, reject) => {
@@ -62,7 +60,6 @@ test("a real failure is reported as itself, not as a deadline", async () => {
   expect(failure?.message).toBe("ECONNREFUSED");
 });
 
-/** A real body that opens and then never produces another byte. */
 const stalled = (): Response =>
   new Response(
     new ReadableStream<Uint8Array>({
@@ -75,8 +72,7 @@ const stalled = (): Response =>
 
 test("closing a stalled replication stream settles its own pending read", async () => {
   const iterator = readReplicationNdjson(stalled())[Symbol.asyncIterator]();
-  // Park a read the way an abandoned assertion does. Nothing will ever
-  // satisfy it, so a plain `return()` would queue behind it forever.
+
   const parked = iterator.next().catch(() => undefined);
 
   const started = Date.now();
@@ -98,8 +94,7 @@ test("closing a stalled live-query stream settles its own pending read", async (
 });
 
 test("a transport cancel that stalls is abandoned at the same deadline", async () => {
-  // The bound has to cover the cancel too: a wedged transport can stall it,
-  // and a bound that only covers `return()` is no bound.
+
   const started = Date.now();
   await closeObservedStream(
     {
@@ -114,9 +109,7 @@ test("a transport cancel that stalls is abandoned at the same deadline", async (
 });
 
 test("a close that cannot settle is abandoned at its deadline, not awaited", async () => {
-  // No `cancelTransport`, and a `return()` that never resolves: the shape a
-  // reader outside these helpers can still present. Cleanup must give up
-  // rather than spend the caller's whole test budget.
+
   const started = Date.now();
   await closeObservedStream(
     { return: () => new Promise<never>(() => {}) },
@@ -131,7 +124,6 @@ test("a close whose return rejects does not surface as an unhandled rejection", 
   await closeObservedStream({
     return: () => Promise.reject(new Error("already released")),
   });
-  // A rejection escaping cleanup would fail whichever unrelated test the
-  // runner happened to be on when it surfaced.
+
   await Bun.sleep(10);
 });

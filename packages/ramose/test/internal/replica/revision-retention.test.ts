@@ -50,8 +50,6 @@ describe("opaque revision retention", () => {
     const hiddenWorld = new Map<string, readonly ReplicationRevisionRetentionRecord[]>();
     let touched = 0;
 
-    // Each map entry represents the independently addressed Durable Object for
-    // that opaque binding. Fill and churn many B partitions before A exists.
     for (let binding = 0; binding < 80; binding++) {
       let records: readonly ReplicationRevisionRetentionRecord[] = [];
       for (let revision = 0; revision < 20; revision++) {

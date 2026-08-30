@@ -1,11 +1,3 @@
-/**
- * M2 bench: sustained write throughput through the Transactor write path
- * (validate → resolve → assign t → GROUP COMMIT to a real SQLite file →
- * ack → novelty broadcast) with N concurrent clients, no Cloudflare.
- * Target: ≥ 500 tx/s sustained on small txs with group commit.
- *
- *   bun run bench/transactor.bench.ts [concurrency=64] [seconds=5]
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +6,7 @@ import { fmt, percentile } from "./lib.ts";
 
 const conc = Number(process.argv[2] ?? 64);
 const seconds = Number(process.argv[3] ?? 5);
-/** optional: comma-separated concurrency sweep for the write-ceiling table, e.g. "1,8,64,256" */
+
 const sweep = process.argv[4] ? process.argv[4].split(",").map(Number) : [conc];
 
 const dir = mkdtempSync(join(tmpdir(), "ramose-tx-"));
@@ -25,7 +17,7 @@ async function run(label: string, groupCommit: boolean, conc: number) {
   const tx = h.transactor;
   await tx.init();
   await tx.transact([attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" }), attribute(":k/v", "string")]);
-  const sub = h.subscribe(tx.t); // one novelty subscriber receiving every frame
+  const sub = h.subscribe(tx.t);
 
   let done = 0, errors = 0;
   const lat: number[] = [];
@@ -51,7 +43,7 @@ async function run(label: string, groupCommit: boolean, conc: number) {
   console.log(`${label.padEnd(16)} concurrency=${conc}: ${done} tx in ${fmt(ms, 0)} ms → ${fmt(tps, 0)} tx/s, errors=${errors}`);
   console.log(`  ack latency p50 ${fmt(percentile(lat, 50))} ms  p95 ${fmt(percentile(lat, 95))} ms  p99 ${fmt(percentile(lat, 99))} ms`);
   console.log(`  storage writes=${h.writes} batches=${tx.stats.batches} maxBatch=${tx.stats.maxBatch} avgBatch=${fmt(tx.stats.txs / Math.max(1, tx.stats.batches), 1)} frames=${sub.ofKind("tx").length}`);
-  // sanity: durable log is contiguous
+
   const ts = h.logTs();
   for (let i = 0; i < ts.length; i++) if (ts[i] !== i + 1) throw new Error(`log gap at ${i}: ${ts[i]}`);
   if (ts.length !== tx.t) throw new Error(`log length ${ts.length} != t ${tx.t}`);

@@ -1,8 +1,3 @@
-/**
- * In-process adapter used only by microbenchmarks so measurements exclude
- * network/workerd overhead. Runtime behavior is tested through Alchemy local.
- */
-
 import { Database } from "bun:sqlite";
 import {
   type R2Like,

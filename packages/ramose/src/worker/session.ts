@@ -1,5 +1,3 @@
-/** Session socket protocol: inbound frames + the apply-then-push walk. */
-
 import type { WireDatom } from "../internal/core/index.ts";
 import type { Principal } from "./auth.ts";
 import type { WritesMode } from "../writes.ts";
@@ -8,22 +6,16 @@ import type { SessionLog, SessionLogEntry, SessionTxDecision } from "./session-s
 
 export { WRITES_HEADER };
 
-// ---- wire ------------------------------------------------------------------
-
-/** A frame from the client. `id` correlates the reply; ops mirror the HTTP routes. */
 export type ClientFrame =
-  /** token refresh — the only frame that is not a sub-request */
   | { id: number; op: "auth"; token: string }
   | { id: number; op: "transact"; tx: unknown[]; clientTxId?: string }
   | { id: number; op: "operation"; name: string; entity?: unknown; input: unknown; clientOpId?: string }
-  /** catch-up: walk `(from, now]` and skip empties; resync if the gap is gone or a rule view flipped */
   | { id: number; op: "sync"; from: number }
   | { id: number; op: "q"; query: string | object; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean; minT?: number }
   | { id: number; op: "pull"; eid: number | string | [string, unknown]; pattern: string | unknown[]; asOf?: number; history?: boolean; minT?: number }
   | { id: number; op: "entity"; eid: number; asOf?: number }
   | { id: number; op: "info" };
 
-/** One reply per client frame. `id` is 0 when the frame was too malformed to carry one. */
 export interface ReplyFrame {
   id: number;
   status: number;
@@ -31,36 +23,30 @@ export interface ReplyFrame {
   headers?: Record<string, string>;
 }
 
-/** Who a session is, as the wire tells it: `eid` is `null` only when the peer does not provision this principal. */
 export interface WirePrincipal {
   eid: number | null;
   class: string;
 }
 
-/** The `auth` frame's success reply: the principal was swapped (and, when the session can describe it, who it now is). */
 export interface AuthAck {
   id: number;
   ok: true;
   principal?: WirePrincipal;
 }
 
-/** Unsolicited: facts this principal may read from one committed tx. */
 export interface TxPushFrame {
   op: "tx";
   t: number;
   datoms: WireDatom[];
-  /** Writer's own echo only — the session that POSTed this tx. */
   clientTxId?: string;
 }
 
-/** Unsolicited: this principal's rule view flipped — drop local state and sieve current. */
 export interface ResyncFrame {
   op: "resync";
   t: number;
   datoms?: WireDatom[];
 }
 
-/** Diagnostic response headers worth carrying back on a reply (the `x-ramose-*` set the routes set). */
 export const META_HEADERS: readonly string[] = [
   "x-ramose-ms",
   "x-ramose-r2-gets",
@@ -76,102 +62,58 @@ export const META_HEADERS: readonly string[] = [
   "x-ramose-colo",
 ];
 
-/** Worker→replica upgrade: the verified principal, so the replica does not re-parse the JWT. */
 export const PRINCIPAL_HEADER = "x-ramose-principal";
-/** Test-only Worker→Replica credential; never accepted on the public data plane. */
 export const TEST_SESSION_TOKEN_HEADER = "x-ramose-test-session-token";
 
-// ---- seams -----------------------------------------------------------------
-
-/** The bits of a `WebSocket` a session uses (a Workers / DO server socket). */
 export interface SocketLike {
   send(data: string): void;
   close(code?: number, reason?: string): void;
   addEventListener(type: "message" | "close" | "error", cb: (ev: any) => void): void;
 }
 
-/** Runs one planned frame against HTTP routes; never rejects for a non-2xx. */
 export type SessionDispatch = (rest: string, init: { method: string; headers: Record<string, string>; body?: string }, principal?: Principal) => Promise<Response>;
 
-/** Hibernation attachment / reconstruct seed. */
 export interface SessionState {
   readonly principal?: Principal;
   readonly lastT: number;
   readonly watermark: number;
   readonly writerEcho?: { t: number; clientTxId: string };
-  /** Resolved write mode from the Worker upgrade (`x-ramose-writes`). */
   readonly writes?: WritesMode;
 }
 
 export interface SessionOptions {
   dispatch: SessionDispatch;
-  /** the principal from the upgrade (`?token=` / `Authorization`) */
   principal?: Principal;
-  /** re-verify a token for this same database; rejects when it is refused */
   authenticate?: (token: string) => Promise<Principal>;
-  /** `{ eid, class }` for the `auth` ack — the swapped principal's entity, `null` when the peer does not provision this principal */
   describe?: (principal: Principal) => Promise<WirePrincipal>;
-  /** peer-owned upsert before the `auth` ack, so the swapped principal has an eid */
   provision?: (principal: Principal) => Promise<Principal>;
-  /**
-   * Novelty since the current root — used by `{ op: "sync" }` only.
-   * Follow is apply-then-push ({@link Session.applyEntry}), not a poller.
-   */
   readLog?: () => Promise<SessionLog>;
-  /** sieve one unfiltered log entry for this socket's current principal */
   filterEntry?: (entry: SessionLogEntry, principal?: Principal) => Promise<SessionTxDecision>;
-  /** current-value dump through the read view — first sync / resync */
   snapshot?: (principal?: Principal) => Promise<{ t: number; datoms: WireDatom[] }>;
-  /** restore after hibernation */
   seed?: SessionState;
-  /**
-   * When false, the caller drives {@link Session.onMessage} (hibernating DO
-   * `webSocketMessage`). Default true for tests / a Worker-accepted socket.
-   */
   listen?: boolean;
 }
 
 export interface Session {
-  /** Handle one inbound frame. Never rejects; concurrent calls are fine (frames are not serialized). */
   onMessage(data: string | ArrayBuffer): Promise<void>;
-  /**
-   * Replica apply: walk this one applied frame. The follow cursor is the
-   * walked `t` (and the replica's `basisT` after apply). Never stamps a tip
-   * that was not applied. Overlapping calls must not snapshot `watermark`
-   * at enqueue — each job starts from the cursor as it is when it runs.
-   */
   applyEntry(entry: SessionLogEntry, rootT: number): Promise<void>;
   close(): void;
-  /** Highest `t` this socket has been told about (does not advance on a skipped empty). */
   readonly lastT: number;
-  /**
-   * Follow cursor: last `t` this session has **walked** (including sieved
-   * skips). Advances only by walking applied novelty in `t` order, or to a
-   * snapshot's `t` after a dump. Never jumps to a log tip without that dump.
-   */
   readonly watermark: number;
-  /** Current principal (upgrade or last successful `auth`). */
   readonly principal: Principal | undefined;
-  /** Persist across DO hibernation. */
   state(): SessionState;
-  /** Resolves when the socket is closed or errors. */
   readonly closed: Promise<void>;
 }
 
-// ---- planning --------------------------------------------------------------
-
-/** A frame, resolved to the sub-request that answers it. */
 export interface SessionPlan {
   id: number;
   op: ClientFrame["op"];
-  /** path under `/db/:name` — may carry a query string (`/entity/7?asOf=3`) */
   rest: string;
   method: string;
   headers: Record<string, string>;
   body?: string;
 }
 
-/** A frame that could not be planned; answered with a 400 reply (the socket stays open). */
 export interface PlanError {
   id: number | undefined;
   error: string;
@@ -179,24 +121,17 @@ export interface PlanError {
 
 const JSON_CT = { "content-type": "application/json" };
 
-/** `x-ramose-min-t` when the caller carries a fence, nothing otherwise. */
 const minTHeader = (v: unknown): Record<string, string> =>
   typeof v === "number" && Number.isFinite(v) && v >= 0 ? { "x-ramose-min-t": String(v) } : {};
 
 const isPlanError = (p: SessionPlan | PlanError): p is PlanError => (p as PlanError).error !== undefined;
 
-/** Pure expiry decision used before dispatching every non-auth frame. */
 export const sessionPrincipalExpired = (
   principal: Principal,
   nowMs = Date.now(),
 ): boolean =>
   principal.claims.exp !== undefined && principal.claims.exp * 1000 <= nowMs;
 
-/**
- * Frame → sub-request. Pure, and the only place the wire ops map onto routes.
- * Payloads are re-serialized verbatim: whatever encoding the client used for
- * `tx`/`query`/`pattern` is what the route's own `fromJson` sees.
- */
 export function planOf(frame: unknown): SessionPlan | PlanError {
   if (typeof frame !== "object" || frame === null || Array.isArray(frame)) return { id: undefined, error: "frame must be an object" };
   const f = frame as Record<string, unknown>;
@@ -257,20 +192,12 @@ export function parsePrincipalHeader(raw: string | null): Principal | undefined 
   }
 }
 
-// ---- the session ------------------------------------------------------------
-
-/**
- * Wire an accepted socket to dispatch + the apply-then-push walk.
- * The replica is the thing that applies the log and the thing that notifies.
- */
 export function openSession(socket: SocketLike, options: SessionOptions): Session {
   const seed = options.seed;
   let lastT = seed?.lastT ?? 0;
-  /** last `t` considered, including skipped empties — must not leak via `lastT` */
   let watermark = seed?.watermark ?? 0;
   let dead = false;
   let principal = seed?.principal ?? options.principal;
-  /** This socket's last committed write — attached only to that `t`'s `{ op: "tx" }`. */
   let writerEcho: { t: number; clientTxId: string } | undefined = seed?.writerEcho;
   let expiring = false;
   let resolveClosed!: () => void;
@@ -295,19 +222,14 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     try {
       socket.send(JSON.stringify(frame));
     } catch {
-      // the socket went away between the check and the send, or the runtime
-      // refused the write — never leave a zombie: close so the client sees the
-      // session end and reconnects instead of waiting forever on dropped frames
       die();
       try {
         socket.close(1011, "session send failed");
       } catch {
-        /* already gone */
       }
     }
   };
 
-  /** This socket has been told about `t` (a visible tx / resync). Skips stay silence. */
   const seenT = (t: number): void => {
     if (typeof t === "number" && Number.isFinite(t) && t > lastT) lastT = t;
   };
@@ -317,7 +239,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       const snap = await options.snapshot(principal);
       send({ op: "resync", t: snap.t, datoms: snap.datoms });
       seenT(snap.t);
-      // dump in hand — the cursor may sit at the snapshot's t, not a guessed tip
       watermark = snap.t;
       return;
     }
@@ -326,13 +247,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     watermark = t;
   };
 
-  /**
-   * Walk applied novelty in `t` order from `from`. A sieved skip is silence
-   * (watermark moves, no `t` leak). A missing `t` in `(from, log.t]` with
-   * `t > rootT` is a torn window — dump if we have a snapshot, otherwise hold
-   * the cursor. Never jump the cursor to `log.t` and later `continue` a
-   * late-appearing visible `t`.
-   */
   const consider = async (log: SessionLog, from: number): Promise<void> => {
     if (dead) return;
     if (from < log.rootT) {
@@ -357,8 +271,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     const pending = log.entries.filter((e) => e.t > from).sort((a, b) => a.t - b.t);
     let cursor = from;
     const torn = async (): Promise<void> => {
-      // replica apply is dense, so a hole here is a test / catch-up tear.
-      // A snapshot dump is honest. Without one, hold the cursor.
       if (options.snapshot) await pushResync(log.t);
     };
     for (const e of pending) {
@@ -376,8 +288,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         await pushResync(e.t);
         return;
       }
-      // `kind: "tx"` without `datoms` is a sieve bug. Never send the replica
-      // entry — that is the unfiltered log.
       if (decision.datoms === undefined) throw new Error("session filter returned tx without datoms");
       cursor = e.t;
       watermark = e.t;
@@ -401,16 +311,10 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     try {
       socket.close(1011, "session filter failed");
     } catch {
-      /* already gone */
     }
   };
 
   let considering: Promise<void> = Promise.resolve();
-  /**
-   * Walk the log from the cursor as it is when this job *runs*. Capturing
-   * `watermark` at enqueue lets two overlapping `applyEntry`s share the
-   * same `from`; the later `t` then looks torn and never sends `{ op: tx }`.
-   */
   const enqueueConsider = (log: SessionLog): Promise<void> => {
     const run = considering.then(() => consider(log, watermark));
     considering = run.catch(() => undefined);
@@ -423,7 +327,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       throw err;
     });
 
-  /** `{op:"auth", token}`: re-verify, then swap. A refusal keeps the old principal. */
   const refresh = async (f: Record<string, unknown>): Promise<void> => {
     const id = typeof f.id === "number" && Number.isFinite(f.id) ? f.id : 0;
     if (!options.authenticate) {
@@ -436,7 +339,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         try {
           principal = await options.provision(principal);
         } catch {
-          // a transient writer error must not fail the swap; describe may still resolve
         }
       }
       let who: WirePrincipal | undefined;
@@ -444,7 +346,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         try {
           who = await options.describe(principal);
         } catch {
-          // a transient replica error must not fail the swap; the ack just cannot name the entity
           who = { eid: null, class: principal.class };
         }
       }
@@ -479,7 +380,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         const log = await options.readLog();
         watermark = from;
         await enqueueConsider(log);
-        // walk cursor, not log tip — a torn window must not claim log.t
         send({ id, status: 200, body: { t: watermark, from } });
       } catch (err) {
         send({ id, status: 500, body: { error: err instanceof Error ? err.message : String(err) } });
@@ -492,8 +392,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       send({ id: plan.id ?? 0, status: 400, body: { error: plan.error } });
       return;
     }
-    // the principal is bound at plan time: frames planned after an `auth` ack use
-    // the new one, in-flight ones finish under the old
     const bound = principal;
     if (bound !== undefined && sessionPrincipalExpired(bound)) {
       send({ id: plan.id, status: 401, body: { error: "token expired" } });
@@ -516,7 +414,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       try {
         body = JSON.parse(text);
       } catch {
-        body = text; // an upstream pass-through that was never JSON
+        body = text;
       }
     } catch (err) {
       send({ id: plan.id, status: 500, body: { error: err instanceof Error ? err.message : String(err) } });
@@ -528,8 +426,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       if (v !== null) headers[h] = v;
     }
     send({ id: plan.id, status: res.status, body, ...(Object.keys(headers).length > 0 ? { headers } : {}) });
-    // HTTP ack paints the writer overlay. It does not move the follow cursor —
-    // that moves when the replica applies this t and walks the socket.
     if ((plan.op === "transact" || plan.op === "operation") && res.ok) {
       const ack = body as { t?: unknown; clientTxId?: unknown; clientOpId?: unknown } | null;
       const echoT = typeof ack?.t === "number" ? ack.t : undefined;
@@ -545,7 +441,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
           if (typeof req.clientTxId === "string" && req.clientTxId.length > 0) echoId = req.clientTxId;
           else if (typeof req.clientOpId === "string" && req.clientOpId.length > 0) echoId = req.clientOpId;
         } catch {
-          /* body was not JSON — no client id to echo */
         }
       }
       if (echoT !== undefined && echoId !== undefined) writerEcho = { t: echoT, clientTxId: echoId };
@@ -586,7 +481,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
   };
 }
 
-/** After the replica applies one dense `t`, walk every attached session. */
 export async function pushApplied(sessions: Iterable<Session>, entry: SessionLogEntry, rootT: number): Promise<void> {
   for (const s of sessions) await s.applyEntry(entry, rootT);
 }

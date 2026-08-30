@@ -1,32 +1,3 @@
-/**
- * Named client-ref allocation slots (#475 slice 1).
- *
- * An operation that creates entities an offline client must be able to
- * address *before* the server has committed them declares, in its inert
- * descriptor, a named slot for each such entity and binds it to a typed
- * entity-reference path in its own declared output:
- *
- * ```ts
- * Operation({
- *   input: Schema.Struct({ title: Schema.String }),
- *   output: Schema.Struct({ issue: Ramose.EntityId }),
- *   allocates: { issue: ["issue"] },
- *   run: …,
- * })
- * ```
- *
- * A durable queue record then persists `{ slot, clientRef }` pairs, and the
- * authoritative receipt returns `{ clientRef, entityId }` for exactly those
- * slots. Nothing is ever inferred from a transaction tempid name, a callback's
- * source, or the shape of a raw output value: a tempid is transaction-local
- * and an output number is not self-describing, so either inference would bind
- * a durable client identity to a coincidence.
- *
- * The declaration is inert data. It carries no executable body, and the list
- * is canonically ordered here so that the invocation digest (#487, consumed in
- * the next slice) covers a value that cannot depend on author key order.
- */
-
 import type { RamoseVt } from "./valueTypes.ts";
 
 /** One addressable position inside a decoded operation output. */
@@ -43,20 +14,6 @@ export type AllocationSlots = readonly AllocationSlot[];
 
 type Decrement = [never, 0, 1, 2, 3, 4];
 
-/**
- * Every path through an output *codec* that lands on an entity-reference slot.
- *
- * It walks the schema, not the decoded type. A decoded `Ramose.EntityId` and a
- * decoded `Schema.Number` are both `number`, so a decoded-type walk would let
- * `allocates: { issue: ["count"] }` type-check and bind a durable client ref to
- * an ordinary integer. The `RamoseVt<"ref">` brand only exists on the schema,
- * so matching it there is what makes the contract real.
- *
- * `Struct` exposes `fields` and `Array` exposes `value`; anything else — a
- * string, a literal, a union — has no entity-reference position and yields
- * `never`. Bounded depth keeps the type finite for recursive schemas, which is
- * the intended pressure toward flat output contracts.
- */
 export type EntityRefPath<OCodec, Depth extends number = 5> = [Depth] extends
   [never] ? never
   : OCodec extends RamoseVt<"ref"> ? readonly []
@@ -84,14 +41,8 @@ export type AllocationDeclaration<OCodec> = {
   readonly [slot: string]: EntityRefPath<OCodec>;
 };
 
-/** Conservative, stable, and safe as an object key and in a canonical digest. */
 const SLOT_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
-/**
- * The one slot-name predicate. Declaration, durable construction, and durable
- * decoding all use it, so a name one of them accepts is never a name another
- * refuses — which would leave a committed row unreadable on the next restart.
- */
 export const isAllocationSlotName = (value: unknown): value is string =>
   typeof value === "string" && SLOT_NAME.test(value);
 
@@ -128,15 +79,6 @@ const normalizePath = (
   );
 };
 
-/**
- * Unambiguous text of one path, for duplicate detection.
- *
- * A delimiter-joined encoding cannot distinguish a property literally named
- * `"a.b"` from the nested pair `a` then `b`, so two genuinely different output
- * positions would collide and one valid declaration would be rejected as a
- * duplicate. JSON escapes the segments, and keeps a numeric index distinct
- * from the string that spells it.
- */
 export const allocationPathKey = (
   path: readonly AllocationPathSegment[],
 ): string => JSON.stringify(path);
@@ -170,11 +112,6 @@ export const allocationSlots = (
   return Object.freeze(slots);
 };
 
-/**
- * Read the value one declared slot addresses out of a decoded output. Returns
- * `undefined` when the path does not exist, which the authoritative edge
- * treats as a failed allocation rather than as an absent mapping.
- */
 export const readAllocationPath = (
   output: unknown,
   path: readonly AllocationPathSegment[],
@@ -186,9 +123,6 @@ export const readAllocationPath = (
       if (!Array.isArray(cursor) || !Object.hasOwn(cursor, segment)) return undefined;
       cursor = cursor[segment];
     } else {
-      // Own properties only. An inherited value is not part of the output,
-      // and reading one would resolve a slot against something the durable
-      // record never carried.
       if (Array.isArray(cursor) || !Object.hasOwn(cursor, segment)) return undefined;
       cursor = (cursor as Record<string, unknown>)[segment];
     }

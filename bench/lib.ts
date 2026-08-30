@@ -1,6 +1,3 @@
-/**
- * Shared bench helpers: build a 1M-datom in-memory Ramose database.
- */
 import {
   Connection,
   type Datom,
@@ -47,14 +44,13 @@ export function mulberry32(seed: number): () => number {
 export const FIRST_PERSON = FIRST_USER_EID + 100;
 export const N_CITIES = 10;
 
-/** ~10 datoms per person → `people` people ≈ 10·people datoms. */
 export function generateDatoms(people: number, seed = 1): Datom[] {
   const r = mulberry32(seed);
   const out: Datom[] = schemaDatoms(2);
   const t0 = 3;
   for (let i = 0; i < people; i++) {
     const e = FIRST_PERSON + i;
-    const t = t0 + (i % 1000); // spread over 1000 txs
+    const t = t0 + (i % 1000);
     out.push({ e, a: ATTR.name, vt: ValueTag.Str, v: `person-${i}`, t, op: true });
     out.push({ e, a: ATTR.email, vt: ValueTag.Str, v: `p${i}@example.com`, t, op: true });
     out.push({ e, a: ATTR.age, vt: ValueTag.Long, v: Math.floor(r() * 90), t, op: true });

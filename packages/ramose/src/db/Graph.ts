@@ -1,5 +1,3 @@
-/** The built-in trait implemented by every dynamic child-graph row. */
-
 import type { BindableTrait, CodeDefinition } from "./Binding.ts";
 import { Field, string } from "./Field.ts";
 import { Trait, type Trait as TraitType } from "./Trait.ts";

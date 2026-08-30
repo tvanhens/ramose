@@ -1,16 +1,3 @@
-/**
- * Test-only checkpoints and admin enablement (issue #390).
- *
- * Inert in production:
- *   - HTTP `/__test__/*` is 404 unless `RAMOSE_TEST_HOOKS=1` and the stage
- *     is not `prod`.
- *   - `checkpoint` / `checkpointSync` are no-ops until a test admin route
- *     arms them in this isolate.
- *
- * Armed checkpoints never invent a successful result. They wait, throw, or
- * pass through to the real operation.
- */
-
 export const TEST_HOOKS_ENV_KEY = "RAMOSE_TEST_HOOKS" as const;
 
 export type TestHooksEnv = {
@@ -46,33 +33,20 @@ type Arm = {
   pending: boolean;
 };
 
-/**
- * How a `throw` arm fails, beyond the default `Error(message)`.
- *
- * A boundary that stands in for a native platform failure has to fail the way
- * the platform does — recovery classifies a `DOMException` by its name, and an
- * ordinary `Error` would be classified as an unrelated bug and propagate. This
- * makes the real operation fail with the real exception type at the real
- * boundary; it never invents a successful result.
- */
 export type CheckpointThrowOptions = {
   readonly error?: string | undefined;
-  /** Throw a `DOMException` under this name instead of a plain `Error`. */
   readonly errorName?: string | undefined;
-  /** How many times this arm fires before the boundary passes through again. */
   readonly times?: number | undefined;
 };
 
 const arms = new Map<string, Arm>();
 let enabled = false;
 
-/** Public `/__test__/*` and isolate enablement. Never true on prod stage. */
 export const testHooksEnabled = (env?: TestHooksEnv): boolean => {
   if (env?.RAMOSE_STAGE === "prod") return false;
   return env?.RAMOSE_TEST_HOOKS === "1";
 };
 
-/** Turn on checkpoint evaluation in this isolate (called from `/__test__` admin). */
 export const enableTestHooks = (): void => {
   enabled = true;
 };
@@ -152,17 +126,12 @@ export const checkpointStatus = (): Record<string, CheckpointArm> => {
   return out;
 };
 
-/** Record an instantaneous boundary without creating a cross-request waiter. */
 export const checkpointReached = (name: string): void => {
   if (!enabled) return;
   const arm = arms.get(name);
   if (arm !== undefined) arm.pending = true;
 };
 
-/**
- * Async barrier. No-op until armed. `wait` parks until `releaseCheckpoint`.
- * `throw` fails the real operation at this boundary.
- */
 export const checkpoint = async (name: string): Promise<void> => {
   if (!enabled) return;
   const arm = arms.get(name);
@@ -174,18 +143,11 @@ export const checkpoint = async (name: string): Promise<void> => {
   }
   if (arm.action === "wait") {
     arm.pending = true;
-    // Construct the waiter in the request context that reaches the boundary,
-    // not in the earlier admin request that armed it. Workerd forbids safely
-    // resuming a Promise created by a completed request context.
     if (arm.wait === undefined) {
       arm.wait = new Promise<void>((resolve) => {
         arm.release = resolve;
       });
     }
-    // A same-isolate timer lets real Worker-boundary tests release the exact
-    // arm they reached even when the local runtime dispatches concurrent admin
-    // requests to another isolate. It exists only for explicitly armed test
-    // hooks and starts after the real boundary is reached.
     if (arm.releaseAfterMs !== undefined) {
       arm.timer = setTimeout(() => releaseCheckpoint(name), arm.releaseAfterMs);
     }
@@ -193,10 +155,6 @@ export const checkpoint = async (name: string): Promise<void> => {
   }
 };
 
-/**
- * Sync throw-only barrier for `transactionSync` and other sync hosts.
- * `wait` is ignored here — arm `throw` for rollback tests.
- */
 export const checkpointSync = (name: string): void => {
   if (!enabled) return;
   const arm = arms.get(name);
@@ -206,7 +164,6 @@ export const checkpointSync = (name: string): void => {
   throw checkpointFailure(name, arm);
 };
 
-/** Injected only by the repository's explicit source-only testing assembly. */
 export const testRuntimeBoundaries = Object.freeze({
   checkpoint,
   checkpointSync,
@@ -220,10 +177,6 @@ const json = (body: unknown, status = 200): Response =>
     headers: { "content-type": "application/json" },
   });
 
-/**
- * Isolate-local checkpoint / abort admin for Transactor and Replica DOs.
- * The Worker forwards `/__test__/db/:name/checkpoint|abort` here.
- */
 export const handleIsolateTestAdmin = async (
   request: Request,
   path: string,
@@ -235,8 +188,6 @@ export const handleIsolateTestAdmin = async (
   if (!path.startsWith("/admin/test/")) return undefined;
   enableTestHooks();
   if (path === "/admin/test/abort" && request.method === "POST") {
-    // Drop isolate test state. `ctx.abort` rebuilds the DO instance; miniflare
-    // may keep the module, so reset here as well as in the DO constructor.
     resetTestHooks();
     if (abort !== undefined) queueMicrotask(() => abort("test abort"));
     return json({ ok: true, aborted: true });

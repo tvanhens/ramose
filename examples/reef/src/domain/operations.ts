@@ -1,7 +1,3 @@
-/**
- * Portable named operation declarations shared with authoritative execution.
- */
-
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 import { rankAfter } from "./rank.ts";
@@ -17,7 +13,6 @@ import {
 const Op = Ramose.Operation.for(Reef);
 const { Query } = Ramose;
 
-/** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [
   { name: "bug", color: "#ef5f6b" },
   { name: "feature", color: "#5b8cff" },
@@ -40,13 +35,6 @@ const authFetch = (
   return (input, init) => fetchFn.call(auth, input, init);
 };
 
-/**
- * Workspace provisioning as an operation: optional org registration as an
- * effect, then seed labels. Authoritative catalog publication happens before
- * this operation is admitted. The peer upserts the creator's `user` row
- * (`sub`, `role`, and `ramose.attrs`) at session establishment — the body
- * must not write that row.
- */
 export const provisionWorkspaceOp = Op(
   "workspace/provision",
   {
@@ -319,9 +307,6 @@ export interface NewIssue {
   readonly labelIds?: readonly number[];
 }
 
-// ── sample data ──────────────────────────────────────────────────────────────
-
-/** A realistic starter board, for the empty state. Label names map to ids. */
 const SAMPLE_ISSUES: readonly {
   title: string;
   status: Status;

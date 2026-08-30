@@ -1,10 +1,3 @@
-/**
- * Forwarding recorders and `/__test__/*` admin against the real local Worker.
- *
- * `/db/*` stays fail-closed. These tests prove the instrumentation path:
- * record-and-forward, real R2 put/get, isolate checkpoints, DO abort.
- */
-
 import { describe, expect, test } from "bun:test";
 import { recordingTransport } from "../support/recorder.ts";
 import {

@@ -1,8 +1,3 @@
-/**
- * Signs JWTs for the local auth contract. Kept in this package so `jose`
- * resolves. The public JWK / policy JSON live in `test/local/auth-keys.ts`.
- */
-
 import { SignJWT, importJWK } from "jose";
 import { AUD, ISS } from "../../../test/local/auth-keys.ts";
 
@@ -21,7 +16,6 @@ const key = async () => {
   return privateKey;
 };
 
-/** Sign a `ramose.class` identity token. `db` is unused leftover. */
 export const signToken = async (
   _db: string,
   cls: string,

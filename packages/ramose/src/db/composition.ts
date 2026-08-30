@@ -1,10 +1,3 @@
-/**
- * Derive a {@link CompositionIndex} from the TypeScript schema surface.
- *
- * This is the same descriptor-level walk Entity / Trait already do — not a
- * second membership store and not database-resident composition metadata.
- */
-
 import {
   composerIdent,
   reachableTraits,
@@ -14,7 +7,6 @@ import {
 import { makeCompositionIndex, type CompositionIndex } from "../internal/core/composition.ts";
 import type { AnySchema } from "./Schema.ts";
 
-/** Type-to-trait lookup for the composers in `schema`. */
 export const compositionFromSchema = (schema: AnySchema): CompositionIndex => {
   const entities = Object.values(schema.entities);
   const traits = reachableTraits(entities as ComposerLike[]);

@@ -1,11 +1,3 @@
-/**
- * Source-only QueryReplica assembly for Ramose's real local/Alchemy tests.
- *
- * Nothing in the supported `ramose/worker` graph imports this module. It owns
- * the deferred session protocol, diagnostic query/info routes, admin controls,
- * and mutable race boundaries that must not ship in the production Worker.
- */
-
 import { DurableObject } from "cloudflare:workers";
 import { Unauthorized } from "../../db/Errors.ts";
 import type { Principal } from "../../worker/auth.ts";
@@ -66,14 +58,12 @@ export interface ReplicaTesting {
   ) => Promise<Response | undefined>;
 }
 
-/** @internal Explicit non-production assembly; never re-exported by `ramose/worker`. */
 export const createTestingQueryReplicaDO = (
   testing: ReplicaTesting,
 ): (new (
   ctx: DurableObjectState,
   env: RamoseEnv,
 ) => DurableObject<RamoseEnv>) => class QueryReplicaDO extends QueryReplicaDOBase {
-  /** Deferred test-session protocol objects rebuilt from hibernation attachments. */
   private readonly live = new Map<WebSocket, Session>();
 
   constructor(ctx: DurableObjectState, env: RamoseEnv) {
@@ -208,7 +198,6 @@ export const createTestingQueryReplicaDO = (
     try {
       ws.serializeAttachment?.(session.state());
     } catch {
-      /* attachment is optional outside workerd */
     }
   }
 
@@ -229,7 +218,6 @@ export const createTestingQueryReplicaDO = (
         try {
           ws.close(1011, "session filter failed");
         } catch {
-          /* already gone */
         }
       }
     }
@@ -316,7 +304,6 @@ export const createTestingQueryReplicaDO = (
     try {
       ws.close(code, "bye");
     } catch {
-      /* already gone */
     }
   }
 
@@ -434,7 +421,6 @@ export const createTestingQueryReplicaDO = (
       try {
         this.ws?.close(1000, "reconnect");
       } catch {
-        /* already gone */
       }
       this.ws = undefined;
       await this.sync();

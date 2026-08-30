@@ -1,45 +1,3 @@
-/**
- * Optimistic projections — the authoring contract (#476 slice 1).
- *
- * An operation may declare one optional pure optimistic projection. It is
- * trusted code from the installed client bundle, and it is a *separate*
- * declaration: never a serialized, inferred, restricted, or interpreted form of
- * the authoritative body, which stays deployed server code and never crosses
- * the client boundary.
- *
- * ```ts
- * optimistic: ({ input, tx }) =>
- *   tx
- *     .set(input.issue, Issue.status, input.status)
- *     .set(input.issue, Issue.rank, input.rank)
- * ```
- *
- * Callers express requested *target values* (`done: true`), not basis-dependent
- * commands (`toggle`), because a projection has no basis to depend on.
- *
- * ## What the API withholds
- *
- * The context carries validated invocation input, the invocation's own target,
- * the client refs its declared allocation slots minted, and a transaction
- * builder. It carries no local-database query, no Effect, no clock, and no
- * server capability. That is an API and authoring constraint expressed by what
- * is *passed in* — there is no JavaScript sandbox here, and nothing anywhere in
- * this design reads a callback's source. {@link runProjection} calls the
- * function; it never parses, validates, rewrites, reconstructs, or interprets
- * it, and it never consults `Function.prototype.toString`.
- *
- * ## Why a stamped field ref and not a bare ident
- *
- * `tx.set` lowers its value through the field's *declared* value type. A bare
- * ident (`":issue/status"`) cannot say whether a 55-character string is a
- * sealed handle or an ordinary title, and inferring it from the characters
- * would bind a durable intent to a coincidence — the same reason an allocation
- * slot is declared rather than discovered. So a projection passes the stamped
- * field (`Issue.status`), which carries both.
- *
- * Portable: this module is on `ramose/db`.
- */
-
 import { bytesToBase64 } from "../internal/core/log.ts";
 import type { Cardinality } from "./Field.ts";
 import { isClientRef, isMutationRef, type ClientRef, type MutationRef } from "./refs.ts";
@@ -49,16 +7,6 @@ const fail = (detail: string): never => {
   throw new Error(`ramose/projection: ${detail}`);
 };
 
-/**
- * One projected value, in the replica's own logical value model.
- *
- * The eight cases are exactly the replica's logical value types, so the overlay
- * lowers them through the same projection the replica installer and the
- * integrity validator share. Only `ref` differs: it names an `EntityId` or a
- * `ClientRef` rather than a replication identity, because a client addresses
- * entities by durable public handle. Every case is structured-cloneable, which
- * is what lets a durable layer row store a changeset rather than serialize one.
- */
 export type ProjectionValue =
   | { readonly type: "long"; readonly value: number }
   | {
@@ -70,19 +18,8 @@ export type ProjectionValue =
   | { readonly type: "ref"; readonly value: MutationRef }
   | { readonly type: "uuid"; readonly value: string }
   | { readonly type: "instant"; readonly value: number }
-  /** Base64, exactly as the replica's own `bytes` logical value carries it. */
   | { readonly type: "bytes"; readonly value: string };
 
-/**
- * One datom-level operation.
- *
- * `set` replaces on a cardinality-one field and adds on a cardinality-many one,
- * exactly as the public verb means; the overlay reads the cardinality from the
- * committed schema rather than trusting a copy stored here, so the two cannot
- * drift. `remove` with no value removes every value of the field. `create`
- * brings a declared allocation slot's client ref into the local view before the
- * server has committed anything. `delete` retracts the entity.
- */
 export type ProjectionOp =
   | {
     readonly op: "set";
@@ -94,19 +31,16 @@ export type ProjectionOp =
     readonly op: "remove";
     readonly entity: MutationRef;
     readonly field: string;
-    /** `null` removes every current value of the field. */
     readonly value: ProjectionValue | null;
   }
   | {
     readonly op: "create";
     readonly entity: ClientRef;
     readonly slot: string;
-    /** The entity definition's `ns`, asserted as `:ramose/type`. */
     readonly type: string;
   }
   | { readonly op: "delete"; readonly entity: MutationRef };
 
-/** One invocation's whole optimistic intent, in call order. */
 export type ProjectionChangeset = readonly ProjectionOp[];
 
 /** What `tx.set` / `tx.remove` accept: a stamped field ref carries both. */
@@ -129,16 +63,6 @@ export type ProjectionEntity = { readonly ns: string };
 export interface ProjectionTx {
   set(entity: MutationRef, field: ProjectionField, value: unknown): ProjectionTx;
   remove(entity: MutationRef, field: ProjectionField, value?: unknown): ProjectionTx;
-  /**
-   * The client ref this invocation minted for one *declared* allocation slot,
-   * created in the local view as an entity of `definition`. A projection may
-   * bring a new entity into view only this way: it cannot manufacture an
-   * `EntityId`, a mapping, a receipt, an authorization, or a commit result.
-   *
-   * The definition is what makes the new row a *member*: `:ramose/type` is
-   * what type-scoped queries join on, so a create without it would be a row no
-   * query could find.
-   */
   create(slot: string, definition: ProjectionEntity): ClientRef;
   delete(entity: MutationRef): ProjectionTx;
 }
@@ -146,7 +70,6 @@ export interface ProjectionTx {
 /** Everything a projection may observe. */
 export type ProjectionContext<Input> = {
   readonly input: Input;
-  /** The invocation's own target, or `undefined` for an untargeted operation. */
   readonly self: MutationRef | undefined;
   readonly tx: ProjectionTx;
 };
@@ -159,17 +82,8 @@ export type OptimisticProjection<Input> = (
 /** Erased projection, for registries that cannot name the input type. */
 export type AnyOptimisticProjection = OptimisticProjection<never>;
 
-/** Revision assumed when a projection declares none. */
 export const DEFAULT_PROJECTION_REVISION = 1;
 
-/**
- * The author-declared projection revision: an ordinary positive integer.
- *
- * It is deliberately *not* part of #487's canonical operation descriptor. If
- * bumping it rotated `OperationVersion`, editing a projection would revoke
- * every already-queued invocation's right to submit — so a projection-only
- * client change stays a projection-only change.
- */
 export const normalizeProjectionRevision = (value: unknown): number => {
   if (value === undefined) return DEFAULT_PROJECTION_REVISION;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
@@ -180,23 +94,12 @@ export const normalizeProjectionRevision = (value: unknown): number => {
   return value as number;
 };
 
-/** The invocation a projection runs against. */
 export type ProjectionInvocation<Input> = {
-  /** Already decoded and validated against the operation's input schema. */
   readonly input: Input;
   readonly self?: MutationRef | undefined;
-  /** Client refs minted for this invocation's declared allocation slots. */
   readonly allocations?: Readonly<Record<string, ClientRef>> | undefined;
 };
 
-/**
- * The result of running one projection.
- *
- * A projection that throws produces no layer rather than a partial one: an
- * invocation still queues normally, and the local view simply shows nothing
- * optimistic for it. Failing loudly here would let one authoring mistake wedge
- * a durable queue that is otherwise perfectly submittable.
- */
 export type ProjectionOutcome =
   | { readonly type: "changeset"; readonly changeset: ProjectionChangeset }
   | { readonly type: "failed"; readonly reason: string };
@@ -234,11 +137,6 @@ const integral = (
   return { type, value: millis as number };
 };
 
-/**
- * Lower one authored value against the field's declared value type. Every
- * refusal happens here, inside the projection call, so a bad value becomes a
- * failed projection rather than a changeset the overlay must later discard.
- */
 const lowerValue = (field: ProjectionField, value: unknown): ProjectionValue => {
   const ident = field.ident;
   switch (field.valueType) {
@@ -273,13 +171,6 @@ const lowerValue = (field: ProjectionField, value: unknown): ProjectionValue => 
   }
 };
 
-/**
- * Engine-owned namespaces. A projection describes application data; letting one
- * assert `:db/valueType` or `:ramose/type` over a committed row would let it
- * restate the local view's own schema and type membership, which nothing about
- * an optimistic update should be able to reach. `tx.create` is the one
- * sanctioned way to claim a type, and only for a ref this device minted.
- */
 const RESERVED_NAMESPACES = [":db/", ":db.", ":ramose/"];
 
 const requireField = (field: ProjectionField): string => {
@@ -303,11 +194,6 @@ class Builder implements ProjectionTx {
     private readonly allocations: Readonly<Record<string, ClientRef>>,
   ) {}
 
-  /**
-   * Sealing after the call returns is what makes "no Effects, no async" real
-   * rather than advisory: a builder captured into a promise or a timer cannot
-   * append to a changeset that has already been handed to the overlay.
-   */
   seal(): void {
     this.sealed = true;
   }
@@ -378,13 +264,6 @@ class Builder implements ProjectionTx {
   }
 }
 
-/**
- * Run one projection natively, with ordinary JavaScript semantics.
- *
- * This is the whole execution model: build the context, call the function, take
- * what the builder recorded. Nothing is serialized, parsed, validated,
- * rewritten, reconstructed, or interpreted, and no source is ever read.
- */
 export const runProjection = <Input>(
   projection: OptimisticProjection<Input>,
   invocation: ProjectionInvocation<Input>,
@@ -396,17 +275,10 @@ export const runProjection = <Input>(
       self: invocation.self,
       tx: builder,
     });
-    // An async projection would resolve after the layer is already visible, so
-    // its later writes could never be part of the same view. Refusing it is the
-    // API constraint that keeps a projection a pure function of its input.
     if (
       typeof (returned as { readonly then?: unknown } | undefined)?.then ===
         "function"
     ) {
-      // Refusing the value does not unsubscribe from it. An async projection
-      // that also rejects would otherwise surface as an unhandled rejection —
-      // crashing the host on Node's default policy — for a result this call has
-      // already decided to discard.
       void (returned as Promise<unknown>).catch(() => {});
       return Object.freeze({
         type: "failed" as const,

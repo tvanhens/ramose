@@ -1,28 +1,3 @@
-/**
- * Datom type, value model, order-preserving value encoding and the four
- * index-order comparators (EAVT / AEVT / AVET / VAET).
- *
- * A datom is `[e a v t op]`:
- *   e  — entity id      (u64 on disk; JS `number`, must be a safe integer)
- *   a  — attribute id   (u32; interned via the schema's `:db/ident`)
- *   v  — tagged value   (long | double | string | bool | ref | uuid | inst | bytes)
- *   t  — transaction    (u64 on disk; JS `number`)
- *   op — assert (true) / retract (false)
- *
- * Values are stored *flat* on the datom (`vt` = tag, `v` = primitive payload)
- * to avoid one extra allocation per datom; 1M-datom in-memory sets are a
- * design target and every byte per datom matters.
- *
- * All comparators here are *structural* (fast). `encodeValue` produces an
- * order-preserving byte string; the test-suite asserts that lexicographic
- * comparison of encoded bytes ≡ `compareValue`.
- */
-
-// ---------------------------------------------------------------------------
-// Value tags
-// ---------------------------------------------------------------------------
-
-/** Numeric tag identifying a value's type. Tag order == cross-type sort order. */
 export const ValueTag = {
   Long: 1,
   Double: 2,
@@ -46,18 +21,12 @@ export const ValueTagName: Record<ValueTag, string> = {
   8: "bytes",
 };
 
-/** Payload representation per tag. */
 export type DatomValue = number | string | boolean | Uint8Array;
 
-/** A tagged value, used at API boundaries (the datom itself stores it flat). */
 export interface TaggedValue {
   readonly vt: ValueTag;
   readonly v: DatomValue;
 }
-
-// ---------------------------------------------------------------------------
-// Datom
-// ---------------------------------------------------------------------------
 
 export interface Datom {
   readonly e: number;
@@ -65,7 +34,6 @@ export interface Datom {
   readonly vt: ValueTag;
   readonly v: DatomValue;
   readonly t: number;
-  /** true = assert, false = retract */
   readonly op: boolean;
 }
 
@@ -75,12 +43,6 @@ export function datom(e: number, a: number, vt: ValueTag, v: DatomValue, t: numb
 
 export const MAX_ID = Number.MAX_SAFE_INTEGER;
 
-/**
- * Validate & normalize a payload for the given tag. Throws on type mismatch.
- * - doubles: -0 → +0, NaN rejected (NaN has no total order)
- * - longs / refs / insts: must be safe integers
- * - uuids: canonical lowercase 8-4-4-4-12 form
- */
 export function normalizeValue(vt: ValueTag, v: DatomValue): DatomValue {
   switch (vt) {
     case ValueTag.Long:
@@ -94,7 +56,7 @@ export function normalizeValue(vt: ValueTag, v: DatomValue): DatomValue {
     case ValueTag.Double:
       if (typeof v !== "number") throw new TypeError(`double value must be a number`);
       if (Number.isNaN(v)) throw new TypeError(`double value must not be NaN`);
-      return v + 0; // -0 → +0
+      return v + 0;
     case ValueTag.Str:
       if (typeof v !== "string") throw new TypeError(`string value must be a string`);
       return v;
@@ -117,16 +79,6 @@ export function normalizeValue(vt: ValueTag, v: DatomValue): DatomValue {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Structural comparators
-// ---------------------------------------------------------------------------
-
-/**
- * Compare two JS strings by Unicode code point (== UTF-8 byte order), not by
- * UTF-16 code unit. The two orders differ only when a surrogate pair meets a
- * BMP char in U+E000..U+FFFF; we remap those ranges so a plain code-unit
- * comparison yields code-point order.
- */
 export function compareStrings(a: string, b: string): number {
   if (a === b) return 0;
   const n = a.length < b.length ? a.length : b.length;
@@ -135,7 +87,6 @@ export function compareStrings(a: string, b: string): number {
     let y = b.charCodeAt(i);
     if (x !== y) {
       if (x >= 0xd800 && y >= 0xd800) {
-        // fix up: surrogates (D800..DFFF) must sort after E000..FFFF
         if (x >= 0xe000) x -= 0x800;
         else x += 0x2000;
         if (y >= 0xe000) y -= 0x800;
@@ -156,7 +107,6 @@ export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   return a.length < b.length ? -1 : a.length > b.length ? 1 : 0;
 }
 
-/** Total order over all tagged values: by tag first, then by payload. */
 export function compareValue(at: ValueTag, av: DatomValue, bt: ValueTag, bv: DatomValue): number {
   if (at !== bt) return at < bt ? -1 : 1;
   switch (at) {
@@ -174,7 +124,6 @@ export function compareValue(at: ValueTag, av: DatomValue, bt: ValueTag, bv: Dat
       return x - y;
     }
     case ValueTag.Uuid: {
-      // canonical lowercase fixed-width hex → code-unit order == byte order
       const x = av as string, y = bv as string;
       return x < y ? -1 : x > y ? 1 : 0;
     }
@@ -188,14 +137,9 @@ export function compareValue(at: ValueTag, av: DatomValue, bt: ValueTag, bv: Dat
 export function valueEquals(at: ValueTag, av: DatomValue, bt: ValueTag, bv: DatomValue): boolean {
   if (at !== bt) return false;
   if (av === bv) return true;
-  // primitives: strict equality is value equality (except NaN); objects (bytes) need the deep compare
   if (typeof av !== "object" || typeof bv !== "object") return typeof av === "number" && typeof bv === "number" && av !== av && bv !== bv;
   return compareValue(at, av, bt, bv) === 0;
 }
-
-// ---------------------------------------------------------------------------
-// Index orders
-// ---------------------------------------------------------------------------
 
 export const Index = {
   EAVT: 0,
@@ -211,7 +155,7 @@ function cmpNum(a: number, b: number): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 function cmpOp(a: boolean, b: boolean): number {
-  return a === b ? 0 : a ? 1 : -1; // retract (false) sorts before assert (true)
+  return a === b ? 0 : a ? 1 : -1;
 }
 
 export function cmpEAVT(x: Datom, y: Datom): number {
@@ -262,22 +206,10 @@ export function comparatorFor(index: IndexId): DatomComparator {
   return COMPARATORS[index];
 }
 
-/** Two datoms are identical when all five components match. */
 export function datomEquals(x: Datom, y: Datom): boolean {
   return x.e === y.e && x.a === y.a && x.t === y.t && x.op === y.op && valueEquals(x.vt, x.v, y.vt, y.v);
 }
 
-// ---------------------------------------------------------------------------
-// Prefix keys (partial keys in index order)
-// ---------------------------------------------------------------------------
-
-/**
- * A prefix key: some leading components of an index key. Which components
- * are meaningful depends on the index order:
- *   EAVT: e, a, v, t     AEVT: a, e, v, t     AVET: a, v, e, t     VAET: v, a, e, t
- * A component that is `undefined` (and every component after it) is
- * unconstrained. Value is present iff `vt !== undefined`.
- */
 export interface Prefix {
   readonly e?: number;
   readonly a?: number;
@@ -286,11 +218,6 @@ export interface Prefix {
   readonly t?: number;
 }
 
-/**
- * Compare a datom against a prefix in the given index's order.
- * Returns <0 if the datom sorts before every key matching the prefix,
- * 0 if it matches, >0 if it sorts after.
- */
 export function comparePrefix(index: IndexId, d: Datom, p: Prefix): number {
   let c: number;
   switch (index) {
@@ -335,7 +262,6 @@ export function comparePrefix(index: IndexId, d: Datom, p: Prefix): number {
   }
 }
 
-/** Number of leading components a prefix constrains in the given index (0..4). */
 export function prefixDepth(index: IndexId, p: Prefix): number {
   const has = (k: "e" | "a" | "v" | "t") =>
     k === "v" ? p.vt !== undefined : (p as any)[k] !== undefined;
@@ -355,16 +281,11 @@ export const INDEX_ORDER: Record<IndexId, readonly ("e" | "a" | "v" | "t")[]> = 
   3: ["v", "a", "e", "t"],
 };
 
-// ---------------------------------------------------------------------------
-// Order-preserving byte encoding of values
-// ---------------------------------------------------------------------------
-
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: false });
 
 const SIGN_FLIP = 1n << 63n;
 
-/** 8-byte big-endian encoding of a signed integer with the sign bit flipped (order-preserving). */
 export function encodeI64(n: number | bigint, out: Uint8Array, off: number): void {
   const b = BigInt.asUintN(64, BigInt(n)) ^ SIGN_FLIP;
   const hi = Number(b >> 32n) >>> 0;
@@ -387,7 +308,6 @@ export function decodeI64(buf: Uint8Array, off: number): bigint {
   return BigInt.asIntN(64, u ^ SIGN_FLIP);
 }
 
-/** 8-byte big-endian unsigned (order-preserving for non-negative safe integers). */
 export function encodeU64(n: number, out: Uint8Array, off: number): void {
   const hi = Math.floor(n / 0x100000000) >>> 0;
   const lo = (n % 0x100000000) >>> 0;
@@ -410,17 +330,14 @@ export function decodeU64(buf: Uint8Array, off: number): number {
 
 const f64buf = new DataView(new ArrayBuffer(8));
 
-/** Order-preserving 8-byte encoding of an IEEE-754 double. */
 export function encodeF64(x: number, out: Uint8Array, off: number): void {
-  f64buf.setFloat64(0, x + 0, false); // -0 → +0
+  f64buf.setFloat64(0, x + 0, false);
   let hi = f64buf.getUint32(0, false);
   let lo = f64buf.getUint32(4, false);
   if (hi & 0x80000000) {
-    // negative: flip all bits
     hi = ~hi >>> 0;
     lo = ~lo >>> 0;
   } else {
-    // positive: flip sign bit
     hi = (hi | 0x80000000) >>> 0;
   }
   out[off] = hi >>> 24;
@@ -463,14 +380,6 @@ export function bytesToUuid(b: Uint8Array, off = 0): string {
   return s;
 }
 
-/**
- * Encode a tagged value into an order-preserving byte string:
- *   [tag byte][payload]
- * Lexicographic comparison of the output (shorter-prefix-first) matches
- * `compareValue`. Note this is a *standalone* value encoding — when embedded
- * in a composite key it must be length-prefixed or terminated (segments do
- * the former); tree keys are compared structurally so that never matters.
- */
 export function encodeValue(vt: ValueTag, v: DatomValue): Uint8Array {
   switch (vt) {
     case ValueTag.Long:
@@ -520,7 +429,6 @@ export function encodeValue(vt: ValueTag, v: DatomValue): Uint8Array {
   }
 }
 
-/** Inverse of `encodeValue`. */
 export function decodeValue(buf: Uint8Array): TaggedValue {
   const vt = buf[0] as ValueTag;
   switch (vt) {
@@ -544,16 +452,6 @@ export function decodeValue(buf: Uint8Array): TaggedValue {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Convenience: JS value ⇄ tagged value
-// ---------------------------------------------------------------------------
-
-/**
- * Infer a value tag from a plain JS value (used when no schema attribute is
- * available to decide, e.g. `[?e ?a 42]`). numbers → long (or double if
- * non-integer), strings → string (uuid if it looks like one? no — explicit),
- * booleans → bool, Date → inst, Uint8Array → bytes, bigint → long.
- */
 export function inferTag(v: unknown): TaggedValue {
   switch (typeof v) {
     case "number":
@@ -573,13 +471,11 @@ export function inferTag(v: unknown): TaggedValue {
   throw new TypeError(`cannot infer value type for ${String(v)}`);
 }
 
-/** Convert a stored payload back into an idiomatic JS value (Date for inst). */
 export function toJsValue(vt: ValueTag, v: DatomValue): unknown {
   if (vt === ValueTag.Inst) return new Date(v as number);
   return v;
 }
 
-/** Stable string key for hashing a value in joins / sets. */
 export function valueKey(vt: ValueTag, v: DatomValue): string {
   switch (vt) {
     case ValueTag.Bytes: {

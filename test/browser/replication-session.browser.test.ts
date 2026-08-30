@@ -171,9 +171,6 @@ browserTest("restores only an exact credential binding and isolates observer fai
     expect(bindingRecords).toHaveLength(1);
     expect(candidateRecords).toHaveLength(1);
 
-    // The post-commit activation fence: an activation that never delivers an
-    // authoritative outcome never fences. Restoring a stale value, opening,
-    // failing to connect, and closing are none of them.
     let fences = 0;
     session = await ReplicationSession.open({
       activation,
@@ -410,8 +407,6 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       selected.readCompatibilityHash,
     ))?.revision).toBe(changedRevision);
 
-    // A colliding selector nominates the old principal only until the current
-    // authenticated Reset confirms and rebinds the other identity.
     const collision = await storage.selectCacheCandidate(
       oldKey,
       selected.readCompatibilityHash,
@@ -438,8 +433,6 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       selected.readCompatibilityHash,
     ))?.revision).toBe(opaque("2"));
 
-    // A different route slot has no candidate, but the authenticated identity
-    // still locates the committed partition and can bind that new slot.
     expect(await storage.selectCacheCandidate(
       renamedKey,
       selected.readCompatibilityHash,
@@ -510,9 +503,6 @@ browserTest("never relabels a shared physical partition after a post-fence crash
     expect(replicaPartitionKey(replacement)).toBe(replicaPartitionKey(selected));
     await install(storage);
 
-    // A valid Reset/Start may bind the newly authenticated identity before its
-    // replacement snapshot commits. A crash at that point must not turn the
-    // prior record into the new identity's value on restart.
     await storage.bindAuthenticated({
       fingerprint,
       identity: replacement,
@@ -571,7 +561,7 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
       for (const [store, keyPath] of LEGACY_STORE_KEY_PATHS) {
         database.createObjectStore(store, { keyPath: keyPath as string | string[] });
       }
-      // A store family this format does not own must survive the migration.
+
       database.createObjectStore(mutations, { keyPath: "id" });
     });
     const legacyPartition = "ramose-replica-v1:legacy";
@@ -586,7 +576,7 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
       datoms: [],
-      // Version 1 persisted annotation documentation inside its schema.
+
       attributes: [{
         ident: ":item/name",
         valueType: 2,
@@ -625,7 +615,7 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
       hash: "legacy-node",
       body: new Uint8Array([1, 2, 3]),
     });
-    // Version 1 keyed both of these by hashed graph-path text.
+
     seed.objectStore("replica-credential-bindings-v1").put({
       fingerprint: "path-keyed-fingerprint",
       identity: selected,
@@ -658,7 +648,6 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
     expect(counts).toEqual(counts.map(() => 0));
     expect(preserved).toBe(1);
 
-    // The reset partition is unreachable and a fresh replica installs cleanly.
     expect(await upgraded.restore(
       selected,
       attributes,
@@ -677,13 +666,6 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
   }
 });
 
-/**
- * Every store the previous build owned, at the shape it owned them.
- *
- * Storage version 3 adds no store — it only changes what a manifest holds — so
- * seeding this set at the previous database version produces exactly the
- * database an origin running the last build is sitting on.
- */
 const PREVIOUS_STORE_KEY_PATHS: readonly (readonly [string, string | string[]])[] = [
   ...LEGACY_STORE_KEY_PATHS,
   ["replica-route-slots-v1", ["scope", "pathKey"]],
@@ -696,11 +678,7 @@ browserTest(
     const name = `ramose-session-storage-v3-${browser.uniqueId}`;
     const scope = replicaScopeOf(selected);
     const receiver = replicaDatabaseScopeOf(selected);
-    // The spelling the previous build stamped into every row it queued, written
-    // out literally. That is what makes this a regression rather than a
-    // tautology: if a manifest bump moved the lifecycle key space,
-    // `replicaScopeKey` would stop producing this string and the row below
-    // would refuse its own acknowledgement forever.
+
     const scopeKey = ["ramose-replica-scope-v2", selected.server, selected.principal]
       .join(":");
     expect(replicaScopeKey(scope)).toBe(scopeKey);
@@ -709,9 +687,7 @@ browserTest(
       "ramose-replica-v3:",
       "ramose-replica-v2:",
     );
-    // Written by the previous build, through the very builders that build
-    // wrote them with — so the `scope` these rows carry is not a guess about
-    // the old spelling, it is the spelling this build still computes.
+
     const record = buildOutboxRecord({
       invocation: invocationId(),
       receiver,
@@ -747,8 +723,7 @@ browserTest(
         MUTATION_QUEUES,
         MUTATION_RECEIPTS,
       ], "readwrite");
-      // A storage-version-2 manifest: no sealed-handle binding, so every row it
-      // holds could be read and never addressed.
+
       seed.objectStore("replica-committed-v1").put({
         partition: legacyPartition,
         storageVersion: 2,
@@ -767,8 +742,7 @@ browserTest(
         hash: "version-2-node",
         body: new Uint8Array([1, 2, 3]),
       });
-      // Fence state, well past its initial value — which is the whole point:
-      // recreating it at 1 would unfence work a completed clear had fenced off.
+
       const generations = seed.objectStore(REPLICA_GENERATIONS_STORE);
       generations.put({ key: scopeKey, generation: 7, confirmedAt: 1_700_000_000_000 });
       generations.put({
@@ -825,22 +799,17 @@ browserTest(
       await transactionDone(inspect);
       inspect.db.close();
 
-      // (a) The unreadable manifests and their nodes are gone.
       expect(manifests).toBe(0);
       expect(nodes).toBe(0);
-      // (b) The queued invocation is untouched…
+
       expect(queued).toBe(1);
-      // …and still acknowledges. This is the regression: the row carries the
-      // scope key the previous build stamped it with, and an acknowledgement
-      // recomputes that key. If a manifest-format bump could move the lifecycle
-      // key space, this row would refuse its own acknowledgement — permanently,
-      // since it is never removed and the recomputation never changes.
+
       await expect(upgraded.outbox().acknowledge(record, {
         _tag: "Committed",
         output: null,
         mappings: [],
       })).resolves.toMatchObject({ state: "committed" });
-      // (c) And the fence state is exactly where the previous build left it.
+
       expect(scopeGeneration?.generation).toBe(7);
       expect(databaseGeneration?.generation).toBe(4);
     } finally {
@@ -855,7 +824,7 @@ browserTest("stable route slots survive a rename and refuse a delete/recreate", 
   const storage = await IndexedDbReplicaStorage.open(name);
   const address = replicationActivationAddress(activation);
   const scope = await replicaRouteScope(address);
-  // One Graph entity, seen under two successive names.
+
   const boardLineage = [opaque("1")];
   const recreatedLineage = [opaque("2")];
   const boardSlot = await stableReplicaRouteSlot(boardLineage);
@@ -892,8 +861,6 @@ browserTest("stable route slots survive a rename and refuse a delete/recreate", 
       },
     });
 
-    // Renaming the Graph the parent replica has observed keeps one slot, so the
-    // same exact credential restores the same child replica.
     const renamedPathKey = await replicaRoutePathKey(["board-renamed"]);
     await storage.bindAuthenticated({
       fingerprint: boundFingerprint,
@@ -912,8 +879,6 @@ browserTest("stable route slots survive a rename and refuse a delete/recreate", 
       selected.readCompatibilityHash,
     ))?.revision).toBe(opaque("r"));
 
-    // Deleting and recreating a same-named Graph produces a different lineage,
-    // so nothing the previous Graph stored can be selected.
     expect(await storage.restoreBound(
       await replicationCredentialFingerprint(credential, address, recreatedSlot),
       attributes,
@@ -925,8 +890,6 @@ browserTest("stable route slots survive a rename and refuse a delete/recreate", 
       selected.readCompatibilityHash,
     )).toBeUndefined();
 
-    // An offline client whose observation table never saw the rename falls back
-    // to the provisional path slot and reuses nothing.
     const unobservedPathKey = await replicaRoutePathKey(["board-never-observed"]);
     expect(await storage.observedRouteSlot({ scope, pathKey: unobservedPathKey }))
       .toBeUndefined();
@@ -938,8 +901,6 @@ browserTest("stable route slots survive a rename and refuse a delete/recreate", 
       selected.readCompatibilityHash,
     )).toBeUndefined();
 
-    // The session resolves the same slot offline, so the renamed path restores
-    // the child replica as stale while the unobserved name restores nothing.
     const renamed = await ReplicationSession.open({
       activation: { ...activation, graphPath: ["board-renamed"] },
       credential,
@@ -962,7 +923,6 @@ browserTest("stable route slots survive a rename and refuse a delete/recreate", 
     expect(undiscovered.snapshot().value).toBeUndefined();
     await undiscovered.close();
 
-    // Path text never becomes a persisted key.
     const inspected = await openNative(name);
     const tx = inspected.transaction("replica-route-slots-v1", "readonly");
     const records = await requestResult<unknown[]>(

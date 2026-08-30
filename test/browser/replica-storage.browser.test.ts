@@ -208,24 +208,15 @@ browserTest("keeps stable partition-local ids across snapshot, change, and reope
     expect(final?.revision).toBe(revision3);
     expect((await namedEntities(final!.db)).get("updated")).toBe(originalEid);
 
-    // The sealed-handle binding (#477). A local eid is a partition-local
-    // number this replica invented; the handle is the identity a mutation is
-    // addressed by, and the join between them is what every install and every
-    // restore above has to keep — through a fresh IndexedDB connection, and
-    // through a change that renamed the entity and added a second one.
     expect(final!.handles.get(sealedHandle(entityZ))).toBe(originalEid);
     expect(final!.handles.get(sealedHandle(entityM)))
       .toBe(thirdNames.get("incremental"));
-    // Every entity the value holds is addressable, including one the change
-    // never mentioned: the binding describes the committed value, not the
-    // last frame.
+
     expect(final!.handles.get(sealedHandle(entityA)))
       .toBe(thirdNames.get("lexically earlier"));
-    // And a handle no replicated frame ever bound is simply not here — the
-    // client cannot derive one, which is the point of carrying it.
+
     expect(final!.handles.has(sealedHandle(opaque("w")))).toBe(false);
-    // Schema metadata that disagrees with the committed read view is a typed
-    // outcome the caller branches on, not a thrown internal error.
+
     expect(await storage.restoreOutcome(selected, [
       { ...attributes[0]!, cardinality: "many" },
       ...attributes.slice(1),
@@ -474,9 +465,7 @@ browserTest("an open adapter does not block a future IndexedDB schema upgrade", 
   const name = `ramose-replica-upgrade-${browser.uniqueId}`;
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-    // Pinned to the current version plus one, never to a literal: a stale
-    // number would start failing on the next bump instead of proving that an
-    // open adapter yields to a future upgrade.
+
     const next = REPLICA_DATABASE_VERSION + 1;
     const upgraded = await openDatabase(name, next);
     expect(upgraded.version).toBe(next);
@@ -517,7 +506,6 @@ browserTest("a documentation-only catalog change reuses the replica without any 
     }, documented);
     expect(installed?.revision).toBe(revision);
 
-    // No documentation reaches the persisted manifest or the local indexes.
     const inspected = await openDatabase(name, REPLICA_DATABASE_VERSION);
     const inspectTx = inspected.transaction(["replica-committed-v1", "replica-nodes-v1"], "readonly");
     const [manifests, nodes] = await Promise.all([
@@ -544,8 +532,6 @@ browserTest("a documentation-only catalog change reuses the replica without any 
     storage.close();
     storage = await IndexedDbReplicaStorage.open(name);
 
-    // Restoring under completely rewritten documentation performs no write at
-    // all: no reset, no snapshot, and only readonly IndexedDB transactions.
     const modes: string[] = [];
     const databasePrototype = IDBDatabase.prototype;
     const nativeTransaction = databasePrototype.transaction;
@@ -584,8 +570,6 @@ browserTest("a documentation-only catalog change reuses the replica without any 
     expect(JSON.stringify(afterManifests[0]!.roots)).toBe(rootHashes);
     expect(afterNodes).toHaveLength(nodes.length);
 
-    // Materializing the same value under different documentation produces
-    // byte-identical content-addressed roots, so docs cannot perturb storage.
     const twinName = `${name}-twin`;
     const twin = await IndexedDbReplicaStorage.open(twinName);
     try {

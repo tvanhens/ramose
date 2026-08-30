@@ -1,13 +1,3 @@
-/**
- * Query / pull-pattern parsing: EDN strings or JS forms → AST.
- *
- * JS form mirrors EDN structurally:
- *   { find: ["?e", ["count", "?x"]], in: ["$", "?name"], where: [["?e", ":user/name", "?name"], [[">", "?x", 5]]] }
- * Strings beginning with '?' are variables, '_' is blank, strings beginning
- * with ':' are keywords (attribute idents / enum values); wrap other strings
- * that happen to look like that in `{ const: "..." }`.
- */
-
 import {
   type Binding,
   type Clause,
@@ -36,10 +26,6 @@ function fail(msg: string, form?: unknown): never {
   throw new QueryParseError(form === undefined ? msg : `${msg}: ${printEdn(form)}`);
 }
 
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
 function isVarName(x: unknown): x is string {
   return typeof x === "string" && x.length > 1 && x[0] === "?";
 }
@@ -53,7 +39,6 @@ function isFnName(x: unknown): x is string {
   return typeof x === "string" && x.length > 0 && !isVarName(x) && !isKeyword(x) && !isSrcName(x) && x !== "_";
 }
 
-/** An expression form: EDN list, or a JS array whose head is a plain symbol. */
 function asExpr(x: unknown): unknown[] | undefined {
   if (x instanceof EdnList) return x.items;
   if (Array.isArray(x) && x.length > 0 && isFnName(x[0])) return x;
@@ -87,14 +72,9 @@ function bindVar(x: unknown): string | null {
   return fail("bad binding variable", x);
 }
 
-// ---------------------------------------------------------------------------
-// where clauses
-// ---------------------------------------------------------------------------
-
 export function toClause(form: unknown): Clause {
   const expr = asExpr(form);
   if (expr) {
-    // bare list at clause position: (not ...) (or ...) (or-join ...) (not-join ...) (and ...)
     return listClause(expr, form);
   }
   if (!Array.isArray(form)) fail("clause must be a vector or list", form);
@@ -102,7 +82,6 @@ export function toClause(form: unknown): Clause {
   if (arr.length === 0) fail("empty clause");
   const inner = asExpr(arr[0]);
   if (inner) {
-    // [(pred ...)] or [(fn ...) binding]
     const head = inner[0];
     if (typeof head !== "string") fail("function/predicate name must be a symbol", form);
     if (head === "not" || head === "or" || head === "or-join" || head === "not-join" || head === "and") {
@@ -113,7 +92,6 @@ export function toClause(form: unknown): Clause {
     if (arr.length === 2) return { kind: "fn", fn: head, args, binding: toBinding(arr[1]) };
     return fail("bad function clause", form);
   }
-  // data pattern: [src?] e a v tx? op?
   let i = 0;
   let src: string | undefined;
   if (isSrcName(arr[0])) {
@@ -144,7 +122,6 @@ function listClause(items: unknown[], form: unknown): Clause {
     case "or-join": {
       const join = items[1];
       if (!Array.isArray(join)) fail("or-join needs a vector of variables", form);
-      // Datomic allows [[?a ?b] ?c] required-var syntax; flatten
       const vars = (join as unknown[]).flatMap((x) => (Array.isArray(x) ? x : [x])) as string[];
       if (!vars.every(isVarName)) fail("or-join needs variables", form);
       return { kind: "or", join: vars, branches: items.slice(2).map(orBranch) };
@@ -152,8 +129,6 @@ function listClause(items: unknown[], form: unknown): Clause {
     case "and":
       return fail("(and ...) is only valid inside (or ...)", form);
     default: {
-      // any other symbol head is a rule invocation; parseQuery checks the
-      // name against :rules afterwards, so a typo'd combinator still fails
       if (!isFnName(head)) return fail(`bad clause head '${String(head)}'`, form);
       return { kind: "rule-call", name: head as string, args: items.slice(1).map(toTerm) };
     }
@@ -165,10 +140,6 @@ function orBranch(form: unknown): Clause[] {
   if (expr && expr[0] === "and") return expr.slice(1).map(toClause);
   return [toClause(form)];
 }
-
-// ---------------------------------------------------------------------------
-// find / in
-// ---------------------------------------------------------------------------
 
 function toFindElem(x: unknown): FindElem {
   if (isVarName(x)) return { kind: "var", name: x };
@@ -214,11 +185,6 @@ function toInputs(form: unknown): InputSpec[] {
   return (form as unknown[]).map((x) => (isSrcName(x) ? { kind: "src", name: x } : toBinding(x)));
 }
 
-// ---------------------------------------------------------------------------
-// order / limit / offset
-// ---------------------------------------------------------------------------
-
-/** Strip a leading ':' so EDN keywords and plain JSON strings both work. */
 function bare(x: unknown): unknown {
   return typeof x === "string" && x.startsWith(":") ? x.slice(1) : x;
 }
@@ -241,7 +207,6 @@ function mkOrder(name: string, dir: "asc" | "desc", empty: "first" | "last" | un
   return empty === undefined ? { var: name, dir } : { var: name, dir, empty };
 }
 
-/** `?v` | `[?v :desc :last]` | `{:var ?v :dir :desc :empty :last}` */
 function toOrderSpec(x: unknown): OrderSpec {
   if (isVarName(x)) return { var: x, dir: "asc" };
   if (Array.isArray(x)) {
@@ -272,7 +237,6 @@ function toCount(x: unknown, key: string): number | undefined {
   return x as number;
 }
 
-/** `:after [v0 v1 …]` — one value per `:order` key (`nil`/`null` allowed). */
 function toAfter(form: unknown, order: OrderSpec[] | undefined, find: FindSpec): unknown[] | undefined {
   if (form === undefined || form === null) return undefined;
   if (!Array.isArray(form)) fail(":after must be a vector of values, one per :order key", form);
@@ -285,19 +249,13 @@ function toAfter(form: unknown, order: OrderSpec[] | undefined, find: FindSpec):
   return (form as unknown[]).map((x) => (isEdnConstWrapper(x) ? unwrapEdnConst(x) : x));
 }
 
-// ---------------------------------------------------------------------------
-// query
-// ---------------------------------------------------------------------------
-
 const SECTIONS = [":find", ":in", ":where", ":with", ":keys", ":strs", ":syms", ":rules", ":having", ":order", ":after", ":limit", ":offset"];
-/** Sections that take a single value rather than a sequence of forms. */
 const SCALAR_SECTIONS = ["after", "limit", "offset", "rules"];
 const QUERY_KEYS = new Set(SECTIONS.map((s) => s.slice(1)));
 
 function normalizeMap(form: unknown): Record<string, unknown> {
   if (typeof form === "string") form = readEdn(form);
   if (Array.isArray(form)) {
-    // [:find ... :in ... :where ...]
     const out: Record<string, unknown> = {};
     let key: string | undefined;
     for (const x of form as unknown[]) {
@@ -359,15 +317,6 @@ export function parseQuery(form: unknown): Query {
   };
 }
 
-// ---------------------------------------------------------------------------
-// rules
-// ---------------------------------------------------------------------------
-
-/**
- * `:rules [[[name ?a ?b] clause…] …]` — each definition is a head vector
- * followed by body clauses; same-named definitions are disjunctive branches
- * and must agree on arity.
- */
 function toRules(form: unknown): RuleDef[] | undefined {
   if (form === undefined) return undefined;
   if (!Array.isArray(form)) fail(":rules must be a vector of rule definitions", form);
@@ -398,7 +347,6 @@ function toRuleDef(form: unknown): RuleDef {
   return { name: name as string, args: args as string[], clauses: items.slice(1).map(toClause) };
 }
 
-/** Every rule-call must name a declared rule with the declared arity. */
 function checkRuleCalls(clauses: Clause[], rules: RuleDef[] | undefined): void {
   const arity = new Map<string, number>();
   for (const d of rules ?? []) arity.set(d.name, d.args.length);
@@ -425,7 +373,6 @@ function checkRuleCalls(clauses: Clause[], rules: RuleDef[] | undefined): void {
   clauses.forEach(walk);
 }
 
-/** `:having` — post-group predicates over `:find` cells, never datoms. */
 function toHaving(form: unknown, find: FindSpec): Clause[] | undefined {
   if (form === undefined) return undefined;
   if (!Array.isArray(form)) fail("having must be a vector", form);
@@ -457,10 +404,6 @@ function toHaving(form: unknown, find: FindSpec): Clause[] | undefined {
   return clauses;
 }
 
-// ---------------------------------------------------------------------------
-// pull patterns
-// ---------------------------------------------------------------------------
-
 export function parsePullPattern(form: unknown): PullPattern {
   if (typeof form === "string") form = readEdn(form);
   if (!Array.isArray(form)) fail("pull pattern must be a vector", form);
@@ -479,9 +422,6 @@ function attrName(x: unknown, form: unknown): { attr: string; reverse: boolean }
   return { attr: s, reverse: false };
 }
 
-// --- nested collection :where / :order --------------------------------------
-
-/** Map-ish form with the leading ':' stripped from every key. */
 function keyedMap(x: unknown, what: string, form: unknown): Record<string, unknown> {
   if (typeof x !== "object" || x === null || Array.isArray(x) || x instanceof EdnList) fail(`${what} must be a map`, form);
   const m: Record<string, unknown> = {};
@@ -489,11 +429,6 @@ function keyedMap(x: unknown, what: string, form: unknown): Record<string, unkno
   return m;
 }
 
-/**
- * A path of attribute idents walked from a collection element, plus which hops
- * run backwards. Reverse spelling (`:user/_friends`) and an explicit `reverse`
- * flag mean the same thing, so a client may use either.
- */
 function elemPath(pathForm: unknown, revForm: unknown, form: unknown): { path: string[]; reverse?: boolean[] } {
   if (!Array.isArray(pathForm)) fail("pull path must be a vector of attribute idents", form);
   if (revForm !== undefined && !Array.isArray(revForm)) fail("pull path :reverse must be a vector of booleans", form);
@@ -509,7 +444,6 @@ function elemPath(pathForm: unknown, revForm: unknown, form: unknown): { path: s
   return reverse.some(Boolean) ? { path, reverse } : { path };
 }
 
-/** A comparison operand: plain data, with `{const: …}` wrappers unwrapped. */
 function elemValue(x: unknown): unknown {
   return isEdnConstWrapper(x) ? unwrapEdnConst(x) : x;
 }
@@ -519,7 +453,6 @@ function elemPreds(x: unknown, form: unknown): PullElemPred[] {
   return (x as unknown[]).map((p) => elemPred(p, form));
 }
 
-/** `{:every {:path […] :pred {…}}}` — a quantifier over what `path` reaches. */
 function elemQuant(x: unknown, what: string, form: unknown): PullElemQuant {
   const m = keyedMap(x, `pull :where ${what}`, form);
   if (m.pred === undefined) fail(`pull :where ${what} needs a :pred`, form);
@@ -560,7 +493,6 @@ function elemOrders(x: unknown, form: unknown): PullElemOrder[] {
 
 function pullSpec(x: unknown): PullAttrSpec | { kind: "wildcard" } {
   if (x === "*" || x === ":*") return { kind: "wildcard" };
-  // Already-lowered AST specs (alchemy `lowerPullPattern`) pass through.
   if (
     typeof x === "object" &&
     x !== null &&
@@ -582,7 +514,6 @@ function pullSpec(x: unknown): PullAttrSpec | { kind: "wildcard" } {
   if (isKeyword(x)) return { kind: "attr", ...attrName(x, x) };
   const expr = asExpr(x);
   if (expr) {
-    // (attr :as "x" :limit 5 :default 0)  or  (limit :attr 5) / (default :attr 0)
     const head = expr[0];
     if (head === "limit") return { kind: "attr", ...attrName(expr[1], x), limit: expr[2] as number | null };
     if (head === "default") return { kind: "attr", ...attrName(expr[1], x), default: expr[2] };

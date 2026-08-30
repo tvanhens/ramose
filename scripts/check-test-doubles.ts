@@ -1,17 +1,4 @@
 #!/usr/bin/env bun
-/**
- * CI guard for issue #390: reject newly introduced test doubles.
- *
- * Allowed instrumentation records, blocks, releases, closes, restarts, or
- * corrupts a real implementation. It must not invent HTTP/WebSocket
- * responses, substitute R2/SQLite/Cache/auth, or mock `cloudflare:workers`.
- *
- * The completed #390 migration leaves `scripts/test-double-allowlist.json`
- * empty. Do not add new entries.
- *
- *   bun run scripts/check-test-doubles.ts
- *   bun run scripts/check-test-doubles.ts --write-allowlist
- */
 
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -47,7 +34,6 @@ export interface Pattern {
   readonly note: string;
 }
 
-/** Forbidden infrastructure-double markers. Domain fixtures and docs are out of scope. */
 export const PATTERNS: readonly Pattern[] = [
   {
     id: "mock.module",
@@ -174,7 +160,6 @@ export interface Hit {
 }
 
 export interface Allowlist {
-  readonly comment?: string;
   readonly files: Record<string, PatternId[]>;
 }
 
@@ -195,8 +180,7 @@ export const scanFile = (abs: string, patterns: readonly Pattern[] = PATTERNS): 
   if (SKIP_FILE.has(file)) return [];
   if (![...TEXT_EXT].some((ext) => file.endsWith(ext))) return [];
   const raw = readFileSync(abs, "utf8");
-  // Keep line numbers; blank out block comments so docs can name the
-  // forbidden identifiers without counting as a double.
+
   const text = raw.replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "));
   const hits: Hit[] = [];
   const original = raw.split(/\r?\n/);
@@ -274,10 +258,7 @@ const writeAllowlist = (hits: Hit[]): void => {
   for (const [file, ids] of [...hitsByFile(hits).entries()].sort(([a], [b]) => a.localeCompare(b))) {
     files[file] = [...ids].sort();
   }
-  const body: Allowlist = {
-    comment: "No #390 test-double exceptions remain. Do not add entries.",
-    files,
-  };
+  const body: Allowlist = { files };
   writeFileSync(ALLOWLIST_PATH, `${JSON.stringify(body, null, 2)}\n`);
 };
 

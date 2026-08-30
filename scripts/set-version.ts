@@ -1,27 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Set the version on the workspace root and the published package, then commit
- * that change with a standard message.
- *
- * The root is private and never ships, but it carries the version the release
- * notes read, so the two must never drift — scripts/check-release.ts fails the
- * release if they do. This is the supported way to move them.
- *
- *   bun run release:version 0.2.0
- *   git tag v0.2.0 && git push origin HEAD --tags
- *
- * Only those two manifests are staged, by path. A blanket `git commit -a` would
- * sweep up whatever else happens to be in the working tree, and a release
- * commit should contain the version bump and nothing else.
- *
- * Tagging stays manual on purpose. The two release paths want it at different
- * moments: publishing from CI means the tag is the trigger and comes before
- * the publish, while publishing locally means the tag marks a release that has
- * already happened. Deciding that here would be wrong half the time.
- *
- * Flags:
- *   --no-commit   edit the manifests and stop, leaving the change unstaged
- */
 
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -34,8 +11,6 @@ if (!version) {
   process.exit(1);
 }
 
-// Semver, optionally with a prerelease tag (0.2.0-alpha.1) — a leading "v" is a
-// common slip and produces a version npm will reject, so catch it here.
 if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
   console.error(`invalid version: ${version} (expected e.g. 0.2.0 or 0.2.0-alpha.1, with no leading "v")`);
   process.exit(1);
@@ -64,8 +39,6 @@ if (noCommit) {
   process.exit(0);
 }
 
-// Inherited stdio: a commit can still need the terminal — a GPG or SSH signing
-// key with a passphrase prompts here, and a piped stdio would fail silently.
 const message = `release: v${version}`;
 const add = Bun.spawn({
   cmd: ["git", "add", "--", ...manifests],

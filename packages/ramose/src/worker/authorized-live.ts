@@ -1,8 +1,3 @@
-/**
- * HTTP live-query admission and NDJSON output. Authorization and diffs
- * come from {@link executeAuthorizedLive}; this file only frames the stream.
- */
-
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
@@ -47,7 +42,6 @@ export const liveDiffNdjsonStream = <R, E>(
     context,
   );
 
-/** Frame any already-authorized live stream through the one public NDJSON shape. */
 export const liveResponseFromStream = <R, E>(
   stream: Stream.Stream<LiveQueryDiff, E, R>,
   headers: Record<string, string>,
@@ -65,11 +59,6 @@ export const liveResponseFromStream = <R, E>(
     });
   });
 
-/**
- * Admit the first authorized result, then stream diffs. Admission failures
- * stay on the Effect channel (401/400). Later renewal failures close the
- * body without a reason frame.
- */
 export const authorizedLiveResponse = <R, EDb>(
   input: AuthorizedLiveInput<R, EDb> & {
     readonly admissionCurrentDb?: AuthorizedRequestInput<R, EDb>["currentDb"];
@@ -79,9 +68,6 @@ export const authorizedLiveResponse = <R, EDb>(
   headers: Record<string, string>,
 ): Effect.Effect<Response, EDb | OneShotReadError | Unauthorized, R> =>
   Effect.gen(function* () {
-    // Resolve the first read before returning headers so admission and read
-    // failures retain their ordinary HTTP status. The live scope recomputes
-    // this value under its own lease at the downstream emission boundary.
     yield* executeAuthorizedRead(
       input.admissionCurrentDb === undefined
         ? input

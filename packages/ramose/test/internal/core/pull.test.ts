@@ -45,7 +45,7 @@ describe("pull", () => {
     );
     expect(friends.map((f) => f[":user/name"])).toEqual(["B", "C"]);
     expect(friends[0]![":db/id"]).toBe(ids.b);
-    // what `ref.select(all(N))` sends: an attr spec whose `sub` is still `["*"]`
+
     const ast = await pull(db, ids.a, [
       { kind: "attr", attr: ":user/friends", reverse: false, as: "friends", sub: ["*"] },
     ]);
@@ -57,7 +57,7 @@ describe("pull", () => {
     expect(r).toEqual({ ":user/name": "A", ":user/friends": [{ ":user/name": "B" }, { ":user/name": "C" }], ":user/address": { ":address/city": "Rome" } });
     const rev = await pull(db, ids.b, `[:user/name {:user/_friends [:user/name]}]`);
     expect(rev).toEqual({ ":user/name": "B", ":user/_friends": [{ ":user/name": "A" }] });
-    // reverse of a component attr is single-valued
+
     const comp = await pull(db, ids.addr, `[:address/city {:user/_address [:user/name]}]`);
     expect(comp).toEqual({ ":address/city": "Rome", ":user/_address": { ":user/name": "A" } });
     const opts = await pull(db, ids.a, `[(:user/name :as "name") (limit :user/tags 2) (default :user/age 0) (default :user/nope 7)]`);
@@ -68,7 +68,7 @@ describe("pull", () => {
     const dflt = await pull(db, ids.c, `[:user/name (default :user/age 0)]`);
     expect(dflt).toEqual({ ":user/name": "C", ":user/age": 0 });
     expect(await pull(db, 999_999, `[:user/name]`)).toBeNull();
-    // JS-form pattern
+
     expect(await pull(db, ids.c, [":user/name"])).toEqual({ ":user/name": "C" });
     expect(parsePullPattern([":user/name", { ":user/friends": [":user/name"] }]).length).toBe(2);
   });
@@ -78,7 +78,7 @@ describe("pull", () => {
     expect(r![":user/name"]).toBe("A");
     const friends = r![":user/friends"] as any[];
     const b = friends.find((f) => f[":user/name"] === "B");
-    expect(b[":user/friends"]).toEqual([{ ":db/id": ids.a }]); // cycle cut
+    expect(b[":user/friends"]).toEqual([{ ":db/id": ids.a }]);
     const limited = await pull(db, ids.a, `[:user/name {:user/friends 1}]`);
     const lb = (limited![":user/friends"] as any[]).find((f) => f[":user/name"] === "B");
     expect(lb[":user/friends"]).toEqual([{ ":db/id": ids.a }]);

@@ -1,11 +1,3 @@
-/**
- * Authoring-time types for the read-authorization language (#406).
- *
- * These objects exist only before compile. The compiled artifact is
- * Schema-decoded {@link import("../ir.ts").PolicyTemplateIR} — no
- * functions, prototypes, Effects, or authoring tags.
- */
-
 import type { AnySchema } from "../../../db/Schema.ts";
 import type { PathCarrier } from "../../../db/shapes.ts";
 import type { AnyEntity } from "../../../db/Entity.ts";
@@ -61,7 +53,6 @@ export type ReadRule = {
   readonly expr: AuthExpr;
 };
 
-/** Principal-only grant attached to one canonical owned operation. */
 export type InvokeRule = {
   readonly _tag: typeof INVOKE_RULE_TAG;
   readonly target: AnyOwnedOperation;
@@ -90,7 +81,6 @@ type RefTargetFields<F> = F extends {
     : { readonly [key: string]: unknown }
   : { readonly [key: string]: unknown };
 
-/** Fields reachable after a field-target `read(Issue.owner)` hop. */
 export type FieldTargetFields<T> = T extends {
   readonly schema: { readonly _target?: infer Target };
 }

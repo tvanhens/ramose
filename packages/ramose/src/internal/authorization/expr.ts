@@ -1,22 +1,3 @@
-/**
- * Data-only expression vocabulary for authorization language v1.
- *
- * Authoring callbacks are build-time macros. Runtime evaluates this data,
- * not those callbacks. No aggregates, ordering, limiting, unrestricted
- * recursion, database effects, or author functions appear here (LANG-1–3).
- *
- * Core v1 is the executable surface: boolean constants; `and` / `or` /
- * `not`; equality and presence; `hasClass`; restricted membership (`in`);
- * literals, subject, optional `me`, declared claims, and typed refs.
- * Operation input, bindings, `some`, `overlaps`, and `exists` are not
- * in this union — those tags fail during Schema decoding.
- *
- * Effect Schema is the source of truth. Parameterized nodes are factories
- * over relative or canonical identity schemas. Types are `typeof Model.Type`
- * except the recursive expression unions, which exist only to break the
- * inference cycle and are checked by `Schema.Codec<Decoded, Encoded>`.
- */
-
 import * as Schema from "effect/Schema";
 import {
   CanonicalIdentitySchemas,
@@ -36,7 +17,6 @@ export type PathRoot = typeof PathRoot.Type;
 
 export const PathStep = <F extends Schema.Top>(field: F) => Schema.Struct({ field });
 
-/** Typed fixed-depth ref traversal. Depth is `steps.length`; bounded at install. */
 export const RefTerm = <F extends Schema.Top>(field: F) =>
   Schema.TaggedStruct("ref", {
     root: PathRoot,
@@ -48,15 +28,12 @@ export const LitTerm = Schema.TaggedStruct("lit", {
 });
 export type LitTerm = typeof LitTerm.Type;
 
-/** Verified JWT subject. Always present in authorization context. */
 export const SubjectTerm = Schema.TaggedStruct("subject", {});
 export type SubjectTerm = typeof SubjectTerm.Type;
 
-/** Optional application principal row. Incomplete when no row resolves. */
 export const MeTerm = Schema.TaggedStruct("me", {});
 export type MeTerm = typeof MeTerm.Type;
 
-/** Typed claim access. Key must be in the declared claims vocabulary. */
 export const ClaimTerm = Schema.TaggedStruct("claim", {
   key: Schema.String,
 });

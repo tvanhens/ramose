@@ -42,10 +42,6 @@ const second: LogicalDatom = {
   op: "add",
 };
 
-/**
- * The binding a committed value carries for exactly these entities — which is
- * what a value keeps: a handle whose entity no longer appears is pruned.
- */
 const bindings = (...entities: readonly string[]): ReadonlyMap<string, string> =>
   new Map(entities.map((entity) => [entity, sealedHandle(entity)]));
 
@@ -193,8 +189,7 @@ describe("client replication transition machine", () => {
     expect(next.committed).toEqual({
       revision: opaque("L"),
       datoms: [second],
-      // The retracted entity's binding goes with its last fact: a handle that
-      // outlived the row would be a mutation target for something gone.
+
       handles: bindings(opaque("I")),
     });
     expect(prior.committed).toEqual({
@@ -289,14 +284,6 @@ describe("client replication transition machine", () => {
   });
 });
 
-/**
- * The sealed-`EntityId` binding a committed value carries (#477).
- *
- * A queried row's mutation target comes from here and nowhere else, so the
- * transitions have exactly one job: accumulate what the frames bind, refuse
- * anything that would let one entity acquire two handles or one handle name two
- * entities, and never publish a value holding a row it cannot address.
- */
 describe("the committed sealed-handle binding", () => {
   test("accumulates across chunks and is complete before a snapshot installs", () => {
     let state = apply(emptyClientReplicationState(), start(opaque("J"), opaque("K")));
@@ -308,9 +295,7 @@ describe("the committed sealed-handle binding", () => {
 
   test("refuses a snapshot that names an entity it cannot address", () => {
     let state = apply(emptyClientReplicationState(), start(opaque("J"), opaque("K")));
-    // The one frame this fixture builds by hand rather than through the
-    // builder: a server that omitted a binding would leave a row an application
-    // could read and never mutate, so the value must not install at all.
+
     state = apply(state, {
       type: "SnapshotChunk",
       protocol: 1,

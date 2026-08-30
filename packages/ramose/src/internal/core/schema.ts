@@ -1,23 +1,4 @@
-/**
- * Schema: attributes are entities described by datoms (Datomic-inspired):
- *   :db/ident        string   — the attribute's name, e.g. ":user/email"
- *   :db/valueType    string   — ":db.type/string" | long | double | boolean | ref | uuid | instant | bytes
- *   :db/cardinality  string   — ":db.cardinality/one" | ":db.cardinality/many"
- *   :db/unique       string   — ":db.unique/identity" | ":db.unique/value"   (implies AVET)
- *   :db/index        boolean  — AVET membership
- *   :db/isComponent  boolean
- *   :db/doc          string
- *
- * `Schema` is an immutable-ish projection of those datoms that the engine
- * consults for interning, typing, and index membership (AVET for indexed /
- * unique attrs, VAET for refs — never index everything).
- */
-
 import { type Datom, ValueTag, type ValueTag as VT } from "./datom.ts";
-
-// ---------------------------------------------------------------------------
-// Bootstrap attribute ids (stable forever)
-// ---------------------------------------------------------------------------
 
 export const DB_IDENT = 10;
 export const DB_VALUE_TYPE = 40;
@@ -26,16 +7,13 @@ export const DB_UNIQUE = 42;
 export const DB_IS_COMPONENT = 43;
 export const DB_INDEX = 44;
 export const DB_OPTIONAL = 45;
-/** Instance membership — stamped on ordinary user entities; policy-judged by the named type, not as schema metadata. */
 export const RAMOSE_TYPE = 46;
 export const DB_TX_INSTANT = 50;
 export const DB_DOC = 62;
 
 export const RAMOSE_TYPE_IDENT = ":ramose/type";
 
-/** First entity id handed out to user entities. */
 export const FIRST_USER_EID = 1000;
-/** Tx entities live in their own id partition: e = TX_BASE + t. */
 export const TX_BASE = 2 ** 42;
 export function txEid(t: number): number {
   return TX_BASE + t;
@@ -59,7 +37,6 @@ export interface Attribute {
   readonly index: boolean;
   readonly isComponent: boolean;
   readonly doc?: string | undefined;
-  /** Card-one field the schema marked optional — not required at create. */
   readonly optional?: boolean;
 }
 
@@ -77,7 +54,6 @@ export const VALUE_TYPE_NAMES: Record<number, string> = Object.fromEntries(
   Object.entries(VALUE_TYPE_IDENTS).map(([k, v]) => [v, k]),
 );
 
-/** Attribute schema as a plain object (input form for `schemaTx`). */
 export interface AttributeSpec {
   ident: string;
   valueType: keyof typeof VALUE_TYPE_IDENTS | VT;
@@ -102,7 +78,6 @@ const BOOTSTRAP_SPECS: (AttributeSpec & { id: number })[] = [
   { id: DB_DOC, ident: ":db/doc", valueType: ":db.type/string", cardinality: "one" },
 ];
 
-/** Datoms describing an attribute entity `e` per `spec`, at tx `t`. */
 export function attributeDatoms(e: number, spec: AttributeSpec, t: number): Datom[] {
   const vt = typeof spec.valueType === "number" ? spec.valueType : VALUE_TYPE_IDENTS[spec.valueType];
   if (vt === undefined) throw new Error(`unknown valueType ${String(spec.valueType)}`);
@@ -119,7 +94,6 @@ export function attributeDatoms(e: number, spec: AttributeSpec, t: number): Dato
   return out;
 }
 
-/** The bootstrap transaction (t = 1): system attributes describing themselves. */
 export function bootstrapDatoms(): Datom[] {
   const t = 1;
   const out: Datom[] = [];
@@ -127,10 +101,6 @@ export function bootstrapDatoms(): Datom[] {
   out.push({ e: txEid(t), a: DB_TX_INSTANT, vt: ValueTag.Inst, v: 0, t, op: true });
   return out;
 }
-
-// ---------------------------------------------------------------------------
-// Schema projection
-// ---------------------------------------------------------------------------
 
 interface Partial {
   ident?: string | undefined;
@@ -146,7 +116,6 @@ interface Partial {
 export class Schema {
   private readonly byId = new Map<number, Attribute>();
   private readonly byIdent = new Map<string, Attribute>();
-  /** every :db/ident (attributes and plain ident entities) → eid */
   private readonly idents = new Map<string, number>();
   private readonly identOf = new Map<number, string>();
   private readonly partials = new Map<number, Partial>();
@@ -165,11 +134,10 @@ export class Schema {
     return s;
   }
 
-  /** Apply schema-relevant datoms (others are ignored). Mutates and returns this. */
   apply(datoms: readonly Datom[]): this {
     const touched = new Set<number>();
     for (const d of datoms) {
-      if (d.a > DB_DOC) continue; // fast reject: user attrs have larger ids... unless < 1000; check below anyway
+      if (d.a > DB_DOC) continue;
       let p = this.partials.get(d.e);
       switch (d.a) {
         case DB_IDENT: {
@@ -263,7 +231,6 @@ export class Schema {
     if (!a) throw new Error(`unknown attribute ${String(idOrIdent)}`);
     return a;
   }
-  /** Resolve an ident (attribute or plain ident entity) to its entity id. */
   entid(ident: string): number | undefined {
     return this.idents.get(ident);
   }
@@ -274,12 +241,10 @@ export class Schema {
     return [...this.byId.values()];
   }
 
-  /** Should datoms of attribute `a` be in AVET? (indexed or unique) */
   isAvet(a: number): boolean {
     const at = this.byId.get(a);
     return at !== undefined && at.index;
   }
-  /** Should datoms of attribute `a` be in VAET? (refs) */
   isVaet(a: number): boolean {
     const at = this.byId.get(a);
     return at !== undefined && at.valueType === ValueTag.Ref;

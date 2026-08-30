@@ -23,16 +23,14 @@ jobs:
       pull-requests: read
       issues: read
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      actions: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Full history so Claude can diff against the base branch.
+
           fetch-depth: 0
 
-      # Set up the same toolchain as CI so Claude can run typecheck, tests,
-      # and the build when responding to @claude requests.
       - uses: oven-sh/setup-bun@v2
 
       - run: bun install --frozen-lockfile
@@ -43,18 +41,9 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
-          # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
 
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
-
-          # Pre-approve the project's own verification commands (mirroring
-          # ci.yml) plus the git/gh read + comment commands Claude needs to
-          # inspect PR diffs — interactive approval is unavailable in Actions,
-          # so anything not listed here is denied outright.
           claude_args: >-
             --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status),Bash(git fetch:*),Bash(bun install:*),Bash(bun run typecheck),Bash(bun run test),Bash(bun run test:*),Bash(bun test:*),Bash(bun run build),Bash(bun run scripts/check-release.ts:*),Bash(bun run scripts/check-client-dts.ts)"
             --append-system-prompt "This is a non-interactive CI run: tool calls outside the allowlist are denied automatically, and piped or compound Bash commands are denied even when each base command is allowed. Use plain single commands. A denied command is not a reason to stop: retry with an allowed unpiped variant or an allowed alternative, and carry the task through to completion. In this environment, ending your turn terminates the session immediately — any still-running background task or subagent is killed with its results discarded. Launch every subagent with run_in_background: false so the call blocks until its result is returned, and never end your turn to 'wait for' background work. Pass these same rules along to every subagent you launch."
-

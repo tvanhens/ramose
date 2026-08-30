@@ -1,7 +1,3 @@
-/**
- * App-path DbError → the same allowlisted public vocabulary as the peer.
- */
-
 import { describe, expect, test } from "bun:test";
 import {
   DatabaseNotFound,

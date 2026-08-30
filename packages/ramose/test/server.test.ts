@@ -1,13 +1,3 @@
-/**
- * The resources themselves: identity, the name rule their clients enforce,
- * Worker resolution, and the env keys the two transports agree on.
- *
- * Instantiating a resource (`Ramose.Server("Ramose", …)`) needs a running
- * engine — that lives in `stack.test.ts`. What is checkable in isolation is
- * everything the provider decides *about* a server, plus the shape of the
- * props and attributes, which the compiler checks.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Database, isDatabase } from "../src/Database.ts";
@@ -230,10 +220,6 @@ describe("escape-hatch wiring", () => {
   });
 });
 
-/**
- * The server Worker declares its own auth env; `authEnv` only names the keys
- * it reads. The Worker must agree on these exact strings.
- */
 describe("the server's auth env", () => {
   test("the key names are the ones the server Worker reads", () => {
     expect(AUTH_ENV_KEYS).toEqual({

@@ -1,33 +1,3 @@
-/**
- * Integrity validation and corruption classification for one persisted replica
- * partition (#474 slice 9).
- *
- * A restored replica is a content-addressed value: the manifest names four
- * index roots, and every node reachable from a root is stored under the hash of
- * its own compressed body. Nothing outside this process guarantees any of that
- * still holds — a browser can lose or rewrite records, and a partial
- * maintenance pass can leave a manifest pointing at nodes that are gone. So a
- * restore verifies the whole reachable value *before* it can become observable:
- * a partial walk must never yield a partial `Db`.
- *
- * Everything here is pure. The storage adapter owns the IndexedDB reads, the
- * hashing, and the decompression; this module owns the decisions:
- *
- *   - {@link validateReplicaManifest} — is the stored manifest a complete,
- *     self-consistent description of the requested partition?
- *   - {@link validateReplicaNode} — does one decoded node match the reference
- *     that led to it (position, kind, counts, order)?
- *   - {@link replicaRecoveryAction} — what does the caller do about it?
- *
- * Corruption is classified precisely for diagnosis (missing node, hash
- * mismatch, structural invariant, undecodable record) but collapses to exactly
- * one outcome for the caller: this partition cannot be used and must be
- * replaced by a fresh snapshot. Incompatibility — a replica whose read
- * compatibility or schema metadata disagrees with the installed client
- * catalog — is the other outcome: the client must update before anything in
- * this partition can be interpreted.
- */
-
 import * as Data from "effect/Data";
 import * as Result from "effect/Result";
 import { ENTITY_ID_PATTERN } from "../../db/refs.ts";
@@ -49,7 +19,6 @@ import {
   type ReplicaAttributeSpec,
 } from "./replica-schema.ts";
 
-/** One committed replica exactly as a partition stores it. */
 export type ReplicaManifest = {
   readonly partition: string;
   readonly storageVersion: typeof REPLICA_STORAGE_VERSION;
@@ -57,86 +26,32 @@ export type ReplicaManifest = {
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly revision: string;
   readonly datoms: readonly LogicalDatom[];
-  /** Documentation-free by construction; docs live in the client catalog. */
   readonly attributes: readonly ReplicaAttributeSpec[];
-  /** Server identities only; future client refs use a different store and map. */
   readonly entityIds: readonly (readonly [string, number])[];
-  /**
-   * The wire identity → sealed `EntityId` binding this value arrived with, one
-   * entry per entity {@link ReplicaManifest.datoms} names.
-   *
-   * Persisted rather than derived: the sealed handle is the *cross-view*
-   * identity, and nothing on this device can compute it from the wire identity
-   * — both are one-way functions of a private eid the client never sees. It is
-   * what turns a row this replica holds into a durable mutation target, so a
-   * manifest missing one for an entity it holds is incomplete, not merely
-   * sparse.
-   */
   readonly entityHandles: readonly (readonly [string, string])[];
   readonly attributeIds: readonly (readonly [string, number])[];
   readonly roots: Roots;
   readonly nextLocalId: number;
-  /**
-   * Unique to the act of installing this record, not to the value it holds.
-   *
-   * Two installs of the same revision produce identical roots, identical maps,
-   * and identical sizes, so nothing else in the record can tell them apart —
-   * and the one case where that matters is a repair: a restore refuses a
-   * partition whose node was damaged, and while it is deciding, another
-   * session re-installs the very same revision and rewrites the damaged node
-   * under its own address. Without this field the quarantine CAS would
-   * conclude it is still looking at the manifest it refused and withdraw a
-   * healthy one. Records written before this field existed carry none, and
-   * {@link replicaManifestFingerprint} reads an absent field as `null`, which
-   * leaves their behavior exactly as it was.
-   */
   readonly installId?: string | undefined;
 };
 
-/**
- * Why one stored partition cannot produce an observable `Db`.
- *
- * The first four describe damage to the content-addressed value; the last two
- * describe a value that is intact but disagrees with the installed client.
- */
 export type ReplicaCorruptionReason =
-  /** The manifest record is missing fields, or carries values of the wrong shape. */
   | "manifest-undecodable"
-  /** The manifest decodes but contradicts itself or the requested partition. */
   | "manifest-invariant"
-  /** A referenced content node is not in this partition's node store. */
   | "node-missing"
-  /** A node's stored body does not hash to the address it is stored under. */
   | "node-hash"
-  /** A node body cannot be decompressed or decoded. */
   | "node-undecodable"
-  /** A node's kind or index disagrees with the reference that led to it. */
   | "node-kind"
-  /** A node's counts, arity, or datom order break a tree invariant. */
   | "node-invariant";
 
-/** Why one intact partition is nonetheless unusable by this client. */
 export type ReplicaIncompatibilityReason =
-  /** The stored read compatibility hash is not the one this client confirmed. */
   | "read-compatibility"
-  /** The stored replica schema is not the installed client catalog's schema. */
   | "schema-metadata";
 
 export type ReplicaUnusableReason = ReplicaCorruptionReason | ReplicaIncompatibilityReason;
 
-/**
- * What the caller must do. Corruption is always recoverable by re-fetching the
- * authorized value; incompatibility is not, because no local data can be
- * interpreted until client and server agree on the read schema again.
- */
 export type ReplicaRecoveryAction = "replacement-required" | "update-required";
 
-/**
- * Collapse every damage class to one caller outcome. Distinguishing a missing
- * node from a flipped byte matters for diagnosis and for tests; it must never
- * matter for recovery, or a rarer corruption class would get a rarer — and
- * therefore less exercised — recovery path.
- */
 export const replicaRecoveryAction = (
   reason: ReplicaUnusableReason,
 ): ReplicaRecoveryAction =>
@@ -144,13 +59,10 @@ export const replicaRecoveryAction = (
     ? "update-required"
     : "replacement-required";
 
-/** One located reason a partition failed validation. */
 export type ReplicaIntegrityFailure = {
   readonly reason: ReplicaCorruptionReason;
   readonly detail: string;
-  /** The index whose tree was being walked, when the failure is a node's. */
   readonly index?: IndexId;
-  /** The content address the failure was found at. */
   readonly hash?: string;
 };
 
@@ -169,40 +81,22 @@ const failure = (
     ...(located?.hash === undefined ? {} : { hash: located.hash }),
   });
 
-/** A restore refused a stored partition. Carries the classification, not a stack. */
 export class ReplicaCorruptError extends Data.TaggedError("ReplicaCorruptError")<{
   readonly partition: string;
   readonly reason: ReplicaUnusableReason;
   readonly detail: string;
 }> {}
 
-/**
- * What one restore path produces. `restored` is the only variant that carries
- * an observable value; the other three are ordinary data the caller branches
- * on, never a thrown internal error.
- */
 export type ReplicaRestoreOutcome<A> =
-  /** A fully validated replica. */
   | { readonly _tag: "restored"; readonly replica: A }
-  /** Nothing is stored for this selection. Not an error; snapshot from scratch. */
   | { readonly _tag: "absent" }
-  /**
-   * The partition is intact and probably still holds exactly what was asked
-   * for, but it kept moving — an install, or a sweep of the roots that install
-   * superseded — for every attempt this restore was willing to make. Nothing
-   * was refused and nothing was withdrawn; opening again is the whole remedy.
-   * It is deliberately distinct from `absent`, which asserts that nothing is
-   * stored, so a caller can never mistake contention for an empty partition.
-   */
   | { readonly _tag: "contended"; readonly partition: string; readonly attempts: number }
-  /** The partition was quarantined; the caller must re-snapshot it. */
   | {
     readonly _tag: "replacement-required";
     readonly partition: string;
     readonly reason: ReplicaUnusableReason;
     readonly detail: string;
   }
-  /** Client and server must agree on the read schema before any restore. */
   | {
     readonly _tag: "update-required";
     readonly partition: string;
@@ -221,7 +115,6 @@ export const replicaContended = <A>(
   attempts: number,
 ): ReplicaRestoreOutcome<A> => Object.freeze({ _tag: "contended", partition, attempts });
 
-/** Build the outcome a reason implies, so classification lives in one place. */
 export const replicaUnusable = <A>(
   partition: string,
   reason: ReplicaUnusableReason,
@@ -234,21 +127,15 @@ export const replicaUnusable = <A>(
     detail,
   });
 
-/** The replica an outcome restored, or `undefined` for every other outcome. */
 export const restoredReplica = <A>(outcome: ReplicaRestoreOutcome<A>): A | undefined =>
   outcome._tag === "restored" ? outcome.replica : undefined;
 
-/** True when the outcome quarantined or refused a stored partition. */
 export const replicaRefused = <A>(
   outcome: ReplicaRestoreOutcome<A>,
 ): outcome is Extract<
   ReplicaRestoreOutcome<A>,
   { readonly _tag: "replacement-required" | "update-required" }
 > => outcome._tag === "replacement-required" || outcome._tag === "update-required";
-
-// ---------------------------------------------------------------------------
-// Shape checks
-// ---------------------------------------------------------------------------
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 
@@ -258,12 +145,6 @@ const isCount = (value: unknown): value is number =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/**
- * A node reference is the only thing a manifest or a directory node hands the
- * walk, so its own shape has to be checked before it can be followed: an
- * address that is not a sha-256 hex digest can never name a stored node, and a
- * kind outside the two the codec defines has no legal position anywhere.
- */
 export const validateReplicaNodeRef = (
   ref: unknown,
   where: string,
@@ -288,12 +169,6 @@ export const validateReplicaNodeRef = (
   return undefined;
 };
 
-/**
- * The four roots of one committed value. EAVT and AEVT index every datom, so
- * they must agree exactly; AVET and VAET index declared subsets and can only
- * ever be smaller. A manifest that breaks either relation describes a value no
- * build could have produced.
- */
 export const validateReplicaRoots = (
   roots: unknown,
 ): ReplicaIntegrityFailure | undefined => {
@@ -315,15 +190,6 @@ export const validateReplicaRoots = (
   return undefined;
 };
 
-/**
- * Every field {@link sameReplicationIdentity} reads, in the shape it reads it.
- *
- * A partially damaged identity is worse than a missing one: comparing it would
- * throw on the first absent field, and that raw failure would escape the
- * restore before anything could classify or quarantine the partition — wedging
- * every later startup on the same record. Nothing may be compared until the
- * whole shape is known.
- */
 const isReplicationIdentityShape = (value: unknown): value is ReplicationIdentity =>
   isRecord(value) && value.version === 1 &&
   ["server", "principal", "database", "catalog", "readView", "readCompatibilityHash",
@@ -331,14 +197,6 @@ const isReplicationIdentityShape = (value: unknown): value is ReplicationIdentit
   Array.isArray(value.graphLineage) &&
   value.graphLineage.every((entity: unknown) => typeof entity === "string");
 
-/**
- * The identity a stored record claims, before anything else about it is known.
- *
- * A restore needs this to tell "some other value is filed here" — which selects
- * nothing and is not damage — from "this partition's record is unusable".
- * `undefined` means the record cannot state a complete identity, which is damage
- * and is left to {@link validateReplicaManifest} to classify.
- */
 export const replicaManifestIdentity = (
   record: unknown,
 ): ReplicationIdentity | undefined =>
@@ -346,26 +204,6 @@ export const replicaManifestIdentity = (
     ? record.identity as unknown as ReplicationIdentity
     : undefined;
 
-/**
- * A stable token for the exact stored manifest a restore validated.
- *
- * Quarantine deletes a whole partition, so it must prove it is still deleting
- * the manifest it refused rather than a replacement another session installed
- * while the walk was running — that session may already have published a `Db`
- * over the nodes the deletion would take. Revision plus the four root addresses
- * changes on every install and is cheap to compare; the datom journal is not.
- * Unreadable fields become explicit nulls so a damaged record still compares
- * equal to itself and unequal to a repaired one.
- *
- * A re-install of the *same* revision rebuilds identical roots and identical
- * maps, so the value's own shape cannot separate the refused manifest from a
- * repaired one written in its place — which is exactly the case a mid-walk
- * repair produces. {@link ReplicaManifest.installId} is what separates them:
- * it is unique to the install rather than to the value, so any replacement
- * this client wrote fails the comparison and the healthy manifest survives.
- * Records installed before that field existed carry none and compare as `null`
- * on both sides, which is the behavior they already had.
- */
 export const replicaManifestFingerprint = (record: unknown): string => {
   const manifest = isRecord(record) ? record : {};
   const roots = isRecord(manifest.roots) ? manifest.roots : {};
@@ -376,9 +214,6 @@ export const replicaManifestFingerprint = (record: unknown): string => {
       const ref = roots[name];
       return isRecord(ref) && typeof ref.hash === "string" ? ref.hash : null;
     }),
-    // Unique to the install rather than to the value, so a re-install of the
-    // same revision — the shape a mid-walk repair takes — is distinguishable
-    // from the manifest that was refused. Absent on pre-existing records.
     typeof manifest.installId === "string" ? manifest.installId : null,
     typeof roots.t === "number" ? roots.t : null,
     typeof manifest.nextLocalId === "number" ? manifest.nextLocalId : null,
@@ -389,11 +224,6 @@ export const replicaManifestFingerprint = (record: unknown): string => {
   ]);
 };
 
-/**
- * One stored logical value, in exactly one of the variants the wire format
- * defines. Materialization switches on `type` without a default arm, so an
- * unknown or wrongly typed variant would throw rather than be refused.
- */
 const isLogicalValue = (value: unknown): boolean => {
   if (!isRecord(value)) return false;
   switch (value.type) {
@@ -410,9 +240,6 @@ const isLogicalValue = (value: unknown): boolean => {
     case "uuid":
       return typeof value.value === "string";
     case "bytes":
-      // Materialization decodes this with `atob`, which throws on anything
-      // that is not base64 — and a throw here would escape the typed outcome
-      // and wedge every reconnect on the same record.
       return typeof value.value === "string" && isCanonicalBase64(value.value);
     default:
       return false;
@@ -427,11 +254,8 @@ const isCanonicalBase64 = (value: string): boolean => {
   }
 };
 
-/** What the caller already knows about the partition it asked to restore. */
 export type ReplicaManifestExpectation = {
-  /** The partition key the record was read from. */
   readonly partition: string;
-  /** The read compatibility hash this client has installed and confirmed. */
   readonly readCompatibilityHash: ReadCompatibilityHash;
 };
 
@@ -452,10 +276,6 @@ const localIds = (
     if (typeof name !== "string" || !isCount(id)) {
       return Result.fail(failure("manifest-undecodable", `malformed ${what} entry`));
     }
-    // Materialization numbers these from the user range upwards. An id inside
-    // the bootstrap range would overwrite a built-in schema entry while the
-    // indexed facts kept using the id they were built with, so ident-based
-    // reads would silently miss data.
     if (id < FIRST_USER_EID) {
       return Result.fail(failure("manifest-invariant", `${what} ${name} is a reserved local id`));
     }
@@ -471,13 +291,6 @@ const localIds = (
   return Result.succeed(map);
 };
 
-/**
- * The stored wire-identity → sealed-handle binding.
- *
- * Two entities may never share a handle: the seal is injective in the eid
- * within one scope, so a repeat means the record binds two rows to one mutation
- * target and a queued invocation could reach the wrong one.
- */
 const sealedHandles = (
   entries: unknown,
 ): Result.Result<ReadonlyMap<string, string>, ReplicaIntegrityFailure> => {
@@ -513,14 +326,6 @@ const sealedHandles = (
   return Result.succeed(map);
 };
 
-/**
- * Validate one stored manifest against the partition and client that asked for
- * it. This runs before any node is read, so a manifest that cannot describe a
- * complete value never starts a walk.
- *
- * `record` is deliberately `unknown`: it comes back from structured clone and
- * nothing but these checks makes it a {@link ReplicaManifest}.
- */
 export const validateReplicaManifest = (
   record: unknown,
   expected: ReplicaManifestExpectation,
@@ -545,8 +350,6 @@ export const validateReplicaManifest = (
         failure("manifest-undecodable", "manifest has no complete identity or revision"),
       );
     }
-    // The compatibility hash is duplicated onto the record so a restore can
-    // refuse before touching the identity; the two must never disagree.
     if (
       record.readCompatibilityHash !== identity.readCompatibilityHash ||
       record.readCompatibilityHash !== expected.readCompatibilityHash
@@ -570,8 +373,6 @@ export const validateReplicaManifest = (
     const entities = yield* localIds(record.entityIds, "entity id");
     const handles = yield* sealedHandles(record.entityHandles);
     const attributeIds = yield* localIds(record.attributeIds, "attribute id");
-    // Entities and attributes are numbered by one partition-local allocator, so
-    // an id may be claimed once in total, not once per map.
     const allocated = new Set<number>();
     for (const [what, ids] of [["entity", entities], ["attribute", attributeIds]] as const) {
       for (const [name, id] of ids) {
@@ -589,10 +390,6 @@ export const validateReplicaManifest = (
       }
     }
     const bootstrap = Schema.bootstrap();
-    // Materialization projects these straight into the restored schema, so a
-    // malformed one is damage rather than a client disagreement, and one the
-    // allocator never numbered would leave a restored attribute with no local
-    // id at all.
     for (const spec of record.attributes as readonly unknown[]) {
       if (
         !isRecord(spec) || typeof spec.ident !== "string" ||
@@ -610,16 +407,6 @@ export const validateReplicaManifest = (
         );
       }
     }
-    // Every fact the manifest keeps must be interpretable: its entity, its
-    // field, and any entity it references all need a partition-local id, or
-    // materialization would have to invent one and the restored value would
-    // silently differ from the committed one.
-    //
-    // The journal is not only a description of the restored value: the next
-    // `Change` rebuilds the whole committed set from it. A malformed value
-    // would throw while materializing, and a `retract` — which the committed
-    // set can never contain, because retraction removes a fact rather than
-    // storing one — would be re-asserted as an ordinary fact.
     for (const datom of record.datoms as readonly LogicalDatom[]) {
       if (
         !isRecord(datom) || typeof datom.entity !== "string" ||
@@ -650,9 +437,6 @@ export const validateReplicaManifest = (
             failure("manifest-invariant", "logical reference has no local entity"),
           );
         }
-        // The same requirement the subject carries. A reference is a way to
-        // reach an entity, so a target this value cannot address is the same
-        // hole as an unaddressable subject.
         if (!handles.has(target)) {
           return yield* Result.fail(
             failure("manifest-invariant", "logical reference has no sealed handle"),
@@ -663,33 +447,10 @@ export const validateReplicaManifest = (
     return record as unknown as ReplicaManifest;
   });
 
-// ---------------------------------------------------------------------------
-// Node checks
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Whole-tree summaries
-// ---------------------------------------------------------------------------
-
-/**
- * An order-independent summary of the datoms one index tree holds.
- *
- * Node addresses prove each node's own bytes, but the roots live in the
- * manifest and are not covered by any digest, so a damaged manifest can pair
- * one index's current root with another index's stale one — every node
- * validates, and yet entity-ordered and attribute-ordered reads answer from
- * different values. Comparing counts alone cannot see that; comparing whole
- * datom sets would need both trees resident. A commutative fold gives the same
- * answer in constant memory, folded in during the walk that already decodes
- * every leaf.
- */
 export type ReplicaIndexDigest = {
   datoms: number;
-  /** Commutative sum of the per-datom hashes, modulo 2^32. */
   sum: number;
-  /** Commutative xor of the same hashes: two folds, two ways to disagree. */
   xor: number;
-  /** The largest transaction number the tree holds. */
   basis: number;
 };
 
@@ -727,7 +488,6 @@ const datomHash = (datom: Datom): number => {
   return mixed;
 };
 
-/** Fold one leaf's datoms into the running summary of its tree. */
 export const digestReplicaDatoms = (
   digest: ReplicaIndexDigest,
   datoms: readonly Datom[],
@@ -741,10 +501,6 @@ export const digestReplicaDatoms = (
   }
 };
 
-/**
- * Whether two index trees hold the same datoms. EAVT and AEVT are built from
- * one datom list, so anything else is a manifest that mixes two values.
- */
 export const sameReplicaIndexContents = (
   left: ReplicaIndexDigest,
   right: ReplicaIndexDigest,
@@ -761,23 +517,6 @@ const emptyDigests = (): ReplicaIndexDigests => ({
   3: emptyReplicaIndexDigest(),
 });
 
-/**
- * The datoms a stored manifest says its four trees hold, derived the way the
- * install derived them.
- *
- * A manifest keeps two descriptions of one value: a logical journal of
- * authorized facts, and four physical index roots built from it. The first
- * restore reads only the roots, but the next `Change` rebuilds everything from
- * the journal, so a journal that has drifted from the roots silently adds or
- * drops facts at the next change and the result is internally consistent
- * forever after. The local id maps and stored schema sit between the two and
- * can drift the same way.
- *
- * Replaying the shared projection settles all of it in one pass — the journal,
- * the id maps, the stored attributes, and each index's membership rule — and it
- * costs one hash per fact with no datom arrays held: the whole comparison is
- * four fixed-size digests.
- */
 export const expectedReplicaContents = (
   manifest: ReplicaManifest,
 ): Result.Result<ReplicaIndexDigests, ReplicaIntegrityFailure> => {
@@ -787,8 +526,6 @@ export const expectedReplicaContents = (
     return Result.fail(failure("manifest-invariant", "a stored attribute has no local id"));
   }
   const digests = emptyDigests();
-  // EAVT and AEVT index every datom; AVET and VAET index the subsets the
-  // restored schema selects, which is exactly how the build partitions them.
   const fold = (datom: Datom): void => {
     digestReplicaDatoms(digests[0], [datom]);
     digestReplicaDatoms(digests[1], [datom]);
@@ -808,30 +545,11 @@ export const expectedReplicaContents = (
       fold(fact);
     }
   } catch {
-    // Materializing a stored value must never escape as a raw throw: that
-    // would skip the typed outcome and the quarantine, and the same record
-    // would fail identically on every later restore. The checks above reject
-    // each known way a stored value can refuse to decode; this catches any
-    // that a future value type adds.
     return Result.fail(failure("manifest-undecodable", "a stored fact cannot be materialized"));
   }
   return Result.succeed(digests);
 };
 
-/**
- * The whole-tree conclusions only a completed walk can reach.
- *
- * Node addresses prove each node's own bytes, but the roots live in the
- * manifest and no digest covers them, so a damaged manifest can pair one
- * index's current root with a superseded root of the same size — every node
- * validates, and yet the four trees describe different values. Comparing each
- * walked tree against what the manifest says it should hold settles that, the
- * basis, and the journal/index agreement at once.
- *
- * `roots.t` is checked separately because it is the manifest's own claim rather
- * than anything the trees carry, and it becomes the restored value's `basisT`:
- * lowering it silently filters intact facts out of every read.
- */
 export const validateReplicaContents = (
   roots: Roots,
   walked: ReplicaIndexDigests,
@@ -852,7 +570,6 @@ export const validateReplicaContents = (
   return undefined;
 };
 
-/** The datoms a node holds directly, or the total its children claim. */
 const nodeCount = (node: TreeNode): number => {
   if (node.kind === NodeKind.Leaf) return node.datoms.length;
   let total = 0;
@@ -860,30 +577,13 @@ const nodeCount = (node: TreeNode): number => {
   return total;
 };
 
-/** The references a walk must follow out of one node. */
 export const replicaNodeChildren = (node: TreeNode): readonly NodeRef[] =>
   node.kind === NodeKind.Dir ? node.refs : [];
 
-/**
- * Validate one decoded node against the reference that led the walk to it.
- *
- * The content address already proves the body is exactly the bytes that were
- * written, so these checks are about *position*: a node whose body is intact
- * but which is reachable from somewhere it does not belong would otherwise
- * produce a well-formed `Db` over the wrong datoms. The index tag, the kind,
- * the subtree count, and the sort order are all recorded independently of the
- * reference, so each disagreement is a real inconsistency.
- */
 export const validateReplicaNode = (
   index: IndexId,
   ref: NodeRef,
   decoded: { readonly index: IndexId; readonly node: TreeNode },
-  /**
-   * The separator the parent directory filed this subtree under, absent at a
-   * root. A descent picks a child by comparing these keys, so one that is not
-   * the child's own smallest datom routes a lookup into the wrong subtree and
-   * silently omits facts that are all still present and correctly hashed.
-   */
   expectedKey?: Datom,
 ): ReplicaIntegrityFailure | undefined => {
   const located = { index, hash: ref.hash };
@@ -900,9 +600,6 @@ export const validateReplicaNode = (
     return failure("node-invariant", "node does not hold the referenced datom count", located);
   }
   const comparator = COMPARATORS[index];
-  // The smallest datom this subtree holds. A build always files a subtree under
-  // exactly that datom, at every level, so the separator and the child settle
-  // each other.
   const smallest = node.kind === NodeKind.Leaf ? node.datoms[0] : node.keys[0];
   if (expectedKey !== undefined) {
     if (smallest === undefined) {
@@ -927,8 +624,6 @@ export const validateReplicaNode = (
   if (node.refs.length !== node.keys.length) {
     return failure("node-invariant", "directory keys and children disagree", located);
   }
-  // A directory with no children can never be reached by a descent, and a
-  // build never produces one: an empty tree is an empty leaf root.
   if (node.refs.length === 0) return failure("node-invariant", "directory has no children", located);
   for (let i = 0; i < node.refs.length; i++) {
     const invalid = validateReplicaNodeRef(node.refs[i], `child ${i}`, index);

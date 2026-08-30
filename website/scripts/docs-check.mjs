@@ -1,17 +1,4 @@
 #!/usr/bin/env node
-// docs-check — the single source of truth for objective facts about this docs site.
-//
-// Reviewers and writers must cite THIS tool rather than their own counts: hand
-// counting produced three different "landing page word count" numbers in one
-// review cycle, and disagreements about measurement stop a review loop from
-// converging.
-//
-//   bun website/scripts/docs-check.mjs              human-readable report
-//   bun website/scripts/docs-check.mjs --json       machine-readable
-//   bun website/scripts/docs-check.mjs --page index every check for one page
-//   bun website/scripts/docs-check.mjs --only words|shape|terms|links|images|code|facts
-//
-// Exit code 1 if any ERROR-severity check fails, 0 otherwise (WARN never fails).
 
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, dirname, resolve } from "node:path";
@@ -37,7 +24,6 @@ const asJson = args.includes("--json");
 const onlyPage = args.includes("--page") ? args[args.indexOf("--page") + 1] : null;
 const onlyCheck = args.includes("--only") ? args[args.indexOf("--only") + 1] : null;
 
-// ── word budgets for the current information architecture ──────────────────
 const BUDGETS = {
   index: 1000,
   "getting-started/introduction": 400,
@@ -85,14 +71,11 @@ const BUDGETS = {
   "reference/server": 700,
 };
 
-// Banned in PROSE (allowed inside code fences, and in Reference tables where
-// unavoidable). blueprint.md §1.2 rule 7.
 const BANNED = [
   "datom", "isolate", "standing query", "standing read", "materialize",
   "datalog", "novelty", "tempid", "EAVT", "AEVT", "AVET", "VAET",
 ];
-// Softer: a legitimate use exists, but only so many. `peer` is banned in
-// prose — the code is `createServer` / `ServerAuth`.
+
 const BANNED_SOFT = { peer: 0, upsert: 0, idempotent: 0, colo: 0 };
 
 const REFERENCE_PAGES = /^reference\//;
@@ -105,7 +88,6 @@ const findings = [];
 const add = (sev, check, page, msg, detail) =>
   findings.push({ sev, check, page, msg, detail });
 
-// ── collect pages ───────────────────────────────────────────────────────────
 const walk = (dir) =>
   readdirSync(dir).flatMap((f) => {
     const p = join(dir, f);
@@ -125,7 +107,6 @@ const allSlugs = new Set(
   walk(DOCS).map((p) => relative(DOCS, p).replace(/\.mdx?$/, "")),
 );
 
-// ── parsing helpers ─────────────────────────────────────────────────────────
 const splitFrontmatter = (src) => {
   const m = src.match(/^---\n([\s\S]*?)\n---\n?/);
   return m ? { fm: m[1], body: src.slice(m[0].length) } : { fm: "", body: src };
@@ -143,16 +124,14 @@ const splitCode = (body) => {
   return { prose, blocks };
 };
 
-// ONE canonical word count. Prose = body minus code fences, minus JSX/HTML
-// tags, minus MDX expressions and comments, minus markdown punctuation.
 const countProse = (prose) => {
   let t = prose;
-  t = t.replace(/\{\/\*[\s\S]*?\*\/\}/g, " ");       // {/* mdx comment */}
-  t = t.replace(/<[^>]+>/g, " ");                     // tags
-  t = t.replace(/\{[^{}]*\}/g, " ");                  // jsx expressions
-  t = t.replace(/^import .*$/gm, " ");                // imports
+  t = t.replace(/\{\/\*[\s\S]*?\*\/\}/g, " ");
+  t = t.replace(/<[^>]+>/g, " ");
+  t = t.replace(/\{[^{}]*\}/g, " ");
+  t = t.replace(/^import .*$/gm, " ");
   t = t.replace(/[`*_>#|]/g, " ");
-  t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");      // links → their text
+  t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
   return t.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
 };
 const countCode = (blocks) =>
@@ -166,7 +145,6 @@ const countCode = (blocks) =>
     return n + src.split(/\s+/).filter(Boolean).length;
   }, 0);
 
-// github-slugger-compatible enough for our heading set
 const slugify = (s) =>
   s
     .trim()
@@ -183,12 +161,11 @@ const headings = (body) => {
   for (const m of prose.matchAll(/^(#{2,4})\s+(.+?)\s*$/gm)) {
     out.push({ level: m[1].length, text: m[2], id: slugify(m[2]) });
   }
-  // Components that render an <h2> with a known id
+
   if (/<Next\b/.test(body)) out.push({ level: 2, text: "Next", id: "next" });
   return out;
 };
 
-// index every page's anchors for cross-page link checking
 const anchorIndex = new Map();
 for (const p of walk(DOCS).map((f) => ({
   slug: relative(DOCS, f).replace(/\.mdx?$/, ""),
@@ -196,7 +173,7 @@ for (const p of walk(DOCS).map((f) => ({
 }))) {
   const { body } = splitFrontmatter(p.src);
   const ids = new Set(headings(body).map((h) => h.id));
-  // explicit id="..." (glossary uses these)
+
   for (const m of body.matchAll(/\bid=["']([^"']+)["']/g)) ids.add(m[1]);
   for (const m of body.matchAll(/\{#([^}]+)\}/g)) ids.add(m[1]);
   anchorIndex.set(p.slug, ids);
@@ -208,7 +185,6 @@ const slugForHref = (href) => {
   return clean;
 };
 
-// ── the checks ──────────────────────────────────────────────────────────────
 const run = (name) => !onlyCheck || onlyCheck === name;
 const report = [];
 
@@ -217,7 +193,6 @@ for (const page of pages) {
   const { prose, blocks } = splitCode(body);
   const row = { slug: page.slug };
 
-  // WORDS
   if (run("words")) {
     const fmProse = countProse(
       (fm.match(/^\s*(title|description|tagline):\s*(.*)$/gm) || []).join(" "),
@@ -235,7 +210,6 @@ for (const page of pages) {
     }
   }
 
-  // SHAPE
   if (run("shape")) {
     const title = fm.match(/^title:\s*(.+)$/m)?.[1]?.trim();
     const desc = fm.match(/^description:\s*(.+)$/m)?.[1]?.trim();
@@ -269,7 +243,7 @@ for (const page of pages) {
       row.learn = hasLearn;
       row.next = hasNext;
     }
-    // unused imports
+
     for (const m of body.matchAll(/^import\s+(\w+)\s+from/gm)) {
       const comp = m[1];
       if (comp[0] !== comp[0].toUpperCase()) continue;
@@ -277,7 +251,7 @@ for (const page of pages) {
       if (uses === 0)
         add("ERROR", "shape", page.slug, `imports ${comp} but never uses it`);
     }
-    // heading order
+
     let prev = 2;
     for (const h of headings(body)) {
       if (h.level > prev + 1)
@@ -286,19 +260,15 @@ for (const page of pages) {
     }
   }
 
-  // TERMS
   if (run("terms")) {
-    // Inline code spans are code, not prose: blueprint rule 7 bans these words
-    // in prose only, and reference tables legitimately name wire fields.
+
     const proseNoCode = prose.replace(/`[^`]*`/g, " ");
     const hay = proseNoCode.toLowerCase();
     for (const w of BANNED) {
       const re = new RegExp(`\\b${w.toLowerCase()}s?\\b`, "g");
       const hits = [...hay.matchAll(re)];
       if (hits.length) {
-        // the glossary is allowed to name the banned word it replaces
-        // The glossary and the one Datomic-credit page both legitimately name
-        // the words they replace (in a mapping table).
+
         const namesTheOldWord =
           page.slug === "concepts/glossary" || page.slug === "concepts/data-model";
         const sev = namesTheOldWord ? "WARN" : "ERROR";
@@ -318,7 +288,6 @@ for (const page of pages) {
     row.datomic = datomic;
   }
 
-  // LINKS
   if (run("links")) {
     const hrefs = [
       ...body.matchAll(/href=["']([^"']+)["']/g),
@@ -337,7 +306,6 @@ for (const page of pages) {
     }
   }
 
-  // IMAGES
   if (run("images")) {
     for (const m of body.matchAll(/<img\b([^>]*)>/g)) {
       const attrs = m[1];
@@ -353,13 +321,8 @@ for (const page of pages) {
     }
   }
 
-  // CODE provenance
   if (run("code")) {
-    // `Cloudflare.Worker`'s `main` is a filesystem path, not a module
-    // specifier: a bare "ramose/worker" resolves to nothing, and the failure
-    // is silent — the server reports ready and every request hangs forever.
-    // This spelling shipped in the docs for months. A block may still show it
-    // as a counter-example, but only alongside the spelling that works.
+
     for (const b of blocks) {
       if (/main:\s*["'`]ramose\/worker["'`]/.test(b.code) &&
           !b.code.includes("import.meta.resolve")) {
@@ -390,7 +353,6 @@ for (const page of pages) {
   report.push(row);
 }
 
-// FACTS — counts and tables that name code
 if (run("facts") && !onlyPage) {
   const tags = dbErrorTags();
   for (const page of pages) {
@@ -417,7 +379,6 @@ if (run("facts") && !onlyPage) {
   }
 }
 
-// unused images (whole-site check, skipped when scoped to one page)
 if (run("images") && !onlyPage) {
   const referenced = new Set();
   for (const p of walk(DOCS)) {
@@ -425,12 +386,12 @@ if (run("images") && !onlyPage) {
     for (const m of src.matchAll(/src=["'](\/[^"']+\.(?:png|gif|jpg|svg))["']/g))
       referenced.add(m[1]);
   }
-  // og.png and the favicon are referenced from <head>, not from an <img>.
+
   const HEAD_ASSETS = new Set(["/og.png", "/favicon.svg"]);
   const onDisk = walk(PUBLIC)
     .map((p) => "/" + relative(PUBLIC, p))
     .filter((p) => /\.(png|gif|jpg)$/.test(p) && !p.startsWith("/brand") && !HEAD_ASSETS.has(p));
-  // Keep unused-asset output consolidated so actionable findings stay visible.
+
   const unused = onDisk
     .filter((img) => !referenced.has(img))
     .map((img) => ({ img, kb: Math.round(statSync(join(PUBLIC, img)).size / 1024) }));
@@ -442,7 +403,6 @@ if (run("images") && !onlyPage) {
   }
 }
 
-// ── output ──────────────────────────────────────────────────────────────────
 const errors = findings.filter((f) => f.sev === "ERROR");
 const warns = findings.filter((f) => f.sev === "WARN");
 

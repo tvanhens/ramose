@@ -1,5 +1,3 @@
-/** Portable queries and operation declarations used by the peer and fixtures. */
-
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 import { Todo, Todos } from "../schema.ts";

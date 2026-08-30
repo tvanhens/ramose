@@ -1,8 +1,3 @@
-/**
- * Shared catalog-unit builders for deployed-registry tests.
- * Copied from catalog-unit.test.ts patterns — not imported from that file.
- */
-
 import * as Effect from "effect/Effect";
 import {
   CatalogId,

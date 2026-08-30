@@ -29,7 +29,7 @@ const idScope = Object.freeze({
   principal: "prn",
   database: "dbs",
 });
-/** The epoch the fixture mappings record, and one that is not it. */
+
 const fixtureEpoch = Object.freeze({
   keyId: "AAECAwQFBgcICQoLDA0ODw",
   material: "c2VhbGluZy1tYXRlcmlhbC1mb3ItcmVjZWlwdC1maXh0dXJlcw",
@@ -39,11 +39,7 @@ const otherEpoch = Object.freeze({
   material: "YW5vdGhlci1zZWFsaW5nLXJvb3QtZm9yLXJlY2VpcHQtdGVzdHM",
 });
 const otherAllocatedRef = clientRef();
-/**
- * A genuinely sealed handle, not a synthetic 55-character string: the durable
- * mapping check reads each handle's own preamble for the codec version and the
- * key epoch, so only a real one can stand in for a stored mapping.
- */
+
 const sealedEntityId = await sealEntityId(fixtureEpoch, idScope, 4242);
 const operationVersion = OperationVersion.make("1f".repeat(32));
 const otherOperationVersion = OperationVersion.make("2e".repeat(32));
@@ -145,8 +141,6 @@ describe("authoritative invocation receipt identity", () => {
       expect(candidate.invocationDigest).not.toBe(base.invocationDigest);
     }
 
-    // Deployment identity is a separate private fence and never digested:
-    // a redeploy or an unrelated catalog change must not conflict a replay.
     const redeployed = await Promise.all([
       prepare(invocation({ unitHash: CatalogUnitHash.make("cd".repeat(32)) })),
       prepare(invocation({ catalogKey: CatalogId.make("other-catalog") })),
@@ -198,9 +192,7 @@ describe("authoritative invocation receipt identity", () => {
 
   test("the allocation binding is covered, and an empty one leaves the digest untouched", async () => {
     const base = await prepare(invocation());
-    // The extension has to be absence-preserving: every receipt already stored
-    // was digested without it, and adding a field unconditionally would turn a
-    // lost acknowledgement into a conflict instead of an exact replay.
+
     expect((await prepare(invocation({ allocations: [] }))).invocationDigest)
       .toBe(base.invocationDigest);
     expect(
@@ -216,8 +208,6 @@ describe("authoritative invocation receipt identity", () => {
       allocations: [{ slot: "item", clientRef: allocatedRef }],
     });
 
-    // The same invocation id promised to a *different* durable client identity
-    // is a different intent, so #487's ordinary conflict applies.
     const rebound = await prepare(invocation({
       allocations: [{ slot: "item", clientRef: otherAllocatedRef }],
     }));
@@ -296,13 +286,12 @@ describe("authoritative invocation receipt state machine", () => {
       output: { id: 7 },
       replayFence,
     });
-    // Same caller, same invocation id, different deployed operation version:
-    // the digest necessarily differs too, but the answer must be specific.
+
     expect(decideInvocationReceipt(completed, preparedFixture({
       operationVersion: otherOperationVersion,
       invocationDigest: digest("e"),
     }))).toEqual({ _tag: "OperationChanged" });
-    // An unchanged operation with different data stays an ordinary conflict.
+
     expect(decideInvocationReceipt(completed, preparedFixture({
       invocationDigest: digest("e"),
     }))).toEqual({ _tag: "Conflict" });
@@ -323,7 +312,7 @@ describe("authoritative invocation receipt state machine", () => {
     expect(legacy).toEqual({ _tag: "LegacyInvocationReceipt", version: 1 });
     expect(decideInvocationReceipt(legacy, preparedFixture()))
       .toEqual({ _tag: "UpdateRequired" });
-    // Even a row whose stored operation version would have matched.
+
     expect(decideInvocationReceipt(legacy, preparedFixture({
       invocationDigest: digest("f"),
     }))).toEqual({ _tag: "UpdateRequired" });
@@ -382,8 +371,7 @@ describe("authoritative invocation receipt serialization", () => {
       replayFence,
     });
     if (completed.status !== "completed") throw new Error("expected completion");
-    // Where the public projection must seal, carried over the internal hop and
-    // never onto a response. The durable output keeps its resolved eids.
+
     const outcome = {
       ...invocationReceiptOutcome(completed),
       outputRefPaths: [["id"], ["rows", 0]],
@@ -391,10 +379,7 @@ describe("authoritative invocation receipt serialization", () => {
     const wire = JSON.parse(JSON.stringify(outcome));
     expect(parseAuthoritativeInvocationResult(wire, "invocation-01"))
       .toEqual(outcome);
-    // A path this build cannot follow is refused rather than skipped: skipping
-    // one would publish the raw eid it names.
-    // An empty path is addressable — it names the whole output — but an empty
-    // *list* is not: the field is omitted when nothing needs sealing.
+
     expect(
       parseAuthoritativeInvocationResult(
         { ...wire, outputRefPaths: [[]] },
@@ -432,14 +417,14 @@ describe("authoritative invocation receipt serialization", () => {
       allocations,
     });
     if (completed.status !== "completed") throw new Error("expected completion");
-    // Same row, same key, same state machine: only the extension is added.
+
     expect(completed.allocations).toEqual(allocations);
     expect(parseStoredInvocationReceipt(JSON.parse(JSON.stringify(completed))))
       .toEqual(completed);
 
     const outcome = invocationReceiptOutcome(completed);
     if (outcome._tag !== "Completed") throw new Error("expected completion");
-    // The slot name stays private to the durable row.
+
     expect(outcome.mappings).toEqual([
       { clientRef: allocatedRef, entityId: sealedEntityId },
     ]);
@@ -449,7 +434,6 @@ describe("authoritative invocation receipt serialization", () => {
       "invocation-01",
     )).toEqual(outcome);
 
-    // A numeric eid can never enter or leave a receipt, even from above.
     expect(() => parseStoredInvocationReceipt({
       ...completed,
       allocations: { ...allocations, entries: [{
@@ -458,8 +442,7 @@ describe("authoritative invocation receipt serialization", () => {
         entityId: 1001,
       }] },
     })).toThrow("invalid durable invocation receipt");
-    // A row that does not say which epoch and scope it was sealed under cannot
-    // be checked for resolvability, so it is corruption rather than a replay.
+
     expect(() => parseStoredInvocationReceipt({
       ...completed,
       allocations: { version: 1, entries: allocations.entries },
@@ -468,7 +451,7 @@ describe("authoritative invocation receipt serialization", () => {
       ...JSON.parse(JSON.stringify(outcome)),
       mappings: [{ clientRef: allocatedRef, entityId: 1001 }],
     }, "invocation-01")).toThrow("invalid authoritative invocation result");
-    // Two slots naming one client ref would make the mapping ambiguous.
+
     expect(() => parseStoredInvocationReceipt({
       ...completed,
       allocations: {
@@ -480,14 +463,9 @@ describe("authoritative invocation receipt serialization", () => {
       },
     })).toThrow("invalid durable invocation receipt");
 
-    // The stored handles are openable only under the epoch and scope they were
-    // sealed to. A rotated key or a second public origin serving the same
-    // database must not hand back mappings the caller can never resolve.
     const bound = { keyId: allocations.keyId, scope: allocations.scope };
     expect(allocationMappingsResolvable(allocations, bound)).toBe(true);
-    // Every handle must say the epoch itself. The recorded `keyId` is not
-    // believed alone, so a row whose epoch was rewritten to the current one
-    // cannot present handles this build has no key for.
+
     expect(allocationMappingsResolvable({
       ...allocations,
       entries: [{
@@ -495,9 +473,7 @@ describe("authoritative invocation receipt serialization", () => {
         entityId: await sealEntityId(otherEpoch, idScope, 4242),
       }],
     }, bound)).toBe(false);
-    // And a newer codec that keeps this envelope *length* and moves only its
-    // version byte is not merely the right shape — it is unopenable, and the
-    // preamble is where that shows.
+
     const futureEnvelope = new Uint8Array(41);
     futureEnvelope[0] = ENTITY_ID_CODEC + 1;
     expect(allocationMappingsResolvable({
@@ -520,10 +496,7 @@ describe("authoritative invocation receipt serialization", () => {
   });
 
   test("a receipt whose handles a newer codec wrote is recognized, not corruption", () => {
-    // A newer entity-id codec wrote this row and the service was then rolled
-    // back. The row must survive its own decoder — throwing would make an
-    // exact retry an internal 500 forever, before the replay decision that
-    // would have told the client to update.
+
     const future = "Z".repeat(80);
     const claim = decideInvocationReceipt(undefined, preparedFixture());
     if (claim._tag !== "Claim") throw new Error("expected claim");
@@ -543,15 +516,13 @@ describe("authoritative invocation receipt serialization", () => {
     };
     const decoded = parseStoredInvocationReceipt(JSON.parse(JSON.stringify(rolled)));
     expect(decoded).toEqual(rolled as never);
-    // And it is not replayable: this build cannot open those handles, so the
-    // caller is told to update rather than handed something unusable.
+
     const stored = decoded as typeof rolled;
     expect(allocationMappingsResolvable(stored.allocations, {
       keyId: stored.allocations.keyId,
       scope: stored.allocations.scope,
     })).toBe(false);
-    // A numeric eid is still refused outright — that is a type error, not a
-    // codec generation, and no rollback can produce it.
+
     expect(() => parseStoredInvocationReceipt({
       ...rolled,
       allocations: {
@@ -606,8 +577,7 @@ describe("authoritative invocation receipt serialization", () => {
       ...completed,
       executableSource: "return destroyEverything()",
     })).toThrow("invalid durable invocation receipt");
-    // A current-generation row without its operation version is corruption,
-    // not a legacy row: it must never be reinterpreted as replayable.
+
     const { operationVersion: _dropped, ...withoutVersion } = completed;
     expect(() => parseStoredInvocationReceipt(withoutVersion))
       .toThrow("invalid durable invocation receipt");
@@ -623,7 +593,7 @@ describe("authoritative invocation receipt serialization", () => {
       scopeDigest: "private",
     }, "invocation-01")).toThrow("invalid authoritative invocation result");
     for (const tag of ["OperationChanged", "UpdateRequired"] as const) {
-      // Effect-free refusals carry no receipt and no engine metadata.
+
       expect(parseAuthoritativeInvocationResult({ _tag: tag }, "invocation-01"))
         .toEqual({ _tag: tag });
       expect(() => parseAuthoritativeInvocationResult({

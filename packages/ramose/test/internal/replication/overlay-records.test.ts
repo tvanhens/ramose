@@ -1,13 +1,3 @@
-/**
- * The durable layer record and the restore decision (#476 slice 2).
- *
- * Everything here is a pure value: the record the enqueue writes, the strict
- * decoder that gates it, and the total decision that turns stored rows back
- * into layers by natively replaying the installed projection. The IndexedDB
- * half — atomicity, the crash cuts, the scoped clear, and the fence
- * transaction — is proven in an actual browser.
- */
-
 import { describe, expect, test } from "bun:test";
 import {
   runProjection,
@@ -95,7 +85,6 @@ const layerRecord = (
 ): OptimisticLayerRecord =>
   buildOptimisticLayer({ record, projection, createdAt: 1_700_000_000_001 });
 
-/** The projection every catalog below installs, unless a case replaces it. */
 const rename = ({ input, self, tx }: {
   readonly input: { readonly title: string };
   readonly self: unknown;
@@ -170,9 +159,7 @@ describe("the durable layer record", () => {
 
   test("stores no changeset, no callback, and no source of any kind", () => {
     const layer = layerRecord();
-    // The whole persisted vocabulary. A changeset, an `ops`, a `source`, a
-    // `body`, or anything function-shaped here would be an executable
-    // persistence format; there is deliberately none.
+
     expect(Object.keys(layer).sort()).toEqual([
       "activation",
       "allocations",
@@ -239,9 +226,7 @@ describe("the durable layer record", () => {
     const handle = (await sealEntityId(sealing, scope, 7)) as unknown as EntityId;
     const layer = layerRecord(queued({ target: { type: "entity", entityId: handle } }));
     expect(layer.sealing).toEqual({ codecVersion: 1, keyId: sealing.keyId });
-    // A row whose `sealing` was rewritten to another epoch is unreadable, not
-    // ready: believing the field would let a stale handle look current after a
-    // key rotation and skip the very quarantine the epoch exists to trigger.
+
     expect(decodeOptimisticLayer({
       ...layer,
       sealing: { codecVersion: 1, keyId: base64Url(new Uint8Array(16)) },
@@ -324,9 +309,7 @@ describe("restoring layers by native replay", () => {
     });
 
     test("one drifted row withholds every layer of its receiver database", () => {
-      // Partial replay would show a speculative view the installed bundle
-      // cannot account for; the rows stay durable and a compatible build
-      // replays them unchanged.
+
       const restored = restore([withTarget(1), withTarget(2)], catalogOf({ revision: 4 }));
       expect(restored).toMatchObject({ type: "update-required" });
       expect(restored.type === "update-required" && restored.quarantined).toHaveLength(2);
@@ -348,12 +331,10 @@ describe("restoring layers by native replay", () => {
         database: receiver.database,
       }, 3)) as unknown as EntityId;
       const row = layerRecord(queued({ target: { type: "entity", entityId: handle } }));
-      // An unconfirmed epoch is not evidence of a rotation, so offline — or
-      // before the first authenticated response — nothing quarantines.
+
       expect(restore([row]).type).toBe("layers");
       expect(reasons(restore([row], catalogOf({}), sealing.keyId))).toEqual([]);
-      // The server has since replaced the key: the layer is quarantined
-      // data-free rather than replayed against a replica it cannot address.
+
       const rotated = base64Url(Uint8Array.from({ length: 16 }, () => 7));
       expect(reasons(restore([row], catalogOf({}), rotated))).toEqual(["key-epoch"]);
     });

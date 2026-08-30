@@ -1,11 +1,3 @@
-/**
- * Tagged failures for the peer Worker's request Effect.
- *
- * Rich causes stay available to internal logging. `toHttp` is the only
- * public restatement and deliberately exposes the small, stable vocabulary
- * selected by `public-observation.ts`.
- */
-
 import {
   OperationRejected,
   QueryBudgetExceeded,
@@ -27,7 +19,6 @@ export class BadRequest extends Data.TaggedError("BadRequest")<{
   readonly message: string;
   readonly trace?: string | undefined;
 }> {}
-/** A Transactor/Replica failure whose detail is internal only. */
 export class UpstreamError extends Data.TaggedError("UpstreamError")<{
   readonly status: number;
   readonly body: string;
@@ -57,13 +48,11 @@ const TAGS = new Set([
   "OperationRejected",
 ]);
 
-/** A tagged failure that was `throw`n inside an async route body. */
 export const isRamoseError = (error: unknown): error is RamoseError =>
   typeof error === "object" &&
   error !== null &&
   TAGS.has((error as { readonly _tag?: string })._tag ?? "");
 
-/** Classify route failures without inferring public status from private text. */
 export function fromThrown(
   error: unknown,
   options: { readonly stacks: boolean } = { stacks: false },
@@ -97,7 +86,6 @@ export interface HttpError {
   readonly headers?: Record<string, string> | undefined;
 }
 
-/** Tagged failure -> the complete public status/body vocabulary. */
 export function toHttp(error: RamoseError): HttpError {
   switch (error._tag) {
     case "NotFound":

@@ -1,6 +1,3 @@
-// Remark plugin: any fence whose title cites a repo file is replaced with
-// the extract. A mismatch against a non-empty body fails the build.
-
 import { extractTitle, bodyMatchesExtract } from "./lib/snippets.mjs";
 
 const visit = (node, fn) => {
@@ -24,8 +21,7 @@ export default function remarkExtractSnippets() {
       const title = titleOf(node);
       if (!title) return;
       const got = extractTitle(title);
-      // Known-deleted client files (shrink-only allowlist). Leave the
-      // fence as written; do not fail the site build.
+
       if (got.skipped) return;
       if (!got.extracted) return;
       if (!got.ok) {

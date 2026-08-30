@@ -1,37 +1,3 @@
-/**
- * The one operation-scoped compatibility version (#487).
- *
- * `OperationVersion` is the full SHA-256 of a single operation's canonical
- * descriptor. Every consumer that has to decide whether an invocation minted
- * earlier is still the same operation — offline queues, invocation receipts,
- * operation references — compares this value and nothing else.
- *
- * ## What the canonical descriptor covers
- *
- * - the semantic operation identity: catalog key, owner kind/name, local name;
- * - the target mode (`required` / `none`) — the public interaction shape;
- * - the normalized semantic input and output contracts: the declared schema
- *   representation plus the lowered Ramose shape;
- * - the public precondition and allocation behavior: the admissible composer
- *   entity names for a targeted trait operation, the declared write entity
- *   names, and the ordered named client-ref allocation slots with the output
- *   paths they bind (#475) — an offline client pins this version *before* it
- *   can submit, so moving a slot's output path has to rotate the version or a
- *   queued invocation would bind its client ref to a different entity;
- * - the author-declared executable revision.
- *
- * ## What it must never cover
- *
- * Catalog unit hashes, deployment or build-artifact identity, executable
- * source, unrelated definitions in the same catalog, grants and policies,
- * documentation, graph paths and database instances, and wire projections or
- * aliases. Deployment binding stays a separate private fence: it may still
- * refuse to *execute*, but it never participates in the compatibility
- * decision. Excluding executable source is why the revision exists — bump
- * `revision` to rotate an operation whose declared contract is unchanged but
- * whose behavior is not.
- */
-
 import * as Effect from "effect/Effect";
 import type { AllocationSlots } from "../../db/allocations.ts";
 import type { OperationInputShape } from "./catalog.ts";
@@ -46,23 +12,15 @@ import type { JsonValue } from "./json.ts";
 
 const OPERATION_VERSION_DOMAIN_V1 = "ramose/operation-version/v1\0";
 
-/**
- * Canonical descriptor generation. Bumping it rotates every version.
- *
- * 2 added the named client-ref allocation declaration (#475).
- */
 export const OPERATION_VERSION_DESCRIPTOR_VERSION = 2 as const;
 
-/** Revision assumed when an operation does not declare one. */
 export const DEFAULT_OPERATION_REVISION = 1;
 
-/** One declared semantic contract: the wire representation and lowered shape. */
 export type OperationContractMaterial = {
   readonly representation: JsonValue;
   readonly shape: OperationInputShape;
 };
 
-/** Exactly the inputs the canonical operation descriptor is allowed to see. */
 export type OperationVersionDescriptor = {
   readonly catalog: CatalogId;
   readonly owner: OwnerRef;
@@ -71,21 +29,11 @@ export type OperationVersionDescriptor = {
   readonly revision: number;
   readonly input: OperationContractMaterial;
   readonly output: OperationContractMaterial;
-  /** Entity types admitted as the target of a trait operation. */
   readonly composers: readonly string[];
-  /** Entity definitions this operation may allocate or write. */
   readonly writes: readonly string[];
-  /**
-   * Named client-ref allocation slots, already canonically ordered by slot
-   * name, each with the entity-reference output path it binds.
-   */
   readonly allocations: AllocationSlots;
 };
 
-/**
- * An author-declared revision must be an ordinary positive integer. It is the
- * only way to rotate an operation whose declared contract did not change.
- */
 export const requireOperationRevision = (
   value: unknown,
   label: string,
@@ -102,14 +50,12 @@ export const requireOperationRevision = (
 const sortedNames = (names: readonly string[]): readonly string[] =>
   [...new Set(names)].sort();
 
-/** JSON Schema keywords that carry documentation and no wire meaning. */
 const DOCUMENTATION_KEYWORDS = new Set([
   "title",
   "description",
   "$comment",
   "examples",
 ]);
-/** Keywords whose value is one subschema. */
 const SUBSCHEMA_KEYWORDS = new Set([
   "additionalItems",
   "additionalProperties",
@@ -124,14 +70,12 @@ const SUBSCHEMA_KEYWORDS = new Set([
   "unevaluatedItems",
   "unevaluatedProperties",
 ]);
-/** Keywords whose value is an array of subschemas. */
 const SUBSCHEMA_LIST_KEYWORDS = new Set([
   "allOf",
   "anyOf",
   "oneOf",
   "prefixItems",
 ]);
-/** Keywords whose value maps author-chosen names to subschemas. */
 const SUBSCHEMA_MAP_KEYWORDS = new Set([
   "$defs",
   "definitions",
@@ -143,13 +87,6 @@ const SUBSCHEMA_MAP_KEYWORDS = new Set([
 const isJsonObject = (value: unknown): value is Record<string, JsonValue> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/**
- * Drop documentation keywords from one JSON Schema node. Only positions that
- * are known to hold subschemas are descended into, so an author's property
- * *named* `description` is never mistaken for an annotation and an unknown
- * keyword is hashed verbatim. Removing documentation can never merge two
- * different contracts — it can only stop rotating on a doc-only edit.
- */
 const stripSchemaDocumentation = (node: JsonValue): JsonValue => {
   if (Array.isArray(node)) return node.map(stripSchemaDocumentation);
   if (!isJsonObject(node)) return node;
@@ -174,9 +111,7 @@ const stripSchemaDocumentation = (node: JsonValue): JsonValue => {
   return out;
 };
 
-/** JSON Pointer prefixes a deployed projection uses for its own definitions. */
 const DEFINITION_REF_PREFIXES = ["#/$defs/", "#/definitions/"];
-/** Canonical prefix every surviving internal reference is rewritten to. */
 const CANONICAL_REF_PREFIX = "#/$defs/";
 
 const definitionRefName = (
@@ -193,11 +128,6 @@ const definitionRefName = (
   return undefined;
 };
 
-/**
- * Order definition names by first reference, walking object keys sorted so
- * the order depends on structure alone. A name is recorded before its body is
- * entered, so a recursive definition terminates.
- */
 const orderDefinitionNames = (
   node: JsonValue,
   definitions: Record<string, JsonValue>,
@@ -241,14 +171,6 @@ const rewriteDefinitionRefs = (
   return out;
 };
 
-/**
- * Replace the projection's definition names with positions in a structural
- * traversal. An Effect `identifier` annotation becomes the definition name and
- * the `$ref` that points at it, and renaming one is a wire alias change, not a
- * contract change — the compatibility contract excludes aliases, so the digest
- * must not see them. Renaming is a bijection, so two different contracts can
- * never be merged by it.
- */
 const canonicalizeDefinitionNames = (
   document: Record<string, JsonValue>,
   mapKey: "definitions" | "$defs",
@@ -258,7 +180,6 @@ const canonicalizeDefinitionNames = (
   if (names.size === 0) return document;
   const order: string[] = [];
   orderDefinitionNames(document.schema!, definitions, names, order);
-  // A definition nothing reaches still has to land somewhere deterministic.
   for (const name of [...names].sort()) {
     if (!order.includes(name)) order.push(name);
   }
@@ -273,17 +194,6 @@ const canonicalizeDefinitionNames = (
   };
 };
 
-/**
- * Normalize one declared contract representation for the version digest.
- *
- * The deployed projection is a JSON Schema document (`{ dialect, schema,
- * definitions }`). Two things in it are excluded from the compatibility
- * contract and are removed here: documentation, so an author's `description`
- * or `title` edit does not rotate the version, and wire aliases — an Effect
- * `identifier` annotation surfaces as the definition name and its `$ref`, and
- * renaming one is not a contract change. An unrecognized document shape is
- * hashed verbatim rather than guessed at.
- */
 export const normalizeContractRepresentation = (
   representation: JsonValue,
 ): JsonValue => {
@@ -312,11 +222,6 @@ export const normalizeContractRepresentation = (
   return mapKey === undefined ? out : canonicalizeDefinitionNames(out, mapKey);
 };
 
-/**
- * Canonical, deployment-free operation material. Construction is the
- * enforcement: nothing outside {@link OperationVersionDescriptor} can reach
- * the digest.
- */
 export const operationVersionMaterial = (
   descriptor: OperationVersionDescriptor,
 ): JsonValue => ({
@@ -345,8 +250,6 @@ export const operationVersionMaterial = (
   behavior: {
     composers: [...sortedNames(descriptor.composers)],
     writes: [...sortedNames(descriptor.writes)],
-    // Already canonically ordered by `allocationSlots`; re-sorted here so the
-    // digest cannot depend on how a caller assembled the descriptor.
     allocations: [...descriptor.allocations]
       .sort((left, right) => (left.slot < right.slot ? -1 : left.slot > right.slot ? 1 : 0))
       .map((allocation) => ({
@@ -356,7 +259,6 @@ export const operationVersionMaterial = (
   },
 });
 
-/** Hash one canonical operation descriptor into its branded version. */
 export const hashOperationVersion = Effect.fn("Authorization.hashOperationVersion")(
   function* (descriptor: OperationVersionDescriptor) {
     const digest = yield* hashDomainSeparatedCanonicalJson(

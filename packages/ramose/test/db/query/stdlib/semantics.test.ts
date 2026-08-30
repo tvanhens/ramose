@@ -1,13 +1,3 @@
-/**
- * Semantics and boundary behaviour for the v1 expression standard library
- * (#507).
- *
- * Every function is total: an undefined case is absence, never an exception
- * and never a poisoned value. These tests pin the boundaries that make that
- * claim real — null propagation, empty text and empty collections, non-finite
- * arithmetic, clamped indices, and the instant range.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
 import {
@@ -30,7 +20,6 @@ import {
   type StdlibValue,
 } from "../../../../src/db/query/stdlib/index.ts";
 
-/** Evaluate a call that must succeed. */
 const call = (
   name: string,
   args: readonly StdlibValue[],
@@ -45,7 +34,6 @@ const call = (
   return outcome.success;
 };
 
-/** The sealed code of a call that must fail. */
 const failureCode = (
   name: string,
   args: readonly StdlibValue[],
@@ -58,7 +46,6 @@ const failureCode = (
   return sealStdlibFailure(outcome.failure).code;
 };
 
-/** A value nested `depth` containers deep around a scalar. Built iteratively. */
 const nest = (depth: number): StdlibValue => {
   let value: StdlibValue = 1;
   for (let i = 0; i < depth; i += 1) value = [value];
@@ -106,8 +93,7 @@ describe("value helpers", () => {
     expect(asciiUpper("refund")).toBe("REFUND");
     expect(asciiLower("ÄÖÜ")).toBe("ÄÖÜ");
     expect(asciiUpper("straße")).toBe("STRAßE");
-    // U+1C89/U+1C8A are the pair whose mapping differs between Unicode
-    // versions; ASCII-only mapping leaves both untouched on every engine.
+
     expect(asciiLower("\u1C89")).toBe("\u1C89");
     expect(asciiUpper("\u1C8A")).toBe("\u1C8A");
     expect(asciiLower("A1[]~")).toBe("a1[]~");
@@ -124,7 +110,7 @@ describe("value helpers", () => {
     expect(trimPinned("hi there")).toBe("hi there");
     expect(trimPinned("")).toBe("");
     expect(trimPinned(pinned)).toBe("");
-    // U+200B ZERO WIDTH SPACE is not in the set and is not trimmed.
+
     expect(trimPinned("\u200Bhi\u200B")).toBe("\u200Bhi\u200B");
   });
 
@@ -513,9 +499,7 @@ describe("time", () => {
   });
 
   test("a difference too large to be exact is absent, not rounded", () => {
-    // The exact span is 17_279_999_999_999_999 ms, which a double cannot
-    // hold: it would report 17_280_000_000_000_000 and hand a silently wrong
-    // duration to filtering, projection, or ordering.
+
     const from = -MAX_TIMESTAMP_MILLIS;
     const to = MAX_TIMESTAMP_MILLIS - 1;
     expect(to - from).toBe(17_280_000_000_000_000);
@@ -564,8 +548,7 @@ describe("the text domain is well-formed Unicode", () => {
   });
 
   test("ill-formed text nested inside a collection is rejected too", () => {
-    // The argument check walks the whole value, so an element cannot smuggle
-    // ill-formed text past it and out through `collection.first`.
+
     expect(failureCode("collection.first", [["\uD800"]])).toBe(
       "query_function_argument_domain",
     );
@@ -582,9 +565,7 @@ describe("the text domain is well-formed Unicode", () => {
   });
 
   test("code-point indices stay consistent for astral text", () => {
-    // The published semantics say index 1 is the code point after the emoji,
-    // and slicing at that index agrees. A lone low surrogate could otherwise
-    // have matched at code-unit offset 1, which is inside the pair.
+
     expect(call("text.indexOf", ["😀x", "x"])).toBe(1);
     expect(call("text.slice", ["😀x", 1, 2])).toBe("x");
     expect(call("text.length", ["😀x"])).toBe(2);
@@ -628,8 +609,7 @@ describe("the value domain bounds nesting depth", () => {
   });
 
   test("a 200,000-deep value is refused rather than crashing the isolate", () => {
-    // Sub-megabyte JSON, and every traversal it can reach runs on an explicit
-    // stack, so this is a sealed failure and never a RangeError.
+
     const veryDeep = nest(200_000);
     const outcome = evaluateQueryCall({
       name: "logic.eq",
@@ -649,8 +629,7 @@ describe("the value domain bounds nesting depth", () => {
   });
 
   test("the traversals themselves do not depend on the host call stack", () => {
-    // Belt and braces: even called directly, past any domain check, the
-    // helpers must not overflow.
+
     const a = nest(200_000);
     const b = nest(200_000);
     expect(() => deepEquals(a, b)).not.toThrow();
@@ -679,7 +658,7 @@ describe("the value domain bounds nesting depth", () => {
 });
 
 describe("produced text is bounded before it is allocated", () => {
-  /** The sealed failure of a call that must fail. */
+
   const failure = (name: string, args: readonly StdlibValue[]) => {
     const outcome = evaluateQueryCall({ name, context: "let", args });
     if (Result.isSuccess(outcome)) {
@@ -691,7 +670,7 @@ describe("produced text is bounded before it is allocated", () => {
   test("replace cannot multiply two small inputs into a huge one", () => {
     const value = "a".repeat(2_000);
     const replacement = "b".repeat(1_000);
-    // 2,000 matches × a 1,000-unit replacement is ~2M units from ~3KB of input.
+
     expect(failure("text.replace", [value, "a", replacement])).toEqual({
       code: "query_function_output_size",
       function: "text.replace",

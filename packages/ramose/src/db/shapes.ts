@@ -1,19 +1,3 @@
-/**
- * Attr refs and select shapes — the machinery the query surface's terminals
- * reuse. An attribute reference (`User.name`) carries its ident, schema and
- * cardinality (the types `Q.fact` correlates on); a **shape** is the fields a
- * projection asks for (`select({ … })` / `Q.pull`), with `.optional`,
- * `.orDefault`, nested `ref.select({ … })`, the wildcard (`all(N)`) and
- * recursion (`again(n)`). This module also lowers the row-dropping half of a
- * shape (`requiredClauses`) and binds sort keys without dropping rows
- * (`lowerOrderPath`) — both shared by the kernel query lowering.
- *
- * The navigational query surface that used to live here (predicate methods
- * on attrs, quantifiers, element cursors, `Ramose.query(N)`) is gone: the
- * kernel query language (`Q`, `Query.q`, the pipeable stdlib) is the one
- * constraint language.
- */
-
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyField, Cardinality } from "./Field.ts";
 import type { AnyEntity } from "./Entity.ts";
@@ -53,29 +37,12 @@ import {
   pullDefault,
 } from "./Pull.ts";
 
-// ── attr refs ──────────────────────────────────────────────────────────────
-
-/**
- * What a stamped attribute carries at runtime beyond its schema: the ident,
- * and — for a backlink node — the reversal flag. `__path` / `__cards` /
- * `__revs` describe the (single-hop) path a shape field or sort key walks;
- * a plain attribute's path is just its own ident.
- */
 export type PathCarrier = {
   readonly ident: string;
   readonly cardinality?: Cardinality | undefined;
   readonly __path?: readonly string[];
-  /** Cardinality of each hop in `__path` — parallel to it. */
   readonly __cards?: readonly Cardinality[];
-  /**
-   * Which hops in `__path` are walked backwards — parallel to it. A reversed
-   * hop is `[?next :a ?e]` instead of `[?e :a ?next]`. It is cardinality-many
-   * (any number of entities may point at one) unless the ref is a
-   * `:db/owned` one, whose referrer is unique — that backlink is
-   * card-one, and `__cards` says so.
-   */
   readonly __revs?: readonly boolean[];
-  /** @internal Set on the node `attr.reverse` returns. */
   readonly __reverse?: boolean;
 };
 
@@ -85,11 +52,9 @@ export const pathOf = (attr: PathCarrier): readonly string[] =>
 export const cardsOf = (attr: PathCarrier): readonly Cardinality[] =>
   attr.__cards ?? [attr.cardinality ?? "one"];
 
-/** Reversal flag per hop. A path with no reversed hop reports all `false`. */
 export const revsOf = (attr: PathCarrier): readonly boolean[] =>
   attr.__revs ?? pathOf(attr).map(() => false);
 
-/** The value an attr compares against: its Schema's type, `unknown` if untyped. */
 export type AttrValue<A> = A extends {
   readonly schema: { readonly Type: infer T };
 }
@@ -101,38 +66,21 @@ export type EidLike = number | { readonly id: number };
 
 type IsMany<A> = A extends { readonly cardinality: "many" } ? true : false;
 
-/**
- * Where `.orDefault` is defined: a **card-one scalar**. A card-many attribute
- * has no missing value to stand in for — it is `[]`, which is already an
- * answer — and a ref reaches an entity, whose stand-in would have to be a
- * whole shape, not a value. `:db/id` is a ref here, and is never missing.
- */
 type IsDefaultable<A> = IsMany<A> extends true
   ? false
   : A extends { readonly valueType: "ref" }
     ? false
     : true;
 
-/** Does this node end on a ref (a backlink is one, read the other way)? */
 const isRefNav = (attr: PathCarrier): boolean =>
   (attr as { valueType?: unknown }).valueType === "ref";
 
-// ── select shapes ──────────────────────────────────────────────────────────
-
-/**
- * `.select` on a ref: a named shape, `all(N)` — the target's wildcard
- * row — or `again(n)`, which re-applies the enclosing shape. A card-many
- * ref (or backlink) also takes its pull-phase constraints here, as one
- * options record — see {@link NestedOpts}.
- */
 type RefSelect<A> = {
   <const D extends RecurDepth>(shape: Again<D>, opts?: SelectOpts<A>): SelectNested<A, Again<D>>;
   <const N extends AnyEntity>(shape: AllShape<N>, opts?: SelectOpts<A>): SelectNested<A, AllShape<N>>;
   <const S extends Shape>(shape: S & ValidShape<S>, opts?: SelectOpts<A>): SelectNested<A, S>;
 };
 
-/** Where select options are legal: only a card-many collection has elements
- * to filter, order, and page. A card-one ref rejects the record. */
 type SelectOpts<A> = [IsManyRef<A>] extends [true] ? NestedOpts<A> : never;
 
 export type OrderEmpty = "first" | "last";
@@ -150,17 +98,10 @@ export type ShapeField =
       readonly attr: unknown;
       readonly shape: Shape | AllShape | Again;
     }
-  // a filtered card-many *scalar* is the field itself — its elements are
-  // values, so there is no shape to select through it
   | { readonly _tag: "collection"; readonly attr: unknown };
 
 export type Shape = { readonly [key: string]: ShapeField };
 
-/**
- * `S`, with every invalid field replaced by the error naming it. Used as
- * `shape: S & ValidShape<S>`: the intersection still infers `S` from the
- * argument, and a rejected field has nowhere to go.
- */
 export type ValidShape<S> = {
   readonly [K in keyof S]: IsAgainTerm<S[K]> extends true
     ? AgainAsField<K & string>
@@ -169,18 +110,12 @@ export type ValidShape<S> = {
       : S[K];
 };
 
-/** The attribute a shape field hangs on, peeling `.optional` / `.orDefault` / `.select`. */
 type ShapeAttrOf<F> = F extends { readonly _tag: "optional" | "default"; readonly field: infer I }
   ? ShapeAttrOf<I>
   : F extends { readonly _tag: "select" | "nested" | "collection"; readonly attr: infer A }
     ? A
     : F;
 
-/**
- * `S`, with every field that is not a member of `N`'s stamped field map
- * replaced by an error naming it. Used as `S & FocusShape<N, S>` the same
- * way {@link ValidShape} is — a foreign entity's attribute has nowhere to go.
- */
 type IsReverseField<A> = A extends { readonly __reverse: true } ? true : false;
 
 export type FocusShape<N extends AnyComposer, S> = {
@@ -191,7 +126,6 @@ export type FocusShape<N extends AnyComposer, S> = {
       : `select field "${K & string}" is not an attribute of the focus entity`;
 };
 
-/** A select argument constrained to the focus entity's attributes. */
 export type FocusSelect<N extends AnyComposer, S> = S extends AllShape<infer M>
   ? [M] extends [N]
     ? S
@@ -206,44 +140,26 @@ type AgainNsField<F, S, K extends string> = AgainTargetNs<F> extends ShapeNs<S>
   ? F
   : AgainNsMismatch<K, ShapeNs<S> & string>;
 
-/** A card-many **ref** (a many forward ref, or an ordinary backlink):
- * the hop with elements a nested collection can order and page. */
 type IsManyRef<A> = IsMany<A> extends true
   ? A extends { readonly valueType: "ref" }
     ? true
     : false
   : false;
 
-/**
- * A sort key for a nested collection: a card-one attribute of the element.
- */
 export type NestedOrderKey = PathCarrier & {
   readonly cardinality?: "one";
 };
 
-/**
- * One `where` predicate for a nested collection: a filter fragment over the
- * element. A ref collection's element is an entity var — the same fragments
- * the pipe uses (`is`, `has`, `Q.not(…)`, any userland combinator built from
- * the kernel) apply verbatim. A card-many **scalar**'s element is the value
- * itself, so the fragment is handed the value var directly:
- * `values(User.tags, { where: [(v) => Q.startsWith(v, "a")] })`.
- */
 export type NestedElemPred<A> = A extends { readonly valueType: "ref" }
   ? (focus: Var<EidCell>) => Iterable<unknown>
   : (v: Var<AttrValue<A>>) => Iterable<unknown>;
 
-/** One sort key with its direction: `{ key: Comment.createdAt, dir: "desc" }`.
- * `dir` defaults to `"asc"`; `empty` places elements the key reaches no
- * value for (default `"last"`, in both directions). */
 export interface NestedOrderSpec {
   readonly key: NestedOrderKey;
   readonly dir?: OrderDir;
   readonly empty?: OrderEmpty;
 }
 
-/** The `orderBy` option: a bare key (ascending), one keyed record, or an
- * array of either for a multi-key sort. */
 export type NestedOrderBy =
   | NestedOrderKey
   | NestedOrderSpec
@@ -282,20 +198,8 @@ export interface NestedOpts<A = PathCarrier> {
   readonly offset?: number;
 }
 
-/**
- * Predicate-free stamp on every attribute reference: the pull-shaping
- * methods. `.optional` / `.orDefault` wrap the receiver; `.select` opens a
- * nested shape on a ref, and a card-many ref's pull-phase constraints ride
- * its options record ({@link NestedOpts}).
- */
 export type AttrNav<A extends PathCarrier> = A & {
   readonly optional: ReturnType<typeof optional<A>>;
-  /**
-   * Card-one scalar only: read a missing datom as `value`. It lowers to the
-   * pull's `:default`, so the peer substitutes it — the row is kept without a
-   * required clause, nothing is written, and the field's type is the
-   * attribute's, not `| undefined`. See {@link IsDefaultable}.
-   */
   readonly orDefault: IsDefaultable<A> extends true
     ? (value: AttrValue<A>) => PullDefault<A>
     : never;
@@ -342,8 +246,6 @@ const lowerElemOrder = (
 const isOrderSpec = (k: NestedOrderKey | NestedOrderSpec): k is NestedOrderSpec =>
   typeof k === "object" && k !== null && !("ident" in k) && "key" in k;
 
-/** Lower a {@link NestedOpts} record into the wire's nested constraints.
- * Eager and total, like every shape-side lowering. */
 const lowerNestedOpts = (attr: PathCarrier, opts: NestedOpts<never>): PullNestedConstraints => {
   for (const key of Object.keys(opts)) {
     if (key !== "where" && key !== "orderBy" && key !== "limit" && key !== "offset") {
@@ -382,8 +284,6 @@ const lowerNestedOpts = (attr: PathCarrier, opts: NestedOpts<never>): PullNested
   };
 };
 
-/** Select options need a collection: only a card-many hop has elements to
- * filter, order, and page. */
 const assertManyForOpts = (attr: PathCarrier, spelling: string): void => {
   const cards = cardsOf(attr);
   if (cards[cards.length - 1] !== "many") {
@@ -427,7 +327,6 @@ export interface SelectNested<A = unknown, S = unknown> {
   readonly _tag: "select";
   readonly attr: A;
   readonly shape: S;
-  /** Pull-phase constraints (`:where` / `:order` / `:limit` / `:offset`). */
   readonly constraints?: PullNestedConstraints;
   readonly optional: {
     readonly _tag: "optional";
@@ -466,7 +365,6 @@ export const makeSelectNested = (
   return nestedSelect;
 };
 
-/** Stamp an attribute reference with the pull-shaping methods. */
 export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
   const api = {
     select(this: PathCarrier, shape: Shape | AllShape | Again, opts?: NestedOpts<never>) {
@@ -482,7 +380,6 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
         opts === undefined ? undefined : lowerNestedOpts(this, opts),
       );
     },
-    // like `.optional`, it wraps the *receiver* (issue #69)
     orDefault(this: PathCarrier, value: unknown) {
       return pullDefault(this, value);
     },
@@ -490,7 +387,6 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
 
   return new Proxy(attr, {
     get(target, prop, receiver) {
-      // `.optional` wraps the *receiver*, so a reversed node keeps its flags
       if (prop === "optional") return optional(receiver);
       if (typeof prop === "string" && prop in api) {
         const v = (api as Record<string, unknown>)[prop];
@@ -506,11 +402,6 @@ export const isSelectNested = (x: unknown): x is SelectNested =>
   x !== null &&
   (x as { _tag?: unknown })._tag === "select";
 
-/**
- * `all(N)` is a shape, not a field: there is no attribute to hang a
- * wildcard on. `ref.select(all(N))` is the nested form — a SelectNested,
- * not a bare AllShape — and lowers to the peer's `[*]` on that hop.
- */
 const assertNotAll = (shape: unknown, key?: string): void => {
   if (!isAllShape(shape)) return;
   throw new Error(
@@ -520,7 +411,6 @@ const assertNotAll = (shape: unknown, key?: string): void => {
   );
 };
 
-/** Convert a select shape into the literate pull map `lowerPullPattern` knows. */
 export const shapeToPullMap = (shape: Shape): Record<string, unknown> => {
   assertNotAll(shape);
   assertNotAgain(shape);
@@ -556,16 +446,10 @@ const shapeFieldToPull = (field: unknown): unknown => {
   return field;
 };
 
-// ── the row a shape denotes ────────────────────────────────────────────────
-
 export type SelectResult<S> = {
   readonly [K in keyof S]: SelectFieldResult<S[K], S>;
 };
 
-/**
- * A nested `.select`: a named shape, `all(N)`, or `again(n)` — {@link Unroll}
- * of the enclosing shape, an array when the hop is cardinality-many.
- */
 type NestedSelectResult<A, S, Enclosing = unknown> = [S] extends [
   { readonly _tag: "again"; readonly depth: infer D extends number },
 ]
@@ -592,8 +476,7 @@ type SelectFieldResult<F, Enclosing = unknown> = F extends {
   readonly _tag: "default";
   readonly field: infer Inner;
 }
-  ? // the default stands in for the missing datom: the field always reads,
-    // so it is the attribute's own type — never `| undefined`
+  ?
     SelectFieldResult<Inner, Enclosing>
   : F extends {
         readonly _tag: "optional";
@@ -612,7 +495,7 @@ type SelectFieldResult<F, Enclosing = unknown> = F extends {
           readonly pattern: infer P;
         }
       ? NestedSelectResult<A, P, Enclosing>
-      : // a filtered scalar collection reads as the attribute's own array
+      :
         F extends {
             readonly _tag: "collection";
             readonly attr: infer A;
@@ -623,7 +506,7 @@ type SelectFieldResult<F, Enclosing = unknown> = F extends {
             readonly cardinality: infer Card;
           }
         ? F extends { readonly ident: ":db/id" }
-          ? // the cell is the raw id number, branded with `N.id`'s namespace
+          ?
             IdCell<F>
           : Card extends "many"
             ? readonly SchemaType<F>[]
@@ -632,23 +515,15 @@ type SelectFieldResult<F, Enclosing = unknown> = F extends {
           ? IdCell<F>
           : never;
 
-// ── lowering helpers shared with the kernel query surface ──────────────────
-
 let fresh = 0;
 const gensym = (prefix: string) => `?${prefix}${fresh++}`;
 
-/** @internal The lowering pass resets for deterministic names. */
 export const resetGensym = () => {
   fresh = 0;
 };
 
-/** The pseudo-attribute: the entity variable itself, never a datom. */
 const ID = ":db/id";
 
-/**
- * `[?e :a ?j] [?j :b <value>]` — the join chain a path of idents walks.
- * A reversed hop is the same datom read the other way: `[?j :a ?e]`.
- */
 const hopClauses = (
   root: string,
   path: readonly string[],
@@ -669,12 +544,6 @@ const hopClauses = (
   ];
 };
 
-/**
- * Bind a sort variable to the value at `path` **without dropping rows**: one
- * or-join branch walks the path, the other proves it is absent and grounds
- * `null`, which the engine places per the key's `empty`. (`get-else` cannot
- * stand in: a function binding of `null` drops the row.)
- */
 export const lowerOrderPath = (
   root: string,
   path: readonly string[],
@@ -699,38 +568,15 @@ export const lowerOrderPath = (
   };
 };
 
-/**
- * The row-dropping half of `filterPull`, as `where` clauses — so the peer's
- * row set is already the one the client keeps and `:limit` pages it honestly.
- *
- * A required cardinality-one field must be present (a nested one recursively,
- * through the ref); `.optional` and cardinality-many fields never drop the
- * row (a missing many is `[]`), and `:db/id` is always there.
- *
- * The card-one backlink of a component ref is required like any other card-one
- * field, and its clause reads the datom backwards — the entity that must exist
- * is the *owner* pointing at this row.
- *
- * A defaulted field is not required either — the whole point of `.orDefault`
- * is that the entity without the datom is a row, reading as the default. A
- * clause here would drop exactly the rows it exists to keep, and `:limit`
- * would page a set the client never sees.
- */
 export const requiredClauses = (e: string, pattern: unknown): unknown[] => {
-  // a wildcard has no required field: every key is optional
   if (Array.isArray(pattern) || isAllShape(pattern) || isAgain(pattern)) return [];
   const out: unknown[] = [];
   for (const [key, field] of Object.entries(fieldsOf(pattern))) {
     const info = inspectPullField(field);
-    // a multi-hop field would ask `?e` for the *leaf* ident and drop rows for
-    // a datom they were never meant to have — reject it here too, not just in
-    // the pull pattern, because this half runs first
     assertDirectField(key, info.attr, info.nestedPattern !== undefined);
     if (info.optional || info.many || info.hasDefault) continue;
     const ident = lowerAttr(info.attr);
     if (ident === ID) continue;
-    // a backlink reads the datom the other way: the required entity is the one
-    // *pointing at* `?e` (a component backlink is card-one, so it gets here)
     if (info.nestedPattern === undefined || isAgain(info.nestedPattern)) {
       out.push(info.reverse ? [gensym("r"), ident, e] : [e, ident, "_"]);
       continue;
@@ -738,7 +584,6 @@ export const requiredClauses = (e: string, pattern: unknown): unknown[] => {
     const target = gensym("r");
     const sub = requiredClauses(target, info.nestedPattern);
     if (info.reverse) {
-      // the entity position of a clause has to be a variable, never `_`
       out.push([target, ident, e], ...sub);
       continue;
     }

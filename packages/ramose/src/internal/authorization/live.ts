@@ -1,14 +1,3 @@
-/**
- * Leased server live queries (#415).
- *
- * One authorization lease/epoch covers recomputation, enqueue, and emission.
- * Each authorized basis rebuilds the filtered {@link Db} through the caller's
- * ordinary request-context constructor and runs the ordinary one-shot read.
- * Output is additions and retractions of that result. Raw transaction
- * datoms, IDs, counts, rule facts, and hidden-only sequence events are
- * never forwarded. There is no second live authorization predicate.
- */
-
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -47,30 +36,18 @@ export type LiveQueryDiff = {
 export type LiveBasisEvent = "ready" | "change";
 
 export type AuthorizedLiveControls<R = never> = {
-  /** Already-authorized result used as the first diff baseline. */
   readonly previous?: unknown;
-  /** Basis-change signals. Extra offers coalesce on a sliding slot. */
   readonly wakes?: Queue.Dequeue<unknown>;
-  /** Completing this invalidates the current epoch and closes uniformly. */
   readonly revoked?: Deferred.Deferred<void>;
-  /** Revalidate deployment-scoped authority before starting another lease. */
   readonly renew?: Effect.Effect<void, Unauthorized, R>;
-  /** Push-only basis notifications from the real replica topology. */
   readonly basisChanges?: Stream.Stream<LiveBasisEvent, Unauthorized, R>;
-  /** Optional early invalidation source; bounded renewal remains authoritative. */
   readonly invalidations?: Stream.Stream<unknown, Unauthorized, R>;
-  /** Explicit non-production race boundaries; absent in the production graph. */
   readonly boundaries?: RuntimeBoundaries;
 };
 
 export type AuthorizedLiveInput<R = never, EDb = unknown> =
   AuthorizedRequestInput<R, EDb> & AuthorizedLiveControls<R>;
 
-/**
- * One generic lease/output gate. Authorization callbacks may construct an
- * ordinary single-database filtered Db or compose that same boundary across
- * a graph path; the lease engine never evaluates authorization itself.
- */
 export type AuthorizedLiveLeaseInput<R = never, EAuthorize = unknown> =
   AuthorizedLiveControls<R> & {
     readonly authenticate: Effect.Effect<AuthenticatedCaller, Unauthorized, R>;
@@ -78,7 +55,6 @@ export type AuthorizedLiveLeaseInput<R = never, EAuthorize = unknown> =
     readonly authorize: (
       caller: AuthenticatedCaller,
     ) => Effect.Effect<Db, Unauthorized | EAuthorize, R>;
-    /** Graph paths reauthorize even while idle; ordinary live reads stay push-only. */
     readonly reauthorizeOnIdle?: boolean;
   };
 
@@ -109,7 +85,6 @@ const callerLease = (
   return Result.succeed({ duration, expiresAtMs: nowMs + Duration.toMillis(duration) });
 };
 
-/** A renewed request can extend one stream only for the same principal. */
 const principalLeaseIdentity = (caller: AuthenticatedCaller): string =>
   stringifyJson({
     claims: caller.claims,
@@ -127,7 +102,6 @@ const atBoundary = (
         catch: () => deny(),
       });
 
-/** Query / pull / entity / lookup results as a bag of comparable rows. */
 export const liveResultRows = (value: unknown): readonly unknown[] => {
   if (value === null || value === undefined) return [];
   return Array.isArray(value) ? value : [value];
@@ -136,11 +110,6 @@ export const liveResultRows = (value: unknown): readonly unknown[] => {
 export const isSilentLiveDiff = (diff: LiveQueryDiff): boolean =>
   diff.added.length === 0 && diff.retracted.length === 0;
 
-/**
- * Additions and retractions between two authorized one-shot results.
- * Occurrences are compared by canonical JSON; hidden facts and transaction
- * metadata cannot appear because they are not in either result.
- */
 export const diffAuthorizedResults = (previous: unknown, next: unknown): LiveQueryDiff => {
   const prevRows = liveResultRows(previous);
   const nextRows = liveResultRows(next);
@@ -171,10 +140,6 @@ export const diffAuthorizedResults = (previous: unknown, next: unknown): LiveQue
     else remainingNext.set(key, remaining - 1);
   }
 
-  // Retractions remove one matching occurrence and additions append. If that
-  // minimal bag delta cannot reproduce the exact ordered sequence, use a full
-  // replacement. Keeping arrays here is essential for tuple queries whose
-  // result contains the same value more than once.
   const reconstructed = [...prevRows];
   for (const row of retracted) {
     const key = stringifyJson(row);
@@ -223,7 +188,6 @@ const readAuthorized = (
     catch: (cause) => new OneShotReadError({ cause }),
   });
 
-/** Validate the authorization epoch at the downstream pull boundary. */
 const deliverSnapshot = (
   item: QueuedSnapshot,
 ): Effect.Effect<Result.Result<LiveQueryDiff, void>, Unauthorized> =>
@@ -250,11 +214,6 @@ const deliverSnapshot = (
     return Result.succeed(diff);
   });
 
-/**
- * The shared authorization-lease and output gate. The supplied callback owns
- * construction of the ordinary filtered Db; this loop owns only lifetime,
- * invalidation, recomputation, enqueue, and emission.
- */
 export const executeAuthorizedLiveLease = <R, EAuthorize = unknown>(
   input: AuthorizedLiveLeaseInput<R, EAuthorize>,
   read: OneShotRead,
@@ -378,8 +337,6 @@ export const executeAuthorizedLiveLease = <R, EAuthorize = unknown>(
             event === "ready"
               ? Deferred.succeed(basisReady, undefined).pipe(Effect.asVoid)
               : Deferred.succeed(basisReady, undefined).pipe(
-                  // A conflated basis frame proves the ordered ready frame was
-                  // received even if the bounded wake queue replaced it.
                   Effect.andThen(signalBasisChange),
                   Effect.asVoid,
                 )).pipe(
@@ -404,8 +361,6 @@ export const executeAuthorizedLiveLease = <R, EAuthorize = unknown>(
           ? leaseAndBasis
           : Effect.raceFirst(leaseAndBasis, invalidationWatch);
 
-        // Always end the callback queue. A failed producer fiber otherwise
-        // leaves Stream.callback open, so consumers hang until the test timeout.
         yield* authorizedLoop.pipe(
           Effect.result,
           Effect.andThen(invalidate),
@@ -419,11 +374,6 @@ export const executeAuthorizedLiveLease = <R, EAuthorize = unknown>(
     { bufferSize: 1, strategy: "suspend" },
   ).pipe(Stream.filterMapEffect(deliverSnapshot));
 
-/**
- * Live output over one ordinary filtered database value. Reuses one-shot
- * query, pull, entity, lookup, refs, graph, aggregation, ordering, and limit
- * behavior without introducing another authorization predicate.
- */
 export const executeAuthorizedLive = <R, EDb = unknown>(
   input: AuthorizedLiveInput<R, EDb>,
   read: OneShotRead,

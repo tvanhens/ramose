@@ -1,9 +1,3 @@
-/**
- * Named rules: `:rules` on the wire, invocation from `:where`, recursion
- * under the query budget. The client's membership rules and `Query.rule`
- * lower to exactly these forms.
- */
-
 import { beforeAll, describe, expect, test } from "bun:test";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { type Db } from "../../../src/internal/core/db.ts";
@@ -32,7 +26,7 @@ beforeAll(async () => {
     { ":db/id": "bob", ":person/name": "Bob", ":person/age": 25, ":person/boss": "alice", ":person/city": "Berlin" },
     { ":db/id": "carol", ":person/name": "Carol", ":person/age": 35, ":person/boss": "alice", ":person/city": "Oslo" },
     { ":db/id": "dave", ":person/name": "Dave", ":person/age": 25, ":person/boss": "carol" },
-    // nested groups: root ⊃ eng ⊃ platform; bob in platform, carol in eng, alice in root
+
     { ":db/id": "root", ":group/name": "root" },
     { ":db/id": "eng", ":group/name": "eng", ":group/parent": "root" },
     { ":db/id": "platform", ":group/name": "platform", ":group/parent": "eng" },
@@ -173,9 +167,7 @@ describe("recursive rules", () => {
   });
 
   test("mutual recursion", async () => {
-    // even/odd distance from the root of the boss chain — the base case
-    // keeps a positive clause so every head var has a binding (range
-    // restriction: a var inside not needs a positive base)
+
     const rules = [
       [["evenChain", "?e"], ["?e", ":person/name", "_"], ["not", ["?e", ":person/boss", "_"]]],
       [["evenChain", "?e"], ["?e", ":person/boss", "?b"], ["oddChain", "?b"]],
@@ -186,7 +178,7 @@ describe("recursive rules", () => {
       where: [["oddChain", "?e"], ["?e", ":person/name", "?n"]],
       rules,
     });
-    // bob → alice (1 hop), carol → alice (1 hop); dave → carol → alice (2)
+
     expect(sortRows(res)).toEqual(sortRows([["Bob"], ["Carol"]]));
   });
 
