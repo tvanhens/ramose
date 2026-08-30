@@ -694,6 +694,18 @@ browserTest("an unconfirmed scope cannot hold durable work", async ({ browser })
       { scope: replicaScopeOf(left) },
     );
     expect(queued.sequence).toBe(1);
+
+    // A scope confirmed only *after* this enqueue began is refused too: the
+    // generation it would adopt could already be a post-clear one.
+    const late = identity({ principal: RIGHT });
+    const lateScope = replicaScopeOf(late);
+    // The rejection is observed from the start, so a refusal that lands while
+    // the confirmation is still in flight is still a handled outcome.
+    const pending = rejectedTag(
+      storage.outbox().enqueue(draft(replicaDatabaseScopeOf(late)), { scope: lateScope }),
+    );
+    await confirm(storage, late, "right");
+    expect(await pending).toBe("ReplicaScopeUnconfirmedError");
   } finally {
     storage.close();
     await deleteDatabase(name);

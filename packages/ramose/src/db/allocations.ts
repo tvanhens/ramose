@@ -128,13 +128,18 @@ const normalizePath = (
   );
 };
 
-/** Canonical text of one path, for duplicate detection and for the digest. */
+/**
+ * Unambiguous text of one path, for duplicate detection.
+ *
+ * A delimiter-joined encoding cannot distinguish a property literally named
+ * `"a.b"` from the nested pair `a` then `b`, so two genuinely different output
+ * positions would collide and one valid declaration would be rejected as a
+ * duplicate. JSON escapes the segments, and keeps a numeric index distinct
+ * from the string that spells it.
+ */
 export const allocationPathKey = (
   path: readonly AllocationPathSegment[],
-): string =>
-  path.map((segment) =>
-    typeof segment === "number" ? `#${segment}` : `.${segment}`
-  ).join("");
+): string => JSON.stringify(path);
 
 /**
  * Normalize and validate one declaration into the canonical ordered list a
@@ -178,10 +183,13 @@ export const readAllocationPath = (
   for (const segment of path) {
     if (typeof cursor !== "object" || cursor === null) return undefined;
     if (typeof segment === "number") {
-      if (!Array.isArray(cursor)) return undefined;
+      if (!Array.isArray(cursor) || !Object.hasOwn(cursor, segment)) return undefined;
       cursor = cursor[segment];
     } else {
-      if (Array.isArray(cursor)) return undefined;
+      // Own properties only. An inherited value is not part of the output,
+      // and reading one would resolve a slot against something the durable
+      // record never carried.
+      if (Array.isArray(cursor) || !Object.hasOwn(cursor, segment)) return undefined;
       cursor = (cursor as Record<string, unknown>)[segment];
     }
   }

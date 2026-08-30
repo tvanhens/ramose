@@ -422,10 +422,14 @@ const readPath = (
   for (const segment of path) {
     if (typeof cursor !== "object" || cursor === null) return undefined;
     if (typeof segment === "number") {
-      if (!Array.isArray(cursor)) return undefined;
+      if (!Array.isArray(cursor) || !Object.hasOwn(cursor, segment)) return undefined;
       cursor = cursor[segment];
     } else {
-      if (Array.isArray(cursor)) return undefined;
+      // Own properties only. A value installed on `Object.prototype` would
+      // otherwise satisfy a declared position that the snapshot — and so the
+      // durable row — does not contain, leaving the row unreadable on a
+      // restart where that prototype mutation is absent.
+      if (Array.isArray(cursor) || !Object.hasOwn(cursor, segment)) return undefined;
       cursor = (cursor as Record<string, unknown>)[segment];
     }
   }
@@ -479,6 +483,12 @@ export const buildOutboxRecord = (
   if (draft.target.type === "client-ref" && !isClientRef(draft.target.clientRef)) {
     reject("the queued target is not a durable client ref");
   }
+  if (draft.target.type === "client-ref") {
+    const targeted = draft.target.clientRef;
+    if (draft.allocations.some((allocation) => allocation.clientRef === targeted)) {
+      reject("an invocation may not target a client ref it allocates");
+    }
+  }
   // Validated and materialized once. Everything below reads this snapshot,
   // and it is what becomes durable.
   const input = jsonSnapshot(draft.input, "input", new Set());
@@ -504,6 +514,12 @@ export const buildOutboxRecord = (
 
   const positions = new Set<string>();
   for (const use of draft.inputRefs) {
+    // A ref this very invocation allocates cannot also be an input it depends
+    // on: the mapping only exists once this invocation's authoritative result
+    // arrives, which is after its inputs had to be resolved.
+    if (allocated.has(use.ref)) {
+      reject("an invocation may not depend on a client ref it allocates");
+    }
     const position = JSON.stringify(use.path);
     if (!validPath(use.path)) {
       reject(`input position ${position} is not an addressable path`);
@@ -609,10 +625,6 @@ export const outboxDependencies = (
   return Object.freeze(refs);
 };
 
-/** Whether the record's own allocations satisfy a dependency. */
-const allocatesItself = (record: OutboxRecord, ref: ClientRef): boolean =>
-  record.allocations.some((allocation) => allocation.clientRef === ref);
-
 export type QuarantineReason = "codec-version" | "key-epoch";
 
 export type OutboxEntryState =
@@ -678,7 +690,6 @@ export const decideOutboxEntry = (
   }
   const missing: ClientRef[] = [];
   for (const ref of outboxDependencies(record)) {
-    if (allocatesItself(record, ref)) continue;
     const epoch = context.mapped.get(mappingKey(record.partition, ref));
     if (epoch === undefined) {
       missing.push(ref);
@@ -949,9 +960,14 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
   // The persisted epoch is not believed on its own: it must be exactly what
   // this row's own handles say. A row whose `sealing` was rewritten — by a
   // partial write, a foreign build, or tampering — is unreadable, not ready.
-  // The same invariant the builder enforced. A row whose declared reference
-  // no longer matches its own input is not interpretable, so it quarantines.
+  // The same invariants the builder enforced. A row whose declared reference
+  // no longer matches its own input, or that depends on a ref it allocates,
+  // is not interpretable, so it quarantines.
   if (!inputRefsAgree(input, inputRefs)) return undefined;
+  if (
+    (target.type === "client-ref" && claimed.has(target.clientRef)) ||
+    inputRefs.some((use) => claimed.has(use.ref))
+  ) return undefined;
   const embedded = embeddedSealingEpoch(target, inputRefs);
   if (embedded === "unreadable" || embedded === "mixed") return undefined;
   if (embedded === null) {

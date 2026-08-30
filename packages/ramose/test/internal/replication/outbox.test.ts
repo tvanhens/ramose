@@ -195,12 +195,26 @@ describe("allocation slots", () => {
     expect(() => allocationSlots({ ok: "issue" as never })).toThrow(/output path array/);
   });
 
-  test("a declared path reads exactly its output position", () => {
+  test("a declared path reads exactly its own output position", () => {
     const output = { issues: [{ id: 3 }, { id: 5 }] };
     expect(readAllocationPath(output, ["issues", 1, "id"])).toBe(5);
     expect(readAllocationPath(output, ["issues", 9, "id"])).toBeUndefined();
     expect(readAllocationPath(output, ["issues", "id"])).toBeUndefined();
-    expect(allocationPathKey(["issues", 1, "id"])).toBe(".issues#1.id");
+    // Inherited is not present: an output does not carry what its prototype
+    // happens to have.
+    expect(readAllocationPath(output, ["constructor"])).toBeUndefined();
+    expect(readAllocationPath({ a: [1] }, ["a", "length"])).toBeUndefined();
+  });
+
+  test("a path key distinguishes positions a delimiter would merge", () => {
+    // A property literally named "a.b" is not the nested pair a → b, and a
+    // numeric index is not the string that spells it.
+    expect(allocationPathKey(["a.b"])).not.toBe(allocationPathKey(["a", "b"]));
+    expect(allocationPathKey([0])).not.toBe(allocationPathKey(["0"]));
+    expect(allocationSlots({ flat: ["a.b"], nested: ["a", "b"] })).toEqual([
+      { slot: "flat", path: ["a.b"] },
+      { slot: "nested", path: ["a", "b"] },
+    ]);
   });
 });
 
@@ -259,6 +273,28 @@ describe("building one durable queue record", () => {
     const serialized = JSON.stringify(record);
     expect(serialized).not.toContain("function");
     expect(serialized).not.toContain("unitHash");
+  });
+
+  test("an inherited value never satisfies a declared position", () => {
+    // A dependency installing a plausible value on `Object.prototype` must
+    // not be able to satisfy a path the snapshot does not contain: the row
+    // would be unreadable on the next restart.
+    const ref = clientRef();
+    Object.defineProperty(Object.prototype, "ramoseInheritedRef", {
+      value: ref,
+      configurable: true,
+    });
+    try {
+      expect(rejection(() =>
+        buildOutboxRecord(
+          draft({ input: {}, inputRefs: [{ path: ["ramoseInheritedRef"], ref }] }),
+          scopeKey,
+          1,
+        )
+      )).toMatch(/does not hold the declared reference/);
+    } finally {
+      delete (Object.prototype as Record<string, unknown>).ramoseInheritedRef;
+    }
   });
 
   test("persists the value it validated, not the object it was handed", () => {
@@ -595,18 +631,52 @@ describe("dependencies and blocking", () => {
     ).toEqual({ type: "update-required", reason: "codec-version" });
   });
 
-  test("a record never blocks on a ref it allocates itself", () => {
+  test("an invocation may not depend on a ref it allocates", () => {
+    // Circular: the mapping only exists once this invocation's authoritative
+    // result arrives, which is after its target and inputs had to resolve.
     const own = clientRef();
-    const record = buildOutboxRecord(
-      draft({
-        input: { parent: own },
-        inputRefs: [{ path: ["parent"], ref: own }],
-        allocations: [{ slot: "parent", clientRef: own }],
-      }),
-      scopeKey,
-      1,
-    );
-    expect(decideOutboxEntry(record, { mapped: mappings([]) })).toEqual({ type: "ready" });
+    expect(rejection(() =>
+      buildOutboxRecord(
+        draft({
+          input: { parent: own },
+          inputRefs: [{ path: ["parent"], ref: own }],
+          allocations: [{ slot: "parent", clientRef: own }],
+        }),
+        scopeKey,
+        1,
+      )
+    )).toMatch(/depend on a client ref it allocates/);
+    expect(rejection(() =>
+      buildOutboxRecord(
+        draft({
+          target: { type: "client-ref", clientRef: own },
+          allocations: [{ slot: "parent", clientRef: own }],
+        }),
+        scopeKey,
+        1,
+      )
+    )).toMatch(/target a client ref it allocates/);
+  });
+
+  test("a stored row with a circular dependency stays quarantined", () => {
+    const own = clientRef();
+    const stored = JSON.parse(JSON.stringify(
+      buildOutboxRecord(
+        draft({ allocations: [{ slot: "parent", clientRef: own }] }),
+        scopeKey,
+        1,
+      ),
+    )) as Record<string, unknown>;
+    expect(decodeOutboxRecord(stored)).toBeDefined();
+    expect(decodeOutboxRecord({
+      ...stored,
+      target: { type: "client-ref", clientRef: own },
+    })).toBeUndefined();
+    expect(decodeOutboxRecord({
+      ...stored,
+      input: { parent: own },
+      inputRefs: [{ path: ["parent"], ref: own }],
+    })).toBeUndefined();
   });
 });
 

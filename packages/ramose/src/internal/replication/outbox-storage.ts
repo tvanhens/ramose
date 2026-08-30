@@ -297,6 +297,13 @@ export class IndexedDbOutbox {
     // handle or another one in the same realm — bumps it, and the comparison
     // inside the write refuses rather than repopulating what was just deleted.
     const observed = await this.scopeGeneration(scopeKey);
+    // No generation at all means no authenticated response has confirmed this
+    // scope *yet*. Adopting whatever the write transaction later finds would
+    // let a confirmation and a clear both land in between and still persist
+    // work after the deletion, so the enqueue simply refuses.
+    if (observed === undefined) {
+      throw new ReplicaScopeUnconfirmedError({ scope: scopeKey });
+    }
     const transaction = this.database.transaction([...ENQUEUE_STORES], "readwrite");
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
@@ -338,7 +345,7 @@ export class IndexedDbOutbox {
     options: EnqueueOptions,
     scopeKey: string,
     partition: string,
-    observed: number | undefined,
+    observed: number,
   ): Promise<OutboxRecord> {
     const generations = transaction.objectStore(REPLICA_GENERATIONS_STORE);
     const outbox = transaction.objectStore(MUTATION_OUTBOX);
@@ -351,18 +358,15 @@ export class IndexedDbOutbox {
       ),
       requestResult<unknown>(outbox.index(BY_INVOCATION).get(draft.invocation)),
     ]);
-    // Only a scope an authenticated response confirmed may hold durable work:
-    // `clearScope` refuses an unconfirmed scope, so queueing under one would
-    // create local data the deletion API can never select.
-    if (fence === undefined) throw new ReplicaScopeUnconfirmedError({ scope: scopeKey });
-    // A clear committed between the read above and this transaction. Refusing
-    // here is what stops an enqueue that started before a clear from writing
-    // durable work back into the scope after the deletion committed.
-    if (observed !== undefined && observed !== fence.generation) {
+    // The generation must still be exactly the one the preflight read. A clear
+    // that committed in between bumps it, and a scope whose record vanished is
+    // no longer confirmed — either way this enqueue must not write durable
+    // work behind a deletion.
+    if (fence === undefined || fence.generation !== observed) {
       throw new ReplicaFencedError({
         key: scopeKey,
         expected: observed,
-        observed: fence.generation,
+        observed: fence?.generation ?? 0,
       });
     }
     // Only the scope generation guards a queue. Evicting one cached database
