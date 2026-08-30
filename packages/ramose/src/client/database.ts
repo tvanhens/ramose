@@ -11,9 +11,7 @@
 
 import type { AnyComposer } from "../db/Composer.ts";
 import { NotOne } from "../db/Errors.ts";
-import type { EntityRow, FluentQuery } from "../db/query/fluent.ts";
 import {
-  from as queryFrom,
   lowerQueryObject,
   type AnyQueryObject,
   type LoweredKernelQuery,
@@ -39,6 +37,13 @@ import {
 import { sameReplicationIdentity } from "../internal/replication/state.ts";
 import type { IndexedDbReplicaStorage } from "../internal/replication/indexeddb.ts";
 import type { ClientCatalog } from "./catalog.ts";
+import {
+  clientQueryFrom,
+  GraphDatabaseHandle,
+  type ClientQuery,
+  type GraphAncestor,
+  type GraphRegistry,
+} from "./graph.ts";
 import { Store, sameResult, type Subscription } from "./subscription.ts";
 import { syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -156,7 +161,25 @@ export const readSessionSnapshot = (
 export type DatabaseContext = {
   readonly server: string;
   readonly root: string;
+  /**
+   * The current mutable path names this activation sends, one per authorized
+   * segment. The server authorizes every one of them: the local route slot the
+   * lineage below selects is cache selection, never authority.
+   */
   readonly graphPath: readonly string[];
+  /**
+   * The stable Graph lineage a previous activation of this same graph identity
+   * confirmed, if this client has one.
+   *
+   * Resolved at activation rather than captured, so a lineage confirmed while
+   * this handle was being constructed still selects the durable replica it
+   * names. Absent for the root, and absent until something has confirmed it —
+   * the session then falls back on the durable observation table and finally on
+   * a provisional path slot, exactly as it does with no client at all.
+   */
+  readonly graphLineage?: (() => readonly string[] | undefined) | undefined;
+  /** Every resolved child database this client has, interned by graph identity. */
+  readonly graph: () => GraphRegistry;
   readonly catalog: () => Promise<ClientCatalog>;
   readonly storage: () => Promise<IndexedDbReplicaStorage>;
   readonly credential: () => Promise<{
@@ -305,9 +328,7 @@ class QueryObserver {
  */
 export interface ClientDatabase {
   readonly query: {
-    readonly from: <N extends AnyComposer>(
-      entity: N,
-    ) => FluentQuery<N, EntityRow<N>>;
+    readonly from: <N extends AnyComposer>(entity: N) => ClientQuery<N>;
   };
   /**
    * Observe one query. Observing activates this database; constructing the
@@ -324,10 +345,21 @@ export interface ClientDatabase {
   readonly sync: Subscription<SyncState>;
 }
 
-export class ClientDatabaseHandle implements ClientDatabase {
-  readonly query = { from: queryFrom };
+export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
+  readonly query = { from: clientQueryFrom(this) };
   private readonly syncStore = new Store<SyncState>(syncState("idle"));
   readonly sync = this.syncStore.subscription;
+  /**
+   * A resolved database *is* its own binding, and never rebinds: it is what
+   * every path hanging off it resolves against. The subscription exists so a
+   * descendant does not have to care whether its parent is one of these or an
+   * unresolved graph handle.
+   */
+  readonly binding: Subscription<unknown> = Object.freeze({
+    subscribe: () => () => undefined,
+    getSnapshot: () => this,
+  });
+  private readonly graphChildren = new Map<string, GraphDatabaseHandle>();
 
   private readonly observers = new Map<string, QueryObserver>();
   /**
@@ -433,6 +465,45 @@ export class ClientDatabaseHandle implements ClientDatabase {
     return observer;
   }
 
+  // ── graph ancestry ───────────────────────────────────────────────────────
+
+  /** The current authorized path names this database activates with. */
+  graphPath(): readonly string[] {
+    return this.context.graphPath;
+  }
+
+  activateGraph(): void {
+    void this.activate();
+  }
+
+  boundDatabase(): ClientDatabaseHandle | undefined {
+    return this.closed ? undefined : this;
+  }
+
+  bindingFailure(): Error | undefined {
+    return undefined;
+  }
+
+  /**
+   * The interned unresolved path for one canonical resolution query.
+   *
+   * Interned by parent plus canonical query identity, so two equivalent paths
+   * built independently — during a render, in two components — are one handle,
+   * and constructing them costs nothing.
+   */
+  graphChild(key: string, canonical: AnyQueryObject): GraphDatabaseHandle {
+    const existing = this.graphChildren.get(key);
+    if (existing !== undefined) return existing;
+    const child = new GraphDatabaseHandle(
+      this,
+      canonical,
+      this.context.graph(),
+      (operation) => this.context.assertLive(operation),
+    );
+    this.graphChildren.set(key, child);
+    return child;
+  }
+
   /**
    * Open this database's replication, once.
    *
@@ -458,6 +529,12 @@ export class ClientDatabaseHandle implements ClientDatabase {
     this.catalog = catalog;
     const credential = await this.context.credential();
     if (!this.live()) return;
+    // The lineage a previous activation of this same stable graph identity
+    // confirmed. It selects the durable replica this path already has — which
+    // is what lets a renamed path resume instead of taking a fresh snapshot —
+    // and it decides nothing about authorization: the path names below are
+    // still what the server authorizes, segment by segment.
+    const lineage = this.context.graphLineage?.();
     const session = await ReplicationSession.open({
       activation: {
         server: this.context.server,
@@ -466,6 +543,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
       },
       credential: credential.token,
       cacheKey: credential.cacheKey,
+      ...(lineage === undefined ? {} : { graphLineage: lineage }),
       attributes: catalog.attributes,
       readCompatibilityHash: catalog.readCompatibilityHash,
       storage,
@@ -542,7 +620,19 @@ export class ClientDatabaseHandle implements ClientDatabase {
     }
     this.observers.clear();
     this.retired.clear();
+    this.closeGraphChildren();
     this.syncStore.publish(syncState("closed"));
+  }
+
+  /**
+   * Release every path hanging off this database.
+   *
+   * The paths themselves, not the databases they resolved to: those belong to
+   * the client's registry, which releases them on its own terms.
+   */
+  private closeGraphChildren(): void {
+    for (const child of this.graphChildren.values()) child.close();
+    this.graphChildren.clear();
   }
 
   /**
@@ -734,6 +824,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
     }
     this.observers.clear();
     this.retired.clear();
+    this.closeGraphChildren();
     this.syncStore.publish(syncState("closed"));
     const session = this.session;
     this.session = undefined;

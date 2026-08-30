@@ -49,3 +49,57 @@ export class ClientLocalDataError extends Data.TaggedError(
   readonly reason: ClientLocalDataFailure;
   readonly cause?: unknown;
 }> {}
+
+/** Why a graph path does not name a database this client may read. */
+export type GraphPathFailure =
+  /**
+   * The path names no entity this client may read.
+   *
+   * Deliberately one answer for two causes: an entity that does not exist and
+   * an entity the read policy hides are indistinguishable here, and must stay
+   * that way — a distinguishable "hidden" would be a disclosure.
+   */
+  | "unavailable"
+  /**
+   * The path matches more than one entity. Never resolved by picking one: an
+   * arbitrary selection would silently address the wrong database, and a
+   * mutation queued against it would be unrecoverable.
+   */
+  | "ambiguous"
+  /** An ancestor's authorization was revoked, or its principal was replaced. */
+  | "unauthorized"
+  /** This build cannot read an ancestor's current authorized view. */
+  | "update-required"
+  /** An ancestor was closed, so nothing maintains the path any more. */
+  | "closed"
+  /** The canonical resolution query could not run against the parent. */
+  | "query";
+
+/**
+ * A graph path could not be resolved to one database.
+ *
+ * Surfaced as the `error` of every descendant query snapshot, and never as an
+ * absence of rows: a path that does not resolve has no rows to be absent.
+ */
+export class GraphPathError extends Data.TaggedError("GraphPathError")<{
+  readonly reason: GraphPathFailure;
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
+/** Why an invocation could not be addressed to one stable database. */
+export type GraphReceiverFailure = "unresolved" | "ambiguous" | "closed";
+
+/**
+ * An invocation's receiver did not resolve to one stable database identity, so
+ * nothing was queued.
+ *
+ * The pre-queue gate: no durable invocation or outbox entry is ever created
+ * from mutable path text or from a guessed receiver, so this failure leaves no
+ * durable trace to undo.
+ */
+export class GraphReceiverError extends Data.TaggedError("GraphReceiverError")<{
+  readonly reason: GraphReceiverFailure;
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}

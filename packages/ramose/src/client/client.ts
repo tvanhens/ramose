@@ -18,7 +18,12 @@ import {
   ClientConfigurationError,
   ClientLocalDataError,
 } from "./errors.ts";
-import { ClientDatabaseHandle, type ClientDatabase } from "./database.ts";
+import {
+  ClientDatabaseHandle,
+  type ClientDatabase,
+  type DatabaseContext,
+} from "./database.ts";
+import { GraphRegistry } from "./graph.ts";
 import { Store, type Subscription } from "./subscription.ts";
 import { aggregateSyncStatus, syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -125,6 +130,7 @@ class RamoseClient implements Client {
   readonly sync = this.syncStore.subscription;
 
   private root: ClientDatabaseHandle | undefined;
+  private graph: GraphRegistry | undefined;
   private catalogBuild: Promise<ClientCatalog> | undefined;
   private storageHandle: Promise<IndexedDbReplicaStorage> | undefined;
   private confirmed: ReplicationIdentity | undefined;
@@ -148,9 +154,19 @@ class RamoseClient implements Client {
   private rootHandle(): ClientDatabaseHandle {
     if (this.root !== undefined) return this.root;
     const root = new ClientDatabaseHandle({
+      ...this.databaseContext(),
+      graphPath: [],
+    });
+    this.root = root;
+    return root;
+  }
+
+  /** Everything every database of this client shares, root or resolved child. */
+  private databaseContext(): Omit<DatabaseContext, "graphPath"> {
+    return {
       server: this.server,
       root: this.options.root,
-      graphPath: [],
+      graph: () => this.graphRegistry(),
       catalog: () => this.catalog(),
       storage: () => this.storage(),
       credential: () => this.credential(),
@@ -163,9 +179,31 @@ class RamoseClient implements Client {
       onFenced: () => {
         void this.terminate(this.clearing ? "cleared" : "fenced");
       },
-    });
-    this.root = root;
-    return root;
+    };
+  }
+
+  /**
+   * The resolved child databases, interned by stable graph identity.
+   *
+   * Built lazily, so a client whose application never constructs a graph handle
+   * carries nothing for one.
+   */
+  private graphRegistry(): GraphRegistry {
+    this.graph ??= new GraphRegistry(({ graphPath, graphLineage, onConfirmed }) =>
+      new ClientDatabaseHandle({
+        ...this.databaseContext(),
+        graphPath,
+        graphLineage,
+        onConfirmed: (identity) => {
+          onConfirmed(identity);
+          // Every database of one client shares one server/principal scope, so
+          // a child's confirmation names the scope a clear would act on just as
+          // the root's does.
+          this.confirmed ??= identity;
+        },
+      })
+    );
+    return this.graph;
   }
 
   private assertLive(operation: string): void {
@@ -205,7 +243,12 @@ class RamoseClient implements Client {
       this.syncStore.publish(syncState("closed"));
       return;
     }
-    const statuses = this.root === undefined ? [] : [this.root.syncStatus()];
+    // Every activated database of this client, root and resolved children
+    // alike: a client is only as synchronized as its least synchronized one.
+    const statuses = [
+      ...(this.root === undefined ? [] : [this.root.syncStatus()]),
+      ...(this.graph?.statuses() ?? []),
+    ];
     this.syncStore.publish(syncState(aggregateSyncStatus(statuses)));
   }
 
@@ -270,6 +313,10 @@ class RamoseClient implements Client {
   ): Promise<void> {
     if (this.terminal !== undefined) return;
     this.terminal = reason;
+    // Children first: closing the root releases the paths hanging off it, and a
+    // path released before its database would leave that database's session
+    // open with nothing holding it.
+    await this.graph?.close();
     await this.root?.close();
     // Closing the storage handle releases every pin, retention and enrolment it
     // still holds. A cleared scope is terminal for the handle as well, so a
