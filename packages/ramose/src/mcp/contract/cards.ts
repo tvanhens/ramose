@@ -36,16 +36,24 @@ import {
 } from "./primitives.ts";
 import {
   DefinitionRefV1,
+  EntityRefV1,
+  FieldRefV1,
   FunctionRefV1,
+  GraphRefV1,
   OperationRefV1,
   OPERATION_TARGET_MODES,
   OwnerRefV1,
   PublicNameV1,
+  TraitRefV1,
   type DefinitionRefV1 as DefinitionRefType,
+  type EntityRefV1 as EntityRefType,
+  type FieldRefV1 as FieldRefType,
   type FunctionRefV1 as FunctionRefType,
+  type GraphRefV1 as GraphRefType,
   type OperationRefV1 as OperationRefType,
   type OperationTargetModeV1,
   type OwnerRefV1 as OwnerRefType,
+  type TraitRefV1 as TraitRefType,
 } from "./references.ts";
 
 const CardTitle = Schema.String.check(
@@ -423,29 +431,59 @@ export type DiscoveryKindV1 = (typeof DISCOVERY_KINDS)[number];
  * `ref` is always machine-addressable — a caller drills down by sending it
  * back verbatim, never by re-typing a name it read out of `title`.
  */
-export const CapabilitySummaryV1 = Schema.Struct({
-  kind: Schema.Literals(DISCOVERY_KINDS).annotate({
-    description: "Which family this entry belongs to.",
-  }),
-  ref: Schema.Union([DefinitionRefV1, OperationRefV1, FunctionRefV1]).annotate({
-    description:
-      "Exact reference to this capability. Send it back as describe.ref to get the full card.",
-  }),
-  title: Schema.optionalKey(CardTitle),
-  description: Schema.optionalKey(CardDescription),
-  at: GraphPathV1,
-}).annotate({
+/**
+ * One listing arm: a kind bound to the one reference shape it can carry.
+ *
+ * `kind` and `ref` were independent unions, which let a projection emit
+ * `kind: "operation"` beside a `FunctionRefV1` and still validate. A client is
+ * told `kind` identifies the family, so it would read `ref.owner` or resend the
+ * value as an operation and get an invalid drill-down out of schema-valid
+ * content. Binding them per arm makes that unrepresentable rather than merely
+ * discouraged.
+ */
+const summaryArm = <Kind extends DiscoveryKindV1, Ref extends Schema.Top>(
+  kind: Kind,
+  ref: Ref,
+  what: string,
+) =>
+  Schema.Struct({
+    kind: Schema.Literal(kind).annotate({
+      description: `Discriminator. "${kind}" means ref is ${what}.`,
+    }),
+    ref,
+    title: Schema.optionalKey(CardTitle),
+    description: Schema.optionalKey(CardDescription),
+    at: GraphPathV1,
+  });
+
+export const CapabilitySummaryV1 = Schema.Union([
+  summaryArm("graph", GraphRefV1, "a graph reference"),
+  summaryArm("entity", EntityRefV1, "an entity reference"),
+  summaryArm("trait", TraitRefV1, "a trait reference"),
+  summaryArm("field", FieldRefV1, "a field reference"),
+  summaryArm("operation", OperationRefV1, "an operation reference with its version"),
+  summaryArm("function", FunctionRefV1, "a query-function reference"),
+]).annotate({
   identifier: "CapabilitySummaryV1",
   description:
-    "Compact listing entry. Drill down with its ref for the complete card.",
+    "Compact listing entry, discriminated by kind: each kind carries exactly the reference shape that kind can be drilled down with. Send ref back as describe.ref for the complete card.",
 });
-export type CapabilitySummaryV1 = {
-  readonly kind: DiscoveryKindV1;
-  readonly ref: DefinitionRefType | OperationRefType | FunctionRefType;
+
+type SummaryArm<Kind extends DiscoveryKindV1, Ref> = {
+  readonly kind: Kind;
+  readonly ref: Ref;
   readonly title?: string;
   readonly description?: string;
   readonly at: GraphPathV1;
 };
+
+export type CapabilitySummaryV1 =
+  | SummaryArm<"graph", GraphRefType>
+  | SummaryArm<"entity", EntityRefType>
+  | SummaryArm<"trait", TraitRefType>
+  | SummaryArm<"field", FieldRefType>
+  | SummaryArm<"operation", OperationRefType>
+  | SummaryArm<"function", FunctionRefType>;
 
 /** Exact reference a caller may drill down on. */
 export const DescribeRefV1 = Schema.Union([

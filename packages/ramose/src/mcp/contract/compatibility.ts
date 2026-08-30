@@ -110,7 +110,7 @@ const describe = (path: readonly string[]): string =>
   path.length === 0 ? "<root>" : path.join(".");
 
 // ---------------------------------------------------------------------------
-// Keyword polarity
+// Keyword dispositions
 // ---------------------------------------------------------------------------
 //
 // A constraint keyword either tightens what a schema accepts or loosens it,
@@ -118,91 +118,138 @@ const describe = (path: readonly string[]): string =>
 // input rejects requests that used to work; loosening an output produces
 // values a client's older schema will reject. Both are breaks, and they are
 // mirror images — which is why one table serves both directions.
+//
+// The table below is exhaustive by construction, and that is the point. Every
+// keyword gets a disposition, every disposition handles a keyword being
+// present on one side only, and "absent" always means "unconstrained". A
+// keyword that appears where there was no constraint is a tightening; one that
+// disappears is a loosening. Handling that uniformly is what stops the
+// one-sided-presence family of bugs from having to be rediscovered per
+// keyword — and `RECOGNIZED_SCHEMA_KEYWORDS` is checked against everything the
+// generator actually emits, so a new keyword cannot arrive unclassified.
 
-/** Documentation. Never part of a compatibility decision. */
-const ANNOTATION_KEYWORDS: ReadonlySet<string> = new Set([
-  "$schema",
-  "$id",
-  "$anchor",
-  "$comment",
-  "$defs",
-  "definitions",
-  "title",
-  "description",
-  "examples",
-  "default",
-  "deprecated",
-  "readOnly",
-  "writeOnly",
-]);
-
-/** Handled structurally elsewhere in `compare`. */
-const STRUCTURAL_KEYWORDS: ReadonlySet<string> = new Set([
-  "$ref",
-  "type",
-  "enum",
-  "const",
-  "required",
-  "properties",
-  "items",
-  "anyOf",
-  "oneOf",
-  "allOf",
-  "additionalProperties",
-]);
-
-/** Raising one of these tightens the schema. Absent means unbounded below. */
-const LOWER_BOUND_KEYWORDS: ReadonlySet<string> = new Set([
-  "minLength",
-  "minItems",
-  "minProperties",
-  "minimum",
-  "exclusiveMinimum",
-  "minContains",
-]);
-
-/** Lowering one of these tightens the schema. Absent means unbounded above. */
-const UPPER_BOUND_KEYWORDS: ReadonlySet<string> = new Set([
-  "maxLength",
-  "maxItems",
-  "maxProperties",
-  "maximum",
-  "exclusiveMaximum",
-  "maxContains",
-]);
-
-/** Turning one of these on tightens the schema. Absent means off. */
-const TIGHTENING_FLAG_KEYWORDS: ReadonlySet<string> = new Set(["uniqueItems"]);
+/** How one keyword's contribution to compatibility is decided. */
+export type KeywordDispositionV1 =
+  /** Documentation. Never part of a compatibility decision. */
+  | "annotation"
+  /** A pointer, resolved before anything is compared. */
+  | "reference"
+  /** The `type` keyword. Absent means any type. */
+  | "type"
+  /** `enum` / `const`: an allowed-value set. Absent means any value. */
+  | "enumeration"
+  /** The `required` name set. Absent means nothing is required. */
+  | "required"
+  /** Raising it tightens. Absent means unbounded below. */
+  | "lowerBound"
+  /** Lowering it tightens. Absent means unbounded above. */
+  | "upperBound"
+  /** Turning it on tightens. Absent means off. */
+  | "tighteningFlag"
+  /** Boolean-or-schema openness. Absent means open. */
+  | "openness"
+  /** One nested schema. Absent means unconstrained. */
+  | "subschema"
+  /** `anyOf` / `oneOf`: more arms is looser. Absent means unconstrained. */
+  | "disjunction"
+  /** `allOf`: more arms is tighter. Absent means unconstrained. */
+  | "conjunction"
+  /** The `properties` map. Absent means no members are described. */
+  | "propertyMap"
+  /** Recognized, but two values of it have no decidable ordering. */
+  | "unorderable";
 
 /**
- * Recognized keywords whose values cannot be ordered, so any change to one is
- * reported rather than guessed at. Two regular expressions have no decidable
- * subset relation; neither do `if`/`then`/`else` or the applicator keywords.
+ * Every JSON Schema 2020-12 keyword this classifier knows, and how it decides.
+ *
+ * A keyword missing from this table is not assumed harmless: it is reported on
+ * any change, including appearing or disappearing. The sweep test walks the
+ * published schemas and asserts every keyword they actually use is listed here,
+ * so the generator cannot introduce one that silently falls through.
  */
-const EXACT_MATCH_KEYWORDS: ReadonlySet<string> = new Set([
-  "pattern",
-  "format",
-  "multipleOf",
-  "contentEncoding",
-  "contentMediaType",
-  "contentSchema",
-  "propertyNames",
-  "patternProperties",
-  "dependentRequired",
-  "dependentSchemas",
-  "prefixItems",
-  "contains",
-  "not",
-  "if",
-  "then",
-  "else",
-  "unevaluatedItems",
-  "unevaluatedProperties",
-]);
+export const SCHEMA_KEYWORD_DISPOSITIONS: Readonly<
+  Record<string, KeywordDispositionV1>
+> = Object.freeze({
+  // Documentation and identity.
+  $schema: "annotation",
+  $id: "annotation",
+  $anchor: "annotation",
+  $dynamicAnchor: "annotation",
+  $vocabulary: "annotation",
+  $comment: "annotation",
+  $defs: "annotation",
+  definitions: "annotation",
+  title: "annotation",
+  description: "annotation",
+  examples: "annotation",
+  default: "annotation",
+  deprecated: "annotation",
+  readOnly: "annotation",
+  writeOnly: "annotation",
+
+  // Pointers.
+  $ref: "reference",
+  $dynamicRef: "reference",
+
+  // Value constraints.
+  type: "type",
+  enum: "enumeration",
+  const: "enumeration",
+  required: "required",
+  minLength: "lowerBound",
+  minItems: "lowerBound",
+  minProperties: "lowerBound",
+  minimum: "lowerBound",
+  exclusiveMinimum: "lowerBound",
+  minContains: "lowerBound",
+  maxLength: "upperBound",
+  maxItems: "upperBound",
+  maxProperties: "upperBound",
+  maximum: "upperBound",
+  exclusiveMaximum: "upperBound",
+  maxContains: "upperBound",
+  uniqueItems: "tighteningFlag",
+
+  // Applicators.
+  additionalProperties: "openness",
+  unevaluatedProperties: "openness",
+  additionalItems: "openness",
+  unevaluatedItems: "openness",
+  items: "subschema",
+  contains: "subschema",
+  propertyNames: "subschema",
+  contentSchema: "subschema",
+  anyOf: "disjunction",
+  oneOf: "disjunction",
+  allOf: "conjunction",
+  properties: "propertyMap",
+
+  // Recognized, but not orderable: two regular expressions have no decidable
+  // subset relation, and neither do conditional or per-name applicators.
+  pattern: "unorderable",
+  format: "unorderable",
+  multipleOf: "unorderable",
+  contentEncoding: "unorderable",
+  contentMediaType: "unorderable",
+  patternProperties: "unorderable",
+  dependentRequired: "unorderable",
+  dependentSchemas: "unorderable",
+  prefixItems: "unorderable",
+  not: "unorderable",
+  if: "unorderable",
+  then: "unorderable",
+  else: "unorderable",
+});
+
+/** Every keyword with an explicit disposition. See the sweep test. */
+export const RECOGNIZED_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set(
+  Object.keys(SCHEMA_KEYWORD_DISPOSITIONS),
+);
 
 /**
- * `additionalProperties` as a three-state openness, tightest last. A schema
- * value sits between the two booleans and cannot be ordered against either.
+ * `additionalProperties` and friends as a three-state openness. A schema value
+ * sits between the two booleans and cannot be ordered against either. Absent
+ * is open, which is what JSON Schema means by leaving it out.
  */
 const openness = (value: unknown): "open" | "closed" | "constrained" => {
   if (value === undefined || value === true) return "open";
@@ -210,20 +257,24 @@ const openness = (value: unknown): "open" | "closed" | "constrained" => {
   return "constrained";
 };
 
+const jsonSet = (values: readonly unknown[]): ReadonlySet<string> =>
+  new Set(values.map((value) => JSON.stringify(value) ?? "null"));
+
 /**
  * Decide whether moving from `before` to `after` is additive for the given
  * direction, or breaking — and if breaking, exactly why.
  *
  * Both arguments are self-contained JSON Schema 2020-12 roots, as
- * `json-schema.ts` produces. Comparison walks `properties` and follows local
- * `$ref`s.
+ * `json-schema.ts` produces. Comparison walks every keyword position and
+ * follows local `$ref`s.
  *
- * It fails closed. Constraint keywords are compared by polarity, keywords whose
- * values cannot be ordered are reported on any change, and a keyword the
+ * It fails closed. Constraints are compared by polarity, a keyword appearing
+ * or disappearing is treated as a change from or to "unconstrained", keywords
+ * whose values cannot be ordered are reported on any change, and a keyword the
  * classifier does not recognize at all is reported on any change too. The
  * asymmetry is deliberate: a wrong "breaking" costs a reviewer an argument,
  * while a wrong "additive" ships a silent break to every client already
- * depending on the old shape — so an unrecognized keyword is never taken as
+ * depending on the old shape — so nothing unrecognized is ever taken as
  * evidence of compatibility.
  */
 export const classifyContractChange = (
@@ -247,83 +298,207 @@ export const classifyContractChange = (
     path: readonly string[],
     keyword: string,
     change: "tightened" | "loosened",
+    detail?: string,
   ): void => {
     const breaks = direction === "input"
       ? change === "tightened"
       : change === "loosened";
     if (breaks) {
-      reasons.push(`${describe(path)}: ${direction} ${keyword} ${change}`);
+      reasons.push(
+        `${describe(path)}: ${direction} ${keyword} ${change}${
+          detail === undefined ? "" : ` (${detail})`
+        }`,
+      );
     }
   };
 
+  /** Neither side can be ordered against the other: refuse in both directions. */
+  const reportUndecidable = (
+    path: readonly string[],
+    keyword: string,
+    why: string,
+  ): void => {
+    reasons.push(`${describe(path)}: ${keyword} ${why}`);
+  };
+
   /**
-   * Compare every keyword that is not walked structurally.
+   * The shape shared by every keyword position: one side may be missing, and
+   * missing always means unconstrained.
    *
-   * The union of both nodes' keys is considered, so a constraint that appears
-   * or disappears is judged the same way as one whose value moved.
+   * Returns `true` when the caller still has two present values to compare.
    */
-  const compareConstraints = (
+  const presence = (
+    path: readonly string[],
+    keyword: string,
+    left: unknown,
+    right: unknown,
+  ): boolean => {
+    if (left === undefined && right === undefined) return false;
+    if (left === undefined) {
+      reportPolarity(path, keyword, "tightened", "constraint added");
+      return false;
+    }
+    if (right === undefined) {
+      reportPolarity(path, keyword, "loosened", "constraint removed");
+      return false;
+    }
+    return true;
+  };
+
+  const compareType = (
     left: SchemaNode,
     right: SchemaNode,
     path: readonly string[],
   ): void => {
-    for (const keyword of new Set([...Object.keys(left), ...Object.keys(right)])) {
-      if (
-        ANNOTATION_KEYWORDS.has(keyword) || STRUCTURAL_KEYWORDS.has(keyword)
-      ) continue;
+    if (sameScalar(left.type, right.type)) return;
+    if (!presence(path, "type", left.type, right.type)) return;
+    // Two concrete types: no ordering between them, so refuse both ways.
+    reportUndecidable(path, "type", "changed between two types");
+  };
 
-      const before = left[keyword];
-      const after = right[keyword];
-      if (sameScalar(before, after)) continue;
+  const compareEnumeration = (
+    left: SchemaNode,
+    right: SchemaNode,
+    path: readonly string[],
+  ): void => {
+    const leftValues = enumValues(left);
+    const rightValues = enumValues(right);
+    if (!presence(path, "enum", leftValues, rightValues)) return;
+    const leftSet = jsonSet(leftValues!);
+    const rightSet = jsonSet(rightValues!);
+    const removed = [...leftSet].filter((value) => !rightSet.has(value));
+    const added = [...rightSet].filter((value) => !leftSet.has(value));
+    // Fewer allowed values is a tightening; more is a loosening.
+    if (removed.length > 0) {
+      reportPolarity(path, "enum", "tightened", `dropped ${removed.join(", ")}`);
+    }
+    if (added.length > 0) {
+      reportPolarity(path, "enum", "loosened", `added ${added.join(", ")}`);
+    }
+  };
 
-      if (LOWER_BOUND_KEYWORDS.has(keyword) || UPPER_BOUND_KEYWORDS.has(keyword)) {
-        const lower = LOWER_BOUND_KEYWORDS.has(keyword);
-        const unconstrained = lower ? -Infinity : Infinity;
-        const from = typeof before === "number" ? before : unconstrained;
-        const to = typeof after === "number" ? after : unconstrained;
-        if (from === to) continue;
-        const raised = to > from;
-        reportPolarity(path, keyword, (lower ? raised : !raised) ? "tightened" : "loosened");
-        continue;
-      }
-
-      if (TIGHTENING_FLAG_KEYWORDS.has(keyword)) {
-        reportPolarity(path, keyword, after === true ? "tightened" : "loosened");
-        continue;
-      }
-
-      reasons.push(
-        EXACT_MATCH_KEYWORDS.has(keyword)
-          ? `${describe(path)}: ${keyword} changed, and no ordering between two values of it can be decided`
-          : `${describe(path)}: unrecognized keyword ${keyword} changed`,
+  const compareRequired = (
+    left: SchemaNode,
+    right: SchemaNode,
+    path: readonly string[],
+  ): void => {
+    const leftNames = stringSet(left.required);
+    const rightNames = stringSet(right.required);
+    const added = [...rightNames].filter((name) => !leftNames.has(name));
+    const removed = [...leftNames].filter((name) => !rightNames.has(name));
+    if (added.length > 0) {
+      reportPolarity(
+        path,
+        "required",
+        "tightened",
+        `now requires ${added.join(", ")}`,
       );
     }
-
-    const from = openness(left.additionalProperties);
-    const to = openness(right.additionalProperties);
-    if (from !== to) {
-      if (from === "constrained" || to === "constrained") {
-        reasons.push(
-          `${describe(path)}: additionalProperties changed to or from a schema`,
-        );
-      } else {
-        reportPolarity(
-          path,
-          "additionalProperties",
-          to === "closed" ? "tightened" : "loosened",
-        );
-      }
-    } else if (
-      from === "constrained" &&
-      !sameScalar(left.additionalProperties, right.additionalProperties)
-    ) {
-      compare(
-        left.additionalProperties,
-        right.additionalProperties,
-        [...path, "additionalProperties"],
+    if (removed.length > 0) {
+      reportPolarity(
+        path,
+        "required",
+        "loosened",
+        `no longer guarantees ${removed.join(", ")}`,
       );
     }
   };
+
+  const comparePropertyMap = (
+    left: SchemaNode,
+    right: SchemaNode,
+    path: readonly string[],
+  ): void => {
+    // Absent means "no members described", so a vanished map removes them all.
+    const leftMembers = isObject(left.properties) ? left.properties : {};
+    const rightMembers = isObject(right.properties) ? right.properties : {};
+    for (const name of Object.keys(leftMembers)) {
+      if (!Object.hasOwn(rightMembers, name)) {
+        // Fail closed: whether this tightens or loosens depends on the
+        // surrounding openness, so it is refused in both directions.
+        reasons.push(`${describe([...path, name])}: property removed`);
+        continue;
+      }
+      compare(leftMembers[name], rightMembers[name], [...path, name]);
+    }
+    // A newly described member is additive on its own; `required` decides
+    // whether the caller now has to send it.
+  };
+
+  const compareOpenness = (
+    keyword: string,
+    left: unknown,
+    right: unknown,
+    path: readonly string[],
+  ): void => {
+    const from = openness(left);
+    const to = openness(right);
+    if (from === to) {
+      if (from === "constrained" && !sameScalar(left, right)) {
+        compare(left, right, [...path, keyword]);
+      }
+      return;
+    }
+    if (from === "constrained" || to === "constrained") {
+      reportUndecidable(path, keyword, "changed to or from a schema");
+      return;
+    }
+    reportPolarity(path, keyword, to === "closed" ? "tightened" : "loosened");
+  };
+
+  const compareSubschema = (
+    keyword: string,
+    left: unknown,
+    right: unknown,
+    path: readonly string[],
+  ): void => {
+    if (sameScalar(left, right)) return;
+    if (!presence(path, keyword, left, right)) return;
+    if (isObject(left) && isObject(right)) {
+      compare(left, right, [...path, keyword]);
+      return;
+    }
+    // A boolean schema against an object schema, or two different booleans.
+    reportUndecidable(path, keyword, "changed between incomparable schemas");
+  };
+
+  const compareArms = (
+    keyword: string,
+    conjunctive: boolean,
+    left: unknown,
+    right: unknown,
+    path: readonly string[],
+  ): void => {
+    if (sameScalar(left, right)) return;
+    if (!presence(path, keyword, left, right)) return;
+    if (!Array.isArray(left) || !Array.isArray(right)) {
+      reportUndecidable(path, keyword, "is not a list of schemas on both sides");
+      return;
+    }
+    if (right.length !== left.length) {
+      // Conjunctive arms narrow as they multiply; disjunctive arms widen.
+      const grew = right.length > left.length;
+      reportPolarity(
+        path,
+        keyword,
+        (conjunctive ? grew : !grew) ? "tightened" : "loosened",
+        `${left.length} arms became ${right.length}`,
+      );
+    }
+    const shared = Math.min(left.length, right.length);
+    for (let index = 0; index < shared; index++) {
+      compare(left[index], right[index], [...path, `${keyword}[${index}]`]);
+    }
+  };
+
+  /** Keywords compared as a group, because they interact. */
+  const GROUPED: ReadonlySet<string> = new Set([
+    "type",
+    "enum",
+    "const",
+    "required",
+    "properties",
+  ]);
 
   const compare = (
     beforeNode: unknown,
@@ -343,134 +518,73 @@ export const classifyContractChange = (
       seenAgainst.add(right);
     }
 
-    // `type` is a constraint like any other, so its appearance and its
-    // disappearance carry polarity too: adding one rejects values that used
-    // to validate, and removing one admits values a client's older schema
-    // does not expect. Only a change *between* two types is undecidable, and
-    // that is reported in both directions.
-    if (!sameScalar(left.type, right.type)) {
-      if (left.type === undefined) {
-        reportPolarity(path, "type", "tightened");
-      } else if (right.type === undefined) {
-        reportPolarity(path, "type", "loosened");
-      } else {
-        reasons.push(`${describe(path)}: type changed`);
-        return;
-      }
-    }
+    compareType(left, right, path);
+    compareEnumeration(left, right, path);
+    compareRequired(left, right, path);
+    comparePropertyMap(left, right, path);
 
-    const leftEnum = enumValues(left);
-    const rightEnum = enumValues(right);
-    if (leftEnum !== undefined && rightEnum !== undefined) {
-      const rightSet = new Set(rightEnum.map((value) => JSON.stringify(value)));
-      const leftSet = new Set(leftEnum.map((value) => JSON.stringify(value)));
-      const removed = [...leftSet].filter((value) => !rightSet.has(value));
-      const added = [...rightSet].filter((value) => !leftSet.has(value));
-      if (direction === "input" && removed.length > 0) {
-        reasons.push(
-          `${describe(path)}: input enumeration narrowed (${removed.join(", ")})`,
-        );
-      }
-      if (direction === "output" && added.length > 0) {
-        reasons.push(
-          `${describe(path)}: output enumeration widened (${added.join(", ")})`,
-        );
-      }
-    }
+    for (const keyword of new Set([...Object.keys(left), ...Object.keys(right)])) {
+      if (GROUPED.has(keyword)) continue;
+      const from = left[keyword];
+      const to = right[keyword];
+      const disposition = SCHEMA_KEYWORD_DISPOSITIONS[keyword];
 
-    compareConstraints(left, right, path);
+      switch (disposition) {
+        case "annotation":
+        case "reference":
+          // Documentation carries no contract, and pointers were resolved
+          // before this node was reached.
+          continue;
 
-    // Unions: line arms up positionally, and treat a shrinking output union
-    // and a shrinking input union the same way an enumeration is treated.
-    for (const keyword of ["anyOf", "oneOf"] as const) {
-      const leftArms = left[keyword];
-      const rightArms = right[keyword];
-      if (Array.isArray(leftArms) && Array.isArray(rightArms)) {
-        if (direction === "input" && rightArms.length < leftArms.length) {
-          reasons.push(`${describe(path)}: input union lost an alternative`);
-        }
-        if (direction === "output" && rightArms.length > leftArms.length) {
-          reasons.push(`${describe(path)}: output union gained an alternative`);
-        }
-        const shared = Math.min(leftArms.length, rightArms.length);
-        for (let index = 0; index < shared; index++) {
-          compare(leftArms[index], rightArms[index], [
-            ...path,
-            `${keyword}[${index}]`,
-          ]);
-        }
-      } else if (Array.isArray(leftArms) !== Array.isArray(rightArms)) {
-        reasons.push(`${describe(path)}: ${keyword} appeared or disappeared`);
+        case "openness":
+          compareOpenness(keyword, from, to, path);
+          continue;
+
+        case "subschema":
+          compareSubschema(keyword, from, to, path);
+          continue;
+
+        case "disjunction":
+          compareArms(keyword, false, from, to, path);
+          continue;
+
+        case "conjunction":
+          compareArms(keyword, true, from, to, path);
+          continue;
+
+        default:
+          break;
       }
-    }
 
-    // `allOf` arms are conjunctive, so its polarity is the opposite of a
-    // union's: gaining an arm narrows what validates, losing one widens it.
-    {
-      const leftArms = left.allOf;
-      const rightArms = right.allOf;
-      if (Array.isArray(leftArms) && Array.isArray(rightArms)) {
-        if (rightArms.length !== leftArms.length) {
-          reportPolarity(
-            path,
-            "allOf",
-            rightArms.length > leftArms.length ? "tightened" : "loosened",
-          );
-        }
-        const shared = Math.min(leftArms.length, rightArms.length);
-        for (let index = 0; index < shared; index++) {
-          compare(leftArms[index], rightArms[index], [
-            ...path,
-            `allOf[${index}]`,
-          ]);
-        }
-      } else if (Array.isArray(leftArms) !== Array.isArray(rightArms)) {
+      if (sameScalar(from, to)) continue;
+
+      if (disposition === "lowerBound" || disposition === "upperBound") {
+        const lower = disposition === "lowerBound";
+        const unconstrained = lower ? -Infinity : Infinity;
+        const start = typeof from === "number" ? from : unconstrained;
+        const end = typeof to === "number" ? to : unconstrained;
+        if (start === end) continue;
+        const raised = end > start;
         reportPolarity(
           path,
-          "allOf",
-          Array.isArray(rightArms) ? "tightened" : "loosened",
+          keyword,
+          (lower ? raised : !raised) ? "tightened" : "loosened",
         );
-      }
-    }
-
-    if (isObject(left.items) || isObject(right.items)) {
-      compare(left.items, right.items, [...path, "items"]);
-    }
-
-    const leftProperties = isObject(left.properties) ? left.properties : undefined;
-    const rightProperties = isObject(right.properties)
-      ? right.properties
-      : undefined;
-    if (leftProperties === undefined || rightProperties === undefined) return;
-
-    const leftRequired = stringSet(left.required);
-    const rightRequired = stringSet(right.required);
-
-    for (const name of Object.keys(leftProperties)) {
-      if (!Object.hasOwn(rightProperties, name)) {
-        reasons.push(`${describe([...path, name])}: property removed`);
         continue;
       }
-      if (direction === "input" && !leftRequired.has(name) && rightRequired.has(name)) {
-        reasons.push(
-          `${describe([...path, name])}: optional input property became required`,
-        );
-      }
-      if (direction === "output" && leftRequired.has(name) && !rightRequired.has(name)) {
-        reasons.push(
-          `${describe([...path, name])}: guaranteed output property became optional`,
-        );
-      }
-      compare(leftProperties[name], rightProperties[name], [...path, name]);
-    }
 
-    for (const name of Object.keys(rightProperties)) {
-      if (Object.hasOwn(leftProperties, name)) continue;
-      if (direction === "input" && rightRequired.has(name)) {
-        reasons.push(
-          `${describe([...path, name])}: new required input property`,
-        );
+      if (disposition === "tighteningFlag") {
+        reportPolarity(path, keyword, to === true ? "tightened" : "loosened");
+        continue;
       }
+
+      reportUndecidable(
+        path,
+        keyword,
+        disposition === "unorderable"
+          ? "changed, and no ordering between two values of it can be decided"
+          : "is not a keyword this classifier recognizes, so any change to it is refused",
+      );
     }
   };
 

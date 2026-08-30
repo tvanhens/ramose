@@ -1,6 +1,7 @@
 /** Published kernel tool schemas (#485). */
 
 import { describe, expect, test } from "bun:test";
+import * as Schema from "effect/Schema";
 import {
   DESCRIBE_TOOL,
   ERROR_CODES,
@@ -12,6 +13,7 @@ import {
   QUERY_TOOL,
   RESERVED_MRTR_ARGUMENT_NAMES,
   assertNoReservedArgumentNames,
+  objectRootJsonSchemaOf,
   pageInfo,
   isDescribeInput,
   isDescribeOutput,
@@ -100,6 +102,27 @@ describe("every published schema", () => {
       expect(tool.outputSchema.$schema).toBe(JSON_SCHEMA_DIALECT_URI);
     });
 
+    test(`${tool.name}: output schema root is a JSON object`, () => {
+      // MCP requires outputSchema to be an object schema literally, not just
+      // a schema whose arms happen to be objects. A bare anyOf root is
+      // rejected by a conformant validator before any call can be made.
+      expect(tool.outputSchema.type).toBe("object");
+    });
+
+    test(`${tool.name}: the object root does not change what the union admits`, () => {
+      // The root type is only sound because every arm is itself an object.
+      const defs = (tool.outputSchema.$defs ?? {}) as Node;
+      const arms = (tool.outputSchema.anyOf ?? []) as readonly Node[];
+      expect(arms.length).toBeGreaterThan(0);
+      for (const arm of arms) {
+        const resolved = typeof arm.$ref === "string"
+          ? defs[arm.$ref.slice("#/$defs/".length)] as Node
+          : arm;
+        expect({ arm: arm.$ref ?? "inline", type: resolved.type })
+          .toEqual({ arm: arm.$ref ?? "inline", type: "object" });
+      }
+    });
+
     for (const which of ["inputSchema", "outputSchema"] as const) {
       test(`${tool.name}.${which}: every definition is described`, () => {
         const root = tool[which] as Node;
@@ -157,6 +180,44 @@ describe("every published schema", () => {
         "application schema",
       )
     ).toThrow(/inputResponses/);
+  });
+});
+
+describe("the object-root helper enforces rather than stamps", () => {
+  test("passes an object schema through unchanged", () => {
+    const root = objectRootJsonSchemaOf(
+      Schema.Struct({ a: Schema.String }),
+      "fixture",
+    );
+    expect(root.type).toBe("object");
+  });
+
+  test("adds the root type to a union whose arms are all objects", () => {
+    const root = objectRootJsonSchemaOf(
+      Schema.Union([
+        Schema.Struct({ a: Schema.String }),
+        Schema.Struct({ b: Schema.String }),
+      ]),
+      "fixture",
+    );
+    expect(root.type).toBe("object");
+    expect(Array.isArray(root.anyOf)).toBe(true);
+  });
+
+  test("refuses a union with a non-object arm instead of lying about it", () => {
+    // Stamping type: "object" here would exclude the string arm, so the
+    // published schema would no longer admit what the contract admits.
+    expect(() =>
+      objectRootJsonSchemaOf(
+        Schema.Union([Schema.Struct({ a: Schema.String }), Schema.String]),
+        "fixture",
+      )
+    ).toThrow(/union arm that is not an object/);
+  });
+
+  test("refuses a root that is neither an object nor a union", () => {
+    expect(() => objectRootJsonSchemaOf(Schema.String, "fixture"))
+      .toThrow(/must have an object root/);
   });
 });
 
@@ -307,6 +368,31 @@ describe("structuredContent validation", () => {
     expect(isDescribeOutput(envelope)).toBe(true);
     expect(isQueryOutput(envelope)).toBe(true);
     expect(isMutateOutput(envelope)).toBe(true);
+  });
+
+  test("accepts every top-level input shape the engine can deploy", () => {
+    // OperationInputShape admits scalar, ref, struct, array and opaque at the
+    // top level. An operation declaring any of them must be invokable, not
+    // just discoverable.
+    for (
+      const input of [
+        { reason: "duplicate" },
+        "duplicate",
+        42,
+        true,
+        null,
+        ["a", "b"],
+        [{ id: "ISSUE-1" }],
+      ]
+    ) {
+      expect({ input, valid: isMutateInput({ ...mutateRequest, input }) })
+        .toEqual({ input, valid: true });
+    }
+  });
+
+  test("accepts a mutation that declares no input at all", () => {
+    const { input: _dropped, ...withoutInput } = mutateRequest;
+    expect(isMutateInput(withoutInput)).toBe(true);
   });
 
   test("rejects a mutation that omits the operation version", () => {

@@ -2,6 +2,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  DESCRIBE_TOOL,
   MUTATE_TEMPLATE_FILL_FIELDS,
   MUTATE_TOOL,
   assertNoReservedArgumentNames,
@@ -16,6 +17,7 @@ import {
   closeIssue,
   closeIssueCard,
   describeCard,
+  describeListing,
   listingCursor,
   supportPath,
 } from "./examples.ts";
@@ -143,6 +145,20 @@ describe("lowering a card to a call", () => {
     expect(viaAlias).toEqual(filled);
   });
 
+  test("the template completes with a non-object input just as well", () => {
+    // An operation declaring a scalar or array input lowers through the same
+    // template; only the value the caller fills in differs.
+    for (const input of ["duplicate", ["a", "b"], 7]) {
+      const call = { ...closeIssueCard.mutateTemplate.arguments, ...{
+        target: { entity: "issue", id: "ISSUE-8472" },
+        input,
+        invocationId: "01K5Q0R7VYX3S6ZB2A9C4D8E1F",
+      } };
+      expect({ input, valid: isMutateInput(call) })
+        .toEqual({ input, valid: true });
+    }
+  });
+
   test("an incomplete template is refused, not guessed at", () => {
     const { invocationId: _dropped, ...withoutId } = filled;
     expect(isMutateInput(withoutId)).toBe(false);
@@ -171,6 +187,56 @@ describe("operation cards", () => {
         "card",
       )
     ).toThrow(/requestState/);
+  });
+});
+
+describe("listing summaries bind each kind to its reference shape", () => {
+  const listing = (kind: string, ref: unknown) => ({
+    ok: true,
+    result: "listing",
+    at: supportPath,
+    catalogToken,
+    items: [{ kind, ref, at: supportPath }],
+    page: pageInfo({ limit: 25, returned: 1 }),
+  });
+
+  const refs = {
+    graph: { kind: "graph", name: "support" },
+    entity: { kind: "entity", name: "issue" },
+    trait: { kind: "trait", name: "taggable" },
+    field: { kind: "field", owner: { kind: "entity", name: "issue" }, name: "title" },
+    operation: closeIssue,
+    function: { namespace: "text", name: "lower" },
+  } as const;
+
+  test("each kind accepts exactly its own reference", () => {
+    for (const [kind, ref] of Object.entries(refs)) {
+      expect({ kind, valid: isDescribeOutput(listing(kind, ref)) })
+        .toEqual({ kind, valid: true });
+    }
+  });
+
+  test("a kind paired with another kind's reference is rejected", () => {
+    // The reported case: kind says operation, so a client reads ref.owner and
+    // ref.version — but the value is a function reference.
+    expect(isDescribeOutput(listing("operation", refs.function))).toBe(false);
+    expect(isDescribeOutput(listing("function", refs.operation))).toBe(false);
+    expect(isDescribeOutput(listing("entity", refs.trait))).toBe(false);
+    expect(isDescribeOutput(listing("trait", refs.entity))).toBe(false);
+    expect(isDescribeOutput(listing("field", refs.entity))).toBe(false);
+    expect(isDescribeOutput(listing("graph", refs.field))).toBe(false);
+  });
+
+  test("the published schema really is six discriminated arms", () => {
+    const defs = DESCRIBE_TOOL.outputSchema.$defs as Record<string, {
+      readonly anyOf?: readonly { readonly $ref?: string }[];
+    }>;
+    const summary = defs.CapabilitySummaryV1;
+    expect(summary?.anyOf).toHaveLength(6);
+  });
+
+  test("every published summary example still validates", () => {
+    expect(isDescribeOutput(describeListing)).toBe(true);
   });
 });
 

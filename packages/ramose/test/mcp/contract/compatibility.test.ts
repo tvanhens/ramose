@@ -14,11 +14,16 @@ import {
   MUTATE_TOOL,
   QUERY_DOCUMENT_VERSION,
   QUERY_TOOL,
+  RECOGNIZED_SCHEMA_KEYWORDS,
   REQUIRES_NEW_VERSION,
+  SCHEMA_KEYWORD_DISPOSITIONS,
   classifyContractChange,
 } from "../../../src/mcp/contract/index.ts";
 
 type Node = { readonly [key: string]: unknown };
+
+const isObject = (value: unknown): value is Node =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const object = (
   properties: Node,
@@ -68,7 +73,7 @@ describe("input schemas may only widen", () => {
     const change = classifyContractChange(before, after, "input");
     expect(change.kind).toBe("breaking");
     if (change.kind !== "breaking") throw new Error("unreachable");
-    expect(change.reasons.join(" ")).toContain("new required input property");
+    expect(change.reasons.join(" ")).toContain("input required tightened (now requires search)");
   });
 
   test("promoting an existing optional argument to required is breaking", () => {
@@ -125,7 +130,7 @@ describe("output schemas may only keep their promises", () => {
     const change = classifyContractChange(nine, ten, "output");
     expect(change.kind).toBe("breaking");
     if (change.kind !== "breaking") throw new Error("unreachable");
-    expect(change.reasons.join(" ")).toContain("output enumeration widened");
+    expect(change.reasons.join(" ")).toContain("output enum loosened");
   });
 
   test("narrowing an output enumeration to a handled subset is additive", () => {
@@ -262,7 +267,7 @@ describe("constraint keywords", () => {
     );
     expect(change.kind).toBe("breaking");
     if (change.kind !== "breaking") throw new Error("unreachable");
-    expect(change.reasons.join(" ")).toContain("unrecognized keyword");
+    expect(change.reasons.join(" ")).toContain("not a keyword this classifier recognizes");
   });
 
   test("documentation is never part of the decision", () => {
@@ -284,6 +289,219 @@ describe("constraint keywords", () => {
     expect(verdict(two, one, "input")).toBe("additive");
     expect(verdict(one, two, "output")).toBe("additive");
     expect(verdict(two, one, "output")).toBe("breaking");
+  });
+});
+
+describe("one-sided presence is a first-class case", () => {
+  // The bug family this suite exists to close: a keyword or subschema present
+  // on one side only, which earlier revisions skipped and called additive.
+  // Absent always means unconstrained, so appearing tightens and vanishing
+  // loosens — for every position, not for a list of keywords someone
+  // remembered.
+  const wrap = (node: Node): Node => object({ value: node }, ["value"]);
+
+  const appearsTightens = (label: string, absent: Node, present: Node) => {
+    test(`${label}: appearing tightens, vanishing loosens`, () => {
+      expect(verdict(wrap(absent), wrap(present), "input")).toBe("breaking");
+      expect(verdict(wrap(absent), wrap(present), "output")).toBe("additive");
+      expect(verdict(wrap(present), wrap(absent), "output")).toBe("breaking");
+      expect(verdict(wrap(present), wrap(absent), "input")).toBe("additive");
+    });
+  };
+
+  appearsTightens("type", {}, { type: "string" });
+  appearsTightens("enum", { type: "string" }, {
+    type: "string",
+    enum: ["a", "b"],
+  });
+  appearsTightens("const", { type: "string" }, { type: "string", const: "a" });
+  appearsTightens("items", { type: "array" }, {
+    type: "array",
+    items: { type: "string" },
+  });
+  appearsTightens("contains", { type: "array" }, {
+    type: "array",
+    contains: { type: "string" },
+  });
+  appearsTightens("propertyNames", { type: "object" }, {
+    type: "object",
+    propertyNames: { pattern: "^a" },
+  });
+  appearsTightens("minLength", { type: "string" }, {
+    type: "string",
+    minLength: 2,
+  });
+  appearsTightens("maxLength", { type: "string" }, {
+    type: "string",
+    maxLength: 2,
+  });
+  appearsTightens("uniqueItems", { type: "array" }, {
+    type: "array",
+    uniqueItems: true,
+  });
+  appearsTightens("allOf", {}, { allOf: [{ minLength: 1 }] });
+  appearsTightens("anyOf", {}, { anyOf: [{ type: "string" }] });
+  appearsTightens("oneOf", {}, { oneOf: [{ type: "string" }] });
+
+  test("an enum that appears reports why, not just that", () => {
+    const change = classifyContractChange(
+      wrap({ type: "string" }),
+      wrap({ type: "string", enum: ["a"] }),
+      "input",
+    );
+    expect(change.kind).toBe("breaking");
+    if (change.kind !== "breaking") throw new Error("unreachable");
+    expect(change.reasons.join(" ")).toContain("input enum tightened");
+    expect(change.reasons.join(" ")).toContain("constraint added");
+  });
+
+  test("required appearing tightens the input and vanishing loosens the output", () => {
+    const optional = object({ a: { type: "string" } }, []);
+    const mandatory = object({ a: { type: "string" } }, ["a"]);
+    expect(verdict(optional, mandatory, "input")).toBe("breaking");
+    expect(verdict(mandatory, optional, "output")).toBe("breaking");
+    expect(verdict(optional, mandatory, "output")).toBe("additive");
+    expect(verdict(mandatory, optional, "input")).toBe("additive");
+  });
+
+  test("a required name with no described property is still classified", () => {
+    // `required` can name something `properties` never mentions.
+    const before = { type: "object", properties: {}, required: [] };
+    const after = { type: "object", properties: {}, required: ["ghost"] };
+    expect(verdict(before, after, "input")).toBe("breaking");
+    expect(verdict(after, before, "output")).toBe("breaking");
+  });
+
+  test("an unorderable keyword appearing is refused in both directions", () => {
+    for (const keyword of ["pattern", "not", "if", "patternProperties"]) {
+      const present = wrap({ type: "string", [keyword]: {} });
+      expect(verdict(wrap({ type: "string" }), present, "input"))
+        .toBe("breaking");
+      expect(verdict(wrap({ type: "string" }), present, "output"))
+        .toBe("breaking");
+    }
+  });
+
+  test("an unrecognized keyword appearing is refused in both directions", () => {
+    const present = wrap({ type: "string", "x-ramose-budget": 10 });
+    expect(verdict(wrap({ type: "string" }), present, "input")).toBe("breaking");
+    expect(verdict(wrap({ type: "string" }), present, "output"))
+      .toBe("breaking");
+  });
+
+  test("a properties map vanishing removes every member it described", () => {
+    const before = object({ a: { type: "string" }, b: { type: "string" } }, []);
+    const after = { type: "object", additionalProperties: false };
+    const change = classifyContractChange(before, after, "input");
+    expect(change.kind).toBe("breaking");
+    if (change.kind !== "breaking") throw new Error("unreachable");
+    expect(change.reasons.filter((r) => r.includes("property removed")))
+      .toHaveLength(2);
+  });
+});
+
+describe("the classifier recognizes every keyword the generator emits", () => {
+  // This is the test that structurally prevents another one-sided-presence
+  // finding. It does not check behavior — it checks that no keyword can reach
+  // the classifier without an explicit disposition. If the schema generator
+  // starts emitting something new, this fails and forces a decision instead of
+  // letting the keyword fall through to a default.
+  const collectKeywords = (root: Node): ReadonlySet<string> => {
+    const found = new Set<string>();
+    const seen = new Set<unknown>();
+
+    const visitMap = (value: unknown): void => {
+      if (!isObject(value)) return;
+      for (const child of Object.values(value)) visitSchema(child);
+    };
+
+    const visitSchema = (node: unknown): void => {
+      if (Array.isArray(node)) {
+        for (const item of node) visitSchema(item);
+        return;
+      }
+      if (!isObject(node) || seen.has(node)) return;
+      seen.add(node);
+      for (const [keyword, value] of Object.entries(node)) {
+        found.add(keyword);
+        switch (SCHEMA_KEYWORD_DISPOSITIONS[keyword]) {
+          case "subschema":
+          case "openness":
+          case "disjunction":
+          case "conjunction":
+            visitSchema(value);
+            break;
+          case "propertyMap":
+            visitMap(value);
+            break;
+          case "annotation":
+            // `$defs` is an annotation for comparison — pointers resolve
+            // through it — but it is where most of the schema lives, so the
+            // sweep has to walk into it.
+            if (keyword === "$defs" || keyword === "definitions") visitMap(value);
+            break;
+          default:
+            break;
+        }
+      }
+    };
+
+    visitSchema(root);
+    return found;
+  };
+
+  test("every keyword in every published tool schema has a disposition", () => {
+    const unclassified = new Set<string>();
+    const seen = new Set<string>();
+    for (const tool of [DESCRIBE_TOOL, QUERY_TOOL, MUTATE_TOOL]) {
+      for (const which of ["inputSchema", "outputSchema"] as const) {
+        for (const keyword of collectKeywords(tool[which] as Node)) {
+          seen.add(keyword);
+          if (!RECOGNIZED_SCHEMA_KEYWORDS.has(keyword)) {
+            unclassified.add(`${tool.name}.${which}: ${keyword}`);
+          }
+        }
+      }
+    }
+    expect([...unclassified]).toEqual([]);
+    // Guard against the sweep silently collecting nothing.
+    expect(seen.size).toBeGreaterThan(10);
+    expect([...seen]).toContain("properties");
+    expect([...seen]).toContain("$defs");
+  });
+
+  test("the sweep would actually catch an unclassified keyword", () => {
+    const injected = collectKeywords({
+      type: "object",
+      properties: { a: { type: "string", "x-made-up": 1 } },
+      $defs: { D: { "x-also-made-up": 2 } },
+    });
+    expect([...injected]).toContain("x-made-up");
+    expect([...injected]).toContain("x-also-made-up");
+    expect(RECOGNIZED_SCHEMA_KEYWORDS.has("x-made-up")).toBe(false);
+  });
+
+  test("every disposition in the table is one the classifier handles", () => {
+    const handled = new Set([
+      "annotation",
+      "reference",
+      "type",
+      "enumeration",
+      "required",
+      "lowerBound",
+      "upperBound",
+      "tighteningFlag",
+      "openness",
+      "subschema",
+      "disjunction",
+      "conjunction",
+      "propertyMap",
+      "unorderable",
+    ]);
+    for (const disposition of Object.values(SCHEMA_KEYWORD_DISPOSITIONS)) {
+      expect({ disposition, known: handled.has(disposition) })
+        .toEqual({ disposition, known: true });
+    }
   });
 });
 

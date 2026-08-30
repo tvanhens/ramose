@@ -58,7 +58,7 @@ import {
 import { ErrorEnvelopeV1, type ErrorEnvelopeV1 as ErrorEnvelopeType } from "./errors.ts";
 import {
   assertNoReservedArgumentNames,
-  rootJsonSchemaOf,
+  objectRootJsonSchemaOf,
   type JsonSchemaV1,
 } from "./json-schema.ts";
 import {
@@ -67,7 +67,6 @@ import {
   GraphPathV1,
   InstanceRefV1,
   InvocationIdV1,
-  JsonObjectV1,
   JsonValueV1,
   PageInfoV1,
   PageLimitV1,
@@ -333,6 +332,16 @@ export type QueryOutputV1 =
  * writes, never accepts operation source or an AST, and never executes
  * anything the application did not declare (#417, #501).
  *
+ * `input` is any JSON value, not an object. The engine's `OperationInputShape`
+ * admits a scalar, a reference, an array, a struct, or an opaque value at the
+ * top level, and restricting the envelope to objects would leave every
+ * operation declaring one of the others discoverable through `describe` but
+ * impossible to invoke. Operation-specific validation is the job of the input
+ * schema on that operation's card, which is the author's own contract; the
+ * envelope only has to carry it. MCP's object-root requirement applies to the
+ * *tool* input schema — this envelope, which is an object — not to a member
+ * inside it.
+ *
  * `ifCatalog` is accepted here for the same reason it is accepted on the read
  * tools, and it matters more: an agent that inspected a capability with
  * `describe` and then acts on it can pin the catalog it inspected, so a
@@ -347,9 +356,9 @@ export const MutateInputV1 = Schema.Struct({
   at: OptionalAt,
   operation: OperationRefV1,
   target: Schema.optionalKey(InstanceRefV1),
-  input: Schema.optionalKey(JsonObjectV1).annotate({
+  input: Schema.optionalKey(JsonValueV1).annotate({
     description:
-      "Arguments for the operation, satisfying the input schema on its card. Omit when the operation declares none.",
+      "Arguments for the operation, satisfying the input schema on its card. Any JSON value: an operation may declare a scalar, an array, or a reference at the top level, not only an object. Omit when the operation declares no input.",
   }),
   invocationId: InvocationIdV1,
   ifCatalog: OptionalIfCatalog,
@@ -361,7 +370,7 @@ export type MutateInputV1 = {
   readonly at?: GraphPathType;
   readonly operation: OperationRefType;
   readonly target?: InstanceRefType;
-  readonly input?: JsonObjectType;
+  readonly input?: JsonValueType;
   readonly invocationId: string;
   readonly ifCatalog?: string;
 };
@@ -443,13 +452,17 @@ const toolContract = (input: {
   readonly output: Schema.Top;
   readonly annotations: ToolAnnotationsV1;
 }): ToolContractV1 => {
-  const inputSchema = rootJsonSchemaOf(input.input);
-  const outputSchema = rootJsonSchemaOf(input.output);
-  if (inputSchema.type !== "object") {
-    throw new TypeError(
-      `ramose/mcp: tool ${input.name} input schema root must be a JSON object`,
-    );
-  }
+  // Both ends go through the same helper: MCP requires an object root on the
+  // input schema *and* the output schema, and the helper proves the root type
+  // it adds does not change what the schema admits.
+  const inputSchema = objectRootJsonSchemaOf(
+    input.input,
+    `tool ${input.name} input schema`,
+  );
+  const outputSchema = objectRootJsonSchemaOf(
+    input.output,
+    `tool ${input.name} output schema`,
+  );
   assertNoReservedArgumentNames(inputSchema, `tool ${input.name} input schema`);
   return Object.freeze({
     name: input.name,

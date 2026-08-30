@@ -181,6 +181,60 @@ export const rootJsonSchemaOf = (schema: Schema.Top): JsonSchemaV1 =>
   );
 
 /**
+ * Render one contract schema as a publishable root, with the object root the
+ * MCP Tool wire shape requires.
+ *
+ * MCP says a tool's `inputSchema` and `outputSchema` are each an object schema
+ * — literally `type: "object"` at the root. An input schema gets that for free
+ * because it is a struct. A *result* is a union, and Effect emits a union as a
+ * bare `anyOf` with no root type, which a conformant validator rejects: the
+ * tool definition would be refused before any call could be made.
+ *
+ * Adding the root type is semantically a no-op here and this proves it rather
+ * than assuming it. Every arm is resolved through `$defs` and checked to be
+ * object-typed; only then is `type: "object"` added, so the published schema
+ * still admits exactly the same documents. A union that ever gains a non-object
+ * arm fails the build instead of silently publishing a root type that would
+ * exclude it.
+ */
+export const objectRootJsonSchemaOf = (
+  schema: Schema.Top,
+  label: string,
+): JsonSchemaV1 => {
+  const root = rootJsonSchemaOf(schema);
+  if (root.type === "object") return root;
+  if (root.type !== undefined) {
+    throw new TypeError(
+      `ramose/mcp: ${label} must have an object root, not ${String(root.type)}`,
+    );
+  }
+
+  const defs = isJsonObject(root.$defs) ? root.$defs : {};
+  const resolve = (node: unknown): unknown => {
+    if (!isJsonObject(node)) return node;
+    const ref = node.$ref;
+    if (typeof ref !== "string" || !ref.startsWith(DEFS_PREFIX)) return node;
+    return defs[ref.slice(DEFS_PREFIX.length)];
+  };
+
+  const arms = root.anyOf ?? root.oneOf;
+  if (!Array.isArray(arms) || arms.length === 0) {
+    throw new TypeError(
+      `ramose/mcp: ${label} has neither an object root nor a union to derive one from`,
+    );
+  }
+  for (const arm of arms) {
+    const resolved = resolve(arm);
+    if (!isJsonObject(resolved) || resolved.type !== "object") {
+      throw new TypeError(
+        `ramose/mcp: ${label} has a union arm that is not an object, so an object root would change its meaning`,
+      );
+    }
+  }
+  return Object.freeze({ type: "object", ...root });
+};
+
+/**
  * MCP reserves these argument names for multi-round-trip retries. An
  * application schema that defined either would be silently rewritten by the
  * protocol, so the contract refuses them outright — see
