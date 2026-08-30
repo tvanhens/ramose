@@ -1,12 +1,19 @@
 /**
  * `ramose/react` is a browser package (#479 slice 1).
  *
- * An application that renders with Ramose bundles both entries: `ramose/client`
- * to construct the client, `ramose/react` to read it. That pair is what has to
- * stay free of the deploy engine and the peer Worker, so it is what is built
- * here — bundling the adapter alone would understate the graph, because the
- * hooks reach the client's runtime through the handle the application passes
- * them rather than by importing it.
+ * Two builds, because one would not be honest on its own.
+ *
+ * `src/react/index.ts` is not usable as the subject: it is pure re-exports, so
+ * a bundler collapses it to a stub (82 bytes here) and every byte examined
+ * would come from whatever else was built alongside it — an `alchemy` import
+ * added to the adapter would pass unnoticed. `hooks.ts` is the module that
+ * actually carries the adapter's graph, so that is what the adapter's own
+ * assertion is made against.
+ *
+ * And the adapter alone is not the whole claim either: an application that
+ * renders with Ramose bundles `ramose/client` too, and the hooks reach the
+ * client's runtime through the handle they are passed rather than by importing
+ * it. So the pair is built as well, at the size an application really ships.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -21,24 +28,36 @@ import "../../src/client/index.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+/** Everything one browser build emits, as one string. */
+const bundled = async (...entrypoints: readonly string[]): Promise<string> => {
+  const built = await Bun.build({
+    entrypoints: entrypoints.map((entry) => resolve(here, entry)),
+    target: "browser",
+    external: ["effect", "effect/*", "react"],
+  });
+  expect(built.success).toBe(true);
+  return (await Promise.all(built.outputs.map((output) => output.text()))).join("\n");
+};
+
 describe("the ramose/react bundle", () => {
-  test("bundles for browsers without the deploy engine", async () => {
-    const built = await Bun.build({
-      entrypoints: [
-        resolve(here, "../../src/react/index.ts"),
-        resolve(here, "../../src/client/client.ts"),
-      ],
-      target: "browser",
-      external: ["effect", "effect/*", "react"],
-    });
-    expect(built.success).toBe(true);
-    const bundle = (await Promise.all(built.outputs.map((output) => output.text())))
-      .join("\n");
-    // Proof that the graph is really in here, so the assertion below is about
-    // what the bundle contains rather than about how little of it was built.
-    expect(bundle.length).toBeGreaterThan(200_000);
+  test("carries no deploy engine into the adapter", async () => {
+    const adapter = await bundled("../../src/react/hooks.ts");
+    // Real graph rather than a collapsed re-export stub, so the assertion below
+    // is about what the adapter reaches. The floor is deliberately far under
+    // what it measures: how much of the client survives tree-shaking through
+    // the hooks varies by bundler version, and none of that is the subject.
+    expect(adapter.length).toBeGreaterThan(20_000);
     // Alchemy, the peer Worker, and the Cloudflare bindings must not be
-    // reachable from anything an application renders with.
-    expect(bundle).not.toContain("alchemy");
+    // reachable from `ramose/react`.
+    expect(adapter).not.toContain("alchemy");
+  });
+
+  test("carries no deploy engine into an application that renders with Ramose", async () => {
+    const application = await bundled(
+      "../../src/react/hooks.ts",
+      "../../src/client/client.ts",
+    );
+    expect(application.length).toBeGreaterThan(200_000);
+    expect(application).not.toContain("alchemy");
   });
 });

@@ -57,8 +57,10 @@ type QueryState<A> =
   | { status: "pending" }
   | { status: "ready"; data: A }
   | { status: "stale"; data: A }
-  | { status: "error"; error: unknown }
+  | { status: "error"; error: Error }
 ```
+
+`error` is an `Error`: the framework-neutral client always reports one, so the hook narrows rather than handing you an `unknown` to widen back.
 
 Snapshots are stable under concurrent rendering. Strict Mode does not duplicate activation or subscriptions. A structurally equivalent query reuses the same local observation; changed literals create the appropriate new observation.
 
