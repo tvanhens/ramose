@@ -389,6 +389,27 @@ export const validateReplicaManifest = (
       }
     }
     const bootstrap = Schema.bootstrap();
+    // Materialization projects these straight into the restored schema, so a
+    // malformed one is damage rather than a client disagreement, and one the
+    // allocator never numbered would leave a restored attribute with no local
+    // id at all.
+    for (const spec of record.attributes as readonly unknown[]) {
+      if (
+        !isRecord(spec) || typeof spec.ident !== "string" ||
+        typeof spec.valueType !== "number" ||
+        (spec.cardinality !== "one" && spec.cardinality !== "many") ||
+        typeof spec.index !== "boolean" || typeof spec.isComponent !== "boolean" ||
+        typeof spec.optional !== "boolean" ||
+        (spec.unique !== undefined && spec.unique !== "identity" && spec.unique !== "value")
+      ) {
+        return yield* Result.fail(failure("manifest-undecodable", "malformed replica attribute"));
+      }
+      if (bootstrap.attr(spec.ident) === undefined && !attributeIds.has(spec.ident)) {
+        return yield* Result.fail(
+          failure("manifest-invariant", `attribute ${spec.ident} has no local id`),
+        );
+      }
+    }
     // Every fact the manifest keeps must be interpretable: its entity, its
     // field, and any entity it references all need a partition-local id, or
     // materialization would have to invent one and the restored value would

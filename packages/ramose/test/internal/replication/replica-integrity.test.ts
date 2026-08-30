@@ -260,6 +260,31 @@ describe("manifest validation", () => {
       .toBe("manifest-invariant");
   });
 
+  test("stored attributes must be well formed and numbered", () => {
+    const spec = {
+      ident: ":item/name",
+      valueType: 3,
+      cardinality: "one",
+      index: true,
+      isComponent: false,
+      optional: false,
+    };
+    expect(Result.isSuccess(validated({
+      attributes: [spec],
+      attributeIds: [[":item/name", 1002], [":item/friend", 1003]],
+    }))).toBe(true);
+    // Damage in the stored schema is damage, not a client disagreement.
+    expect(reasonOf(validated({ attributes: [{ ...spec, valueType: ":db.type/string" }] })))
+      .toBe("manifest-undecodable");
+    expect(reasonOf(validated({ attributes: [{ ...spec, cardinality: "several" }] })))
+      .toBe("manifest-undecodable");
+    expect(reasonOf(validated({ attributes: [{ ...spec, unique: "sometimes" }] })))
+      .toBe("manifest-undecodable");
+    // An attribute the allocator never numbered would restore with no local id.
+    expect(reasonOf(validated({ attributes: [{ ...spec, ident: ":item/absent" }] })))
+      .toBe("manifest-invariant");
+  });
+
   test("the claimed identity is readable before anything else about the record is", () => {
     expect(replicaManifestIdentity(manifest())).toMatchObject({ server: opaque("s") });
     expect(replicaManifestIdentity({ identity: "not a record" })).toBeUndefined();
