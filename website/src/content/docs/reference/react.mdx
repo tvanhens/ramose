@@ -78,7 +78,7 @@ Entity results expose `.data`, `.local`, and `.mutate`. Components rerender when
 />
 ```
 
-Use stable entity ids as React keys. Until entity handles land, a row's `id` is a *local* identifier that is not portable across replicas or sessions: key on a unique field instead, and never persist it or put it in a route.
+Use a row's `id` as its React key. It is an opaque `EntityId`, stable for the same server, principal, and database, so it survives reloads and new sessions and is safe to persist or put in a route. It means nothing outside that scope — another principal or another database resolves it as denied — so do not share one between principals. An entity created offline carries a `ClientRef` until its `EntityId` arrives: the handle keeps its object identity across that swap, but the `id` string changes, so a row keyed on `id` remounts once when the server's id lands.
 
 ## useReceipt
 
