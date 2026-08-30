@@ -59,7 +59,7 @@ const UNIFORM_FLOATS = 8;
 function stateTextureSize(cssWidth: number, cssHeight: number, dpr: number): number {
   const devicePixels = cssWidth * cssHeight * dpr * dpr;
   if (devicePixels >= 1_100_000) return 512; // 262,144 particles
-  if (devicePixels >= 500_000) return 384; // 147,456 particles
+  if (devicePixels >= 260_000) return 384; // 147,456 particles
   return 256; // 65,536 particles
 }
 
@@ -286,7 +286,7 @@ export async function startHeroParticles(
         // scaling brightness by the tier ratio (plus a small extra boost)
         // keeps the animation present on small screens.
         constants: {
-          BRIGHTNESS: 0.16 * (512 / size) * (size < 512 ? 1.25 : 1),
+          BRIGHTNESS: 0.16 * (512 / size) * (size < 512 ? 1.5 : 1),
         },
         targets: [
           {

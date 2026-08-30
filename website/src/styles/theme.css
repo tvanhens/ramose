@@ -1596,7 +1596,7 @@ body:has(.rg-proto-hero) header.header site-search > button[data-open-modal]:hov
   background:
     linear-gradient(to bottom, transparent 72%, var(--rg-black)),
     radial-gradient(circle at 68% 38%, rgba(255, 101, 0, 0.09), transparent 31rem),
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='900' height='520' viewBox='0 0 900 520'%3E%3Cg fill='none' stroke='%23ff9a55' stroke-opacity='.105' stroke-width='1'%3E%3Cpath d='M-30 82 112 26l126 87 122-49 128 96 138-52 122 78 173-92M-50 264l132-76 133 55 111-84 157 70 109-55 131 87 187-66M-20 456l116-90 142 54 128-88 125 73 145-94 111 82 183-74'/%3E%3Cpath d='m112 26-30 162 14 178m142-253-23 130 23 177M360 64l6 95v173m122-172-5 69 8 176m135-297-34 66 44 137m112-125-25 75 24 132'/%3E%3C/g%3E%3Cg fill='%23ff6500' fill-opacity='.17'%3E%3Ccircle cx='112' cy='26' r='3'/%3E%3Ccircle cx='215' cy='243' r='3'/%3E%3Ccircle cx='488' cy='160' r='3'/%3E%3Ccircle cx='636' cy='311' r='3'/%3E%3Ccircle cx='748' cy='186' r='3'/%3E%3C/g%3E%3C/svg%3E") center / min(90rem, 100vw) auto no-repeat;
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Crect x='38' y='38' width='180' height='180' rx='11' transform='rotate(45 128 128)' fill='none' stroke='%23f0e4dc' stroke-opacity='.3' stroke-width='10'/%3E%3Crect x='88' y='88' width='80' height='80' rx='8' transform='rotate(45 128 128)' fill='%23ff6500' fill-opacity='.4'/%3E%3C/svg%3E") 76% 42% / clamp(15rem, 32vw, 23rem) no-repeat;
   transition: opacity 500ms ease;
 }
 
