@@ -51,7 +51,12 @@ substitutes. Ramose has four test lanes:
    substitutes are forbidden.
 
 Allowed instrumentation wraps a real implementation and forwards to it:
-`test/support/recorder.ts` (HTTP/WebSocket), checkpoints in
+`test/support/recorder.ts` (HTTP/WebSocket), recorded frame fixtures under
+`test/browser/frames/` (verbatim wire lines captured from the real local
+Worker by `bun run record:frames`, never hand-edited, each with a
+`PROVENANCE.md` and re-decoded through the product frame codec at suite
+start; the dev-server route that serves them must stay behaviorless — one
+committed file selected by URL, no state, no per-call logic), checkpoints in
 `packages/ramose/src/internal/test-hooks.ts`, and `/__test__/db/:name/*`
 (R2/storage, the real Worker basis cache/fetch/invalidation path, checkpoint
 arm/release, DO abort, real session/watch/transactor WebSockets, and forwarded
