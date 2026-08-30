@@ -210,6 +210,29 @@ const sweepGeneration = async (name: string, partition: string): Promise<number>
   return record?.generation ?? 0;
 };
 
+/**
+ * The one durable trace a sweep in another tab leaves behind. Written directly
+ * because a second handle in this realm shares the materialization mark and so
+ * could not produce the situation being tested.
+ */
+const bumpSweepGeneration = async (name: string, partition: string): Promise<void> => {
+  const key = replicaSweepKey(partition);
+  const database = await openNative(name);
+  const transaction = database.transaction(GENERATIONS, "readwrite");
+  const store = transaction.objectStore(GENERATIONS);
+  const record = await requestResult<{ generation: number } | undefined>(store.get(key));
+  store.put({
+    key,
+    kind: "partition",
+    scope: "",
+    generation: (record?.generation ?? 0) + 1,
+    confirmedAt: Date.now(),
+    fencedAt: Date.now(),
+  });
+  await transactionDone(transaction);
+  database.close();
+};
+
 /** Wait until an armed `wait` checkpoint has actually been reached. */
 const reachedCheckpoint = async (name: string): Promise<void> => {
   for (let attempt = 0; attempt < 2000; attempt++) {
@@ -850,6 +873,46 @@ browserTest(
       const restored = await storage.restore(selected, attributes, READ_COMPATIBILITY);
       expect(restored?.revision).toBe(opaque("1"));
       expect((await names(restored!.db)).length).toBe(40);
+    } finally {
+      resetTestHooks();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a sweep this realm cannot see refuses the install rather than corrupting it",
+  async ({ browser }) => {
+    const name = `ramose-gc-foreign-sweep-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(120, "seed"));
+      const before = bytes((await dump(name))[COMMITTED]);
+
+      // Park the install after materialization has written its nodes and before
+      // the manifest naming them commits — the one window in which those nodes
+      // are reachable from nothing.
+      armCheckpoint("replica.installing", "wait");
+      const installing = storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), "entity-000007".padEnd(43, "z"), "changed"),
+      );
+      await reachedCheckpoint("replica.installing");
+
+      // Another tab's sweep leaves exactly one durable trace, and this realm's
+      // materialization mark is invisible to it. Write that trace directly, the
+      // way the other tab's transaction would have.
+      await bumpSweepGeneration(name, partition);
+      releaseCheckpoint("replica.installing");
+
+      // The install is refused rather than committing a manifest over nodes a
+      // sweep may have taken, and the previously committed value is untouched.
+      await expect(installing).rejects.toMatchObject({ _tag: "ReplicaFencedError" });
+      expect(bytes((await dump(name))[COMMITTED])).toBe(before);
+      expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+        .toBe(opaque("1"));
     } finally {
       resetTestHooks();
       storage.close();

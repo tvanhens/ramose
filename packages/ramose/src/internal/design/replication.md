@@ -566,6 +566,18 @@ and zero heads for any GC pass.
   serializes overlapping `readwrite` transactions in creation order, so a
   content-addressed re-put of a node the sweep is deleting always lands after
   the delete, never before it.
+
+  The mark is realm-local, like every other in-process lifecycle registration
+  here, so a sweep in another tab cannot see it: it would find nodes reachable
+  from nothing — because the manifest naming them is not committed yet — and
+  could delete them while the installer's base-revision CAS still passed. An
+  install therefore records the partition's sweep generation before it
+  materializes and re-confirms it inside the transaction that installs. In one
+  realm that value cannot move inside that window, so no live session is ever
+  fenced by it; across realms it is the durable trace such a sweep leaves, and
+  re-reading it turns the hazard into a refused install rather than a manifest
+  committed over deleted nodes. #478's all-tab barrier replaces the mark; this
+  record is what makes the interval safe until it does.
 - **Sweep CAS.** The live set is computed from a committed manifest read outside
   the sweep transaction. The sweep transaction re-reads that manifest and
   requires its fingerprint — including the install identifier — to be unchanged.
@@ -633,10 +645,12 @@ report nothing selected only if the partition keeps moving under every attempt.
 A clear or an eviction keeps surfacing the ordinary typed fence error,
 unchanged.
 
-The install paths deliberately do not observe the sweep generation. They are
-protected by materialization exclusion instead: GC cannot delete the nodes an
-install is writing, so an install has nothing to re-confirm — and observing it
-would fence the very sessions that exclusion exists to leave running.
+The install paths observe it too, but only for the window between writing their
+nodes and committing the manifest that names them, and never through the
+session's long-lived lease. In one realm the materialization mark keeps that
+value still, so a sweep of the roots a running session superseded still fences
+nothing; across realms it is the only signal an install has that its fresh nodes
+may already be gone.
 
 ### Bounded quota recovery
 

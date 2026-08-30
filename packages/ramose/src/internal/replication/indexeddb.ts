@@ -78,6 +78,7 @@ import {
   withConfirmedScope,
   withoutConfirmedScope,
   ReplicaDatabaseActiveError,
+  ReplicaFencedError,
   ReplicaLease,
   ReplicaScopeClearedError,
   ReplicaScopeUnconfirmedError,
@@ -2064,6 +2065,36 @@ export class IndexedDbReplicaStorage {
     return replicaRestored(manifest.success);
   }
 
+  /**
+   * Re-confirm, inside the transaction that installs, that no sweep has
+   * reclaimed nodes from this partition since materialization began.
+   *
+   * The realm-local materialization mark keeps an in-process sweep away from
+   * an install's fresh nodes, so in one realm this value cannot move inside
+   * that window and no live session is ever fenced by it. Another tab has no
+   * view of that mark, and its sweep would see nodes reachable from nothing —
+   * because the manifest naming them is not committed yet — and could delete
+   * them while the base-revision CAS still passes. The sweep generation is the
+   * durable trace such a sweep leaves, so re-reading it here turns that into a
+   * refused install rather than a manifest committed over deleted nodes. #478's
+   * all-tab barrier replaces the mark; this record is what makes the interval
+   * safe until it does.
+   */
+  private async confirmNoSweep(
+    transaction: IDBTransaction,
+    partition: string,
+    observed: number,
+  ): Promise<void> {
+    const key = replicaSweepKey(partition);
+    const record = await requestResult<GenerationRecord | undefined>(
+      transaction.objectStore(GENERATIONS).get(key),
+    );
+    const current = record?.generation ?? 0;
+    if (current === observed) return;
+    await abortTransaction(transaction);
+    throw new ReplicaFencedError({ key, expected: observed, observed: current });
+  }
+
   /** The sweep generation guarding one partition; absent reads as zero. */
   private async sweepGeneration(partition: string): Promise<number> {
     const transaction = this.database.transaction(GENERATIONS, "readonly");
@@ -2678,8 +2709,12 @@ export class IndexedDbReplicaStorage {
     if ((prior?.revision ?? null) !== staged.baseRevision) return undefined;
     // Held across the build and the install: until the manifest exists, the
     // nodes below are reachable from nothing and a sweep must not judge them.
-    const materializing = this.markMaterializing(replicaPartitionKey(frame.identity));
+    const partition = replicaPartitionKey(frame.identity);
+    const materializing = this.markMaterializing(partition);
     try {
+      // What the mark cannot cover: a sweep in another realm. Recorded here and
+      // re-confirmed inside the install transaction.
+      const sweep = await this.sweepGeneration(partition);
       return await this.installSnapshot(
         frame,
         attributes,
@@ -2688,6 +2723,8 @@ export class IndexedDbReplicaStorage {
         staged.baseRevision,
         prior,
         fence,
+        partition,
+        sweep,
       );
     } finally {
       materializing();
@@ -2702,6 +2739,8 @@ export class IndexedDbReplicaStorage {
     baseRevision: string | null,
     prior: CommittedRecord | undefined,
     fence: ReplicaFence | undefined,
+    partition: string,
+    sweep: number,
   ): Promise<RestoredReplica | undefined> {
     const built = await materialize(
       this.database,
@@ -2714,15 +2753,21 @@ export class IndexedDbReplicaStorage {
       this.meter,
     );
     options.signal?.throwIfAborted();
+    // The boundary between having written the nodes and opening the
+    // transaction that names them — the window in which they are reachable
+    // from nothing. Inert in production; the source-only testing assembly
+    // parks here to leave the durable trace another tab's sweep would.
+    await this.boundaries.checkpoint("replica.installing");
+    // The generation store is always in scope: even an unfenced install has to
+    // re-confirm that no sweep reclaimed the nodes it has just written.
     const transaction = this.database.transaction(
-      fence === undefined
-        ? [COMMITTED, COMMITTED_HEADS, STAGING, STAGING_CHUNKS]
-        : [COMMITTED, COMMITTED_HEADS, STAGING, STAGING_CHUNKS, GENERATIONS],
+      [COMMITTED, COMMITTED_HEADS, STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       await enforceFence(transaction, fence);
+      await this.confirmNoSweep(transaction, partition, sweep);
       const current = await requestResult<StagingRecord | undefined>(
         transaction.objectStore(STAGING).get(built.record.partition),
       );
@@ -2822,7 +2867,16 @@ export class IndexedDbReplicaStorage {
     // manifest naming them is committed.
     const materializing = this.markMaterializing(partition);
     try {
-      return await this.installChange(frame, options, state.committed, prior, fence, partition);
+      const sweep = await this.sweepGeneration(partition);
+      return await this.installChange(
+        frame,
+        options,
+        state.committed,
+        prior,
+        fence,
+        partition,
+        sweep,
+      );
     } finally {
       materializing();
     }
@@ -2835,6 +2889,7 @@ export class IndexedDbReplicaStorage {
     prior: CommittedRecord,
     fence: ReplicaFence | undefined,
     partition: string,
+    sweep: number,
   ): Promise<RestoredReplica | undefined> {
     const built = await materialize(
       this.database,
@@ -2847,15 +2902,15 @@ export class IndexedDbReplicaStorage {
       this.meter,
     );
     options.signal?.throwIfAborted();
+    await this.boundaries.checkpoint("replica.installing");
     const write = this.database.transaction(
-      fence === undefined
-        ? [COMMITTED, COMMITTED_HEADS]
-        : [COMMITTED, COMMITTED_HEADS, GENERATIONS],
+      [COMMITTED, COMMITTED_HEADS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(write, options.signal);
     try {
       await enforceFence(write, fence);
+      await this.confirmNoSweep(write, partition, sweep);
       const current = await requestResult<CommittedRecord | undefined>(
         write.objectStore(COMMITTED).get(partition),
       );
