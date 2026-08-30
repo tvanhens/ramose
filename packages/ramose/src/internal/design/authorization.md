@@ -380,9 +380,25 @@ is unchanged by any of this.
 **WR-13.** Stored mappings record the sealing key epoch and the stable scope
 they were minted under, because the receipt's own identity covers neither the
 public origin nor the server key. A replay whose current epoch or scope
-disagrees returns the typed data-free update-required rather than handles the
-caller could never open — a client must never durably persist a client-ref
-mapping it cannot resolve.
+disagrees — or whose stored handles were written by an entity-id codec this
+build cannot read — returns the typed data-free update-required rather than
+handles the caller could never open. A client must never durably persist a
+client-ref mapping it cannot resolve, and a durable row a newer codec wrote is
+recognized and answered, never treated as corruption.
+
+**WR-14.** The scope and the handle sealed under it must come from one epoch.
+Every scope component is a PRF of the durable root, and the Worker and the
+writer cache that root in separate isolates, so a root replacement can leave
+them briefly disagreeing. The Worker sends the key id its scope was derived
+under; the writer compares it before opening or sealing anything and answers
+update-required on a mismatch. Sealing across a disagreement would commit a
+handle encrypted under one epoch and bound to a scope derived under another —
+openable by neither once they converge, and already durable on the client.
+
+**WR-15.** A momentarily unreachable sealing root is a transient dependency
+failure, not an engine defect and not a denial: 503 with `retry-after`, from
+whichever side observes it. A 500 would be indistinguishable, to a durable
+offline queue, from a permanent failure of an invocation that never ran.
 
 ## 11. Live queries and session replication
 

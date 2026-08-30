@@ -186,6 +186,12 @@ interface Pending {
   reject: (e: unknown) => void;
 }
 
+/** The root and scope one invocation's opaque handles are bound to (#475). */
+type SealingContext = {
+  readonly sealing: ServerSealingKey;
+  readonly scope: EntityIdScope;
+};
+
 /** How many recent `clientTxId`s this instance remembers. FIFO once full. */
 const RECENT_CLIENT_TX_LIMIT = 256;
 
@@ -585,7 +591,7 @@ export class Transactor {
    */
   private replayableMappings(
     receipt: TerminalInvocationReceipt,
-    context: { readonly sealing: ServerSealingKey; readonly scope: EntityIdScope } | undefined,
+    context: SealingContext | undefined,
   ): boolean {
     if (receipt.status !== "completed" || receipt.allocations === undefined) {
       return true;
@@ -611,7 +617,7 @@ export class Transactor {
   private requireSealingContext(
     p: Pending,
     operation: AuthoritativeOperationInvocation,
-  ): { readonly sealing: ServerSealingKey; readonly scope: EntityIdScope } {
+  ): SealingContext {
     const scope = operation.entityIdScope;
     if (p.sealing === undefined || scope === undefined) {
       throw opaqueOperationDenial();
@@ -648,17 +654,15 @@ export class Transactor {
    */
   private async resolveInvocationTarget(
     p: Pending,
+    context: SealingContext | undefined,
   ): Promise<AuthoritativeOperationInvocation | undefined> {
     const invocation = p.operation!;
     if (invocation.sealedTarget === undefined) return invocation;
     if (invocation.target !== undefined) throw opaqueOperationDenial();
-    const scope: EntityIdScope | undefined = invocation.entityIdScope;
-    if (scope === undefined || p.sealing === undefined) {
-      throw opaqueOperationDenial();
-    }
+    if (context === undefined) throw opaqueOperationDenial();
     const resolution = await resolveSealedTarget(
-      p.sealing,
-      scope,
+      context.sealing,
+      context.scope,
       invocation.sealedTarget,
     );
     if (resolution._tag === "UpdateRequired") return undefined;
@@ -907,7 +911,32 @@ export class Transactor {
               // caller's handle with the private eid, and every ordinary
               // visibility, type, and admission check below then runs against
               // that eid exactly as it would for a numeric target.
-              const operation = await this.resolveInvocationTarget(p);
+              // Resolved before the body runs, not after the commit: sealing an
+              // allocated eid must not be able to fail between the staged
+              // transaction and the durable batch write.
+              const sealingContext = this.needsSealingKey(p.operation)
+                ? this.requireSealingContext(p, p.operation)
+                : undefined;
+              // The Worker derived the scope under its own cached epoch, and
+              // this isolate caches the root separately. If a replacement left
+              // them disagreeing, every scope component — each a PRF of the
+              // root — names something this key cannot reproduce: opening a
+              // handle would fail as a denial rather than a quarantine, and
+              // sealing one would commit a handle encrypted under one epoch and
+              // bound to a scope derived under another, openable by neither
+              // once they converge and already durable on the client. Ask again
+              // instead; by then they agree, or the client learns to update.
+              if (
+                sealingContext !== undefined &&
+                p.operation.entityIdKeyId !== sealingContext.sealing.keyId
+              ) {
+                await resolveCompatibility("UpdateRequired");
+                continue;
+              }
+              const operation = await this.resolveInvocationTarget(
+                p,
+                sealingContext,
+              );
               if (operation === undefined) {
                 // The handle's own codec version or key epoch is beyond this
                 // build. Data-free, and disclosed only to a caller who may
@@ -915,13 +944,6 @@ export class Transactor {
                 await resolveCompatibility("UpdateRequired");
                 continue;
               }
-              const bound = operation.allocations ?? [];
-              // Resolved before the body runs, not after the commit: sealing an
-              // allocated eid must not be able to fail between the staged
-              // transaction and the durable batch write.
-              const sealingContext = bound.length === 0
-                ? undefined
-                : this.requireSealingContext(p, operation);
               // Prepared first so a malformed invocation id or an unverified
               // principal keeps its ordinary invalid-request answer.
               const prepared = await Effect.runPromise(
@@ -1446,6 +1468,16 @@ export class Transactor {
           (typeof invocation.sealedTarget !== "string" ||
             entityIdScope === undefined)) ||
         (allocations.length > 0 && entityIdScope === undefined)
+      ) {
+        throw new BadRequest({ message: "invalid deployed operation invocation" });
+      }
+      // The key id the scope was derived under is part of the same claim: a
+      // scope without one cannot be checked for epoch agreement, so it is not
+      // a usable scope.
+      if (
+        entityIdScope !== undefined &&
+        (typeof invocation.entityIdKeyId !== "string" ||
+          invocation.entityIdKeyId.length === 0)
       ) {
         throw new BadRequest({ message: "invalid deployed operation invocation" });
       }

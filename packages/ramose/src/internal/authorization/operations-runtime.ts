@@ -128,6 +128,17 @@ export type OperationInvocation = {
    */
   readonly entityIdScope?: EntityIdScope;
   /**
+   * The sealing key epoch {@link entityIdScope} was derived under.
+   *
+   * Every scope component is a PRF of the durable root, so a handle sealed
+   * under a different epoch but bound to these scope strings could never be
+   * opened again — and the client would already have stored the mapping
+   * durably. The Worker and the writer cache the root in separate isolates, so
+   * a root replacement can leave them briefly disagreeing; the writer compares
+   * this and refuses rather than minting an unopenable handle.
+   */
+  readonly entityIdKeyId?: string;
+  /**
    * The caller's `{ slot, clientRef }` allocation binding, canonically ordered
    * by slot name. Covered by the canonical invocation digest (#475).
    */

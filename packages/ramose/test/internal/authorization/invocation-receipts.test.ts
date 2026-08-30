@@ -435,6 +435,49 @@ describe("authoritative invocation receipt serialization", () => {
     }
   });
 
+  test("a receipt whose handles a newer codec wrote is recognized, not corruption", () => {
+    // A newer entity-id codec wrote this row and the service was then rolled
+    // back. The row must survive its own decoder — throwing would make an
+    // exact retry an internal 500 forever, before the replay decision that
+    // would have told the client to update.
+    const future = "Z".repeat(80);
+    const claim = decideInvocationReceipt(undefined, preparedFixture());
+    if (claim._tag !== "Claim") throw new Error("expected claim");
+    const rolled = {
+      ...transitionInvocationReceipt(claim.receipt, {
+        _tag: "Complete",
+        committedT: 42,
+        output: null,
+        replayFence,
+      }),
+      allocations: {
+        version: 1 as const,
+        keyId: "AAECAwQFBgcICQoLDA0ODw",
+        scope: { server: "srv", principal: "prn", database: "dbs" },
+        entries: [{ slot: "item", clientRef: allocatedRef, entityId: future }],
+      },
+    };
+    const decoded = parseStoredInvocationReceipt(JSON.parse(JSON.stringify(rolled)));
+    expect(decoded).toEqual(rolled as never);
+    // And it is not replayable: this build cannot open those handles, so the
+    // caller is told to update rather than handed something unusable.
+    const stored = decoded as typeof rolled;
+    expect(allocationMappingsResolvable(
+      stored.allocations,
+      stored.allocations.keyId,
+      stored.allocations.scope,
+    )).toBe(false);
+    // A numeric eid is still refused outright — that is a type error, not a
+    // codec generation, and no rollback can produce it.
+    expect(() => parseStoredInvocationReceipt({
+      ...rolled,
+      allocations: {
+        ...rolled.allocations,
+        entries: [{ slot: "item", clientRef: allocatedRef, entityId: 1001 }],
+      },
+    })).toThrow("invalid durable invocation receipt");
+  });
+
   test("a completed receipt written before the mapping extension stays replayable", () => {
     const claim = decideInvocationReceipt(undefined, preparedFixture());
     if (claim._tag !== "Claim") throw new Error("expected claim");

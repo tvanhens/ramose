@@ -26,6 +26,12 @@ export const INVOCATION_RECEIPT_VERSION = 2 as const;
 /** Pre-correction rows. Never re-executed, never silently cleared. */
 export const LEGACY_INVOCATION_RECEIPT_VERSIONS: readonly number[] = [1];
 export const MAX_INVOCATION_ID_LENGTH = 256;
+/**
+ * A bound on a stored sealed handle, not a format decision. The v1 envelope is
+ * 55 characters; this is far above anything a future codec would plausibly
+ * produce, so widening the codec never has to revisit it.
+ */
+const MAX_SEALED_HANDLE_LENGTH = 4096;
 
 /** Receipt wrapper around the existing authoritative operation input. */
 export type AuthoritativeOperationInvocation = OperationInvocation & {
@@ -173,6 +179,14 @@ export type InvocationAllocationMappingsV1 = {
  * Whether a stored mapping extension is still openable by the caller that is
  * replaying it. A mismatch is not a denial — the receipt is genuine and the
  * caller is authorized — it is the typed, data-free update-required answer.
+ *
+ * Three ways it can fail, and all three mean the same thing to the caller:
+ * the epoch moved, the scope moved, or the handles were written by an
+ * entity-id codec this build cannot read. The last is the rollback case: a
+ * newer codec wrote the receipt, the service was rolled back, and the stored
+ * handles are shaped for a codec this build does not have. Answering
+ * update-required is what lets the client mint a fresh invocation instead of
+ * retrying forever against a row it can never consume.
  */
 export const allocationMappingsResolvable = (
   mappings: InvocationAllocationMappingsV1,
@@ -185,7 +199,8 @@ export const allocationMappingsResolvable = (
 ): boolean =>
   mappings.keyId === keyId && mappings.scope.server === scope.server &&
   mappings.scope.principal === scope.principal &&
-  mappings.scope.database === scope.database;
+  mappings.scope.database === scope.database &&
+  mappings.entries.every((entry) => isEntityId(entry.entityId));
 
 export type CompletedInvocationReceipt = InvocationReceiptIdentity & {
   readonly status: "completed";
@@ -678,7 +693,16 @@ const isAllocationMappings = (
     const mapping = entry as Record<string, unknown>;
     if (
       !isAllocationSlotName(mapping.slot) || !isClientRef(mapping.clientRef) ||
-      !isEntityId(mapping.entityId) ||
+      // A *string* handle, deliberately not this codec's envelope shape. The
+      // row is our own writing, so shape strictness here buys nothing and
+      // costs forward compatibility: a receipt written by a newer entity-id
+      // codec and then read after a rollback must be recognized and answered
+      // `update-required` by {@link allocationMappingsResolvable}, not thrown
+      // away as corruption before the replay decision can be reached. The
+      // type check is what keeps a numeric eid out, and that is the guarantee
+      // that matters here.
+      typeof mapping.entityId !== "string" || mapping.entityId.length === 0 ||
+      mapping.entityId.length > MAX_SEALED_HANDLE_LENGTH ||
       !hasExactKeys(mapping, ["slot", "clientRef", "entityId"])
     ) return false;
     if (slots.has(mapping.slot) || refs.has(mapping.clientRef)) return false;

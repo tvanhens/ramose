@@ -250,16 +250,37 @@ const invocationEntityIdScope = async (
   origin: string,
   parsed: RoutedOperationRequest,
   caller: AuthenticatedCaller,
-): Promise<EntityIdScope | undefined> => {
+): Promise<
+  { readonly scope: EntityIdScope; readonly keyId: string } | undefined
+> => {
   if (
     parsed.sealedTarget === undefined &&
     (parsed.allocations === undefined || parsed.allocations.length === 0)
   ) return undefined;
-  return makeEntityIdScope(await serverSealingKey(env), {
-    origin,
-    caller,
-    database: DatabaseId.make(database),
-  });
+  let sealing;
+  try {
+    sealing = await serverSealingKey(env);
+  } catch {
+    // The root lives in another Durable Object, so a cold Worker isolate has to
+    // fetch it. That is the identical dependency the Transactor answers 503
+    // for; classifying it as an internal 500 here only because the Worker
+    // happened to notice first would tell a client its invocation failed when
+    // it never ran, and a client that retries only 503/429 would abandon it.
+    throw privateFailure(503, { "retry-after": "1" });
+  }
+  return {
+    // The key id this scope was derived under travels with it. Every component
+    // of the scope is a PRF of the root, so a handle sealed under a *different*
+    // epoch but scoped by these strings could never be opened again — and the
+    // client would already have stored the mapping durably. The writer refuses
+    // that mismatch rather than minting one.
+    keyId: sealing.keyId,
+    scope: await makeEntityIdScope(sealing, {
+      origin,
+      caller,
+      database: DatabaseId.make(database),
+    }),
+  };
 };
 
 export const invokeAuthoritativeOperation = async (
@@ -270,7 +291,7 @@ export const invokeAuthoritativeOperation = async (
   caller: AuthenticatedCaller,
   routeDerivation?: DatabaseRouteDerivation,
 ): Promise<AuthoritativeInvocationResult> => {
-  const entityIdScope = await invocationEntityIdScope(
+  const sealingScope = await invocationEntityIdScope(
     env,
     database,
     origin,
@@ -281,7 +302,10 @@ export const invokeAuthoritativeOperation = async (
     ...parsed,
     database: DatabaseId.make(database),
     caller,
-    ...(entityIdScope === undefined ? {} : { entityIdScope }),
+    ...(sealingScope === undefined ? {} : {
+      entityIdScope: sealingScope.scope,
+      entityIdKeyId: sealingScope.keyId,
+    }),
     ...(routeDerivation === undefined ? {} : { routeDerivation }),
   };
   const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
