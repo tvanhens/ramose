@@ -396,6 +396,32 @@ and the client must not answer that by destroying durable work. An absent
 `result` on an otherwise valid 200 is malformed rather than `null`: recording
 it would corrupt the output and remove the only copy that could be replayed.
 
+### Queue liveness
+
+The invariant every durable transition preserves: **after any transaction
+commits, every non-terminal row is progressable** — its database's FIFO head
+can eventually submit, become terminal, or be unblocked by a mapping some live
+path can still produce, or it is reported with a typed non-terminal state that
+names what must change — and no removed or terminal row strands ownership
+(client refs, slots, FIFO sequences) that new work could need.
+
+| transition | effect | why the invariant holds |
+|---|---|---|
+| enqueue | adds a row | refuses a dependency with no local allocator, one owned by another database, one it allocates itself, and one whose allocator was already rejected. An allocator always precedes its dependents in FIFO order by construction: the ownership row must already exist, so it was enqueued earlier — a dependent can never wait on a record behind it. |
+| acknowledge `Committed` | mappings + receipt + row removal | every allocated slot must come back mapped, so no registered ref is stranded; an unreadable mapping row is repaired rather than skipped; dependents unblock on the mapping. |
+| acknowledge `Rejected` | receipt + row removal + cascade | the refused slots can never map, so every transitively dependent row becomes terminal in the same transaction; the ownership rows survive as history and new work behind them is refused at enqueue. |
+| cascade `dependency_rejected` | receipt + row removal | same cut, and confined to one database — a cross-database dependency cannot exist, because enqueue refuses one. |
+| re-acknowledge (converged) | row removal only | the terminal answer must match exactly; the receipt and its `observation` are left untouched, so a fence that already advanced is not reset. |
+| `blocked` | nothing durable | the allocator is queued ahead of it, so a mapping is still producible. |
+| `update-required`, `unreadable` | nothing durable | deliberately holds its own database and is *reported*; never silently cleared, never re-executed. Client action is what clears it. |
+| `clearScope` | removes all five families by prefix | everything in the scope goes together, so nothing survives to be stranded. |
+
+A property test drives random dependency graphs across two databases through
+random accept/refuse interleavings against real IndexedDB, asserting the end
+state directly: nothing queued, nothing blocked, every invocation terminal. It
+also asserts that the sweep actually produced a cascade, so it cannot pass
+vacuously.
+
 **A rejection is a cut through the dependency graph, not one record.** A
 refused invocation's allocation slots can never be mapped — the one queued
 record that could have produced them is the one being removed — so everything

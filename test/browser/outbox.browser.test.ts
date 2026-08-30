@@ -1777,3 +1777,147 @@ browserTest(
     }
   },
 );
+
+/**
+ * Queue liveness, as a property over random interleavings.
+ *
+ * The invariant every durable transition has to preserve: **after any
+ * transaction commits, every non-terminal row is progressable** — its
+ * database's head can eventually submit, become terminal, or be unblocked by a
+ * mapping some live path can still produce — and no removed or terminal row
+ * strands ownership (client refs, slots, FIFO sequences) that new work could
+ * need.
+ *
+ * A per-case test can only show that one path preserves it. This drives random
+ * dependency graphs through random accept/refuse interleavings against real
+ * IndexedDB and asserts the end state directly: nothing queued, nothing
+ * blocked, every invocation terminal. A seeded generator makes any failure
+ * reproducible from the seed the assertion prints.
+ */
+
+/** xorshift32 — deterministic, seeded, and sufficient for shuffling. */
+const generator = (seed: number) => {
+  let state = seed | 0 || 1;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return ((state >>> 0) % 1_000_000) / 1_000_000;
+  };
+};
+
+browserTest("every interleaving of accept and refuse drains the queues", async ({ browser }) => {
+  const left = identity();
+  const other = identity({ database: OTHER_DATABASE });
+  const receivers = [replicaDatabaseScopeOf(left), replicaDatabaseScopeOf(other)];
+  const scope = replicaScopeOf(left);
+  /**
+   * Guards against a vacuous property. If no run ever cascades, the graphs
+   * were too shallow or the refusals never landed on an allocator, and the
+   * sweep proves much less than it appears to.
+   */
+  const observed = new Set<string>();
+
+  for (const seed of [1, 7, 19, 42, 101]) {
+    const name = `ramose-outbox-liveness-${browser.uniqueId}-${seed}`;
+    const random = generator(seed);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      await confirm(storage, other, "left-other");
+      const outbox = storage.outbox();
+      const enqueued: { invocation: string; partition: string }[] = [];
+      // Refs allocated so far, per receiver — a dependent may only name one
+      // its own database already allocated, which is the enqueue contract.
+      const allocatedBy = new Map<string, ClientRef[]>();
+
+      for (let index = 0; index < 12; index++) {
+        const receiver = receivers[Math.floor(random() * receivers.length)]!;
+        const partition = mutationPartitionKey(receiver);
+        const available = allocatedBy.get(partition) ?? [];
+        const dependent = available.length > 0 && random() < 0.5;
+        const allocates = random() < 0.6;
+        const mine = allocates ? clientRef() : undefined;
+        const on = dependent
+          ? available[Math.floor(random() * available.length)]!
+          : undefined;
+        const record = await outbox.enqueue(
+          draft(receiver, {
+            ...(mine === undefined
+              ? {}
+              : { allocations: [{ slot: "issue", clientRef: mine }] }),
+            ...(on === undefined ? {} : {
+              input: { assignee: on },
+              inputRefs: [{ path: ["assignee"], ref: on }],
+            }),
+          }),
+          { scope },
+        );
+        enqueued.push({ invocation: record.invocation, partition });
+        if (mine !== undefined) {
+          allocatedBy.set(partition, [...available, mine]);
+        }
+      }
+
+      // Drive heads until every queue is empty, refusing or accepting at
+      // random. A cascade may terminate rows this loop never reaches, which is
+      // exactly the behaviour under test.
+      for (let pass = 0; pass < 200; pass++) {
+        const { plans } = await outbox.submissionPlan(scope);
+        const ready = plans.flatMap((plan) =>
+          plan.head.type === "ready" ? [{ plan, record: plan.head.record }] : []
+        );
+        if (ready.length === 0) break;
+        for (const { plan, record } of ready) {
+          if (random() < 0.35) {
+            await outbox.acknowledge(record, {
+              _tag: "Rejected",
+              code: "invocation_conflict",
+            });
+            continue;
+          }
+          const mappings = await Promise.all(
+            record.allocations.map(async (allocation) => ({
+              clientRef: allocation.clientRef,
+              entityId: await sealEntityId(
+                sealingKeyOf(root),
+                idScope(plan.receiver),
+                1000 + Math.floor(random() * 100_000),
+              ) as EntityId,
+            })),
+          );
+          await outbox.acknowledge(record, {
+            _tag: "Committed",
+            output: null,
+            mappings,
+          });
+        }
+      }
+
+      // Nothing queued, nothing blocked, and no row left that only a repair
+      // could clear.
+      const drained = await outbox.plan(scope);
+      expect([seed, drained]).toEqual([seed, []]);
+      const states = await Promise.all(enqueued.map(async (entry) => {
+        const receiver = receivers.find((candidate) =>
+          mutationPartitionKey(candidate) === entry.partition
+        )!;
+        const receipt = await outbox.receipt(receiver, entry.invocation as never);
+        observed.add(`${receipt?.state}:${receipt?.failure?.code ?? ""}`);
+        return receipt?.state;
+      }));
+      expect([seed, states.filter((state) => state !== "committed" && state !== "rejected")])
+        .toEqual([seed, []]);
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  }
+  // Every terminal shape the sweep is supposed to exercise actually occurred,
+  // including a rejection that had to carry dependents with it.
+  expect([...observed].sort()).toEqual([
+    "committed:",
+    "rejected:dependency_rejected",
+    "rejected:invocation_conflict",
+  ]);
+});
