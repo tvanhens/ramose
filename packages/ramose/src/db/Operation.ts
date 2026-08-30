@@ -162,8 +162,10 @@ export type RunArg<C extends AnySchema, OC extends AnySchema, A> =
  * `EntityId` slot; authoritative execution resolves it after the writer assigns
  * eids. What crosses the operation boundary is never that number: the public
  * projection seals every `EntityId` position of the result into the opaque
- * {@link EntityId} handle below, which is the same handle an allocation mapping
- * and logical replication carry for that entity in that scope (#475).
+ * {@link EntityId} handle below. Sealing is deterministic per
+ * `(root, scope, eid)`, so that is byte-identical to the handle an allocation
+ * mapping returns and to the one logical replication binds to the same entity
+ * in the same scope — one identity, three carriers (#475, #477).
  */
 export const EntityId: typeof untargetedRef = untargetedRef;
 

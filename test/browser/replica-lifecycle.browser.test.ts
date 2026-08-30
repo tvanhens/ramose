@@ -26,6 +26,7 @@ import {
   testRuntimeBoundaries,
 } from "../../packages/ramose/src/internal/test-hooks.ts";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 
@@ -134,10 +135,10 @@ const installSnapshot = async (
   await storage.startSnapshot({
     type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
   });
-  await storage.stageSnapshotChunk({
+  await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk", protocol: 1, identity: selected, snapshot, index: 0,
     datoms: [snapshotDatom(value)],
-  });
+  }));
   expect(await storage.commitSnapshot({
     type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
   }, attributes)).toBeDefined();
@@ -388,10 +389,10 @@ browserTest("a fenced lease cannot repopulate a cleared scope or write nodes aft
       type: "SnapshotStart", protocol: 1, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
     }, { lease: renewed });
-    await writer.stageSnapshotChunk({
+    await writer.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: left, snapshot: opaque("q"), index: 0,
       datoms: [snapshotDatom("reinstalled")],
-    }, { lease: renewed });
+    }), { lease: renewed });
 
     // Evicting the database bumps only its own generation. The renewed lease
     // now loses it and is refused while materializing content nodes, so no
@@ -401,10 +402,10 @@ browserTest("a fenced lease cannot repopulate a cleared scope or write nodes aft
       type: "SnapshotStart", protocol: 1, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
     }, { lease: writer.lease() });
-    await writer.stageSnapshotChunk({
+    await writer.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: left, snapshot: opaque("q"), index: 0,
       datoms: [snapshotDatom("reinstalled")],
-    });
+    }));
     await expect(writer.commitSnapshot({
       type: "SnapshotCommit", protocol: 1, identity: left,
       snapshot: opaque("q"), revision: opaque("2"), chunks: 1,

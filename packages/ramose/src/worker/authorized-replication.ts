@@ -28,7 +28,9 @@ import {
   digestLogicalDb,
   diffLogicalDbs,
   encodeReplicationFrame,
+  entryHandles,
   makeLogicalIdentityEncoder,
+  entityIdScopeOf,
   makeReplicationIdentity,
   replicationReadRouteIdentities,
   makeRevision,
@@ -183,6 +185,18 @@ const rawDatabase = (version: AuthorizedVersion): string =>
 const leaseAlive = (version: AuthorizedVersion): boolean =>
   Date.now() < version.leaseExpiresAt;
 
+/**
+ * The encoder one activation projects its datoms through.
+ *
+ * Two identities per entity, minted together. The wire identity is scoped by
+ * the whole replication authenticator, so it rotates with the catalog and the
+ * read view and keeps two partitions of one database unlinkable. The sealed
+ * handle is bound to the stable `{ server, principal, database }` scope read
+ * straight off the identity this stream already authorized — the same scope the
+ * operation boundary seals allocation mappings under, which is what makes a
+ * handle carried by replication and a handle returned by a receipt the same
+ * string for the same entity.
+ */
 const identityEncoder = (
   input: ReplicationRun,
   version: AuthorizedVersion,
@@ -190,6 +204,7 @@ const identityEncoder = (
   makeLogicalIdentityEncoder(
     input.sealing,
     version.identity.authenticator,
+    entityIdScopeOf(version.identity),
   );
 
 const currentState = async (
@@ -299,13 +314,14 @@ const snapshotFrames = async function* (
     for await (const entries of snapshotEntryChunks(
       version.target.context.filteredDb,
       logical,
-      (datoms, chunkIndex) => replicationFrameFitsBound({
+      (entries, chunkIndex) => replicationFrameFitsBound({
         type: "SnapshotChunk",
         protocol: REPLICATION_PROTOCOL_VERSION,
         identity: expectedIdentity,
         snapshot,
         index: chunkIndex,
-        datoms,
+        datoms: entries.map((entry) => entry.datom),
+        handles: entryHandles(entries),
       }),
       signal,
     )) {
@@ -329,6 +345,7 @@ const snapshotFrames = async function* (
         snapshot,
         index,
         datoms: entries.map((entry) => entry.datom),
+        handles: entryHandles(entries),
       });
       index++;
     }
@@ -555,6 +572,7 @@ const advanceFrames = async function* (
       from: previous.revision,
       revision,
       datoms: delta.datoms,
+      handles: delta.handles,
     });
     return finalState;
   }

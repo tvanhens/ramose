@@ -34,6 +34,7 @@ const value = (stale: boolean) => ({
   db: {} as Db,
   identity,
   revision: opaque("r"),
+  handles: new Map<string, number>(),
   stale,
 });
 

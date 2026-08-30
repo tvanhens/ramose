@@ -17,6 +17,11 @@ import {
   type ReplicationFrame,
   type ReplicationIdentity,
 } from "../../../src/internal/replication/index.ts";
+import {
+  changeFrame,
+  sealedHandle,
+  snapshotChunk,
+} from "../../replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 const compatible = ReadCompatibilityHash.make(opaque("K"));
@@ -114,15 +119,15 @@ describe("replication frame codec", () => {
   const nextRevision = opaque("L");
   const frames: readonly ReplicationFrame[] = [
     { type: "SnapshotStart", protocol: 1, identity, snapshot, revision },
-    {
+    snapshotChunk({
       type: "SnapshotChunk",
       protocol: 1,
       identity,
       snapshot,
       index: 0,
       datoms: values.map((datom) => ({ ...datom, op: "add" as const })),
-    },
-    {
+    }),
+    snapshotChunk({
       type: "SnapshotChunk",
       protocol: 1,
       identity,
@@ -140,16 +145,16 @@ describe("replication frame codec", () => {
         },
         op: "add",
       }],
-    },
+    }),
     { type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1 },
-    {
+    changeFrame({
       type: "Change",
       protocol: 1,
       identity,
       from: revision,
       revision: nextRevision,
       datoms: [{ ...values[0]!, op: "retract" }],
-    },
+    }),
     { type: "ResumeReady", protocol: 1, identity, revision },
     { type: "Reset", protocol: 1, identity },
     { type: "KeepAlive", protocol: 1, identity },
@@ -178,7 +183,7 @@ describe("replication frame codec", () => {
       { type: "string" as const, value: "x".repeat(MAX_REPLICATION_STRING_BYTES) },
       { type: "bytes" as const, value: "A".repeat(MAX_REPLICATION_STRING_BYTES) },
     ]) {
-      const maximum: ReplicationFrame = {
+      const maximum: ReplicationFrame = snapshotChunk({
         type: "SnapshotChunk",
         protocol: 1,
         identity,
@@ -190,7 +195,7 @@ describe("replication frame codec", () => {
           value,
           op: "add",
         }],
-      };
+      });
       const wire = encodeReplicationFrame(maximum);
       expect(new TextEncoder().encode(wire).byteLength)
         .toBeLessThanOrEqual(MAX_REPLICATION_FRAME_BYTES);
@@ -256,6 +261,7 @@ describe("replication frame codec", () => {
           },
           op: "add",
         }],
+        handles: [{ entity: opaque("H"), handle: sealedHandle(opaque("H")) }],
       },
       { ...base, datoms: [{ ...values[0], field: "😀".repeat(1_025) }] },
       {
@@ -274,6 +280,40 @@ describe("replication frame codec", () => {
     ]) {
       expect(Result.isFailure(decodeReplicationFrame(JSON.stringify(invalid))))
         .toBe(true);
+    }
+  });
+
+  test("a data-bearing frame's sealed-handle binding is strict and bounded", () => {
+    const chunk = frames[1] as Extract<ReplicationFrame, { type: "SnapshotChunk" }>;
+    const entity = chunk.datoms[0]!.entity;
+    const handle = sealedHandle(entity);
+    // The binding is required, so a server that stopped emitting it is a
+    // protocol change this decoder refuses rather than silently tolerates.
+    const { handles: _omitted, ...withoutHandles } = chunk;
+    expect(Result.isFailure(decodeReplicationFrame(JSON.stringify(withoutHandles))))
+      .toBe(true);
+    for (
+      const handles of [
+        // A wire identity that is not an opaque identity.
+        [{ entity: "not-opaque", handle }],
+        // A respelled handle: the final character's padding bits must be zero,
+        // or one entity would have two spellings of one mutation target.
+        [{ entity, handle: `${handle.slice(0, 54)}B` }],
+        [{ entity, handle: handle.slice(0, 54) }],
+        [{ entity, handle: `${handle}A` }],
+        // An excess property inside the binding.
+        [{ entity, handle, eid: 1_000 }],
+        // Twice the datom bound is the ceiling: one subject and one reference
+        // per datom is every entity a frame can name.
+        Array.from(
+          { length: MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK * 2 + 1 },
+          () => ({ entity, handle }),
+        ),
+      ]
+    ) {
+      expect(Result.isFailure(
+        decodeReplicationFrame(JSON.stringify({ ...chunk, handles })),
+      )).toBe(true);
     }
   });
 

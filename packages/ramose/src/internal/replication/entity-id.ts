@@ -1,12 +1,15 @@
 /**
  * The sealed public entity handle — #475 milestone E0.
  *
- * `makeEntityIdentity` in `identity.ts` is a one-way HMAC scoped by the *full*
- * replication authenticator. It is not reversible and it rotates with the
- * catalog/read-view identity, so it can name an entity inside one live
- * replication stream but it cannot be a durable queued mutation target.
- * That handle stays exactly as it is; this module adds the separate,
- * reversible one.
+ * `makeEntityIdentity` in `identity.ts` is a one-way HMAC over exactly
+ * `{ database, eid }` — and the replication emitter passes the whole
+ * replication *authenticator* as that `database` argument, which is what scopes
+ * the wire identity to one partition and rotates it with the catalog and the
+ * read view. It is not reversible either way, so it can name an entity inside
+ * one live replication stream but it cannot be a durable queued mutation
+ * target. That handle stays exactly as it is; this module adds the separate,
+ * reversible one, and logical replication now carries both — the wire identity
+ * on every datom, and the sealed handle in the frame's `handles` binding.
  *
  * A sealed entity id is authenticated ciphertext of the private numeric eid,
  * bound to one *stable* scope: the confirmed server, the authenticated

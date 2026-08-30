@@ -121,6 +121,39 @@ bytes.
 The client treats every identity field and revision as opaque. Decoding a JWT
 or an opaque id never grants cache authority.
 
+## Sealed entity handles
+
+The wire identity above names an entity *within one partition*: it rotates with
+the authenticator, which is what keeps two partitions of one database
+unlinkable, and it is one-way, so nothing can read an entity out of it. It
+therefore cannot be a durable mutation target, and a client holding only wire
+identities can read a row it has no way to address.
+
+Every data-bearing frame therefore also carries a `handles` binding: one entry
+per distinct entity the frame's datoms name, as a subject or as a reference
+value, pairing that wire identity with the sealed `EntityId` of the same
+entity. The sealed handle is the reversible envelope minted by the engine's
+entity-id codec, bound to the stable `{ server, principal, database }` scope
+and excluding the catalog, the read view, the schema, the deployment, the graph
+path text, and the bearer. Sealing is deterministic per `(root, scope, eid)`, so
+the handle replication binds, the handle an allocation mapping returns, and the
+handle a sealed output position carries are one byte-identical string for one
+entity — three carriers, one identity.
+
+The binding is additive to the partition mechanism, not a replacement for it:
+the datoms keep using wire identities, and the handle crosses only inside an
+authenticated stream the server has already authorized end to end. It is
+therefore disclosed only to the partition owner, who can already mint the same
+handle by invoking an operation that returns the entity. A second principal
+reading the same row receives a different handle and cannot open this one.
+
+Client obligations. A frame's binding is required and strict: a handle must be
+the canonical unpadded base64url of the 41-byte envelope, an entity may not be
+rebound within one partition, and a snapshot or change that would leave an
+entity of the installed value unbound is refused rather than installed. A
+committed value keeps bindings for exactly the entities it holds; a handle whose
+entity is retracted is pruned with its last fact.
+
 ## Logical datoms
 
 A wire datom is:
@@ -168,9 +201,9 @@ Every frame has `protocol: 1` and is one of:
 | Frame | Required payload | Meaning |
 |---|---|---|
 | `SnapshotStart` | identity, snapshot, revision | Begin staging one complete authorized value. |
-| `SnapshotChunk` | identity, snapshot, zero-based index, add datoms | One bounded ordered part; never queryable by itself. |
+| `SnapshotChunk` | identity, snapshot, zero-based index, add datoms, sealed-handle bindings | One bounded ordered part; never queryable by itself. |
 | `SnapshotCommit` | identity, snapshot, revision, chunk count | Atomically install the staged value. |
-| `Change` | identity, from revision, revision, datoms | Atomically move one complete authorized value to another. Multiple physical bases may be conflated. |
+| `Change` | identity, from revision, revision, datoms, sealed-handle bindings | Atomically move one complete authorized value to another. Multiple physical bases may be conflated. |
 | `ResumeReady` | identity, revision | One-shot proof that a supplied, resolved committed revision is still the complete current authorized value. |
 | `Reset` | identity | The old resume basis or partition cannot be reused; a snapshot follows. |
 | `KeepAlive` | identity | Reserved fixed-shape liveness frame. Version 1 does not emit it. |

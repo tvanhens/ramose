@@ -55,6 +55,7 @@ import {
 } from "../../packages/ramose/src/internal/replication/transport.ts";
 import recorded from "./frames/optimistic-fence.client.json";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
 // React's own test contract: `act` refuses to flush work outside one.
 declare global {
@@ -119,9 +120,9 @@ const seed = async (name: string, notes: readonly SeededNote[]): Promise<void> =
     const snapshot = opaque("q");
     const revision = opaque("r");
     await storage.startSnapshot({ type: "SnapshotStart", protocol: 1, identity, snapshot, revision });
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0, datoms,
-    });
+    }));
     const committed = await storage.commitSnapshot({
       type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
     }, installed.attributes);
@@ -530,13 +531,13 @@ browserTest("a stale→ready confirmation does not re-render a child memoized on
     const revision = opaque("r");
     const entity = opaque("z");
     await storage.startSnapshot({ type: "SnapshotStart", protocol: 1, identity, snapshot, revision });
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0,
       datoms: [
         { entity, field: ":ramose/type", value: { type: "string", value: ":conformanceIssue" }, op: "add" },
         { entity, field: ":conformanceIssue/title", value: { type: "string", value: "restored" }, op: "add" },
       ],
-    });
+    }));
     (await storage.commitSnapshot({
       type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
     }, installed.attributes))!.release();

@@ -15,6 +15,11 @@ import type {
   SnapshotDatom,
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
 import { browserTest } from "./fixtures.ts";
+import {
+  changeFrame,
+  sealedHandle,
+  snapshotChunk,
+} from "../../packages/ramose/test/replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 
@@ -70,14 +75,14 @@ const installSnapshot = async (
     snapshot,
     revision,
   });
-  await storage.stageSnapshotChunk({
+  await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
     protocol: 1,
     identity: selected,
     snapshot,
     index: 0,
     datoms,
-  });
+  }));
   return storage.commitSnapshot({
     type: "SnapshotCommit",
     protocol: 1,
@@ -177,7 +182,7 @@ browserTest("keeps stable partition-local ids across snapshot, change, and reope
     expect(reopened!.db.attr(":item/name")!.id).toBe(nameAid);
     expect((await facts(reopened!.db, ":item/friend"))[0]!.v).toBe(originalEid);
 
-    const changed: Change = {
+    const changed: Change = changeFrame({
       type: "Change",
       protocol: 1,
       identity: selected,
@@ -189,7 +194,7 @@ browserTest("keeps stable partition-local ids across snapshot, change, and reope
         logicalDatom(entityM, ":item/name", { type: "string", value: "incremental" }),
         logicalDatom(entityM, ":item/friend", { type: "ref", value: entityZ }),
       ],
-    };
+    });
     const third = await storage.applyChange(changed);
     const thirdNames = await namedEntities(third!.db);
     expect(third?.revision).toBe(revision3);
@@ -202,6 +207,21 @@ browserTest("keeps stable partition-local ids across snapshot, change, and reope
     const final = await storage.restore(selected, attributes, READ_COMPATIBILITY);
     expect(final?.revision).toBe(revision3);
     expect((await namedEntities(final!.db)).get("updated")).toBe(originalEid);
+
+    // The sealed-handle binding (#477). A local eid is a partition-local
+    // number this replica invented; the handle is the identity a mutation is
+    // addressed by, and the join between them is what every install and every
+    // restore above has to keep — through a fresh IndexedDB connection, and
+    // through a change that renamed the entity and added a second one.
+    expect(final!.handles.get(sealedHandle(entityZ))).toBe(originalEid);
+    expect(final!.handles.get(sealedHandle(entityM)))
+      .toBe(thirdNames.get("incremental"));
+    // An entity this value no longer holds is not addressable through it: the
+    // second snapshot's `entityA` was replaced wholesale by the third revision.
+    expect(final!.handles.has(sealedHandle(entityA))).toBe(false);
+    // And a handle no replicated frame ever bound is simply not here — the
+    // client cannot derive one, which is the point of carrying it.
+    expect(final!.handles.has(sealedHandle(opaque("w")))).toBe(false);
     // Schema metadata that disagrees with the committed read view is a typed
     // outcome the caller branches on, not a thrown internal error.
     expect(await storage.restoreOutcome(selected, [
@@ -260,19 +280,19 @@ browserTest("restores only old-or-new values across durable staging and aborted 
       snapshot: nextSnapshot,
       revision: snapshotRevision,
     });
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
       protocol: 1,
       identity: selected,
       snapshot: nextSnapshot,
       index: 0,
       datoms: [snapshotDatom(entity, ":item/name", { type: "string", value: "snapshot" })],
-    });
-    await expect(storage.stageSnapshotChunk({
+    }));
+    await expect(storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: selected,
       snapshot: nextSnapshot, index: 0,
       datoms: [snapshotDatom(entity, ":item/name", { type: "string", value: "changed bytes" })],
-    })).rejects.toMatchObject({
+    }))).rejects.toMatchObject({
       _tag: "ReplicationTransitionError",
       reason: "duplicate snapshot chunk changed bytes",
     });
@@ -315,12 +335,12 @@ browserTest("restores only old-or-new values across durable staging and aborted 
     installedController.abort();
     expect(installed?.revision).toBe(snapshotRevision);
     expect([...(await namedEntities(installed!.db)).keys()]).toEqual(["snapshot"]);
-    await expect(storage.stageSnapshotChunk({
+    await expect(storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: selected,
       snapshot: nextSnapshot, index: 0, datoms: [],
-    })).resolves.toBeUndefined();
+    }))).resolves.toBeUndefined();
 
-    const change: Change = {
+    const change: Change = changeFrame({
       type: "Change",
       protocol: 1,
       identity: selected,
@@ -330,7 +350,7 @@ browserTest("restores only old-or-new values across durable staging and aborted 
         logicalDatom(entity, ":item/name", { type: "string", value: "snapshot" }, "retract"),
         logicalDatom(entity, ":item/name", { type: "string", value: "changed" }),
       ],
-    };
+    });
     const changeAbort = new AbortController();
     const abortedChange = storage.applyChange(change, { signal: changeAbort.signal });
     changeAbort.abort();
@@ -368,14 +388,14 @@ browserTest("rejects unknown fields and logical type mismatches without replacin
       snapshot: opaque("b"),
       revision: opaque("2"),
     });
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
       protocol: 1,
       identity: selected,
       snapshot: opaque("b"),
       index: 0,
       datoms: [snapshotDatom(opaque("e"), ":missing/field", { type: "string", value: "bad" })],
-    });
+    }));
     await expect(storage.commitSnapshot({
       type: "SnapshotCommit",
       protocol: 1,
@@ -390,11 +410,11 @@ browserTest("rejects unknown fields and logical type mismatches without replacin
       type: "SnapshotStart", protocol: 1, identity: selected,
       snapshot: opaque("c"), revision: opaque("3"),
     });
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: selected,
       snapshot: opaque("c"), index: 0,
       datoms: [snapshotDatom(opaque("e"), ":item/name", { type: "long", value: 7 })],
-    });
+    }));
     await expect(storage.commitSnapshot({
       type: "SnapshotCommit", protocol: 1, identity: selected,
       snapshot: opaque("c"), revision: opaque("3"), chunks: 1,
@@ -423,18 +443,18 @@ browserTest("a snapshot cannot overwrite a change committed after staging began"
       type: "SnapshotStart", protocol: 1, identity: selected,
       snapshot, revision: r2,
     });
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: selected,
       snapshot, index: 0,
       datoms: [snapshotDatom(entity, ":item/name", { type: "string", value: "stale-r2" })],
-    });
-    await storage.applyChange({
+    }));
+    await storage.applyChange(changeFrame({
       type: "Change", protocol: 1, identity: selected, from: r1, revision: r3,
       datoms: [
         logicalDatom(entity, ":item/name", { type: "string", value: "r1" }, "retract"),
         logicalDatom(entity, ":item/name", { type: "string", value: "r3" }),
       ],
-    });
+    }));
     expect(await storage.commitSnapshot({
       type: "SnapshotCommit", protocol: 1, identity: selected,
       snapshot, revision: r2, chunks: 1,
@@ -484,11 +504,11 @@ browserTest("a documentation-only catalog change reuses the replica without any 
       type: "SnapshotStart", protocol: 1, identity: selected,
       snapshot: opaque("s"), revision,
     });
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: selected,
       snapshot: opaque("s"), index: 0,
       datoms: [snapshotDatom(entity, ":item/name", { type: "string", value: "documented" })],
-    });
+    }));
     const installed = await storage.commitSnapshot({
       type: "SnapshotCommit", protocol: 1, identity: selected,
       snapshot: opaque("s"), revision, chunks: 1,
@@ -571,11 +591,11 @@ browserTest("a documentation-only catalog change reuses the replica without any 
         type: "SnapshotStart", protocol: 1, identity: selected,
         snapshot: opaque("s"), revision,
       });
-      await twin.stageSnapshotChunk({
+      await twin.stageSnapshotChunk(snapshotChunk({
         type: "SnapshotChunk", protocol: 1, identity: selected,
         snapshot: opaque("s"), index: 0,
         datoms: [snapshotDatom(entity, ":item/name", { type: "string", value: "documented" })],
-      });
+      }));
       expect(await twin.commitSnapshot({
         type: "SnapshotCommit", protocol: 1, identity: selected,
         snapshot: opaque("s"), revision, chunks: 1,

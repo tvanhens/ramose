@@ -61,6 +61,7 @@ import {
   type SnapshotDatom,
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk, changeFrame } from "../../packages/ramose/test/replication-fixtures.ts";
 
 // ---------------------------------------------------------------------------
 // #480 budgets, in milliseconds. Asserted exactly as published.
@@ -310,14 +311,14 @@ const installSnapshot = async (
     offset < datoms.length;
     offset += MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK
   ) {
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
       protocol: 1,
       identity: selected,
       snapshot,
       index: index++,
       datoms: datoms.slice(offset, offset + MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK),
-    });
+    }));
   }
   const installed = await storage.commitSnapshot({
     type: "SnapshotCommit",
@@ -486,7 +487,7 @@ browserTest(
       const change = await timed(async () =>
         await withStorage(name, async (storage) => {
           storage.resetWriteCounts();
-          const applied = await storage.applyChange({
+          const applied = await storage.applyChange(changeFrame({
             type: "Change",
             protocol: 1,
             identity: selected,
@@ -498,7 +499,7 @@ browserTest(
               value: { type: "string", value: "one changed datom" },
               op: "add",
             }],
-          });
+          }));
           expect(applied).toBeDefined();
           // The change must be visible in the very value the apply returned,
           // and the representative query must answer from it.

@@ -6,6 +6,7 @@ import {
   classifyReplicationChange,
   replicationTerminalSnapshot,
 } from "../../../src/internal/replication/session.ts";
+import { snapshotChunk, changeFrame } from "../../replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 const identity: ReplicationIdentity = {
@@ -19,14 +20,14 @@ const identity: ReplicationIdentity = {
   graphLineage: [],
   authenticator: opaque("a"),
 };
-const change = (from: string, revision: string) => ({
+const change = (from: string, revision: string) => (changeFrame({
   type: "Change" as const,
   protocol: 1 as const,
   identity,
   from,
   revision,
   datoms: [],
-});
+}));
 
 describe("replication change sequencing", () => {
   test("distinguishes an exact duplicate from a gap", () => {
@@ -77,10 +78,10 @@ describe("metadata-only cache candidate confirmation", () => {
 
   test("snapshot fragments, mismatched resumes, and unseeded liveness fail closed", () => {
     const other = { ...identity, principal: opaque("o") };
-    expect(classifyReplicationCandidateFrame(candidate, {
+    expect(classifyReplicationCandidateFrame(candidate, snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity,
       snapshot: opaque("s"), index: 0, datoms: [],
-    })).toBe("invalid");
+    }))).toBe("invalid");
     expect(classifyReplicationCandidateFrame(candidate, {
       type: "SnapshotCommit", protocol: 1, identity,
       snapshot: opaque("s"), revision, chunks: 0,

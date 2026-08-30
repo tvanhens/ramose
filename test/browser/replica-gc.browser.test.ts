@@ -41,6 +41,7 @@ import {
   testRuntimeBoundaries,
 } from "../../packages/ramose/src/internal/test-hooks.ts";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk, changeFrame } from "../../packages/ramose/test/replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 
@@ -293,11 +294,11 @@ const installSnapshot = async (
   });
   let index = 0;
   for (let offset = 0; offset < datoms.length; offset += 16) {
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: selected, snapshot,
       index: index++,
       datoms: datoms.slice(offset, offset + 16),
-    });
+    }));
   }
   const committed = await storage.commitSnapshot({
     type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision,
@@ -318,7 +319,7 @@ const changeOne = (
   revision: string,
   entity: string,
   value: string,
-) => ({
+) => (changeFrame({
   type: "Change" as const,
   protocol: 1 as const,
   identity: selected,
@@ -330,7 +331,7 @@ const changeOne = (
     value: { type: "string" as const, value },
     op: "add" as const,
   }],
-});
+}));
 
 const confirm = async (
   storage: IndexedDbReplicaStorage,
@@ -455,10 +456,10 @@ browserTest(
         type: "SnapshotStart", protocol: 1, identity: selected,
         snapshot: opaque("y"), revision: opaque("9"),
       });
-      await storage.stageSnapshotChunk({
+      await storage.stageSnapshotChunk(snapshotChunk({
         type: "SnapshotChunk", protocol: 1, identity: selected, snapshot: opaque("y"),
         index: 0, datoms: [snapshotDatom(opaque("x"), "abandoned")],
-      });
+      }));
 
       const before = await nodeHashes(name, partition);
       const siblingBefore = await nodeHashes(name, siblingPartition);

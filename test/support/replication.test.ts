@@ -11,6 +11,7 @@ import {
   decodeReplicationNdjson,
   readReplicationNdjson,
 } from "./replication.ts";
+import { sealedHandle } from "../../packages/ramose/test/replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 const identity: ReplicationIdentity = {
@@ -38,6 +39,7 @@ test("replication NDJSON decoder bounds coalesced transport data per frame", asy
       value: { type: "string", value: "x".repeat(120_000) },
       op: "add",
     }],
+    handles: [{ entity: opaque("H"), handle: sealedHandle(opaque("H")) }],
   };
   const wire = encodeReplicationFrame(frame);
   const frameCount = 10;

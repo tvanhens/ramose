@@ -29,6 +29,7 @@ import {
   testRuntimeBoundaries,
 } from "../../packages/ramose/src/internal/test-hooks.ts";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 
@@ -202,11 +203,11 @@ const installSnapshot = async (
   // is staged as many real transactions, exactly as a session would stage it.
   let index = 0;
   for (let offset = 0; offset < datoms.length; offset += 16) {
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: selected, snapshot,
       index: index++,
       datoms: datoms.slice(offset, offset + 16),
-    });
+    }));
   }
   expect(await storage.commitSnapshot({
     type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision,
@@ -685,10 +686,10 @@ browserTest(
       await storage.startSnapshot({
         type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
       });
-      await storage.stageSnapshotChunk({
+      await storage.stageSnapshotChunk(snapshotChunk({
         type: "SnapshotChunk", protocol: 1, identity: selected, snapshot, index: 0,
         datoms: [snapshotDatom(opaque("x"), "rebased")],
-      });
+      }));
       const installed = await storage.commitSnapshot({
         type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
       }, attributes);

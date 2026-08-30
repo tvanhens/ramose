@@ -10,6 +10,7 @@ import type { Db } from "../core/db.ts";
 import { bytesToBase64 } from "../core/log.ts";
 import { canonicalizeJson } from "../authorization/canonical-json.ts";
 import type { JsonValue } from "../authorization/json.ts";
+import { sealEntityId, type EntityIdScope, type SealedEntityId } from "./entity-id.ts";
 import { makeEntityIdentity, opaqueDigest } from "./identity.ts";
 import type { ServerSealingKey } from "./server-identity.ts";
 import {
@@ -18,6 +19,7 @@ import {
   MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK,
   MAX_REPLICATION_RAW_VALUE_PART_BYTES,
   MAX_REPLICATION_STRING_BYTES,
+  type EntityHandleBinding,
   type LogicalDatom,
   type SnapshotDatom,
   type SnapshotLogicalValue,
@@ -40,18 +42,34 @@ const throwIfAborted = (signal: AbortSignal | undefined): void => {
 export type LogicalEntry = {
   readonly raw: Datom;
   readonly datom: SnapshotDatom;
+  /** The sealed handle of every entity {@link LogicalEntry.datom} names. */
+  readonly handles: readonly EntityHandleBinding[];
+};
+
+/**
+ * The two identities one replicated entity travels under.
+ *
+ * `identity` is the one-way per-stream wire name the datoms use; `handle` is
+ * the reversible sealed `EntityId` bound to the stable scope. Minted together
+ * and cached together, because every frame that carries the first must carry
+ * the second.
+ */
+export type LogicalEntityIdentity = {
+  readonly identity: OpaqueReplicationId;
+  readonly handle: SealedEntityId;
 };
 
 export type LogicalIdentityEncoder = {
   readonly database: string;
-  readonly entity: (eid: number) => Promise<OpaqueReplicationId>;
+  readonly entity: (eid: number) => Promise<LogicalEntityIdentity>;
 };
 
 export const makeLogicalIdentityEncoder = (
   sealing: ServerSealingKey,
   database: string,
+  scope: EntityIdScope,
 ): LogicalIdentityEncoder => {
-  const cache = new Map<number, Promise<OpaqueReplicationId>>();
+  const cache = new Map<number, Promise<LogicalEntityIdentity>>();
   return {
     database,
     entity: (eid) => {
@@ -64,11 +82,39 @@ export const makeLogicalIdentityEncoder = (
       if (cache.size >= MAX_ENTITY_CACHE) {
         cache.delete(cache.keys().next().value!);
       }
-      identity = makeEntityIdentity(sealing, database, eid);
+      identity = Promise.all([
+        makeEntityIdentity(sealing, database, eid),
+        sealEntityId(sealing, scope, eid),
+      ]).then(([wire, handle]) => Object.freeze({ identity: wire, handle }));
       cache.set(eid, identity);
       return identity;
     },
   };
+};
+
+/** Merge one entity's binding into a frame's set, deduplicated by identity. */
+const bind = (
+  into: Map<string, EntityHandleBinding>,
+  entity: LogicalEntityIdentity,
+): void => {
+  if (into.has(entity.identity)) return;
+  into.set(
+    entity.identity,
+    Object.freeze({ entity: entity.identity, handle: entity.handle }),
+  );
+};
+
+/** Every distinct binding a set of entries carries, in first-appearance order. */
+export const entryHandles = (
+  entries: Iterable<LogicalEntry>,
+): readonly EntityHandleBinding[] => {
+  const bindings = new Map<string, EntityHandleBinding>();
+  for (const entry of entries) {
+    for (const binding of entry.handles) {
+      if (!bindings.has(binding.entity)) bindings.set(binding.entity, binding);
+    }
+  }
+  return Object.freeze([...bindings.values()]);
 };
 
 const boundedText = (value: string): string => {
@@ -132,6 +178,8 @@ const valuePartIdentity = async (
 export async function* projectLogicalValueParts(
   datom: Datom,
   encoder: LogicalIdentityEncoder,
+  /** Notified of the referenced entity, so its handle reaches the frame. */
+  collect?: (entity: LogicalEntityIdentity) => void,
 ): AsyncGenerator<SnapshotLogicalValue, void, undefined> {
   switch (datom.vt) {
     case ValueTag.Long:
@@ -181,7 +229,11 @@ export async function* projectLogicalValueParts(
       if (typeof datom.v !== "number" || !Number.isSafeInteger(datom.v) || datom.v < 0) {
         throw new TypeError("invalid logical reference");
       }
-      yield { type: "ref", value: await encoder.entity(datom.v) };
+      {
+        const referenced = await encoder.entity(datom.v);
+        collect?.(referenced);
+        yield { type: "ref", value: referenced.identity };
+      }
       return;
     case ValueTag.Uuid:
       if (typeof datom.v !== "string") throw new TypeError("invalid logical uuid");
@@ -219,19 +271,43 @@ export async function* projectLogicalValueParts(
   }
 }
 
+/** One projected fact and the handle bindings the frame carrying it needs. */
+export type ProjectedDatom = {
+  readonly datom: SnapshotDatom;
+  readonly handles: readonly EntityHandleBinding[];
+};
+
 export async function* projectLogicalDatoms(
   db: Db,
   raw: Datom,
   encoder: LogicalIdentityEncoder,
-): AsyncGenerator<SnapshotDatom, void, undefined> {
+): AsyncGenerator<ProjectedDatom, void, undefined> {
   const attribute = db.attr(raw.a);
   if (attribute === undefined || !attribute.ident.startsWith(":")) {
     throw new TypeError("authorized datom has no logical field identity");
   }
   const entity = await encoder.entity(raw.e);
   const field = boundedText(attribute.ident);
-  for await (const value of projectLogicalValueParts(raw, encoder)) {
-    yield Object.freeze({ entity, field, value, op: "add" as const });
+  // One binding set per datom, shared by every part a fragmented value yields:
+  // the parts describe one fact, and they name the same entities.
+  const bindings = new Map<string, EntityHandleBinding>();
+  bind(bindings, entity);
+  for await (
+    const value of projectLogicalValueParts(
+      raw,
+      encoder,
+      (referenced) => bind(bindings, referenced),
+    )
+  ) {
+    yield Object.freeze({
+      datom: Object.freeze({
+        entity: entity.identity,
+        field,
+        value,
+        op: "add" as const,
+      }),
+      handles: Object.freeze([...bindings.values()]),
+    });
   }
 }
 
@@ -245,9 +321,9 @@ export async function* logicalEntries(
   for await (const chunk of db.datoms(Index.EAVT, {})) {
     for (const raw of chunk) {
       throwIfAborted(signal);
-      for await (const datom of projectLogicalDatoms(db, raw, encoder)) {
+      for await (const projected of projectLogicalDatoms(db, raw, encoder)) {
         throwIfAborted(signal);
-        yield Object.freeze({ raw, datom });
+        yield Object.freeze({ raw, ...projected });
       }
     }
   }
@@ -323,11 +399,20 @@ export type LogicalDelta = {
   readonly previousStateDigest: OpaqueReplicationId;
   readonly stateDigest: OpaqueReplicationId;
   readonly datoms: readonly LogicalDatom[];
+  /** One binding per distinct entity {@link LogicalDelta.datoms} names. */
+  readonly handles: readonly EntityHandleBinding[];
   readonly overflow: boolean;
 };
 
+/**
+ * Whether one candidate chunk fits the wire bound.
+ *
+ * Measured over the *entries*, not their datoms alone: the bindings the entries
+ * carry travel in the same frame, so a predicate that could not see them would
+ * pass a chunk the encoder then has to refuse.
+ */
 export type SnapshotChunkFits = (
-  datoms: readonly SnapshotDatom[],
+  entries: readonly LogicalEntry[],
   index: number,
 ) => boolean;
 
@@ -341,18 +426,24 @@ export const diffLogicalDbs = async (
   const before = logicalEntries(previous, encoder, signal)[Symbol.asyncIterator]();
   const after = logicalEntries(current, encoder, signal)[Symbol.asyncIterator]();
   const changes: LogicalDatom[] = [];
+  const handles = new Map<string, EntityHandleBinding>();
   let changeBytes = 0;
   let overflow = false;
   const hasher = new LogicalStateHasher();
   const previousHasher = new LogicalStateHasher();
-  const appendChange = (datom: SnapshotDatom, op: LogicalDatom["op"]): void => {
+  const appendChange = (entry: LogicalEntry, op: LogicalDatom["op"]): void => {
     if (overflow) return;
-    const change = asChangeDatom(datom, op);
+    const change = asChangeDatom(entry.datom, op);
     if (change === undefined) {
       overflow = true;
       return;
     }
-    const size = encodedBytes(change);
+    // The bindings travel in the same frame, so they are measured against the
+    // same bound. Counting only the datoms would let a change that fits by that
+    // measure exceed the wire limit once its handles were attached, and the
+    // emitter would then have to drop a frame it had already committed to.
+    const added = entry.handles.filter((binding) => !handles.has(binding.entity));
+    const size = encodedBytes(change) + encodedBytes(added);
     if (
       changes.length >= MAX_REPLICATION_DATOMS_PER_CHANGE ||
       changeBytes + size > MAX_REPLICATION_CHANGE_BYTES
@@ -361,6 +452,7 @@ export const diffLogicalDbs = async (
       return;
     }
     changes.push(change);
+    for (const binding of added) handles.set(binding.entity, binding);
     changeBytes += size;
   };
   let left = await before.next();
@@ -371,13 +463,13 @@ export const diffLogicalDbs = async (
         if (right.done) break;
         const added = right.value;
         await hasher.add(added.datom);
-        appendChange(added.datom, "add");
+        appendChange(added, "add");
         right = await after.next();
         continue;
       }
       if (right.done) {
         await previousHasher.add(left.value.datom);
-        appendChange(left.value.datom, "retract");
+        appendChange(left.value, "retract");
         left = await before.next();
         continue;
       }
@@ -389,11 +481,11 @@ export const diffLogicalDbs = async (
         right = await after.next();
       } else if (order < 0) {
         await previousHasher.add(left.value.datom);
-        appendChange(left.value.datom, "retract");
+        appendChange(left.value, "retract");
         left = await before.next();
       } else {
         await hasher.add(right.value.datom);
-        appendChange(right.value.datom, "add");
+        appendChange(right.value, "add");
         right = await after.next();
       }
     }
@@ -406,6 +498,7 @@ export const diffLogicalDbs = async (
     previousStateDigest: await previousHasher.finish(),
     stateDigest: await hasher.finish(),
     datoms: Object.freeze(changes),
+    handles: Object.freeze([...handles.values()]),
     overflow,
   });
 };
@@ -423,13 +516,13 @@ export async function* snapshotEntryChunks(
     if (
       chunk.length > 0 &&
       (chunk.length >= MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK ||
-        !fits([...chunk.map((item) => item.datom), entry.datom], index))
+        !fits([...chunk, entry], index))
     ) {
       yield Object.freeze(chunk);
       chunk = [];
       index++;
     }
-    if (!fits([entry.datom], index)) {
+    if (!fits([entry], index)) {
       throw new RangeError("one logical datom exceeds the snapshot frame bound");
     }
     chunk.push(entry);

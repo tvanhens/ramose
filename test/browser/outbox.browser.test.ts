@@ -57,6 +57,7 @@ import {
   testRuntimeBoundaries,
 } from "../../packages/ramose/src/internal/test-hooks.ts";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 
@@ -212,7 +213,7 @@ const confirm = async (
   await storage.startSnapshot({
     type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
   });
-  await storage.stageSnapshotChunk({
+  await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
     protocol: 1,
     identity: selected,
@@ -224,7 +225,7 @@ const confirm = async (
       value: { type: "string", value: label },
       op: "add",
     }],
-  });
+  }));
   dropped(await storage.commitSnapshot({
     type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
   }, REPLICA_ATTRIBUTES));

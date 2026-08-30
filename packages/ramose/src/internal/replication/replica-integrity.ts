@@ -30,6 +30,7 @@
 
 import * as Data from "effect/Data";
 import * as Result from "effect/Result";
+import { ENTITY_ID_PATTERN } from "../../db/refs.ts";
 import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import { COMPARATORS, type Datom, type IndexId, IndexName } from "../core/datom.ts";
 import type { Roots } from "../core/db.ts";
@@ -60,6 +61,18 @@ export type ReplicaManifest = {
   readonly attributes: readonly ReplicaAttributeSpec[];
   /** Server identities only; future client refs use a different store and map. */
   readonly entityIds: readonly (readonly [string, number])[];
+  /**
+   * The wire identity → sealed `EntityId` binding this value arrived with, one
+   * entry per entity {@link ReplicaManifest.datoms} names.
+   *
+   * Persisted rather than derived: the sealed handle is the *cross-view*
+   * identity, and nothing on this device can compute it from the wire identity
+   * — both are one-way functions of a private eid the client never sees. It is
+   * what turns a row this replica holds into a durable mutation target, so a
+   * manifest missing one for an entity it holds is incomplete, not merely
+   * sparse.
+   */
+  readonly entityHandles: readonly (readonly [string, string])[];
   readonly attributeIds: readonly (readonly [string, number])[];
   readonly roots: Roots;
   readonly nextLocalId: number;
@@ -459,6 +472,48 @@ const localIds = (
 };
 
 /**
+ * The stored wire-identity → sealed-handle binding.
+ *
+ * Two entities may never share a handle: the seal is injective in the eid
+ * within one scope, so a repeat means the record binds two rows to one mutation
+ * target and a queued invocation could reach the wrong one.
+ */
+const sealedHandles = (
+  entries: unknown,
+): Result.Result<ReadonlyMap<string, string>, ReplicaIntegrityFailure> => {
+  if (!Array.isArray(entries)) {
+    return Result.fail(failure("manifest-undecodable", "manifest has no entity handle map"));
+  }
+  const map = new Map<string, string>();
+  const used = new Set<string>();
+  for (const entry of entries) {
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      return Result.fail(failure("manifest-undecodable", "malformed entity handle entry"));
+    }
+    const [identity, handle] = entry as readonly unknown[];
+    if (typeof identity !== "string" || typeof handle !== "string") {
+      return Result.fail(failure("manifest-undecodable", "malformed entity handle entry"));
+    }
+    if (!ENTITY_ID_PATTERN.test(handle)) {
+      return Result.fail(
+        failure("manifest-undecodable", `entity handle for ${identity} is not a sealed handle`),
+      );
+    }
+    if (map.has(identity)) {
+      return Result.fail(failure("manifest-invariant", `duplicate entity handle ${identity}`));
+    }
+    if (used.has(handle)) {
+      return Result.fail(
+        failure("manifest-invariant", `entity handle ${identity} reuses another entity's handle`),
+      );
+    }
+    map.set(identity, handle);
+    used.add(handle);
+  }
+  return Result.succeed(map);
+};
+
+/**
  * Validate one stored manifest against the partition and client that asked for
  * it. This runs before any node is read, so a manifest that cannot describe a
  * complete value never starts a walk.
@@ -513,6 +568,7 @@ export const validateReplicaManifest = (
       );
     }
     const entities = yield* localIds(record.entityIds, "entity id");
+    const handles = yield* sealedHandles(record.entityHandles);
     const attributeIds = yield* localIds(record.attributeIds, "attribute id");
     // Entities and attributes are numbered by one partition-local allocator, so
     // an id may be claimed once in total, not once per map.
@@ -575,6 +631,11 @@ export const validateReplicaManifest = (
       if (!entities.has(datom.entity)) {
         return yield* Result.fail(
           failure("manifest-invariant", `fact entity ${datom.entity} has no local id`),
+        );
+      }
+      if (!handles.has(datom.entity)) {
+        return yield* Result.fail(
+          failure("manifest-invariant", `fact entity ${datom.entity} has no sealed handle`),
         );
       }
       if (bootstrap.attr(datom.field) === undefined && !attributeIds.has(datom.field)) {

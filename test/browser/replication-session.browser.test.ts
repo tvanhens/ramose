@@ -28,6 +28,7 @@ import {
   stableReplicaRouteSlot,
 } from "../../packages/ramose/src/internal/replication/route-slot.ts";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk, changeFrame } from "../../packages/ramose/test/replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 const selected: ReplicationIdentity = {
@@ -96,9 +97,9 @@ const install = async (
   await storage.startSnapshot({
     type: "SnapshotStart", protocol: 1, identity, snapshot, revision,
   });
-  await storage.stageSnapshotChunk({
+  await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0, datoms,
-  });
+  }));
   expect(await storage.commitSnapshot({
     type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
   }, attributes)).toBeDefined();
@@ -363,14 +364,14 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       selected.readCompatibilityHash,
     ))?.revision).toBe(opaque("r"));
     const changedRevision = opaque("3");
-    expect((await storage.applyChange({
+    expect((await storage.applyChange(changeFrame({
       type: "Change",
       protocol: 1,
       identity: selected,
       from: opaque("r"),
       revision: changedRevision,
       datoms: [],
-    }))?.revision).toBe(changedRevision);
+    })))?.revision).toBe(changedRevision);
     expect((await storage.selectCacheCandidate(
       oldKey,
       selected.readCompatibilityHash,

@@ -10,7 +10,9 @@ import {
   decodeReplicationFrame,
   emptyClientReplicationState,
   encodeReplicationFrame,
+  entryHandles,
   makeLogicalIdentityEncoder,
+  openEntityId,
   projectLogicalValueParts,
   type ClientReplicationState,
   type ServerSealingKey,
@@ -18,6 +20,8 @@ import {
   type ReplicationIdentity,
   type SnapshotLogicalValue,
 } from "../../../src/internal/replication/index.ts";
+import { isEntityId } from "../../../src/db/refs.ts";
+import { snapshotChunk } from "../../replication-fixtures.ts";
 
 const sealing: ServerSealingKey = {
   keyId: "bbbbbbbbbbbbbbbbbbbbbb",
@@ -25,6 +29,12 @@ const sealing: ServerSealingKey = {
 };
 
 const opaque = (character: string): string => character.repeat(43);
+/** The stable scope every sealed handle in this stream is bound to. */
+const scope = {
+  server: opaque("A"),
+  principal: opaque("B"),
+  database: opaque("C"),
+};
 const identity: ReplicationIdentity = {
   version: 1,
   server: opaque("A"),
@@ -58,7 +68,7 @@ describe("large logical replication values", () => {
       t: 1,
       op: true,
     };
-    const logical = makeLogicalIdentityEncoder(sealing, opaque("Z"));
+    const logical = makeLogicalIdentityEncoder(sealing, opaque("Z"), scope);
     const values: SnapshotLogicalValue[] = [];
     for await (const value of projectLogicalValueParts(raw, logical)) {
       values.push(value);
@@ -82,7 +92,7 @@ describe("large logical replication values", () => {
       revision,
     });
     for (let index = 0; index < values.length; index++) {
-      const frame: ReplicationFrame = {
+      const frame: ReplicationFrame = snapshotChunk({
         type: "SnapshotChunk",
         protocol: 1,
         identity,
@@ -94,7 +104,7 @@ describe("large logical replication values", () => {
           value: values[index]!,
           op: "add",
         }],
-      };
+      });
       const wire = encodeReplicationFrame(frame);
       expect(new TextEncoder().encode(wire).byteLength)
         .toBeLessThanOrEqual(MAX_REPLICATION_FRAME_BYTES);
@@ -120,7 +130,7 @@ describe("large logical replication values", () => {
   });
 
   test("the real projector round-trips both valid stored double infinities", async () => {
-    const logical = makeLogicalIdentityEncoder(sealing, opaque("Z"));
+    const logical = makeLogicalIdentityEncoder(sealing, opaque("Z"), scope);
     const projected: SnapshotLogicalValue[] = [];
     for (const [index, value] of [
       Number.POSITIVE_INFINITY,
@@ -152,7 +162,7 @@ describe("large logical replication values", () => {
       snapshot,
       revision,
     });
-    const chunk: ReplicationFrame = {
+    const chunk: ReplicationFrame = snapshotChunk({
       type: "SnapshotChunk",
       protocol: 1,
       identity,
@@ -164,7 +174,7 @@ describe("large logical replication values", () => {
         value,
         op: "add" as const,
       })),
-    };
+    });
     const decoded = decodeReplicationFrame(encodeReplicationFrame(chunk));
     expect(Result.isSuccess(decoded)).toBe(true);
     if (Result.isSuccess(decoded)) state = apply(state, decoded.success);
@@ -179,6 +189,79 @@ describe("large logical replication values", () => {
     expect(state.committed?.datoms.map((datom) => datom.value)).toEqual([
       { type: "double", value: "positive-infinity" },
       { type: "double", value: "negative-infinity" },
+    ]);
+  });
+});
+
+/**
+ * The carriage itself, against the real codecs: no fixture handle appears here,
+ * because the claim is that the handle replication emits is the one the sealing
+ * root actually mints for that eid in that scope.
+ */
+describe("the sealed EntityId logical replication carries", () => {
+  test("is the real seal of the private eid, opened by the real resolver", async () => {
+    const encoder = makeLogicalIdentityEncoder(sealing, opaque("Z"), scope);
+    const minted = await encoder.entity(1_042);
+
+    // The wire identity and the handle are different derivations of one eid,
+    // and neither is the other.
+    expect(minted.identity).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(isEntityId(minted.handle)).toBe(true);
+    expect(minted.handle).not.toBe(minted.identity);
+
+    // The handle opens — to exactly the eid, under exactly this scope.
+    expect(await openEntityId(sealing, scope, minted.handle))
+      .toEqual({ type: "resolved", eid: 1_042, scope });
+
+    // Deterministic per (root, scope, eid): the same entity in a second stream
+    // is the same handle, which is what makes it a durable mutation target.
+    const second = makeLogicalIdentityEncoder(sealing, opaque("Y"), scope);
+    const again = await second.entity(1_042);
+    expect(again.handle).toBe(minted.handle);
+    // …while the wire identity is scoped by the whole authenticator, so a
+    // second partition of the same database names the entity differently. That
+    // is the unlinkability the handle is deliberately additive to.
+    expect(again.identity).not.toBe(minted.identity);
+  });
+
+  test("is bound to the scope, so another principal cannot open it", async () => {
+    const mine = makeLogicalIdentityEncoder(sealing, opaque("Z"), scope);
+    const theirs = makeLogicalIdentityEncoder(sealing, opaque("Z"), {
+      ...scope,
+      principal: opaque("X"),
+    });
+    const minted = await mine.entity(1_042);
+    // A different principal reading the same row is handed a different handle,
+    // and the one it was handed is not the one this principal holds.
+    expect((await theirs.entity(1_042)).handle).not.toBe(minted.handle);
+    // And the handle this principal holds is a payload-free denial there —
+    // indistinguishable from not-found, exactly as the seal requires.
+    expect(await openEntityId(sealing, { ...scope, principal: opaque("X") }, minted.handle))
+      .toEqual({ type: "denied" });
+  });
+
+  test("reaches a frame once per entity a datom names, subject and reference alike", async () => {
+    const encoder = makeLogicalIdentityEncoder(sealing, opaque("Z"), scope);
+    const subject = await encoder.entity(1_000);
+    const referenced = await encoder.entity(1_001);
+    const entry = {
+      raw: { e: 1_000, a: 20, vt: ValueTag.Ref, v: 1_001, t: 1, op: true } as Datom,
+      datom: {
+        entity: subject.identity,
+        field: ":item/friend",
+        value: { type: "ref" as const, value: referenced.identity },
+        op: "add" as const,
+      },
+      handles: [
+        { entity: subject.identity, handle: subject.handle },
+        { entity: referenced.identity, handle: referenced.handle },
+      ],
+    };
+    // Both ends of a reference, and a repeated entity contributes once: a frame
+    // binds a set, not a list per datom.
+    expect(entryHandles([entry, entry])).toEqual([
+      { entity: subject.identity, handle: subject.handle },
+      { entity: referenced.identity, handle: referenced.handle },
     ]);
   });
 });

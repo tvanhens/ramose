@@ -3,6 +3,7 @@
 import * as Data from "effect/Data";
 import * as Result from "effect/Result";
 import type {
+  EntityHandleBinding,
   LogicalDatom,
   ReplicationFrame,
   ReplicationIdentity,
@@ -10,15 +11,29 @@ import type {
   SnapshotLogicalValue,
 } from "./protocol.ts";
 
+/**
+ * The wire identity → sealed `EntityId` binding a committed value carries.
+ *
+ * One entry per entity the value names. The wire identity rotates with the
+ * partition; the sealed handle does not, which is exactly why both are kept:
+ * the first addresses the datoms, the second addresses a mutation.
+ */
+export type EntityHandles = ReadonlyMap<string, string>;
+
+export const emptyEntityHandles: EntityHandles = new Map();
+
 export type CommittedReplica = {
   readonly revision: string;
   readonly datoms: readonly LogicalDatom[];
+  readonly handles: EntityHandles;
 };
 
 export type SnapshotStaging = {
   readonly snapshot: string;
   readonly revision: string;
   readonly chunks: ReadonlyMap<number, readonly SnapshotDatom[]>;
+  /** Accumulated across chunks; a snapshot binds each entity exactly once. */
+  readonly handles: EntityHandles;
 };
 
 export type ClientReplicationState = {
@@ -76,6 +91,54 @@ const requireIdentity = (
       sameReplicationIdentity(state.identity, identity)
     ? Result.succeed(undefined)
     : fail("frame identity does not match the active partition");
+
+/**
+ * Merge one frame's bindings into an accumulating set.
+ *
+ * A rebinding is a protocol violation, not a later truth: sealing is
+ * deterministic per `(root, scope, eid)` and the wire identity is a PRF of the
+ * same eid, so one identity can only ever carry one handle within a partition.
+ * Two different handles for one identity would mean two entities are sharing a
+ * wire name — and silently taking the newer one would hand a mutation the wrong
+ * target — so the transition fails instead.
+ */
+const mergeHandles = (
+  prior: EntityHandles,
+  bindings: readonly EntityHandleBinding[],
+): EntityHandles | undefined => {
+  let merged: Map<string, string> | undefined;
+  for (const binding of bindings) {
+    const existing = (merged ?? prior).get(binding.entity);
+    if (existing === binding.handle) continue;
+    if (existing !== undefined) return undefined;
+    merged ??= new Map(prior);
+    merged.set(binding.entity, binding.handle);
+  }
+  return merged ?? prior;
+};
+
+/**
+ * The bindings a committed value keeps: exactly the entities its datoms name.
+ *
+ * Pruned rather than accumulated, for the same reason the overlay is recomputed
+ * rather than patched — a binding that outlives the entity it names is a
+ * mutation target for a row this replica no longer holds.
+ */
+const retainHandles = (
+  handles: EntityHandles,
+  datoms: readonly LogicalDatom[],
+): EntityHandles => {
+  const kept = new Map<string, string>();
+  const keep = (entity: string): void => {
+    const handle = handles.get(entity);
+    if (handle !== undefined) kept.set(entity, handle);
+  };
+  for (const datom of datoms) {
+    keep(datom.entity);
+    if (datom.value.type === "ref") keep(datom.value.value);
+  }
+  return kept;
+};
 
 const isValuePart = (
   value: SnapshotLogicalValue,
@@ -201,11 +264,23 @@ const commitSnapshot = (
     if (facts.has(key)) return fail("snapshot contains a duplicate fact");
     facts.add(key);
   }
+  const missing = new Set<string>();
+  for (const datom of datoms) {
+    if (!staging.handles.has(datom.entity)) missing.add(datom.entity);
+    if (datom.value.type === "ref" && !staging.handles.has(datom.value.value)) {
+      missing.add(datom.value.value);
+    }
+  }
+  // Every replicated entity arrives with its sealed handle, so a snapshot that
+  // completes without one for some entity it names is an incomplete value — and
+  // installing it would leave a row an application can read but cannot address.
+  if (missing.size > 0) return fail("snapshot names an entity with no sealed handle");
   return Result.succeed({
     identity: frame.identity,
     committed: Object.freeze({
       revision: frame.revision,
       datoms: Object.freeze(datoms),
+      handles: retainHandles(staging.handles, datoms),
     }),
     closed: false,
   });
@@ -230,6 +305,9 @@ const applyChange = (
     operations.set(key, datom.op);
   }
 
+  const handles = mergeHandles(committed.handles, frame.handles);
+  if (handles === undefined) return fail("change rebinds an entity's sealed handle");
+
   const facts = new Map<string, LogicalDatom>();
   for (const datom of committed.datoms) {
     facts.set(factKey(datom), datom);
@@ -239,11 +317,18 @@ const applyChange = (
     if (datom.op === "retract") facts.delete(key);
     else facts.set(key, datom);
   }
+  const datoms = Object.freeze([...facts.values()]);
+  for (const datom of datoms) {
+    if (!handles.has(datom.entity)) {
+      return fail("change leaves an entity with no sealed handle");
+    }
+  }
   return Result.succeed({
     identity: frame.identity,
     committed: Object.freeze({
       revision: frame.revision,
-      datoms: Object.freeze([...facts.values()]),
+      datoms,
+      handles: retainHandles(handles, datoms),
     }),
     closed: false,
   });
@@ -293,6 +378,7 @@ export const applyReplicationFrame = (
           snapshot: frame.snapshot,
           revision: frame.revision,
           chunks: new Map(),
+          handles: emptyEntityHandles,
         }),
         closed: false,
       });
@@ -304,6 +390,12 @@ export const applyReplicationFrame = (
       if (staging === undefined || staging.snapshot !== frame.snapshot) {
         return Result.succeed(state);
       }
+      // Merged before the duplicate check, so a resend that rebinds an entity's
+      // handle is refused rather than quietly losing to the first copy.
+      const handles = mergeHandles(staging.handles, frame.handles);
+      if (handles === undefined) {
+        return fail("snapshot chunks disagree on an entity's sealed handle");
+      }
       const existing = staging.chunks.get(frame.index);
       if (existing !== undefined) {
         return sameDatomList(existing, frame.datoms)
@@ -314,7 +406,7 @@ export const applyReplicationFrame = (
       chunks.set(frame.index, Object.freeze([...frame.datoms]));
       return Result.succeed({
         ...state,
-        staging: Object.freeze({ ...staging, chunks }),
+        staging: Object.freeze({ ...staging, chunks, handles }),
       });
     }
     case "SnapshotCommit": {

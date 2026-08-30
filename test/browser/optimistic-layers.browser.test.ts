@@ -63,6 +63,7 @@ import {
 } from "../../packages/ramose/src/internal/test-hooks.ts";
 import recorded from "./frames/optimistic-fence.client.json";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
 /**
  * The identity and client schema of the recorded activation.
@@ -225,7 +226,7 @@ const install = async (
   await storage.startSnapshot({
     type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
   });
-  await storage.stageSnapshotChunk({
+  await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
     protocol: 1,
     identity: selected,
@@ -237,7 +238,7 @@ const install = async (
       value: { type: "string", value },
       op: "add",
     }],
-  });
+  }));
   dropped(await storage.commitSnapshot({
     type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
   }, ATTRIBUTES));

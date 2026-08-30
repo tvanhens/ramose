@@ -41,6 +41,7 @@ import {
 } from "../../src/client/database.ts";
 import type { ClientDatabase } from "../../src/client/index.ts";
 import type { ReplicationIdentity } from "../../src/internal/replication/protocol.ts";
+import { sealedHandle } from "../replication-fixtures.ts";
 
 const BoardCatalog = { key: "board", schema: Schema({}) } satisfies CodeDefinition;
 
@@ -406,23 +407,39 @@ describe("the stable graph identity", () => {
     authenticator: opaque("a"),
   });
 
-  test("separates two read views of one database", () => {
-    const before = view("1");
-    const after = view("2");
+  const handle = (character: string): string => sealedHandle(opaque(character));
+
+  test("survives a benign read-view rotation of one database", () => {
+    const before = replicaDatabaseScopeOf(view("1"));
+    const after = replicaDatabaseScopeOf(view("2"));
     // The premise: these are the same database, so everything scope-shaped
-    // about them is identical…
-    expect(replicaDatabaseKey(replicaDatabaseScopeOf(before)))
-      .toBe(replicaDatabaseKey(replicaDatabaseScopeOf(after)));
-    // …but a local entity id is assigned per *partition*, and a read view is
-    // part of a partition. Delete a Graph, recreate a same-named one, and the
-    // successor can land on the predecessor's id in the rotated view. Keyed on
-    // the scope those two produce one byte-identical key, which would hand the
-    // successor the predecessor's live activation and its confirmed lineage —
-    // and that lineage restores the predecessor's child replica offline.
-    expect(graphStableKey(before, 1000)).not.toBe(graphStableKey(after, 1000));
-    // Within one partition an id is still an identity, and two of them differ.
-    expect(graphStableKey(before, 1000)).toBe(graphStableKey(view("1"), 1000));
-    expect(graphStableKey(before, 1000)).not.toBe(graphStableKey(before, 1001));
+    // about them is identical — and the sealed handle is bound to exactly that
+    // scope, excluding the catalog, the read view, and the schema.
+    expect(replicaDatabaseKey(before)).toBe(replicaDatabaseKey(after));
+    // So a redeploy that rotates the read view without changing which entities
+    // exist keeps the key, and with it the child's resume memo and its durable
+    // replica. Keying on a partition-local id — which PR #574 had to, before
+    // replication carried the handle — lost both on every rotation.
+    expect(graphStableKey(before, handle("g")))
+      .toBe(graphStableKey(after, handle("g")));
+  });
+
+  test("separates a deleted and recreated Graph, and two databases", () => {
+    const scope = replicaDatabaseScopeOf(view("1"));
+    // A recreated Graph is a new entity with a new private eid, and sealing is
+    // injective in the eid within one scope — so the successor cannot reach the
+    // predecessor's key, and the registry cannot hand it the predecessor's
+    // activation or its confirmed lineage.
+    expect(graphStableKey(scope, handle("g")))
+      .not.toBe(graphStableKey(scope, handle("h")));
+    // And one entity's handle under another database is another key: the scope
+    // is half the identity, not decoration.
+    const elsewhere = replicaDatabaseScopeOf({
+      ...view("1"),
+      database: opaque("e"),
+    });
+    expect(graphStableKey(scope, handle("g")))
+      .not.toBe(graphStableKey(elsewhere, handle("g")));
   });
 });
 

@@ -24,6 +24,7 @@ import {
 import {
   REPLICA_STORAGE_VERSION,
   type Change,
+  type EntityHandleBinding,
   type ReplicationIdentity,
   type SnapshotChunk,
   type SnapshotCommit,
@@ -236,6 +237,8 @@ type StagingChunkRecord = {
   readonly partition: string;
   readonly index: number;
   readonly datoms: readonly SnapshotDatom[];
+  /** The chunk's sealed-handle bindings, staged with the datoms they name. */
+  readonly handles: readonly EntityHandleBinding[];
 };
 
 type NodeRecord = {
@@ -366,6 +369,15 @@ const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
 export type RestoredReplica = {
   readonly db: Db;
   readonly revision: string;
+  /**
+   * The sealed `EntityId` → partition-local eid binding for this value.
+   *
+   * The whole point of carrying the handle on the wire: a row read out of
+   * {@link RestoredReplica.db} is numbered by a local allocator, and this is
+   * the only thing that can turn that number back into the opaque identity a
+   * mutation may target — or resolve a handle an optimistic layer names.
+   */
+  readonly handles: ReadonlyMap<string, number>;
   /**
    * Release this value's claim on the nodes it reads.
    *
@@ -765,6 +777,16 @@ const materialize = async (
     datoms: Object.freeze([...committed.datoms]),
     attributes: Object.freeze(specs),
     entityIds: Object.freeze([...entities]),
+    // Exactly the entities this value names, in the order they were numbered,
+    // so the stored binding and the stored id map describe one set.
+    entityHandles: Object.freeze(
+      [...entities.keys()].flatMap((entity) => {
+        const handle = committed.handles.get(entity);
+        return handle === undefined
+          ? []
+          : [Object.freeze([entity, handle] as const)];
+      }),
+    ),
     attributeIds: Object.freeze([...attributeIds]),
     roots,
     nextLocalId,
@@ -783,6 +805,25 @@ const materialize = async (
       nextEid: nextLocalId,
     }),
   };
+};
+
+/**
+ * The sealed-handle binding one stored manifest describes.
+ *
+ * Composed from the two stored maps rather than persisted a third time: the
+ * manifest binds wire identity → sealed handle and wire identity → local eid,
+ * and the value every caller wants is their join.
+ */
+const recordHandles = (
+  record: CommittedRecord,
+): ReadonlyMap<string, number> => {
+  const entities = new Map(record.entityIds);
+  const handles = new Map<string, number>();
+  for (const [identity, handle] of record.entityHandles) {
+    const eid = entities.get(identity);
+    if (eid !== undefined) handles.set(handle, eid);
+  }
+  return handles;
 };
 
 const dbFromRecord = (
@@ -2290,6 +2331,7 @@ export class IndexedDbReplicaStorage {
     return replicaRestored({
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
   }
@@ -2386,6 +2428,7 @@ export class IndexedDbReplicaStorage {
       identity: candidate.identity,
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
   }
@@ -2543,6 +2586,7 @@ export class IndexedDbReplicaStorage {
       identity: binding.identity,
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
   }
@@ -2681,6 +2725,7 @@ export class IndexedDbReplicaStorage {
           partition,
           index: frame.index,
           datoms: frame.datoms,
+          handles: frame.handles,
         } satisfies StagingChunkRecord);
         await commitTransaction(transaction);
         this.meter.stagingChunks++;
@@ -2723,6 +2768,11 @@ export class IndexedDbReplicaStorage {
         snapshot: staging.snapshot,
         index: chunk.index,
         datoms: chunk.datoms,
+        // A chunk staged before this storage version carries none, so the
+        // replay leaves the entities it names unbound and the commit refuses
+        // rather than installing a value with no mutation targets. The version
+        // bump drops those records anyway; this is the belt-and-braces path.
+        handles: chunk.handles ?? [],
       });
     }
     return { state: transition(state, frame), baseRevision: staging.baseRevision };
@@ -2909,6 +2959,7 @@ export class IndexedDbReplicaStorage {
     return {
       db: built.db,
       revision: built.record.revision,
+      handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };
   }
@@ -2939,7 +2990,11 @@ export class IndexedDbReplicaStorage {
     if (prior === undefined) return undefined;
     const state = transition({
       identity: prior.identity,
-      committed: { revision: prior.revision, datoms: prior.datoms },
+      committed: {
+        revision: prior.revision,
+        datoms: prior.datoms,
+        handles: new Map(prior.entityHandles),
+      },
       closed: false,
     }, frame);
     if (state.committed === undefined || state.committed.revision === prior.revision) {
@@ -2970,6 +3025,7 @@ export class IndexedDbReplicaStorage {
       return {
         db: dbFromRecord(this.database, prior, frame.identity.readCompatibilityHash),
         revision: prior.revision,
+        handles: recordHandles(prior),
         release: this.retainRoots(frame.identity, prior.roots),
       };
     }
@@ -3047,6 +3103,7 @@ export class IndexedDbReplicaStorage {
     return {
       db: built.db,
       revision: built.record.revision,
+      handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };
   }

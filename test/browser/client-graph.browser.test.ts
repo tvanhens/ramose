@@ -53,6 +53,7 @@ import {
   replicationCredentialFingerprint,
 } from "../../packages/ramose/src/internal/replication/transport.ts";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
 // ── the application's catalog ───────────────────────────────────────────────
 
@@ -173,10 +174,10 @@ const seed = async (name: string, seeds: readonly Seed[]): Promise<void> => {
       await storage.startSnapshot({
         type: "SnapshotStart", protocol: 1, identity, snapshot, revision,
       });
-      await storage.stageSnapshotChunk({
+      await storage.stageSnapshotChunk(snapshotChunk({
         type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0,
         datoms: entry.datoms,
-      });
+      }));
       const committed = await storage.commitSnapshot({
         type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
       }, installed.attributes);

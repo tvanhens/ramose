@@ -10,6 +10,11 @@ import {
   type ReplicationIdentity,
   type SnapshotDatom,
 } from "../../../src/internal/replication/index.ts";
+import {
+  changeFrame,
+  sealedHandle,
+  snapshotChunk,
+} from "../../replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 const identity = (principal = "B"): ReplicationIdentity => ({
@@ -37,6 +42,13 @@ const second: LogicalDatom = {
   op: "add",
 };
 
+/**
+ * The binding a committed value carries for exactly these entities — which is
+ * what a value keeps: a handle whose entity no longer appears is pruned.
+ */
+const bindings = (...entities: readonly string[]): ReadonlyMap<string, string> =>
+  new Map(entities.map((entity) => [entity, sealedHandle(entity)]));
+
 const apply = (
   state: ClientReplicationState,
   frame: ReplicationFrame,
@@ -57,7 +69,7 @@ const chunk = (
   snapshot: string,
   index: number,
   datoms: readonly (LogicalDatom | SnapshotDatom)[],
-): ReplicationFrame => ({
+): ReplicationFrame => (snapshotChunk({
   type: "SnapshotChunk",
   protocol: 1,
   identity: active,
@@ -67,7 +79,7 @@ const chunk = (
     ...datom,
     op: "add" as const,
   }) as SnapshotDatom),
-});
+}));
 const commit = (
   snapshot: string,
   revision: string,
@@ -101,6 +113,7 @@ describe("client replication transition machine", () => {
     expect(state.committed).toEqual({
       revision: opaque("K"),
       datoms: [first, second],
+      handles: bindings(opaque("H"), opaque("I")),
     });
   });
 
@@ -143,6 +156,7 @@ describe("client replication transition machine", () => {
         value: { type: "string", value: "hello world" },
         op: "add",
       }],
+      handles: bindings(opaque("H")),
     });
   });
 
@@ -164,7 +178,7 @@ describe("client replication transition machine", () => {
 
   test("one complete change is atomic; duplicate and stale revisions are ignored", () => {
     const prior = committed();
-    const change: ReplicationFrame = {
+    const change: ReplicationFrame = changeFrame({
       type: "Change",
       protocol: 1,
       identity: active,
@@ -174,10 +188,20 @@ describe("client replication transition machine", () => {
         { ...first, op: "retract" },
         second,
       ],
-    };
+    });
     const next = apply(prior, change);
-    expect(next.committed).toEqual({ revision: opaque("L"), datoms: [second] });
-    expect(prior.committed).toEqual({ revision: opaque("K"), datoms: [first] });
+    expect(next.committed).toEqual({
+      revision: opaque("L"),
+      datoms: [second],
+      // The retracted entity's binding goes with its last fact: a handle that
+      // outlived the row would be a mutation target for something gone.
+      handles: bindings(opaque("I")),
+    });
+    expect(prior.committed).toEqual({
+      revision: opaque("K"),
+      datoms: [{ ...first, op: "add" as const }],
+      handles: bindings(opaque("H")),
+    });
     expect(apply(next, change)).toBe(next);
     expect(apply(next, { ...change, from: opaque("M"), revision: opaque("N") }))
       .toBe(next);
@@ -204,7 +228,11 @@ describe("client replication transition machine", () => {
       identity: identity("Z"),
     });
     expect(Result.isFailure(wrongIdentity)).toBe(true);
-    expect(prior.committed).toEqual({ revision: opaque("K"), datoms: [first] });
+    expect(prior.committed).toEqual({
+      revision: opaque("K"),
+      datoms: [{ ...first, op: "add" as const }],
+      handles: bindings(opaque("H")),
+    });
   });
 
   test("a partition reset clears retained data before staging the new identity", () => {
@@ -244,19 +272,112 @@ describe("client replication transition machine", () => {
     expect(closed.closed).toBe(true);
     expect(closed.committed).toBe(prior.committed);
     expect(apply(closed, start(opaque("L"), opaque("M")))).toBe(closed);
-    expect(apply(closed, {
+    expect(apply(closed, changeFrame({
       type: "Change",
       protocol: 1,
       identity: active,
       from: opaque("K"),
       revision: opaque("N"),
       datoms: [second],
-    })).toBe(closed);
+    }))).toBe(closed);
     expect(apply(closed, {
       type: "ResumeReady",
       protocol: 1,
       identity: active,
       revision: opaque("K"),
     })).toBe(closed);
+  });
+});
+
+/**
+ * The sealed-`EntityId` binding a committed value carries (#477).
+ *
+ * A queried row's mutation target comes from here and nowhere else, so the
+ * transitions have exactly one job: accumulate what the frames bind, refuse
+ * anything that would let one entity acquire two handles or one handle name two
+ * entities, and never publish a value holding a row it cannot address.
+ */
+describe("the committed sealed-handle binding", () => {
+  test("accumulates across chunks and is complete before a snapshot installs", () => {
+    let state = apply(emptyClientReplicationState(), start(opaque("J"), opaque("K")));
+    state = apply(state, chunk(opaque("J"), 0, [first]));
+    state = apply(state, chunk(opaque("J"), 1, [second]));
+    state = apply(state, commit(opaque("J"), opaque("K"), 2));
+    expect(state.committed?.handles).toEqual(bindings(opaque("H"), opaque("I")));
+  });
+
+  test("refuses a snapshot that names an entity it cannot address", () => {
+    let state = apply(emptyClientReplicationState(), start(opaque("J"), opaque("K")));
+    // The one frame this fixture builds by hand rather than through the
+    // builder: a server that omitted a binding would leave a row an application
+    // could read and never mutate, so the value must not install at all.
+    state = apply(state, {
+      type: "SnapshotChunk",
+      protocol: 1,
+      identity: active,
+      snapshot: opaque("J"),
+      index: 0,
+      datoms: [{ ...first, op: "add" as const }],
+      handles: [],
+    });
+    const commitResult = applyReplicationFrame(
+      state,
+      commit(opaque("J"), opaque("K"), 1),
+    );
+    expect(Result.isFailure(commitResult)).toBe(true);
+    if (Result.isFailure(commitResult)) {
+      expect(commitResult.failure.reason)
+        .toBe("snapshot names an entity with no sealed handle");
+    }
+  });
+
+  test("refuses a chunk or a change that rebinds one entity", () => {
+    const started = apply(emptyClientReplicationState(), start(opaque("J"), opaque("K")));
+    const staged = apply(started, chunk(opaque("J"), 0, [first]));
+    const rebinding = applyReplicationFrame(staged, {
+      type: "SnapshotChunk",
+      protocol: 1,
+      identity: active,
+      snapshot: opaque("J"),
+      index: 1,
+      datoms: [{ ...second, op: "add" as const }],
+      handles: [{ entity: opaque("H"), handle: sealedHandle(opaque("Z")) }],
+    });
+    expect(Result.isFailure(rebinding)).toBe(true);
+
+    const prior = committed();
+    const changed = applyReplicationFrame(prior, {
+      type: "Change",
+      protocol: 1,
+      identity: active,
+      from: opaque("K"),
+      revision: opaque("L"),
+      datoms: [second],
+      handles: [
+        { entity: opaque("I"), handle: sealedHandle(opaque("I")) },
+        { entity: opaque("H"), handle: sealedHandle(opaque("Z")) },
+      ],
+    });
+    expect(Result.isFailure(changed)).toBe(true);
+    if (Result.isFailure(changed)) {
+      expect(changed.failure.reason).toBe("change rebinds an entity's sealed handle");
+    }
+  });
+
+  test("refuses a change that adds an entity it was given no handle for", () => {
+    const prior = committed();
+    const changed = applyReplicationFrame(prior, {
+      type: "Change",
+      protocol: 1,
+      identity: active,
+      from: opaque("K"),
+      revision: opaque("L"),
+      datoms: [second],
+      handles: [],
+    });
+    expect(Result.isFailure(changed)).toBe(true);
+    if (Result.isFailure(changed)) {
+      expect(changed.failure.reason).toBe("change leaves an entity with no sealed handle");
+    }
   });
 });

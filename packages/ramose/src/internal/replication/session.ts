@@ -46,6 +46,15 @@ export type ReplicationSessionValue = {
   readonly db: Db;
   readonly identity: ReplicationIdentity;
   readonly revision: string;
+  /**
+   * Sealed `EntityId` → partition-local eid, for exactly the entities
+   * {@link ReplicationSessionValue.db} holds.
+   *
+   * Published with the value rather than read separately, because the two must
+   * agree: a binding taken from a later install would name ids the value being
+   * queried does not have.
+   */
+  readonly handles: ReadonlyMap<string, number>;
   readonly stale: boolean;
 };
 
@@ -184,6 +193,7 @@ const valueFrom = (
   db: replica.db,
   identity,
   revision: replica.revision,
+  handles: replica.handles,
   stale,
 });
 

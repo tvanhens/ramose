@@ -52,6 +52,7 @@ import {
 } from "../../packages/ramose/src/internal/replication/transport.ts";
 import recorded from "./frames/optimistic-fence.client.json";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
 // ── the application's catalog ───────────────────────────────────────────────
 
@@ -139,9 +140,9 @@ const seed = async (
     await storage.startSnapshot({
       type: "SnapshotStart", protocol: 1, identity, snapshot, revision,
     });
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0, datoms,
-    });
+    }));
     const committed = await storage.commitSnapshot({
       type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
     }, installed.attributes);
@@ -644,13 +645,13 @@ browserTest("fences a replaced principal before any of its data can be read", as
     await storage.startSnapshot({
       type: "SnapshotStart", protocol: 1, identity: prior, snapshot, revision,
     });
-    await storage.stageSnapshotChunk({
+    await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: prior, snapshot, index: 0,
       datoms: [
         { entity, field: ":ramose/type", value: { type: "string", value: ":conformanceIssue" }, op: "add" },
         { entity, field: ":conformanceIssue/title", value: { type: "string", value: "prior-principal" }, op: "add" },
       ],
-    });
+    }));
     (await storage.commitSnapshot({
       type: "SnapshotCommit", protocol: 1, identity: prior, snapshot, revision, chunks: 1,
     }, installed.attributes))!.release();

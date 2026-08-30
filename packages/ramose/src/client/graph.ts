@@ -18,11 +18,13 @@
  * 1. *Before* resolution, by parent plus canonical query identity — the same
  *    [loweredQuery, shape] identity observations already use. Equivalent paths
  *    written twice during a render are one handle.
- * 2. *After* resolution, by stable graph identity: the parent *partition* plus
- *    the resolved Graph entity, never the mutable path text. A rename keeps the
- *    identity, and therefore the child replica; a delete/recreate does not, and
- *    neither does the read-view rotation such a recreate arrives with — see
- *    {@link graphStableKey} for why the partition rather than the database.
+ * 2. *After* resolution, by stable graph identity: the parent database's stable
+ *    scope plus the sealed `EntityId` of the resolved Graph entity, never the
+ *    mutable path text and never a partition-local id. A rename keeps the
+ *    identity, and therefore the child replica; so does a benign read-view
+ *    rotation, because the sealed handle excludes the read view; a
+ *    delete/recreate does not, because the successor seals a different eid. See
+ *    {@link graphStableKey}.
  *
  * The stable identity is also what feeds `ReplicationSession.open({
  * graphLineage })`: once a child activation confirms an identity, its
@@ -52,8 +54,8 @@ import {
 import type { OrderDir, OrderEmpty } from "../db/shapes.ts";
 import type { ReplicationIdentity } from "../internal/replication/protocol.ts";
 import {
+  replicaDatabaseKey,
   replicaDatabaseScopeOf,
-  replicaPartitionKey,
   type ReplicaDatabaseScope,
 } from "../internal/replication/replica-lifecycle.ts";
 import {
@@ -214,34 +216,32 @@ export const graphResolutionQuery = (
 
 /**
  * The identity a resolved child database is interned, cached, and remembered
- * by: the parent *partition* plus the Graph entity resolved inside it.
+ * by: the parent database's *stable scope* plus the sealed `EntityId` of the
+ * Graph entity resolved inside it.
  *
- * The partition, not the database scope, and the difference is load-bearing. A
- * local entity id is assigned per partition — the installer numbers each
- * partition's visible entities independently — while a scope
- * (`server`/`principal`/`database`) spans every read view of that database. Key
- * on the scope and two read views of one database share a key space they do not
- * share ids in: delete a Graph, recreate a same-named one, and the rotation
- * that follows can land the successor on the predecessor's id, producing a
- * byte-identical key. The registry would then hand the successor the
- * predecessor's live activation, and the lineage memo would hand its confirmed
- * lineage to the successor's activation — whose fingerprint then restores and
- * publishes the *predecessor's* child replica. `replicaPartitionKey` includes
- * the read view and the read-compatibility hash, so a rotation yields a new key
- * and therefore a new activation with nothing inherited.
+ * Both halves are chosen against a specific failure. The scope
+ * (`server`/`principal`/`database`) is what survives a read-view rotation, and
+ * the sealed handle is the identity that survives one *with* it: it is bound to
+ * that same scope and excludes the catalog, the read view, and the schema, so a
+ * benign rotation names the same entity with the same string. That is what lets
+ * a child keep its resume memo — and therefore its durable replica — across a
+ * redeploy that rotates nothing an application can see.
  *
- * The accepted trade-off: a *benign* read-view rotation also yields a new key,
- * so the resume memo is lost and the child re-snapshots once. Preserving resume
- * across benign rotations needs a Graph identity that is stable across read
- * views — a logical entity identity rather than a partition-local id — which is
- * the same carriage the opaque `EntityId` surface needs. That belongs with
- * slice 3's EntityId work, not here: inventing a second cross-view identity now
- * would have to be unpicked when the real one lands.
+ * A partition-local id could not do that, and keying on one was the trade-off
+ * PR #574 accepted while the carriage did not exist: the installer numbers each
+ * partition's entities independently, so the key had to include the partition
+ * to stay honest, and every rotation then cost a fresh snapshot. It also had to
+ * be defended in the other direction — delete a Graph, recreate a same-named
+ * one, and the successor could land on the predecessor's local id, producing a
+ * byte-identical key and handing the successor the predecessor's replica. The
+ * sealed handle closes that by construction rather than by partitioning: it
+ * seals the private eid, a recreated entity gets a new eid, and the two handles
+ * therefore differ even under one scope.
  */
 export const graphStableKey = (
-  identity: ReplicationIdentity,
-  entity: number,
-): string => `${replicaPartitionKey(identity)} ${entity}`;
+  scope: ReplicaDatabaseScope,
+  entity: string,
+): string => `${replicaDatabaseKey(scope)} ${entity}`;
 
 /** One resolved segment: which entity, and what it is currently called. */
 type ResolvedSegment = { readonly id: number; readonly name: string };
@@ -765,14 +765,18 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.fail(unavailable());
       return;
     }
-    const identity = parent.confirmedIdentity();
-    if (identity === undefined) {
-      // A parent that published a value always has one; this is the
-      // belt-and-braces branch, and pending is the honest answer for it.
+    const scope = parent.confirmedScope();
+    // The opaque identity of the entity this path named, from the parent's own
+    // committed binding. Absent for a Graph that exists only in an optimistic
+    // layer: the server has not issued a handle for it, so it has no stable
+    // database identity yet and waiting is the only honest answer — resolving
+    // it would mean addressing a child database by a guess.
+    const entity = parent.sealedHandleOf(segment.id);
+    if (scope === undefined || entity === undefined) {
       this.publish(PENDING_BINDING, syncState(parent.syncStatus()));
       return;
     }
-    const stable = graphStableKey(identity, segment.id);
+    const stable = graphStableKey(scope, entity);
     const handle = this.registry.acquire(
       stable,
       [...parent.graphPath(), segment.name],

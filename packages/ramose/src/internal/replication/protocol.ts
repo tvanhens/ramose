@@ -16,10 +16,14 @@ export const REPLICATION_PROTOCOL_VERSION = 1 as const;
 
 /**
  * Local layers own these independently; neither value is sent on the wire.
- * Version 2 is the documentation-free replica schema with stable route slots;
- * every version-1 record is dropped by one atomic pre-public migration.
+ * Version 2 was the documentation-free replica schema with stable route slots;
+ * version 3 adds the persisted sealed-`EntityId` binding every replicated
+ * entity now arrives with. Every earlier record is dropped by one atomic
+ * pre-public migration — a replica stored without the binding cannot produce a
+ * mutation target for a row it holds, and inventing one is exactly what the
+ * binding exists to prevent.
  */
-export const REPLICA_STORAGE_VERSION = 2 as const;
+export const REPLICA_STORAGE_VERSION = 3 as const;
 export const INITIAL_REPLICA_BUILD_ID = "ramose-client-v1" as const;
 
 export const MAX_REPLICATION_REQUEST_BYTES = 65_536;
@@ -161,6 +165,43 @@ const positiveNatural = Schema.Natural.check(Schema.makeFilter(
 ));
 
 /**
+ * Canonical unpadded base64url of the 41-byte sealed `EntityId` envelope.
+ *
+ * Mirrors `SEALED_ENTITY_ID_PATTERN` in the engine's entity-id codec and
+ * `ENTITY_ID_PATTERN` in `ramose/db`; a unit test asserts the three never drift
+ * apart. The final character's low two bits are padding over 41 bytes, so only
+ * the sixteen alphabet positions divisible by four are canonical there —
+ * accepting the rest would let one entity's handle be respelled.
+ */
+export const SealedEntityHandle = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/),
+);
+export type SealedEntityHandle = typeof SealedEntityHandle.Type;
+
+/**
+ * The sealed cross-view handle for one entity named by a data-bearing frame.
+ *
+ * `entity` is the same one-way wire identity the frame's datoms use. That
+ * identity is scoped by the whole replication authenticator, so it rotates with
+ * the catalog, the read view, and the schema, and it is what keeps two
+ * partitions of one database unlinkable. `handle` is the reversible sealed
+ * `EntityId` bound to the *stable* `{ server, principal, database }` scope: the
+ * durable mutation target, and the identity a benign read-view rotation
+ * preserves.
+ *
+ * Both are derived from the same private eid and neither exposes it. The
+ * binding is additive and is emitted only inside an authenticated stream the
+ * server has already authorized end to end, so it discloses nothing to anyone
+ * but the partition owner — who may already mint the same handle by invoking an
+ * operation that returns the entity.
+ */
+export const EntityHandleBinding = Schema.Struct({
+  entity: OpaqueReplicationId,
+  handle: SealedEntityHandle,
+});
+export type EntityHandleBinding = typeof EntityHandleBinding.Type;
+
+/**
  * Stored strings and byte arrays are not write-bounded by the database. A
  * snapshot therefore fragments a large logical value across independently
  * bounded frames. `identity` groups the parts without exposing a physical id.
@@ -231,6 +272,13 @@ export const SnapshotStart = Schema.Struct({
 });
 export type SnapshotStart = typeof SnapshotStart.Type;
 
+/**
+ * One datom names at most two entities — its subject and, for a reference, its
+ * value — so a frame can never bind more handles than twice its datom bound.
+ */
+const handleBindings = (datoms: number) =>
+  Schema.Array(EntityHandleBinding).check(Schema.isMaxLength(datoms * 2));
+
 export const SnapshotChunk = Schema.Struct({
   type: Schema.Literal("SnapshotChunk"),
   protocol: Schema.Literal(REPLICATION_PROTOCOL_VERSION),
@@ -240,6 +288,8 @@ export const SnapshotChunk = Schema.Struct({
   datoms: Schema.Array(SnapshotDatom).check(
     Schema.isMaxLength(MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK),
   ),
+  /** One binding per distinct entity this chunk's datoms name. */
+  handles: handleBindings(MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK),
 });
 export type SnapshotChunk = typeof SnapshotChunk.Type;
 
@@ -262,6 +312,8 @@ export const Change = Schema.Struct({
   datoms: Schema.Array(LogicalDatom).check(
     Schema.isMaxLength(MAX_REPLICATION_DATOMS_PER_CHANGE),
   ),
+  /** One binding per distinct entity this change's datoms name. */
+  handles: handleBindings(MAX_REPLICATION_DATOMS_PER_CHANGE),
 });
 export type Change = typeof Change.Type;
 

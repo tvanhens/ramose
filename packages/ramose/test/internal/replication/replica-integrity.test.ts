@@ -30,6 +30,7 @@ import {
   type ReplicaIncompatibilityReason,
 } from "../../../src/internal/replication/replica-integrity.ts";
 import { replicaPartitionKey } from "../../../src/internal/replication/replica-lifecycle.ts";
+import { sealedHandle } from "../../replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 const READ_COMPATIBILITY = ReadCompatibilityHash.make(opaque("k"));
@@ -76,7 +77,7 @@ const datom = (e: number, a: number, v: string): Datom => ({
 
 const manifest = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   partition: replicaPartitionKey(identity()),
-  storageVersion: 2,
+  storageVersion: 3,
   identity: identity(),
   readCompatibilityHash: READ_COMPATIBILITY,
   revision: opaque("r"),
@@ -86,6 +87,10 @@ const manifest = (overrides: Record<string, unknown> = {}): Record<string, unkno
   ],
   attributes: [],
   entityIds: [[opaque("e"), 1000], [opaque("f"), 1001]],
+  entityHandles: [
+    [opaque("e"), sealedHandle(opaque("e"))],
+    [opaque("f"), sealedHandle(opaque("f"))],
+  ],
   attributeIds: [[":item/name", 1002], [":item/friend", 1003]],
   roots: roots(),
   nextLocalId: 1004,
