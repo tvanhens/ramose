@@ -392,7 +392,26 @@ deliberately answers a bare, receipt-free 403 when the caller's lease expires
 between the authoritative commit and the response, and that invocation *did*
 commit. A 409 code this build does not recognize is non-terminal for the same
 reason: a newer server may name an outcome an older client has never heard of,
-and the client must not answer that by destroying durable work.
+and the client must not answer that by destroying durable work. An absent
+`result` on an otherwise valid 200 is malformed rather than `null`: recording
+it would corrupt the output and remove the only copy that could be replayed.
+
+**A rejection is a cut through the dependency graph, not one record.** A
+refused invocation's allocation slots can never be mapped — the one queued
+record that could have produced them is the one being removed — so everything
+depending on those refs, and on *their* allocations transitively, becomes
+terminal in the same transaction with a typed `dependency_rejected` failure.
+Leaving them queued would make the next one the head, blocked on a ref nothing
+can resolve, holding its database forever. Independent work in the same
+database is untouched, and new work may not be enqueued behind a ref whose
+allocating invocation was already rejected.
+
+Every reader of the mapping store goes through its decoder, including the
+acknowledgement. A row that *looks* right but does not decode would otherwise
+be treated as already installed and skipped, while planning drops it — dependents
+blocked forever, with the record that could have replayed already removed. The
+acknowledgement is the authoritative answer for exactly that ref, so it repairs
+such a row rather than refusing.
 
 ## Integrity validation and corruption recovery
 

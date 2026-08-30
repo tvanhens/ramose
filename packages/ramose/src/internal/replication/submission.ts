@@ -349,10 +349,18 @@ export const classifyMutationResponse = (
     if (!hasReceipt(record, body, ["completed"])) return RETRY("malformed");
     const mappings = readMappings(record, body.mappings);
     if (mappings === undefined) return RETRY("malformed");
-    const output = body.result === undefined
-      ? null
-      : body.result as JsonValue;
-    return Object.freeze({ _tag: "Committed", output, mappings });
+    // An absent `result` is not a spelling of `null`. The completed answer
+    // always carries one, and the writer materialized it as exact JSON before
+    // the commit, so a missing field means an intermediary or an incompatible
+    // server dropped it. Recording `null` as the authoritative output and then
+    // removing the only durable copy of the request would corrupt the result
+    // with no way left to replay for the real one.
+    if (!Object.hasOwn(body, "result")) return RETRY("malformed");
+    return Object.freeze({
+      _tag: "Committed",
+      output: body.result as JsonValue,
+      mappings,
+    });
   }
   if (status === 409) {
     switch (code) {

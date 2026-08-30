@@ -1507,6 +1507,157 @@ browserTest(
 );
 
 browserTest(
+  "a rejection carries its dependents with it instead of stranding them",
+  async ({ browser }) => {
+    const name = `ramose-outbox-cascade-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      const outbox = storage.outbox();
+      const first = clientRef();
+      const second = clientRef();
+      // create → dependent-that-also-allocates → dependent-of-that.
+      const allocator = await outbox.enqueue(
+        draft(receiver, { allocations: [{ slot: "issue", clientRef: first }] }),
+        { scope },
+      );
+      const middle = await outbox.enqueue(
+        draft(receiver, {
+          target: { type: "client-ref", clientRef: first },
+          allocations: [{ slot: "issue", clientRef: second }],
+        }),
+        { scope },
+      );
+      const last = await outbox.enqueue(
+        draft(receiver, {
+          input: { assignee: second },
+          inputRefs: [{ path: ["assignee"], ref: second }],
+        }),
+        { scope },
+      );
+      const unrelated = await outbox.enqueue(
+        draft(receiver, { input: { title: "independent" } }),
+        { scope },
+      );
+
+      await outbox.acknowledge(
+        allocator,
+        { _tag: "Rejected", code: "invocation_conflict" },
+        1_700_000_000_005,
+      );
+
+      // The refused invocation's slots can never be mapped, so nothing that
+      // depends on them — transitively — can ever be submitted. Leaving them
+      // queued would make the next one the head, blocked on a ref nothing can
+      // resolve, holding this database forever.
+      const states = await Promise.all(
+        [allocator, middle, last, unrelated].map(async (record) => [
+          record.invocation,
+          (await outbox.receipt(receiver, record.invocation))?.state,
+          (await outbox.receipt(receiver, record.invocation))?.failure?.code,
+        ]),
+      );
+      expect(states).toEqual([
+        [allocator.invocation, "rejected", "invocation_conflict"],
+        [middle.invocation, "rejected", "dependency_rejected"],
+        [last.invocation, "rejected", "dependency_rejected"],
+        // Independent work is untouched: a cut through the dependency graph,
+        // not through the database.
+        [unrelated.invocation, "queued", undefined],
+      ]);
+      const plans = await outbox.plan(scope);
+      expect(plans).toHaveLength(1);
+      expect(plans[0]!.head).toEqual({ type: "ready", record: unrelated });
+
+      // And new work may not be queued behind a ref that will never map.
+      expect(
+        await rejectedTag(outbox.enqueue(
+          draft(receiver, {
+            input: { assignee: first },
+            inputRefs: [{ path: ["assignee"], ref: first }],
+          }),
+          { scope },
+        )),
+      ).toBe("OutboxRecordInvalid");
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "an unreadable mapping row is repaired by the authoritative acknowledgement",
+  async ({ browser }) => {
+    const name = `ramose-outbox-repair-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      const outbox = storage.outbox();
+      const allocation = clientRef();
+      const record = await outbox.enqueue(
+        draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+        { scope },
+      );
+      const mapped = await sealEntityId(
+        sealingKeyOf(root),
+        idScope(receiver),
+        4242,
+      ) as EntityId;
+
+      // A row whose `invocation` and `entityId` look right but which no reader
+      // can decode — its sealing epoch is missing. Comparing raw fields would
+      // treat it as already installed and skip the write, and planning would
+      // then drop it: every dependent blocked forever, with the one record
+      // that could have replayed for it already removed.
+      storage.close();
+      const raw = await openNative(name);
+      const write = raw.transaction("mutation-client-ref-mappings-v1", "readwrite");
+      write.objectStore("mutation-client-ref-mappings-v1").put({
+        partition: record.partition,
+        clientRef: allocation,
+        entityId: mapped,
+        invocation: record.invocation,
+        mappedAt: 1_700_000_000_000,
+      });
+      await transactionDone(write);
+      raw.close();
+
+      const reopened = await IndexedDbReplicaStorage.open(name);
+      try {
+        expect(await reopened.outbox().mappedRefs(scope)).toEqual(new Map());
+        await reopened.outbox().acknowledge(
+          record,
+          {
+            _tag: "Committed",
+            output: null,
+            mappings: [{ clientRef: allocation, entityId: mapped }],
+          },
+          1_700_000_000_006,
+        );
+        // Repaired, not skipped: the dependents can resolve it.
+        expect(await reopened.outbox().mappedRefs(scope)).toEqual(
+          new Map([[
+            mappingKey(record.partition, allocation),
+            { codecVersion: 1, keyId: root.keyId },
+          ]]),
+        );
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a dependent invocation submits only after its mapping persists",
   async ({ browser }) => {
     const name = `ramose-outbox-dependent-${browser.uniqueId}`;

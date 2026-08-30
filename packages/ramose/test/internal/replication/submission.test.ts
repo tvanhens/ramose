@@ -236,6 +236,20 @@ describe("classifyMutationResponse", () => {
     }
   });
 
+  test("a 200 whose result is absent is not a commit", () => {
+    // Absence is not a spelling of `null`. Recording `null` as the
+    // authoritative output and then removing the only durable copy of the
+    // request would corrupt the result with nothing left to replay for.
+    expect(classifyMutationResponse(plain, response(200, {
+      receipt: completedReceipt(plain.invocation),
+    }))).toEqual({ _tag: "Retry", reason: "malformed" });
+    // An explicit null is a real result and commits.
+    expect(classifyMutationResponse(plain, response(200, {
+      result: null,
+      receipt: completedReceipt(plain.invocation),
+    }))).toEqual({ _tag: "Committed", output: null, mappings: [] });
+  });
+
   test("an invocation that binds nothing commits without mappings", () => {
     expect(classifyMutationResponse(plain, response(200, {
       result: null,

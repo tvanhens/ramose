@@ -529,6 +529,18 @@ export class IndexedDbOutbox {
       if (owner.partition !== partition) {
         throw new ClientRefConflict({ clientRef: ref, partition: owner.partition });
       }
+      // The allocating invocation may already have been refused. Its ownership
+      // row survives as durable history, but the mapping will never exist, so
+      // queueing new work behind it would block this database exactly as the
+      // rejection cascade exists to prevent.
+      const settled = await requestResult<unknown>(
+        transaction.objectStore(MUTATION_RECEIPTS).get([partition, owner.invocation]),
+      );
+      if (decodeReceipt(settled)?.state === "rejected") {
+        throw new OutboxRecordInvalid({
+          reason: "a queued reference names a client ref whose invocation was rejected",
+        });
+      }
     }
     for (const allocation of record.allocations) {
       refs.add(buildClientRef({
@@ -930,7 +942,70 @@ export class IndexedDbOutbox {
       record.partition,
       record.sequence,
     ]);
+    if (acknowledgement._tag === "Rejected") {
+      await this.cascadeRejection(transaction, record, acknowledgedAt);
+    }
     return next;
+  }
+
+  /**
+   * Reject everything that can now never be submitted, in the same transaction.
+   *
+   * A rejected invocation's allocation slots will never be mapped: the only
+   * queued record that could have produced them is the one just removed. Any
+   * record depending on those refs would become the FIFO head, be reported
+   * blocked on a ref nothing can ever resolve, and hold its database forever
+   * — and so would anything depending on *its* allocations, transitively.
+   *
+   * A rejection is therefore not a per-record event: it is a cut through the
+   * dependency graph, and the whole cut has to become terminal together or the
+   * queue is left in a state only a repair could clear.
+   */
+  private async cascadeRejection(
+    transaction: IDBTransaction,
+    rejected: OutboxRecord,
+    acknowledgedAt: number,
+  ): Promise<void> {
+    const unresolvable = new Set<string>(
+      rejected.allocations.map((allocation) => allocation.clientRef),
+    );
+    if (unresolvable.size === 0) return;
+    const outbox = transaction.objectStore(MUTATION_OUTBOX);
+    const receipts = transaction.objectStore(MUTATION_RECEIPTS);
+    const stored = await requestResult<unknown[]>(
+      outbox.getAll(compoundPrefixRange(rejected.partition)),
+    );
+    // An undecodable row already holds this queue as `unreadable`, and its
+    // dependencies cannot be read, so it is left exactly where it is.
+    const pending = stored
+      .map(decodeOutboxRecord)
+      .filter((candidate): candidate is OutboxRecord =>
+        candidate !== undefined && candidate.invocation !== rejected.invocation
+      );
+    for (;;) {
+      const next = pending.find((candidate) =>
+        outboxDependencies(candidate).some((ref) => unresolvable.has(ref))
+      );
+      if (next === undefined) return;
+      pending.splice(pending.indexOf(next), 1);
+      for (const allocation of next.allocations) {
+        unresolvable.add(allocation.clientRef);
+      }
+      receipts.put(buildReceipt({
+        partition: next.partition,
+        invocation: next.invocation,
+        scope: next.scope,
+        state: "rejected",
+        observation: null,
+        output: null,
+        mappings: [],
+        // Typed, and distinct from the refusal that started the cut: this
+        // invocation was never submitted at all.
+        failure: { code: "dependency_rejected" },
+        updatedAt: acknowledgedAt,
+      }));
+      outbox.delete([next.partition, next.sequence]);
+    }
   }
 
   private async stageMappings(
@@ -971,9 +1046,9 @@ export class IndexedDbOutbox {
       // Everything else about the row — including its timestamp — is the
       // canonical builder's business, below.
       const key = [partition, ref];
-      const [allocation, current] = await Promise.all([
+      const [allocation, stored] = await Promise.all([
         requestResult<ClientRefRecord | undefined>(refs.get(key)),
-        requestResult<ClientRefMappingRecord | undefined>(store.get(key)),
+        requestResult<unknown>(store.get(key)),
       ]);
       if (allocation === undefined || allocation.invocation !== invocation) {
         throw new ClientRefMappingRefused({
@@ -982,6 +1057,14 @@ export class IndexedDbOutbox {
           reason: "not-allocated-here",
         });
       }
+      // Read through the same decoder that every reader uses. Comparing the
+      // raw fields instead would let a row that *looks* right but does not
+      // decode be treated as already installed: planning drops it, so every
+      // dependent would block forever — and the acknowledgement would by then
+      // have removed the one queued record that could have replayed for it.
+      const current = stored === undefined
+        ? undefined
+        : decodeClientRefMapping(stored);
       if (current !== undefined) {
         if (current.invocation !== invocation || current.entityId !== entityId) {
           throw new ClientRefMappingRefused({
@@ -992,14 +1075,20 @@ export class IndexedDbOutbox {
         }
         continue;
       }
-      store.add(buildClientRefMapping({
+      const repaired = buildClientRefMapping({
         partition,
         clientRef: ref,
         entityId,
         sealing,
         invocation,
         mappedAt,
-      }));
+      });
+      // An unreadable row holds no meaning to preserve, and this
+      // acknowledgement is the authoritative answer for exactly this ref, so
+      // it is repaired rather than refused: refusing would strand the queue on
+      // a row nothing can ever fix.
+      if (stored === undefined) store.add(repaired);
+      else store.put(repaired);
     }
   }
 }
