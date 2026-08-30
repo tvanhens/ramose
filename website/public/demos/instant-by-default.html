@@ -407,6 +407,65 @@ document.addEventListener('DOMContentLoaded', async function() {
       fitDemo();
       window.addEventListener('resize', fitDemo);
     }
+    const installMobileNarrative = function(firstTitle) {
+      let strip;
+      let cards = [];
+      let desktopColumns = '';
+      let lastActive = 0;
+      let frame = 0;
+
+      const locate = function() {
+        if (strip && strip.isConnected) return true;
+        const title = Array.from(document.querySelectorAll('strong')).find(
+          function(el) { return el.textContent.trim() === firstTitle; }
+        );
+        if (!title || !title.parentElement || !title.parentElement.parentElement) return false;
+        strip = title.parentElement.parentElement;
+        cards = Array.from(strip.children);
+        desktopColumns = strip.style.gridTemplateColumns;
+        return cards.length > 0;
+      };
+
+      const update = function() {
+        frame = 0;
+        if (!locate()) return;
+        cards = Array.from(strip.children);
+        let highlighted = -1;
+        cards.forEach(function(card, index) {
+          const bar = card.firstElementChild;
+          if (bar && getComputedStyle(bar).backgroundColor === 'rgb(255, 101, 0)') {
+            highlighted = index;
+          }
+        });
+        if (highlighted >= 0) lastActive = highlighted;
+        const mobile = document.documentElement.clientWidth <= 544;
+        const visible = highlighted >= 0 ? highlighted : lastActive;
+        const columns = mobile ? 'minmax(0px, 1fr)' : desktopColumns;
+        if (strip.style.gridTemplateColumns !== columns) {
+          strip.style.gridTemplateColumns = columns;
+        }
+        cards.forEach(function(card, index) {
+          const display = mobile && index !== visible ? 'none' : 'grid';
+          if (card.style.display !== display) card.style.display = display;
+        });
+      };
+
+      const schedule = function() {
+        if (!frame) frame = requestAnimationFrame(update);
+      };
+      new MutationObserver(schedule).observe(document.body, {
+        attributes: true,
+        attributeFilter: ['style'],
+        childList: true,
+        subtree: true
+      });
+      window.addEventListener('resize', schedule);
+      [0, 100, 500, 1500].forEach(function(delay) {
+        setTimeout(schedule, delay);
+      });
+      setInterval(schedule, 100);
+    };
+    installMobileNarrative('You drop the card');
   } catch (err) {
     setStatus('Error unpacking: ' + err.message);
     console.error('Bundle unpack error:', err);
