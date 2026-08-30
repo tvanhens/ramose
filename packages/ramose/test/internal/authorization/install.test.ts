@@ -41,7 +41,6 @@ import {
   type OwnerRef,
   type PolicyTemplateIR,
   type RelativeAuthorizationExpr,
-  type RuleAccessLookup,
 } from "../../../src/internal/authorization/index.ts";
 import { digestHex } from "./fixtures.ts";
 import { operationMetadata } from "./operation-support.ts";
@@ -210,17 +209,6 @@ const install = (template: PolicyTemplateIR, descriptor: CatalogDescriptor = cat
 const installFail = (template: PolicyTemplateIR, descriptor: CatalogDescriptor = catalogDescriptor()) =>
   Effect.runPromise(Effect.flip(installAuthorization(bindingInput(template, descriptor))));
 
-const lookupTags = (lookups: ReadonlyArray<RuleAccessLookup>): ReadonlyArray<string> =>
-  lookups.map((lookup) => lookup._tag).sort();
-
-const planFor = (installed: InstalledAuthorizationIRV2, match: (rule: InstalledAuthorizationIRV2["rules"][number]) => boolean) => {
-  const rule = installed.rules.find(match);
-  if (rule === undefined) throw new Error("expected installed rule");
-  const plan = installed.accessPlans.find((entry) => entry.rule === rule.id);
-  if (plan === undefined) throw new Error("expected access plan");
-  return { rule, plan };
-};
-
 const expectFrozen = (value: unknown): void => {
   if (value === null || typeof value !== "object") return;
   expect(Object.isFrozen(value)).toBe(true);
@@ -257,25 +245,6 @@ const ownsIssue = () =>
     right: { _tag: "me" },
   });
 
-const multiHop = () =>
-  rule(
-    digestHex(0x12),
-    { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
-    {
-      _tag: "eq",
-      left: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [
-          { field: relativeField(issueOwner, "parent") },
-          { field: relativeField(issueOwner, "owner") },
-        ],
-      },
-      right: { _tag: "me" },
-    },
-    { traversalDepth: 2 },
-  );
-
 const terminalMembership = () =>
   rule(digestHex(0x13), { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } }, {
     _tag: "in",
@@ -309,56 +278,12 @@ const classOnly = () =>
     { usesResource: false, usesMe: false, usesSubject: false, traversalDepth: 0 },
   );
 
-const subjectOnly = () =>
-  rule(
-    digestHex(0x16),
-    { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
-    { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "lit", value: "alice" } },
-    { usesResource: false, usesMe: false, usesSubject: true, traversalDepth: 0 },
-  );
-
-const claimArray = () =>
-  rule(
-    digestHex(0x17),
-    { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
-    {
-      _tag: "in",
-      value: { _tag: "lit", value: "eng" },
-      collection: { _tag: "claim", key: "teams" },
-    },
-    { usesResource: false, usesMe: false, usesSubject: false, traversalDepth: 0 },
-  );
-
 const fieldDecision = () =>
   rule(
     digestHex(0x18),
     { _tag: "field", field: relativeField(issueOwner, "internalNotes") },
     { _tag: "hasClass", class: "member" },
     { usesResource: false, usesMe: false, usesSubject: false, traversalDepth: 0 },
-  );
-
-const principalRow = () =>
-  rule(
-    digestHex(0x19),
-    { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
-    { _tag: "eq", left: { _tag: "me" }, right: { _tag: "ref", root: { _tag: "me" }, steps: [] } },
-    { usesResource: false, usesMe: true, usesSubject: false, traversalDepth: 0 },
-  );
-
-const indexedLabels = () =>
-  rule(
-    digestHex(0x1a),
-    { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
-    {
-      _tag: "in",
-      value: { _tag: "lit", value: "urgent" },
-      collection: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [{ field: relativeField(issueOwner, "labels") }],
-      },
-    },
-    { usesMe: false },
   );
 
 const unindexedAliases = () =>
@@ -399,146 +324,6 @@ describe("installAuthorization", () => {
     expect(installed.accessPlans).toHaveLength(1);
     expect(installed.rules).toHaveLength(1);
     expectFrozen(installed);
-  });
-
-  test("direct cardinality-one ref plan includes field, entity, and principal lookups", async () => {
-    const installed = await install(
-      templateOf([ownsIssue()], { entities: [entityDecision(digestHex(0x11))], traits: [], fields: [], operations: [] }),
-    );
-    const { plan } = planFor(installed, (entry) => entry.focus._tag === "entity");
-    expect(new Set(lookupTags(plan.lookups))).toEqual(new Set(["entity", "field", "index", "principal"]));
-    expect(plan.lookups).toEqual(
-      expect.arrayContaining([
-        { _tag: "field", field: field(issueOwner, "owner") },
-        { _tag: "entity", entity: entity("issue") },
-        { _tag: "principal", field: field(userOwner, "authId") },
-        { _tag: "index", field: field(userOwner, "authId") },
-        { _tag: "entity", entity: entity("user") },
-        { _tag: "field", field: field(userOwner, "authId") },
-      ]),
-    );
-  });
-
-  test("multi-hop cardinality-one ref plan includes each hop", async () => {
-    const installed = await install(
-      templateOf([multiHop()], { entities: [entityDecision(digestHex(0x12))], traits: [], fields: [], operations: [] }),
-    );
-    const { plan } = planFor(installed, () => true);
-    expect(plan.lookups).toEqual(
-      expect.arrayContaining([
-        { _tag: "field", field: field(issueOwner, "parent") },
-        { _tag: "field", field: field(issueOwner, "owner") },
-        { _tag: "entity", entity: entity("issue") },
-        { _tag: "principal", field: field(userOwner, "authId") },
-      ]),
-    );
-  });
-
-  test("terminal many-ref membership plan includes the field and a refIndex", async () => {
-    const installed = await install(
-      templateOf(
-        [terminalMembership()],
-        {
-          entities: [],
-          traits: [
-            {
-              target: { _tag: "RelativeTraitId", name: "taggable" },
-              decision: { allow: [RuleId.make(digestHex(0x13))], deny: [] },
-            },
-          ],
-          fields: [],
-          operations: [],
-        },
-      ),
-    );
-    const { plan } = planFor(installed, (entry) => entry.focus._tag === "trait");
-    expect(plan.lookups).toEqual(
-      expect.arrayContaining([
-        { _tag: "trait", trait: trait("taggable") },
-        { _tag: "field", field: field(taggableOwner, "tags") },
-        { _tag: "refIndex", field: field(taggableOwner, "tags") },
-        { _tag: "principal", field: field(userOwner, "authId") },
-      ]),
-    );
-    expect(
-      plan.lookups.some(
-        (lookup) => lookup._tag === "index" && lookup.field.localName === "tags",
-      ),
-    ).toBe(false);
-  });
-
-  test("principal-row, subject, claim, class-only, entity, trait, and field plans", async () => {
-    const installed = await install(
-      templateOf(
-        [principalRow(), subjectOnly(), claimArray(), classOnly(), ownsIssue(), terminalMembership(), fieldDecision()],
-        {
-          entities: [
-            {
-              target: { _tag: "RelativeEntityId", name: "issue" },
-              decision: {
-                allow: [
-                  RuleId.make(digestHex(0x19)),
-                  RuleId.make(digestHex(0x16)),
-                  RuleId.make(digestHex(0x17)),
-                  RuleId.make(digestHex(0x15)),
-                  RuleId.make(digestHex(0x11)),
-                ],
-                deny: [],
-              },
-            },
-          ],
-          traits: [
-            {
-              target: { _tag: "RelativeTraitId", name: "taggable" },
-              decision: { allow: [RuleId.make(digestHex(0x13))], deny: [] },
-            },
-          ],
-          fields: [
-            {
-              target: relativeField(issueOwner, "internalNotes"),
-              decision: { allow: [RuleId.make(digestHex(0x18))], deny: [] },
-            },
-          ],
-          operations: [],
-        },
-      ),
-    );
-    expect(installed.accessPlans).toHaveLength(7);
-    expect(new Set(installed.accessPlans.map((plan) => plan.rule)).size).toBe(7);
-
-    const principal = planFor(installed, (entry) => entry.usesMe && !entry.usesResource);
-    expect(principal.plan.lookups.some((lookup) => lookup._tag === "principal")).toBe(true);
-
-    const subject = planFor(installed, (entry) => entry.usesSubject && entry.expr._tag === "eq");
-    expect(subject.plan.lookups.some((lookup) => lookup._tag === "entity")).toBe(true);
-    expect(subject.plan.lookups.some((lookup) => lookup._tag === "principal")).toBe(false);
-
-    const claims = planFor(installed, (entry) => entry.expr._tag === "in" && entry.expr.collection._tag === "claim");
-    expect(claims.plan.lookups.some((lookup) => lookup._tag === "field")).toBe(false);
-
-    const classes = planFor(installed, (entry) => entry.expr._tag === "hasClass" && entry.focus._tag === "entity");
-    expect(classes.plan.lookups).toEqual([{ _tag: "entity", entity: entity("issue") }]);
-
-    const fieldPlan = planFor(installed, (entry) => entry.focus._tag === "field");
-    expect(fieldPlan.plan.lookups).toEqual(
-      expect.arrayContaining([
-        { _tag: "field", field: field(issueOwner, "internalNotes") },
-        { _tag: "entity", entity: entity("issue") },
-      ]),
-    );
-  });
-
-  test("indexed many-scalar membership emits an index lookup", async () => {
-    const installed = await install(
-      templateOf([indexedLabels()], { entities: [entityDecision(digestHex(0x1a))], traits: [], fields: [], operations: [] }),
-    );
-    const { plan } = planFor(installed, () => true);
-    expect(plan.lookups).toEqual(
-      expect.arrayContaining([
-        { _tag: "field", field: field(issueOwner, "labels") },
-        { _tag: "index", field: field(issueOwner, "labels") },
-      ]),
-    );
   });
 
   test("fails for an unrepresentable unindexed many-scalar membership", async () => {

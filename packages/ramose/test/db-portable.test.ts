@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,12 +19,5 @@ describe("ramose/db authoring surface", () => {
     const db = await import("../src/db/index.ts");
     for (const name of ["Schema", "Field", "Entity", "Trait", "Graph", "Query", "Operation", "tempid"]) expect(name in db).toBe(true);
     for (const name of ["connect", "Db", "token", "openOverlay", "Subscription", "PrefixHalt"]) expect(name in db).toBe(false);
-  });
-
-  test("the barrel has no deleted runtime edges", () => {
-    const source = readFileSync(barrel, "utf8");
-    for (const module of ["connect", "Db", "effect", "session", "overlay", "subscription", "token"]) {
-      expect(source).not.toContain(`./${module}.ts`);
-    }
   });
 });

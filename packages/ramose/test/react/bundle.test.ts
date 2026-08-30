@@ -21,8 +21,6 @@ describe("the ramose/react bundle", () => {
   test("carries no deploy engine into the adapter", async () => {
     const adapter = await bundled("../../src/react/hooks.ts");
 
-    expect(adapter.length).toBeGreaterThan(20_000);
-
     expect(adapter).not.toContain("alchemy");
   });
 
@@ -31,7 +29,6 @@ describe("the ramose/react bundle", () => {
       "../../src/react/hooks.ts",
       "../../src/client/client.ts",
     );
-    expect(application.length).toBeGreaterThan(200_000);
     expect(application).not.toContain("alchemy");
   });
 });

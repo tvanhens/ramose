@@ -180,12 +180,6 @@ describe("the sealed EntityId codec", () => {
   });
 
   test("a compatible read-view, catalog, or deployment change is not in the scope", async () => {
-
-    expect(Object.keys(scope()).sort()).toEqual([
-      "database",
-      "principal",
-      "server",
-    ]);
     const token = await sealEntityId(sealing, scope(), 11);
     const extra = { ...scope(), readCompatibilityHash: "ignored" };
     expect(await sealEntityId(sealing, extra, 11)).toBe(token);

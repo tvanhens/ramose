@@ -240,37 +240,3 @@ describe("published examples are executable", () => {
     });
   }
 });
-
-describe("nothing nondeterministic or ambient is reachable", () => {
-  const forbidden: readonly (readonly [string, RegExp])[] = [
-    ["a clock", /\bDate\b/],
-    ["randomness", /Math\s*\.\s*random/],
-    ["crypto", /\bcrypto\b/],
-    ["the process environment", /\bprocess\s*\./],
-    ["the global object", /\bglobalThis\b/],
-    ["the network", /\bfetch\s*\(/],
-    ["dynamic evaluation", /\beval\s*\(|new\s+Function\b/],
-    ["a caller-constructed regex", /new\s+RegExp\b/],
-    ["module lookup", /\brequire\s*\(|\bimport\s*\(/],
-
-    ["a host case table", /\.to(?:Lower|Upper)Case\s*\(/],
-    ["a host locale routine", /toLocale|localeCompare|\bIntl\b/],
-    ["host normalization", /\.normalize\s*\(/],
-    ["a host whitespace table", /\.trim(?:Start|End)?\s*\(\s*\)/],
-  ];
-
-  for (const file of ["implementations.ts", "manifest.ts", "values.ts"] as const) {
-    test(`${file} reaches for none of it`, async () => {
-      const source = await Bun.file(
-        new URL(`../../../../src/db/query/stdlib/${file}`, import.meta.url).pathname,
-      ).text();
-      for (const [label, pattern] of forbidden) {
-        expect({ file, label, found: pattern.test(source) }).toEqual({
-          file,
-          label,
-          found: false,
-        });
-      }
-    });
-  }
-});

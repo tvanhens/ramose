@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
+import { MAX_REPLICATION_REVISIONS_PER_BINDING } from "../../packages/ramose/src/internal/replica/revision-retention.ts";
 import { CONFORMANCE_DATABASES } from "./conformance-catalog.ts";
 import { loadConformanceProof } from "./conformance-proof.ts";
 import { seedWorld } from "./conformance.ts";
@@ -279,6 +280,73 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       });
       expect(stillThere.status).toBe(200);
       expect(stillThere.body).toEqual({ found: true, basisT: 7 });
+    });
+
+    test("advancing a remembered revision does not refresh its eviction order", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = uniqueDb("revision-retention");
+      const binding = opaqueId();
+      const keyId = (await probeIdentityRoot(base, database)).keyId;
+      const revisions = Array.from(
+        { length: MAX_REPLICATION_REVISIONS_PER_BINDING + 1 },
+        opaqueId,
+      );
+
+      for (let index = 0; index < MAX_REPLICATION_REVISIONS_PER_BINDING; index++) {
+        const remembered = await testAdmin(
+          base,
+          database,
+          "/replication-revision",
+          {
+            action: "remember",
+            revision: revisions[index],
+            binding,
+            basisT: index + 1,
+            keyId,
+          },
+        );
+        expect(remembered.status).toBe(200);
+        expect(remembered.body).toEqual({ ok: true, stored: true });
+      }
+
+      await testAdmin(base, database, "/replication-revision", {
+        action: "remember",
+        revision: revisions[0],
+        binding,
+        basisT: 99,
+        keyId,
+      });
+      const advanced = await testAdmin(
+        base,
+        database,
+        "/replication-revision",
+        { action: "resolve", revision: revisions[0], binding, keyId },
+      );
+      expect(advanced.body).toEqual({ found: true, basisT: 99 });
+
+      await testAdmin(base, database, "/replication-revision", {
+        action: "remember",
+        revision: revisions.at(-1),
+        binding,
+        basisT: 100,
+        keyId,
+      });
+
+      const evicted = await testAdmin(
+        base,
+        database,
+        "/replication-revision",
+        { action: "resolve", revision: revisions[0], binding, keyId },
+      );
+      expect(evicted.body).toEqual({ found: false });
+
+      const retained = await testAdmin(
+        base,
+        database,
+        "/replication-revision",
+        { action: "resolve", revision: revisions[1], binding, keyId },
+      );
+      expect(retained.body).toEqual({ found: true, basisT: 2 });
     });
   });
 };

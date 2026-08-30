@@ -3,10 +3,8 @@ import type { AnyOptimisticProjection } from "../../../src/db/Projection.ts";
 import type { CatalogId, OwnerRef } from "../../../src/internal/authorization/identities.ts";
 import {
   makeClientProjectionCatalog,
-  projectionIdentity,
   projectionOperationKey,
   resolveProjectionBinding,
-  sameProjectionIdentity,
   type ClientProjectionCatalog,
   type InstalledProjection,
 } from "../../../src/internal/replication/projection-binding.ts";
@@ -34,6 +32,8 @@ const withProjection = (
   run: AnyOptimisticProjection = noop,
 ): InstalledProjection => ({ operation, projection: { revision, run } });
 
+const identity = (build: string, revision: number) => ({ build, revision });
+
 describe("operation keys", () => {
   test("two owners that differ only by a separator do not collide", () => {
     const left = projectionOperationKey({
@@ -50,24 +50,6 @@ describe("operation keys", () => {
 
   test("the same operation always keys the same", () => {
     expect(projectionOperationKey(move)).toBe(projectionOperationKey({ ...move }));
-  });
-});
-
-describe("identity", () => {
-  test("a build identity must survive a durable key", () => {
-    expect(projectionIdentity("app@1", 2)).toEqual({ revision: 2, build: "app@1" });
-    expect(projectionIdentity("app@1")).toEqual({ revision: 1, build: "app@1" });
-    const withNul = `a${String.fromCharCode(0)}b`;
-    for (const bad of ["", withNul, "x".repeat(257), 3, null]) {
-      expect(() => projectionIdentity(bad)).toThrow(/build identity/);
-    }
-  });
-
-  test("equality is both halves", () => {
-    const base = projectionIdentity("app@1", 2);
-    expect(sameProjectionIdentity(base, projectionIdentity("app@1", 2))).toBe(true);
-    expect(sameProjectionIdentity(base, projectionIdentity("app@2", 2))).toBe(false);
-    expect(sameProjectionIdentity(base, projectionIdentity("app@1", 3))).toBe(false);
   });
 });
 
@@ -100,6 +82,13 @@ describe("catalog assembly", () => {
       /positive integer/,
     );
   });
+
+  test("refuses invalid build identities", () => {
+    const withNul = `a${String.fromCharCode(0)}b`;
+    for (const bad of ["", withNul, "x".repeat(257), 3, null]) {
+      expect(() => catalog(bad as never)).toThrow(/build identity/);
+    }
+  });
 });
 
 describe("the decision table", () => {
@@ -118,7 +107,7 @@ describe("the decision table", () => {
     expect(
       resolveProjectionBinding(installed, {
         operation: archive,
-        projection: projectionIdentity("app@2", 2),
+        projection: identity("app@2", 2),
       }),
     ).toEqual({ type: "update-required", reason: "operation-missing" });
   });
@@ -128,7 +117,7 @@ describe("the decision table", () => {
     expect(
       resolveProjectionBinding(dropped, {
         operation: move,
-        projection: projectionIdentity("app@1", 2),
+        projection: identity("app@1", 2),
       }),
     ).toEqual({ type: "update-required", reason: "projection-missing" });
   });
@@ -137,7 +126,7 @@ describe("the decision table", () => {
     expect(
       resolveProjectionBinding(installed, {
         operation: move,
-        projection: projectionIdentity("app@2", 1),
+        projection: identity("app@2", 1),
       }),
     ).toEqual({ type: "update-required", reason: "projection-revision" });
   });
@@ -146,7 +135,7 @@ describe("the decision table", () => {
     expect(
       resolveProjectionBinding(installed, {
         operation: move,
-        projection: projectionIdentity("app@2", 2),
+        projection: identity("app@2", 2),
       }),
     ).toEqual({
       type: "bound",
@@ -160,7 +149,7 @@ describe("the decision table", () => {
 
     const binding = resolveProjectionBinding(installed, {
       operation: move,
-      projection: projectionIdentity("app@1", 2),
+      projection: identity("app@1", 2),
     });
     expect(binding).toEqual({
       type: "bound",

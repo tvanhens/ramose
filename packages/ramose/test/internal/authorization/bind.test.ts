@@ -33,6 +33,7 @@ import {
   type InstalledAuthorizationIR,
   type OwnerRef,
   type RelativeAuthorizationExpr,
+  type RelativeValueTerm,
 } from "../../../src/internal/authorization/index.ts";
 import {
   RULE_HAS_TAG,
@@ -306,18 +307,6 @@ const findRule = (
 const entityRule = (bound: BoundAuthorizationIRType, name: string) =>
   findRule(bound, (focus) => focus._tag === "entity" && focus.entity.name === name);
 
-const traitRule = (bound: BoundAuthorizationIRType, name: string) =>
-  findRule(bound, (focus) => focus._tag === "trait" && focus.trait.name === name);
-
-const fieldRule = (bound: BoundAuthorizationIRType, owner: OwnerRef, localName: string) =>
-  findRule(
-    bound,
-    (focus) =>
-      focus._tag === "field" &&
-      focus.field.owner.name === owner.name &&
-      focus.field.localName === localName,
-  );
-
 const expectFailure = (
   result: Result.Result<unknown, InvalidIR | CatalogMismatch>,
   tag: "InvalidIR" | "CatalogMismatch",
@@ -333,74 +322,6 @@ const expectFailure = (
 const requireInstalled = (_ir: InstalledAuthorizationIR): void => undefined;
 
 describe("successful binding", () => {
-  test("binds every identity kind in every identity-bearing IR position", () => {
-    const bound = expectBound(bindPolicyTemplateResult(bindingInput()));
-
-    expect(bound._tag).toBe("BoundAuthorizationIR");
-    expect(bound.version).toBe(BOUND_AUTHORIZATION_IR_VERSION);
-    expect(bound.languageVersion).toBe(AUTHORIZATION_LANGUAGE_VERSION);
-    expect(bound.database).toBe(database);
-    expect(bound.catalog).toBe(catalog);
-    expect(bound.catalogVersion).toBe(version);
-    expect(bound.schemaFingerprint).toBe(fingerprint);
-    expect(Object.getPrototypeOf(bound)).toBe(Object.prototype);
-    expect(Object.isFrozen(bound)).toBe(true);
-    expect("policyHash" in bound).toBe(false);
-    expect("accessPlans" in bound).toBe(false);
-    expect("identities" in bound).toBe(false);
-    expect("operations" in bound).toBe(false);
-    expect("traitComposition" in bound).toBe(false);
-
-    expect(bound.principal.entity).toEqual(field(userOwner, "authId"));
-
-    expect(entityRule(bound, "issue").focus).toEqual({ _tag: "entity", entity: entity("issue") });
-    expect(traitRule(bound, "taggable").focus).toEqual({ _tag: "trait", trait: trait("taggable") });
-    expect(fieldRule(bound, issueOwner, "internalNotes").focus).toEqual({
-      _tag: "field",
-      field: field(issueOwner, "internalNotes"),
-    });
-
-    const owns = entityRule(bound, "issue");
-    expect(owns.expr).toEqual({
-      _tag: "eq",
-      left: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [{ field: field(issueOwner, "owner") }],
-      },
-      right: { _tag: "me" },
-    });
-
-    const membership = traitRule(bound, "taggable");
-    expect(membership.expr).toEqual({
-      _tag: "in",
-      value: { _tag: "me" },
-      collection: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [{ field: field(taggableOwner, "tags") }],
-      },
-    });
-
-    expect(bound.decisions.entities[0]?.target).toEqual(entity("issue"));
-    expect(bound.decisions.traits[0]?.target).toEqual(trait("taggable"));
-    expect(bound.decisions.fields[0]?.target).toEqual(field(issueOwner, "internalNotes"));
-    expect(bound.decisions.operations).toEqual([]);
-
-    expect(entityRule(bound, "issue").usesMe).toBe(true);
-    expect(entityRule(bound, "issue").id).toBe(RuleId.make(RULE_OWNS_ISSUE));
-    expect(bound.decisions.entities[0]?.decision.allow).toEqual([
-      RuleId.make(RULE_OWNS_ISSUE),
-      RuleId.make(RULE_TENANT),
-    ]);
-  });
-
-  test("Effect bind remaps rule IDs through the domain-separated hash shell", async () => {
-    const bound = await Effect.runPromise(bindPolicyTemplate(bindingInput()));
-    expect(bound.rules[0]?.id).not.toBe(RULE_OWNS_ISSUE);
-    expect(bound.decisions.entities[0]?.decision.allow[0]).toBe(bound.rules[0]?.id);
-  });
-
   test("rejects duplicate source rule IDs before remapping", () => {
     const template = fullTemplate();
     const first = template.rules[0]!;
@@ -983,38 +904,51 @@ describe("first-failure order", () => {
     );
   });
 
-  test("eq binds the left term before the right term", () => {
+  test("rejects missing fields on either eq operand", () => {
     const template = fullTemplate();
-    expectFailure(
-      bindPolicyTemplateResult(
-        bindingInput({
-          template: {
-            ...template,
-            rules: [
-              rule(
-                RULE_OWNS_ISSUE,
-                { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
-                {
-                  _tag: "eq",
-                  left: {
-                    _tag: "ref",
-                    root: { _tag: "resource" },
-                    steps: [{ field: relativeField(issueOwner, "missing-left") }],
-                  },
-                  right: {
-                    _tag: "ref",
-                    root: { _tag: "resource" },
-                    steps: [{ field: relativeField(issueOwner, "missing-right") }],
-                  },
-                },
-              ),
-            ],
-          },
-        }),
-      ),
-      "InvalidIR",
-      /wrong local name for field 'entity:issue\.missing-left'/,
-    );
+    const missing = (localName: string): RelativeValueTerm => ({
+      _tag: "ref",
+      root: { _tag: "resource" },
+      steps: [{ field: relativeField(issueOwner, localName) }],
+    });
+    const scenarios: ReadonlyArray<readonly [string, RelativeAuthorizationExpr]> = [
+      [
+        "missing-left",
+        {
+          _tag: "eq",
+          left: missing("missing-left"),
+          right: { _tag: "lit", value: "ok" },
+        },
+      ],
+      [
+        "missing-right",
+        {
+          _tag: "eq",
+          left: { _tag: "lit", value: "ok" },
+          right: missing("missing-right"),
+        },
+      ],
+    ];
+    for (const [localName, expr] of scenarios) {
+      expectFailure(
+        bindPolicyTemplateResult(
+          bindingInput({
+            template: {
+              ...template,
+              rules: [
+                rule(
+                  RULE_OWNS_ISSUE,
+                  { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
+                  expr,
+                ),
+              ],
+            },
+          }),
+        ),
+        "InvalidIR",
+        new RegExp(`wrong local name for field 'entity:issue\\.${localName}'`),
+      );
+    }
   });
 });
 

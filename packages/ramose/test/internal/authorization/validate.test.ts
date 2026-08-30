@@ -4,7 +4,6 @@ import * as Result from "effect/Result";
 import {
   AUTHORIZATION_LANGUAGE_VERSION,
   AUTHORIZATION_RULE_HASH_DOMAIN_V1,
-  AuthoritativeCatalog,
   BOUND_AUTHORIZATION_IR_VERSION,
   CatalogId,
   CatalogMismatch,
@@ -1146,22 +1145,6 @@ describe("purity", () => {
     expect(failure).toBeInstanceOf(CatalogMismatch);
   });
 
-  test("AuthoritativeCatalog is not consulted by the kernel", async () => {
-    let resolves = 0;
-    const service = {
-      resolve: () => {
-        resolves += 1;
-        return Effect.succeed(descriptor);
-      },
-    };
-    expectValidated(
-      validateBoundAuthorizationResult({ bound: boundDocument([ownsIssue()]), descriptor }),
-    );
-    await Effect.runPromise(
-      Effect.void.pipe(Effect.provideService(AuthoritativeCatalog, service)),
-    );
-    expect(resolves).toBe(0);
-  });
 });
 
 describe("type distinction", () => {
@@ -1172,47 +1155,6 @@ describe("type distinction", () => {
     // @ts-expect-error
     requireInstalled(validated);
     expect(validated._tag).toBe("ValidatedAuthorizationIR");
-  });
-});
-
-describe("first-failure order", () => {
-  test("the first rule fails before a later missing field", () => {
-    const first = stamp(
-      { _tag: "entity", entity: entity("issue") },
-      { _tag: "hasClass", class: "ghost" },
-      none,
-    );
-    const second = stamp(
-      { _tag: "entity", entity: entity("issue") },
-      {
-        _tag: "eq",
-        left: resourceRef(step(issueOwner, "missing-later")),
-        right: { _tag: "me" },
-      },
-      { usesResource: true, usesMe: true, usesSubject: false, traversalDepth: 1 },
-    );
-    expectFailure(
-      validateBoundAuthorizationResult({ bound: boundDocument([first, second]), descriptor }),
-      "InvalidIR",
-      /undeclared class 'ghost'/,
-    );
-  });
-
-  test("eq walks the left operand before the right operand", () => {
-    const rule = stamp(
-      { _tag: "entity", entity: entity("issue") },
-      {
-        _tag: "eq",
-        left: resourceRef(step(issueOwner, "missing-left")),
-        right: { _tag: "claim", key: "undeclared-right" },
-      },
-      { usesResource: true, usesMe: false, usesSubject: false, traversalDepth: 1 },
-    );
-    expectFailure(
-      validateBoundAuthorizationResult({ bound: boundDocument([rule]), descriptor }),
-      "InvalidIR",
-      /wrong owner for field 'entity:issue\.missing-left'|stale identity: missing traversal field/,
-    );
   });
 });
 

@@ -9,7 +9,6 @@ import {
   REPLICATION_PROTOCOL_VERSION,
   decodeActivationRequest,
   decodeReplicationFrame,
-  decideReplicaCompatibility,
   encodeActivationRequest,
   encodeReplicationFrame,
   type ActivationRequest,
@@ -321,29 +320,5 @@ describe("replication frame codec", () => {
     expect(wire).not.toContain("attributeEid");
     expect(wire).not.toContain("storage");
     expect(wire).not.toContain("/session");
-  });
-});
-
-describe("replica version ownership", () => {
-  const current = {
-    protocol: 1,
-    build: "client-v2",
-    storage: 3,
-    readCompatibilityHash: "schema-b",
-    readView: "view-b",
-  };
-
-  test("chooses one conservative owner in protocol/build/storage/read-view order", () => {
-    expect(decideReplicaCompatibility(current, current)).toBe("reuse");
-    expect(decideReplicaCompatibility({ ...current, protocol: 0 }, current))
-      .toBe("protocol-reset");
-    expect(decideReplicaCompatibility({ ...current, build: "client-v1" }, current))
-      .toBe("build-reset");
-    expect(decideReplicaCompatibility({ ...current, storage: 2 }, current))
-      .toBe("storage-migration");
-    expect(decideReplicaCompatibility({ ...current, readCompatibilityHash: "schema-a" }, current))
-      .toBe("read-compatibility-reset");
-    expect(decideReplicaCompatibility({ ...current, readView: "view-a" }, current))
-      .toBe("read-view-reset");
   });
 });

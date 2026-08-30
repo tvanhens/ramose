@@ -1,12 +1,5 @@
 export const MAX_REPLICATION_REVISIONS_PER_BINDING = 8;
 
-export type ReplicationRevisionRetentionRecord = {
-  readonly revision: string;
-  readonly binding: string;
-  readonly basisT: number;
-  readonly touched: number;
-};
-
 export type ReplicationRevisionRetentionDecision =
   | { readonly type: "advance" }
   | { readonly type: "insert"; readonly evictCount: number }
@@ -29,58 +22,5 @@ export const decideReplicationRevisionRetention = (input: {
       input.bindingRevisionCount + 1 -
         MAX_REPLICATION_REVISIONS_PER_BINDING,
     ),
-  };
-};
-
-export const retainReplicationRevision = (
-  records: readonly ReplicationRevisionRetentionRecord[],
-  candidate: Omit<ReplicationRevisionRetentionRecord, "touched">,
-  touched: number,
-): {
-  readonly stored: boolean;
-  readonly records: readonly ReplicationRevisionRetentionRecord[];
-} => {
-  const existing = records.find((record) =>
-    record.revision === candidate.revision
-  );
-  const bindingRecords = records.filter((record) =>
-    record.binding === candidate.binding
-  );
-  const decision = decideReplicationRevisionRetention({
-    ...(existing === undefined ? {} : { existingBinding: existing.binding }),
-    candidateBinding: candidate.binding,
-    bindingRevisionCount: bindingRecords.length,
-  });
-  if (decision.type === "reject") {
-    return { stored: false, records };
-  }
-  if (decision.type === "advance") {
-    return {
-      stored: true,
-      records: Object.freeze(records.map((record) =>
-        record.revision === candidate.revision
-          ? Object.freeze({
-            ...record,
-            basisT: Math.max(record.basisT, candidate.basisT),
-          })
-          : record
-      )),
-    };
-  }
-  const evicted = new Set(
-    [...bindingRecords]
-      .sort((left, right) =>
-        left.touched - right.touched ||
-        left.revision.localeCompare(right.revision)
-      )
-      .slice(0, decision.evictCount)
-      .map((record) => record.revision),
-  );
-  return {
-    stored: true,
-    records: Object.freeze([
-      ...records.filter((record) => !evicted.has(record.revision)),
-      Object.freeze({ ...candidate, touched }),
-    ]),
   };
 };

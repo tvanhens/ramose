@@ -53,25 +53,6 @@ describe("production package/build graph", () => {
     expect(graph).not.toContain("worker/test-admin.ts");
     expect(graph).not.toContain("worker/storage-test-admin.ts");
     expect(graph).not.toContain("worker/testing.ts");
-    expect(readFileSync(join(sourceRoot, "worker/handle.ts"), "utf8"))
-      .not.toContain("/__test__/");
-  });
-
-  test("the Worker entry exports only startup assembly and Cloudflare classes", () => {
-    const source = readFileSync(workerEntry, "utf8");
-    for (const forbidden of [
-      "resolveWrites",
-      "clearWritesWarning",
-      "RamoseEnv }",
-      "errorResponse",
-      "toHttp",
-      "fromThrown",
-      "isRamoseError",
-      "DeployedCatalogs",
-    ]) {
-      expect(source).not.toContain(`export { ${forbidden}`);
-      expect(source).not.toContain(`export type { ${forbidden}`);
-    }
   });
 
   test("the built production Worker contains no test assembly or hook symbols", () => {

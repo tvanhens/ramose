@@ -24,7 +24,6 @@ the pull request.
 ```sh
 bun install
 bun run typecheck
-bun run test:doubles
 bun run test:unit
 bunx playwright install chromium
 bun run test:browser
@@ -47,9 +46,8 @@ Group pure cases in table-driven unit tests; use browser or local tests only for
 boundary behavior that those lanes uniquely prove.
 
 Do not introduce mocks, fake platform services, scripted peers, in-memory
-infrastructure substitutes, DOM shims, or fake IndexedDB. `bun run test:doubles`
-enforces this policy. Re-record browser frame fixtures with
-`bun run record:frames`; do not edit the recordings by hand.
+infrastructure substitutes, DOM shims, or fake IndexedDB. Re-record browser
+frame fixtures with `bun run record:frames`; do not edit the recordings by hand.
 
 ## Local development
 

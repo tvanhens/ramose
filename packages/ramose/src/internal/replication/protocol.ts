@@ -382,33 +382,3 @@ export const encodeReplicationFrame = (frame: ReplicationFrame): string => {
   }
   return encoded;
 };
-
-export type ReplicaVersionMetadata = {
-  readonly protocol: number;
-  readonly build: string;
-  readonly storage: number;
-  readonly readCompatibilityHash: string;
-  readonly readView: string;
-};
-
-export type ReplicaCompatibilityDecision =
-  | "reuse"
-  | "protocol-reset"
-  | "build-reset"
-  | "storage-migration"
-  | "read-compatibility-reset"
-  | "read-view-reset";
-
-export const decideReplicaCompatibility = (
-  stored: ReplicaVersionMetadata,
-  current: ReplicaVersionMetadata,
-): ReplicaCompatibilityDecision => {
-  if (stored.protocol !== current.protocol) return "protocol-reset";
-  if (stored.build !== current.build) return "build-reset";
-  if (stored.storage !== current.storage) return "storage-migration";
-  if (stored.readCompatibilityHash !== current.readCompatibilityHash) {
-    return "read-compatibility-reset";
-  }
-  if (stored.readView !== current.readView) return "read-view-reset";
-  return "reuse";
-};

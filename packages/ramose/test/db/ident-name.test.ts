@@ -34,12 +34,6 @@ describe("ident names", () => {
     for (const bad of BAD) expect(IDENT_NAME_RE.test(bad)).toBe(false);
   });
 
-  test("isIdentName is the regex as a predicate", () => {
-    for (const name of [...OK, ...BAD]) {
-      expect(isIdentName(name)).toBe(IDENT_NAME_RE.test(name));
-    }
-  });
-
   test("reserved field keys are the Entity metadata names", () => {
     expect([...RESERVED_FIELD_KEYS]).toEqual([
       "id",

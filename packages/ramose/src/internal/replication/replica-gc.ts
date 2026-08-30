@@ -112,6 +112,3 @@ export type ReplicaGcOutcome = {
   readonly retained: number;
   readonly staging: number;
 };
-
-export const emptyReplicaGcOutcome = (): ReplicaGcOutcome =>
-  Object.freeze({ partitions: 0, swept: 0, skipped: 0, nodes: 0, retained: 0, staging: 0 });

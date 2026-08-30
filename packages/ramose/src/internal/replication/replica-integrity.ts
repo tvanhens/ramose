@@ -577,9 +577,6 @@ const nodeCount = (node: TreeNode): number => {
   return total;
 };
 
-export const replicaNodeChildren = (node: TreeNode): readonly NodeRef[] =>
-  node.kind === NodeKind.Dir ? node.refs : [];
-
 export const validateReplicaNode = (
   index: IndexId,
   ref: NodeRef,

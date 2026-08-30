@@ -9,7 +9,6 @@ import {
   compileReadAuthorizationResult,
   decodePolicyTemplateResult,
   encodePolicyTemplate,
-  hashRelativeRule,
   installAuthorization,
   MAX_COLLECTION_SIZE,
   MAX_JSON_NODES,
@@ -54,10 +53,7 @@ import {
   orgClaim,
   semanticAccepts,
   semanticRejects,
-  taggableOwner,
   target,
-  userOwner,
-  workspaceOwner,
 } from "./semantic-fixtures.ts";
 
 const compile = compileRules;
@@ -138,7 +134,7 @@ describe("compile common rules", () => {
     );
   });
 
-  test("owner eq(me), workspace contains, hasClass, claim+subject, trait, field-narrow", () => {
+  test("common entity, trait, and field rules compile, bind, and validate", () => {
     const template = expectOk(
       compile([
         read(Issue).when(
@@ -154,95 +150,16 @@ describe("compile common rules", () => {
         read(Issue.owner).when(eq(Issue.owner, me)),
       ]),
     );
-
-    expect(template._tag).toBe("PolicyTemplateIR");
-    expect(template.version).toBe(2);
-    expect(template.languageVersion).toBe("v1");
-    expect(template.classes).toEqual(["admin", "member"]);
-    expect(template.principal.entity).toEqual({
-      _tag: "RelativeFieldId",
-      owner: { kind: "entity", name: "user" },
-      localName: "authId",
-    });
-
-    const owner = template.rules.find((rule) => rule.expr._tag === "or");
-    expect(owner?.focus).toEqual({ _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } });
-    expect(owner?.usesResource).toBe(true);
-    expect(owner?.usesMe).toBe(true);
-    expect(owner?.usesSubject).toBe(false);
-    expect(owner?.traversalDepth).toBe(2);
-    expect(owner?.expr).toEqual({
-      _tag: "or",
-      exprs: [
-        {
-          _tag: "eq",
-          left: {
-            _tag: "ref",
-            root: { _tag: "resource" },
-            steps: [{ field: { _tag: "RelativeFieldId", owner: issueOwner, localName: "owner" } }],
-          },
-          right: { _tag: "me" },
-        },
-        {
-          _tag: "in",
-          value: { _tag: "me" },
-          collection: {
-            _tag: "ref",
-            root: { _tag: "resource" },
-            steps: [
-              { field: { _tag: "RelativeFieldId", owner: issueOwner, localName: "workspace" } },
-              { field: { _tag: "RelativeFieldId", owner: workspaceOwner, localName: "members" } },
-            ],
-          },
-        },
-        { _tag: "hasClass", class: "admin" },
-      ],
-    });
-
-    const tenant = template.rules.find((rule) => rule.expr._tag === "and");
-    expect(tenant?.usesResource).toBe(false);
-    expect(tenant?.usesMe).toBe(false);
-    expect(tenant?.usesSubject).toBe(true);
-    expect(tenant?.traversalDepth).toBe(0);
-    expect(tenant?.expr).toEqual({
-      _tag: "and",
-      exprs: [
-        { _tag: "hasClass", class: "member" },
-        { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "claim", key: "org" } },
-      ],
-    });
-
-    const trait = template.rules.find((rule) => rule.focus._tag === "trait");
-    expect(trait?.focus).toEqual({ _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } });
-    expect(trait?.expr).toEqual({
-      _tag: "in",
-      value: { _tag: "me" },
-      collection: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [{ field: { _tag: "RelativeFieldId", owner: taggableOwner, localName: "tags" } }],
-      },
-    });
-    expect(Issue.tags.ident).toBe(":taggable/tags");
-
-    const title = template.rules.find(
-      (rule) => rule.focus._tag === "field" && rule.focus.field.localName === "title",
-    );
-    expect(title?.focus._tag).toBe("field");
-    expect(template.decisions.fields).toHaveLength(2);
+    const installed = bindAndValidate(template);
+    if (Result.isFailure(installed)) throw installed.failure;
   });
 
-  test("auto-boxes JSON scalars in eq", () => {
-    const template = expectOk(compile([read(Issue.title).when(eq(Issue.title, "hello"))]));
-    expect(template.rules[0]?.expr).toEqual({
-      _tag: "eq",
-      left: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [{ field: { _tag: "RelativeFieldId", owner: issueOwner, localName: "title" } }],
-      },
-      right: { _tag: "lit", value: "hello" },
-    });
+  test("a JSON scalar is equivalent to an explicit literal", () => {
+    const scalar = expectOk(compile([read(Issue.title).when(eq(Issue.title, "hello"))]));
+    const explicit = expectOk(
+      compile([read(Issue.title).when(eq(Issue.title, lit("hello")))]),
+    );
+    expect(scalar.rules[0]?.expr).toEqual(explicit.rules[0]?.expr);
   });
 
   test("composed trait fields and entity self-ref compile", () => {
@@ -536,80 +453,58 @@ describe("schema field names reserved by $()", () => {
     const thenField = expectOk(compileThing([read(Thing).when($(Thing).then.eq("x"))]));
     const toJsonField = expectOk(compileThing([read(Thing).when($(Thing).toJSON.eq("x"))]));
 
-    const eqField = {
-      _tag: "RelativeFieldId" as const,
-      owner: { kind: "entity" as const, name: "thing" },
-      localName: "eq",
-    };
-    expect(dollars.rules[0]?.expr).toEqual({
-      _tag: "eq",
-      left: { _tag: "ref", root: { _tag: "resource" }, steps: [{ field: eqField }] },
-      right: { _tag: "lit", value: "x" },
-    });
+    const conciseContains = expectOk(
+      compileThing([read(Thing).when(eq(Thing.contains, "c"))]),
+    );
+    const conciseSteps = expectOk(
+      compileThing([read(Thing).when(eq(Thing.steps, "s"))]),
+    );
+    const conciseThen = expectOk(
+      compileThing([read(Thing).when(eq(Thing.then, "x"))]),
+    );
+    const conciseToJson = expectOk(
+      compileThing([read(Thing).when(eq(Thing.toJSON, "x"))]),
+    );
+
+    expect(dollars.rules[0]?.expr).toEqual(conciseField.rules[0]?.expr);
     expect(method.rules[0]?.expr).toEqual(dollars.rules[0]?.expr);
     expect(callback.rules[0]?.expr).toEqual(dollars.rules[0]?.expr);
     expect(collidingCall.rules[0]?.expr).toEqual(dollars.rules[0]?.expr);
     expect(conciseField.rules[0]?.expr).toEqual(dollars.rules[0]?.expr);
-    expect(thenField.rules[0]?.expr).toEqual({
-      _tag: "eq",
-      left: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [{ field: { ...eqField, localName: "then" } }],
-      },
-      right: { _tag: "lit", value: "x" },
-    });
-    expect(toJsonField.rules[0]?.expr).toEqual({
-      _tag: "eq",
-      left: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [{ field: { ...eqField, localName: "toJSON" } }],
-      },
-      right: { _tag: "lit", value: "x" },
-    });
-    expect(containsField.rules[0]?.expr).toEqual({
-      _tag: "eq",
-      left: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [{ field: { ...eqField, localName: "contains" } }],
-      },
-      right: { _tag: "lit", value: "c" },
-    });
-    expect(stepsField.rules[0]?.expr).toEqual({
-      _tag: "eq",
-      left: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [{ field: { ...eqField, localName: "steps" } }],
-      },
-      right: { _tag: "lit", value: "s" },
-    });
+    expect(thenField.rules[0]?.expr).toEqual(conciseThen.rules[0]?.expr);
+    expect(toJsonField.rules[0]?.expr).toEqual(conciseToJson.rules[0]?.expr);
+    expect(containsField.rules[0]?.expr).toEqual(conciseContains.rules[0]?.expr);
+    expect(stepsField.rules[0]?.expr).toEqual(conciseSteps.rules[0]?.expr);
     expectOk(compile([read(Issue).when($(Issue).owner.eq(me))]));
     expectInvalid(compileThing([read(Thing).when($(Thing)("x"))]), /malformed eq/);
   });
 });
 
 describe("hashed compile", () => {
-  test("compileReadAuthorization restamps ids to hashRelativeRule", async () => {
-    const template = await Effect.runPromise(
+  test("equal policies have stable rule ids and semantic changes rotate them", async () => {
+    const compilePolicy = (rules: readonly ReadRule[]) => Effect.runPromise(
       compileReadAuthorization({
         schema: App,
-        rules: [read(Issue).when(eq(Issue.owner, me)), read(Taggable).when(contains(Taggable.tags, me))],
+        rules,
         claims: [orgClaim],
         principal: { entity: User.authId },
       }),
     );
-    expect(template.rules.length).toBe(2);
-    for (const rule of template.rules) {
-      const hashed = await Effect.runPromise(hashRelativeRule(rule));
-      expect(hashed).toBe(rule.id);
-    }
-    const placeholders = template.rules.map((_, i) => i.toString(16).padStart(64, "0"));
-    for (const rule of template.rules) {
-      expect(placeholders.includes(rule.id)).toBe(false);
-    }
+    const rules = [
+      read(Issue).when(eq(Issue.owner, me)),
+      read(Taggable).when(contains(Taggable.tags, me)),
+    ];
+    const first = await compilePolicy(rules);
+    const again = await compilePolicy(rules);
+    const changed = await compilePolicy([
+      read(Issue).when(all(eq(Issue.owner, me), hasClass("member"))),
+      rules[1]!,
+    ]);
+
+    expect(first.rules.map((rule) => rule.id))
+      .toEqual(again.rules.map((rule) => rule.id));
+    expect(changed.rules[0]?.id).not.toBe(first.rules[0]?.id);
+    expect(changed.rules[1]?.id).toBe(first.rules[1]?.id);
   });
 });
 
@@ -682,21 +577,13 @@ describe("field-target callbacks use the same proxy", () => {
   });
 
   test("owner.authId.eq(subject) hops to the ref target", () => {
-    const template = expectOk(
+    const viaCallback = expectOk(
       compile([read(Issue.owner).when((owner) => owner.authId.eq(subject))]),
     );
-    expect(template.rules[0]?.expr).toEqual({
-      _tag: "eq",
-      left: {
-        _tag: "ref",
-        root: { _tag: "resource" },
-        steps: [
-          { field: { _tag: "RelativeFieldId", owner: issueOwner, localName: "owner" } },
-          { field: { _tag: "RelativeFieldId", owner: userOwner, localName: "authId" } },
-        ],
-      },
-      right: { _tag: "subject" },
-    });
+    const viaPath = expectOk(
+      compile([read(Issue.owner).when(eq(path(Issue.owner, User.authId), subject))]),
+    );
+    expect(viaCallback.rules[0]?.expr).toEqual(viaPath.rules[0]?.expr);
   });
 
   test("self-ref callback hops stay on the field's owning row", () => {

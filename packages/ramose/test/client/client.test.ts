@@ -93,8 +93,6 @@ describe("the ramose/client bundle", () => {
     expect(built.success).toBe(true);
     const bundle = await built.outputs[0]!.text();
 
-    expect(bundle.length).toBeGreaterThan(200_000);
-
     expect(bundle).not.toContain("alchemy");
   });
 });

@@ -179,9 +179,12 @@ describe("advanced Field(schema)", () => {
 });
 
 describe("uuid public type", () => {
-  test("is a string schema, not a { vt, v } struct", () => {
+  test("accepts strings and rejects record-shaped values", () => {
     expect(User.token.valueType).toBe("uuid");
-    expect(User.token.schema.ast._tag).toBe("String");
+    expect(Schema.is(User.token.schema)("550e8400-e29b-41d4-a716-446655440000"))
+      .toBe(true);
+    expect(Schema.is(User.token.schema)({ vt: "uuid", v: "550e8400" }))
+      .toBe(false);
   });
 });
 

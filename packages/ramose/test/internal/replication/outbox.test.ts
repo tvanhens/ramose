@@ -131,10 +131,24 @@ describe("durable client identities", () => {
     }
   });
 
-  test("the public wire pattern is the engine's sealed envelope pattern", () => {
-    expect(ENTITY_ID_PATTERN.source).toBe(SEALED_ENTITY_ID_PATTERN.source);
-
-    expect(SEALED_ENTITY_HANDLE_PATTERN.source).toBe(SEALED_ENTITY_ID_PATTERN.source);
+  test("public and engine wire patterns accept the same handle spellings", () => {
+    const candidates = [
+      [`${"a".repeat(54)}A`, true],
+      ["a".repeat(54), false],
+      [`${"a".repeat(54)}+`, false],
+      [`${"a".repeat(54)}B`, false],
+    ] as const;
+    for (const [candidate, accepted] of candidates) {
+      for (
+        const pattern of [
+          ENTITY_ID_PATTERN,
+          SEALED_ENTITY_ID_PATTERN,
+          SEALED_ENTITY_HANDLE_PATTERN,
+        ]
+      ) {
+        expect(pattern.test(candidate)).toBe(accepted);
+      }
+    }
     expect(ENTITY_ID_CODEC).toBe(ENTITY_ID_CODEC_VERSION);
   });
 

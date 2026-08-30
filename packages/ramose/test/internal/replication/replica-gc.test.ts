@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   classifyReplicaStorageFailure,
-  emptyReplicaGcOutcome,
   ReplicaQuotaExhaustedError,
   ReplicaReachability,
   replicaQuotaRecovery,
@@ -71,8 +70,9 @@ describe("reachability", () => {
 });
 
 describe("sweep selection", () => {
-  test("keeps every live address and sweeps the rest in stored order", () => {
-    expect(unreachableNodeHashes(["a", "b", "c", "d"], new Set(["b", "d"]))).toEqual(["a", "c"]);
+  test("keeps every live address and sweeps exactly the rest", () => {
+    expect(new Set(unreachableNodeHashes(["a", "b", "c", "d"], new Set(["b", "d"]))))
+      .toEqual(new Set(["a", "c"]));
   });
 
   test("sweeps nothing when every stored address is live", () => {
@@ -185,16 +185,5 @@ describe("keys", () => {
     expect(replicaPartitionScopeKey("ramose-replica-v3:s:p:d:v:h:extra")).toBeUndefined();
     expect(replicaPartitionScopeKey("ramose-replica-v2:s:p:d:v:h")).toBeUndefined();
     expect(replicaPartitionScopeKey("")).toBeUndefined();
-  });
-});
-
-test("an empty pass reports nothing examined and nothing removed", () => {
-  expect(emptyReplicaGcOutcome()).toEqual({
-    partitions: 0,
-    swept: 0,
-    skipped: 0,
-    nodes: 0,
-    retained: 0,
-    staging: 0,
   });
 });

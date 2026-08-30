@@ -14,7 +14,6 @@ import {
   replicaAbsent,
   replicaManifestFingerprint,
   replicaManifestIdentity,
-  replicaNodeChildren,
   replicaRecoveryAction,
   replicaRefused,
   replicaRestored,
@@ -426,7 +425,6 @@ describe("node validation", () => {
       index: Index.EAVT,
       node,
     })).toBeUndefined();
-    expect(replicaNodeChildren(node)).toEqual([]);
   });
 
   test("a node reached from the wrong index or the wrong kind is refused", () => {
@@ -465,7 +463,6 @@ describe("node validation", () => {
       index: Index.EAVT,
       node,
     })).toBeUndefined();
-    expect(replicaNodeChildren(node)).toEqual(children);
     expect(validateReplicaNode(Index.EAVT, ref({ kind: NodeKind.Dir, count: 4 }), {
       index: Index.EAVT,
       node,

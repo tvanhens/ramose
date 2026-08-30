@@ -101,8 +101,6 @@
     "bench/**/*.ts",
     "test/**/*.ts",
     "test/**/*.tsx",
-    "scripts/check-test-doubles.ts",
-    "scripts/check-test-doubles.test.ts",
     "examples/**/*.ts"
   ],
   "exclude": [

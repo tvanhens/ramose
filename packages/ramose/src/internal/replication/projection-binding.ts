@@ -65,21 +65,6 @@ export const projectionBuild = (value: unknown): string => {
   return value as string;
 };
 
-export const projectionIdentity = (
-  build: unknown,
-  revision?: unknown,
-): ProjectionIdentity =>
-  Object.freeze({
-    revision: normalizeProjectionRevision(revision),
-    build: projectionBuild(build),
-  });
-
-export const sameProjectionIdentity = (
-  left: ProjectionIdentity,
-  right: ProjectionIdentity,
-): boolean =>
-  left.revision === right.revision && left.build === right.build;
-
 export const makeClientProjectionCatalog = (
   build: string,
   installed: readonly InstalledProjection[],
