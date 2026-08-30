@@ -512,6 +512,29 @@ export class ReplicationSession {
    * a reconnect start with no resume revision and take a fresh snapshot,
    * instead of publishing a value assembled from storage that was refused.
    */
+  /**
+   * The one entry point through which a metadata-only candidate becomes a
+   * validated partition.
+   *
+   * A candidate is the first time this session touches its partition, and the
+   * storage only walks a partition when it is asked to restore one. Every
+   * first-authenticated-frame branch therefore goes through here — including
+   * the ones that discard the value and continue the partition instead of
+   * publishing it, because continuing an unwalked journal is exactly how a
+   * drifted one would reach a published `Db`.
+   */
+  private async confirmedCandidate(
+    prior: Pick<ReplicaCacheCandidate, "identity" | "revision">,
+  ): Promise<BoundRestoredReplica> {
+    return this.confirmed(
+      await this.storage.restoreCandidateOutcome(
+        prior,
+        this.attributes,
+        this.readCompatibilityHash,
+      ),
+    );
+  }
+
   private confirmed<A>(outcome: ReplicaRestoreOutcome<A>): A {
     const replica = restoredReplica(outcome);
     if (replica !== undefined) return replica;
@@ -545,20 +568,22 @@ export class ReplicationSession {
         ) {
           throw new Error("authenticated resume has no cached replica candidate");
         }
-        const restored = this.confirmed(
-          await this.storage.restoreCandidateOutcome(
-            prior,
-            this.attributes,
-            this.readCompatibilityHash,
-          ),
-        );
+        const restored = await this.confirmedCandidate(prior);
         this.publishReplica(restored.identity, restored, false, generation);
         return false;
       }
       case "change": {
-        if (frame.type !== "Change") {
+        if (frame.type !== "Change" || prior === undefined) {
           throw new Error("authenticated candidate action disagrees with its frame");
         }
+        // `applyChange` continues the stored partition without re-reading it
+        // through the integrity walk, because the steady-state path has always
+        // validated at open. This path has not: a metadata-only candidate is
+        // the first time this partition is touched, and the change is about to
+        // be combined with a journal nothing has checked. Validate it first —
+        // the result is discarded, since the change supersedes it.
+        await this.confirmedCandidate(prior);
+        if (!this.current(generation)) return false;
         const installed = await this.storage.applyChange(frame, {
           signal: this.controller.signal,
           lease: this.lease,
@@ -606,13 +631,7 @@ export class ReplicationSession {
         if (prior === undefined || frame.type !== "KeepAlive") {
           throw new Error("authenticated candidate action disagrees with its frame");
         }
-        const restored = this.confirmed(
-          await this.storage.restoreCandidateOutcome(
-            prior,
-            this.attributes,
-            this.readCompatibilityHash,
-          ),
-        );
+        const restored = await this.confirmedCandidate(prior);
         this.publishStale(frame.identity, restored, generation);
         return false;
       }

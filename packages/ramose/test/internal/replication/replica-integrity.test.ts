@@ -325,6 +325,13 @@ describe("manifest validation", () => {
       expect(reasonOf(validated({ datoms: [{ ...base, value, op: "add" }] })))
         .toBe("manifest-undecodable");
     }
+    // Byte payloads are decoded with `atob`, which throws on anything that is
+    // not base64 — and a throw would skip the typed outcome entirely, wedging
+    // every reconnect on the same record.
+    for (const value of ["%%%", "AAA", "a===", "AA=A"]) {
+      expect(reasonOf(validated({ datoms: [{ ...base, value: { type: "bytes", value }, op: "add" }] })))
+        .toBe("manifest-undecodable");
+    }
     // Every variant the wire format defines still validates.
     for (
       const value of [

@@ -23,6 +23,7 @@ import type {
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
 import {
   armCheckpoint,
+  checkpointStatus,
   releaseCheckpoint,
   resetTestHooks,
   testRuntimeBoundaries,
@@ -169,6 +170,15 @@ const flipNodeByte = async (
   const body = new Uint8Array(record.body);
   body[body.length - 1] ^= 0x01;
   await writeRecord(name, NODES, { partition, hash, body });
+};
+
+/** Wait until an armed `wait` checkpoint has actually been reached. */
+const reachedCheckpoint = async (name: string): Promise<void> => {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    if (checkpointStatus()[name]?.pending === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error(`checkpoint ${name} was never reached`);
 };
 
 const snapshotDatom = (entity: string, value: string): SnapshotDatom => ({
@@ -516,6 +526,126 @@ browserTest(
       resetTestHooks();
       reader.close();
       writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a clear during the walk fences it instead of publishing over deleted nodes",
+  async ({ browser }) => {
+    const name = `ramose-integrity-fence-${browser.uniqueId}`;
+    const selected = identity();
+    const reader = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    const maintainer = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installOne(reader, selected, opaque("1"), "cleared");
+      await confirm(reader, selected, "cleared");
+
+      // A restore has validated the whole partition and is about to publish it.
+      // Nothing is pinned or enrolled yet — the caller registers only once it
+      // holds a value — so maintenance cannot see it, and the walk has to carry
+      // its own fence.
+      armCheckpoint("replica.validated", "wait");
+      const walking = reader.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
+      // Park until the walk has genuinely finished and adopted its generation,
+      // so the clear lands in the window this fence exists for rather than
+      // somewhere earlier that other checks already cover.
+      await reachedCheckpoint("replica.validated");
+      await maintainer.clearScope({ server: SERVER, principal: LEFT });
+      releaseCheckpoint("replica.validated");
+
+      // The walk loses the generation it adopted, so the ordinary typed fence
+      // error surfaces rather than a `Db` over nodes the clear just removed.
+      await expect(walking).rejects.toMatchObject({ _tag: "ReplicaFencedError" });
+      expect((await dump(name))[COMMITTED]).toEqual([]);
+      expect((await dump(name))[NODES]).toEqual([]);
+    } finally {
+      resetTestHooks();
+      reader.close();
+      maintainer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "an undecodable stored value is quarantined, not thrown out of the restore",
+  async ({ browser }) => {
+    const name = `ramose-integrity-bytes-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    let storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installOne(storage, selected, opaque("1"), "decodable");
+      const record = await committedOf(name, partition);
+      storage.close();
+      // `atob` throws on this, and a raw throw would skip the typed outcome and
+      // the quarantine, so every later restore would fail identically.
+      await writeRecord(name, COMMITTED, {
+        ...record,
+        datoms: [{
+          entity: opaque("x"),
+          field: ":item/name",
+          value: { type: "bytes", value: "%%%" },
+          op: "add",
+        }],
+      });
+
+      storage = await IndexedDbReplicaStorage.open(name);
+      expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
+        .toMatchObject({ _tag: "replacement-required", reason: "manifest-undecodable" });
+      // And the next restore finds nothing rather than failing the same way.
+      expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
+        .toEqual({ _tag: "absent" });
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a snapshot restarted after its base was quarantined still installs",
+  async ({ browser }) => {
+    const name = `ramose-integrity-rebase-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installOne(storage, selected, opaque("1"), "base");
+      // A snapshot begins against that committed value and is interrupted.
+      const snapshot = opaque("q");
+      const revision = opaque("2");
+      await storage.startSnapshot({
+        type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
+      });
+
+      // The committed value it was staged against turns out to be corrupt and
+      // is withdrawn, leaving the staging record based on a revision that is
+      // now gone.
+      const roots = (await committedOf(name, partition)).roots as Record<string, { hash: string }>;
+      await flipNodeByte(name, partition, roots.eavt.hash);
+      expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
+        .toMatchObject({ _tag: "replacement-required" });
+
+      // A snapshot identity is derived from the identity and revision, so the
+      // reconnect restarts this very snapshot. Resuming it in place would keep
+      // the stale base and `commitSnapshot` could never satisfy it again.
+      await storage.startSnapshot({
+        type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
+      });
+      await storage.stageSnapshotChunk({
+        type: "SnapshotChunk", protocol: 1, identity: selected, snapshot, index: 0,
+        datoms: [snapshotDatom(opaque("x"), "rebased")],
+      });
+      const installed = await storage.commitSnapshot({
+        type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
+      }, attributes);
+      expect(installed?.revision).toBe(revision);
+      expect(await names(installed!.db)).toEqual(["rebased"]);
+    } finally {
+      storage.close();
       await deleteDatabase(name);
     }
   },

@@ -1369,6 +1369,12 @@ export class IndexedDbReplicaStorage {
   ): Promise<ReplicaRestoreOutcome<CommittedRecord>> {
     const partition = replicaPartitionKey(identity);
     const expect = replicaManifestFingerprint(record);
+    // The generations guarding this partition as they stood when the record was
+    // read. Validation takes as long as reading the replica, and a clear or an
+    // eviction in another handle sees no pin and no enrolled session yet — the
+    // caller registers only once it has a value — so the walk has to carry the
+    // fence itself rather than rely on being visible to maintenance.
+    const lease = await this.leaseFor(identity);
     const quarantine = async (
       reason: Parameters<typeof replicaUnusable>[1],
       detail: string,
@@ -1379,6 +1385,7 @@ export class IndexedDbReplicaStorage {
       await this.boundaries.checkpoint("replica.refused");
       const removed = await this.quarantinePartition(identity, {
         expect,
+        lease,
         ...(fingerprint === undefined ? {} : { fingerprint }),
       });
       // A concurrent install replaced the manifest this restore refused, so
@@ -1407,7 +1414,61 @@ export class IndexedDbReplicaStorage {
     }
     const invalid = await validateReachableNodes(this.database, manifest.success);
     if (invalid !== undefined) return quarantine(invalid.reason, invalid.detail);
+    // Everything above described the partition as it was when the record was
+    // read, and the walk takes as long as reading the replica. Re-observe the
+    // guarding generations before anything observable is built.
+    //
+    // Only a clear or an eviction removes content nodes, and only those bump a
+    // generation, so this is exactly the difference that matters here: a
+    // concurrent *install* leaves the manifest this walk validated fully intact
+    // and its nodes in place — publishing it is the older of the old-or-new
+    // complete values the caller is promised, not a mixture. A clear or an
+    // eviction is what would leave a value over deleted nodes, and it surfaces
+    // the ordinary typed fence error instead.
+    // The boundary between a completed walk and the fence that lets its result
+    // be published. Inert in production; the source-only testing assembly parks
+    // here to run a clear against a replica that has just validated.
+    await this.boundaries.checkpoint("replica.validated");
+    await this.confirmGuardingGenerations(lease, identity);
     return replicaRestored(manifest.success);
+  }
+
+  /**
+   * The publish fence.
+   *
+   * Reading a partition and acting on it are never one atomic step: a walk
+   * takes as long as reading the replica, and a staged snapshot outlives the
+   * connection that began it. Destructive maintenance in another handle sees
+   * neither — a restore holds no pin until its caller has a value, and staging
+   * is not a participant — so every path states the same invariant instead:
+   *
+   *   Nothing derived from an earlier read of a partition may become
+   *   observable or durable until, in one IndexedDB transaction at the moment
+   *   it becomes load-bearing, the derivation re-confirms both the durable
+   *   generations guarding that partition and the committed state it assumed.
+   *
+   * The generations are what a clear or an eviction moves, so re-observing
+   * them is what distinguishes "the value I validated is still mine to
+   * publish" from "its nodes were deleted while I was reading them". The
+   * committed state is what an ordinary install moves, and each path names the
+   * part of it that its own derivation depended on:
+   *
+   *   - a restored replica re-confirms the generations here, in the one place
+   *     every restore path funnels through, before it can be handed back;
+   *   - a quarantine re-confirms the exact manifest it refused, so it never
+   *     withdraws a replacement it did not examine;
+   *   - a snapshot start re-confirms that the base its staging recorded is
+   *     still committed, and rebases when it is not;
+   *   - a snapshot commit and a change apply re-confirm their base revision
+   *     inside the very transaction that installs.
+   */
+  private async confirmGuardingGenerations(
+    lease: ReplicaLease,
+    identity: ReplicationIdentity,
+  ): Promise<void> {
+    const transaction = this.database.transaction(GENERATIONS, "readonly");
+    await enforceFence(transaction, replicaFence(lease, identity));
+    await transactionDone(transaction);
   }
 
   /** Remove one stale exact binding without touching its shared partition. */
@@ -1759,10 +1820,21 @@ export class IndexedDbReplicaStorage {
           transaction.objectStore(COMMITTED).get(partition),
         ),
       ]);
+      // The publish fence again, for the one derivation that outlives its
+      // connection. A snapshot identity is a deterministic function of the
+      // identity and the revision, so a reconnect restarts the very same
+      // snapshot and this fast path resumes the staging in place — but that
+      // staging recorded a base revision read at some earlier moment, and
+      // resuming it is only sound while that base is still the committed one.
+      // A quarantine, or any other change of the committed value, in between
+      // leaves a base `commitSnapshot` can never satisfy, stranding the
+      // partition on every following attempt. Re-confirming it here rebases
+      // instead.
       if (
         current !== undefined && current.snapshot === frame.snapshot &&
         current.revision === frame.revision &&
-        sameReplicationIdentity(current.identity, frame.identity)
+        sameReplicationIdentity(current.identity, frame.identity) &&
+        current.baseRevision === (committed?.revision ?? null)
       ) {
         await transactionDone(transaction);
         return;

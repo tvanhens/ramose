@@ -417,6 +417,45 @@ clearing and eviction, and the whole quarantine is one IndexedDB transaction, so
 a crash cut leaves the corrupt partition exactly as it was and a retry completes
 it.
 
+### The publish fence
+
+Reading a partition and acting on it are never one atomic step. A walk takes as
+long as reading the replica, and a staged snapshot outlives the connection that
+began it. Destructive maintenance in another handle sees neither — a restore
+holds no pin until its caller has a value, and staging is not a participant — so
+rather than widen what maintenance can see, every path states one invariant:
+
+> Nothing derived from an earlier read of a partition may become observable or
+> durable until, in one IndexedDB transaction at the moment it becomes
+> load-bearing, the derivation re-confirms both the durable generations guarding
+> that partition and the committed state it assumed.
+
+The generations are what a clear or an eviction moves, and only those two delete
+content nodes, so re-observing them is exactly what separates "the value I
+validated is still mine to publish" from "its nodes were deleted while I was
+reading them". An ordinary install moves the committed state instead, and leaves
+a validated manifest and its nodes entirely intact — publishing it is the older
+of the old-or-new complete values a caller is promised, not a mixture — so each
+path re-confirms only the part of the committed state its own derivation
+depended on. Every path derives from the one invariant:
+
+- a **restored replica** re-confirms the generations in `validated`, the single
+  place cold restore, bound restore, and confirmed-candidate restore all funnel
+  through, after the walk and before the manifest can be handed back;
+- a **quarantine** re-confirms the exact manifest it refused, by revision, root
+  addresses, basis, allocator, and stored-map sizes;
+- a **snapshot start** re-confirms that the base revision its staging recorded
+  is still the committed one, and rebases the staging when it is not — a
+  snapshot identity is a deterministic function of identity and revision, so a
+  reconnect resumes the very same staging, and a base its commit can never
+  satisfy again would strand the partition on every following attempt;
+- a **snapshot commit** and a **change apply** re-confirm their base revision
+  inside the very transaction that installs.
+
+A failed generation re-check surfaces the ordinary typed fence error; a failed
+committed-state re-check reports that nothing is selected, so the caller chooses
+again from what is actually stored.
+
 Validating a partition takes as long as reading it, so another session may
 install a complete replacement while a walk is still running. Withdrawal is
 therefore conditional on the refused manifest still being the stored one,

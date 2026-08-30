@@ -356,10 +356,22 @@ const isLogicalValue = (value: unknown): boolean => {
     case "string":
     case "ref":
     case "uuid":
-    case "bytes":
       return typeof value.value === "string";
+    case "bytes":
+      // Materialization decodes this with `atob`, which throws on anything
+      // that is not base64 — and a throw here would escape the typed outcome
+      // and wedge every reconnect on the same record.
+      return typeof value.value === "string" && isCanonicalBase64(value.value);
     default:
       return false;
+  }
+};
+
+const isCanonicalBase64 = (value: string): boolean => {
+  try {
+    return btoa(atob(value)) === value;
+  } catch {
+    return false;
   }
 };
 
@@ -675,16 +687,25 @@ export const expectedReplicaContents = (
     if (built.schema.isAvet(datom.a)) digestReplicaDatoms(digests[2], [datom]);
     if (built.schema.isVaet(datom.a)) digestReplicaDatoms(digests[3], [datom]);
   };
-  for (const datom of replicaBootstrapDatoms()) fold(datom);
-  for (const datom of built.datoms) fold(datom);
-  for (const logical of manifest.datoms) {
-    const fact = replicaFactDatom(logical, built.schema, entities);
-    if (typeof fact === "string") {
-      return Result.fail(
-        failure("manifest-invariant", `stored fact on ${logical.field} cannot be materialized`),
-      );
+  try {
+    for (const datom of replicaBootstrapDatoms()) fold(datom);
+    for (const datom of built.datoms) fold(datom);
+    for (const logical of manifest.datoms) {
+      const fact = replicaFactDatom(logical, built.schema, entities);
+      if (typeof fact === "string") {
+        return Result.fail(
+          failure("manifest-invariant", `stored fact on ${logical.field} cannot be materialized`),
+        );
+      }
+      fold(fact);
     }
-    fold(fact);
+  } catch {
+    // Materializing a stored value must never escape as a raw throw: that
+    // would skip the typed outcome and the quarantine, and the same record
+    // would fail identically on every later restore. The checks above reject
+    // each known way a stored value can refuse to decode; this catches any
+    // that a future value type adds.
+    return Result.fail(failure("manifest-undecodable", "a stored fact cannot be materialized"));
   }
   return Result.succeed(digests);
 };
