@@ -21,6 +21,7 @@
     "release:dry": "bun run scripts/release.ts --dry-run --no-provenance",
     "release:version": "bun run scripts/set-version.ts",
     "release:check": "bun run scripts/check-release.ts --built",
+    "record:frames": "bun run scripts/record-optimistic-fence-frames.ts",
     "test:doubles": "bun run scripts/check-test-doubles.ts",
     "test:unit": "bun test --parallel=3 packages/ramose test/support website/scripts scripts/check-test-doubles.test.ts",
     "test:browser": "bunx vitest run --config vitest.browser.config.ts",

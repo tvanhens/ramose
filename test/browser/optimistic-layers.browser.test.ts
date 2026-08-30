@@ -15,8 +15,14 @@
  * | after the acknowledgement, before the fence | the mapped optimistic view, intact |
  * | inside the fence transaction          | nothing observed, nothing removed       |
  * | after a rejection, before the replay   | exactly that layer gone, the rest kept |
+ *
+ * The frames the session consumes are a *recording* of the real local Worker,
+ * regenerated only by `bun run record:frames`; see
+ * `test/browser/frames/PROVENANCE.md`. The identity and the client schema are
+ * read back from that recording, so nothing here pins a value of its own.
  */
 
+import * as Result from "effect/Result";
 import { expect } from "vitest";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import type { OperationVersion } from "../../packages/ramose/src/internal/authorization/identities.ts";
@@ -42,7 +48,10 @@ import {
   type ReplicaDatabaseScope,
   type ReplicaScope,
 } from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
-import type { ReplicationIdentity } from "../../packages/ramose/src/internal/replication/protocol.ts";
+import {
+  decodeReplicationFrame,
+  type ReplicationIdentity,
+} from "../../packages/ramose/src/internal/replication/protocol.ts";
 import {
   generateServerIdentityRoot,
   sealingKeyOf,
@@ -52,36 +61,32 @@ import {
   resetTestHooks,
   testRuntimeBoundaries,
 } from "../../packages/ramose/src/internal/test-hooks.ts";
+import recorded from "./frames/optimistic-fence.client.json";
 import { browserTest } from "./fixtures.ts";
 
-const opaque = (character: string): string => character.repeat(43);
-
-const SERVER = opaque("s");
-const PRINCIPAL = opaque("p");
-const DATABASE = opaque("d");
-const READ_COMPATIBILITY = ReadCompatibilityHash.make(opaque("k"));
-
 /**
- * Exactly the identity `test/browser/frames/optimistic-fence.ndjson` carries,
- * so the recorded frames install into the very database the mutation queue
- * below names.
+ * The identity and client schema of the recorded activation.
+ *
+ * Read from the recording rather than pinned here: the opaque ids are minted by
+ * the real local Worker and change whenever `bun run record:frames` is run
+ * again, so a test that spelled them out would be a second, silently drifting
+ * copy of the fixture.
  */
-const identity = (overrides: Partial<ReplicationIdentity> = {}): ReplicationIdentity => ({
-  version: 1,
-  server: SERVER,
-  principal: PRINCIPAL,
-  database: DATABASE,
-  catalog: opaque("c"),
-  readView: opaque("v"),
-  readCompatibilityHash: READ_COMPATIBILITY,
-  graphLineage: [],
-  authenticator: opaque("a"),
+const identity = (
+  overrides: Partial<ReplicationIdentity> = {},
+): ReplicationIdentity => ({
+  ...(recorded.identity as unknown as ReplicationIdentity),
   ...overrides,
 });
 
-const ATTRIBUTES: readonly AttributeSpec[] = [
-  { ident: ":item/name", valueType: ":db.type/string", index: true },
-];
+const READ_COMPATIBILITY = ReadCompatibilityHash.make(
+  recorded.identity.readCompatibilityHash,
+);
+
+const ATTRIBUTES = recorded.attributes as readonly AttributeSpec[];
+
+/** A cardinality-one string field the recording actually carries. */
+const TITLE = ":conformanceIssue/title";
 
 const version = "b".repeat(64) as OperationVersion;
 
@@ -91,7 +96,7 @@ const operation = {
   localName: "rename",
 };
 
-const name = { ident: ":item/name", valueType: "string" } as const;
+const name = { ident: TITLE, valueType: "string" } as const;
 
 /** The one installed projection. Trusted client-bundle code; never persisted. */
 const rename = ({ input, self, tx }: {
@@ -227,8 +232,8 @@ const install = async (
     snapshot,
     index: 0,
     datoms: [{
-      entity: opaque("e"),
-      field: ":item/name",
+      entity: "e".repeat(43),
+      field: TITLE,
       value: { type: "string", value },
       op: "add",
     }],
@@ -259,8 +264,52 @@ const names = async (
   const restored = await storage.restore(selected, ATTRIBUTES, READ_COMPATIBILITY);
   try {
     const view = await reconciler.view(restored!.db);
-    const attribute = restored!.db.schema.attr(":item/name")!.id;
+    const attribute = restored!.db.schema.attr(TITLE)!.id;
     const rows = await view.db.datomsArray(Index.AEVT, { a: attribute });
+    return rows.filter((datom) => datom.op).map((datom) => String(datom.v)).sort();
+  } finally {
+    dropped(restored);
+  }
+};
+
+browserTest(
+  "the recorded fixture is still a valid stream under the current codec",
+  async () => {
+    // Fetched through the exact path the session uses, and decoded with the
+    // product's own frame codec — so a protocol change the recording predates
+    // fails here, loudly, instead of silently weakening every test below.
+    // Re-record with `bun run record:frames`; never hand-edit the file.
+    const response = await fetch("/db/optimistic-fence/replicate", { method: "POST" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/x-ndjson");
+    const lines = (await response.text()).split("\n").filter((line) => line !== "");
+    const frames = lines.map((line) => {
+      const decoded = decodeReplicationFrame(line);
+      if (Result.isFailure(decoded)) throw decoded.failure;
+      return decoded.success;
+    });
+    expect(frames.map((frame) => frame.type)).toEqual([
+      "SnapshotStart",
+      ...frames.slice(1, -1).map(() => "SnapshotChunk"),
+      "SnapshotCommit",
+    ]);
+    // The recording and its client half describe one activation, not two.
+    for (const frame of frames) {
+      expect((frame as { readonly identity?: unknown }).identity)
+        .toEqual(recorded.identity);
+    }
+  },
+);
+
+/** Every `title` the committed replica alone holds, with no overlay. */
+const committedNames = async (
+  storage: IndexedDbReplicaStorage,
+  selected: ReplicationIdentity,
+): Promise<readonly string[]> => {
+  const restored = await storage.restore(selected, ATTRIBUTES, READ_COMPATIBILITY);
+  try {
+    const attribute = restored!.db.schema.attr(TITLE)!.id;
+    const rows = await restored!.db.datomsArray(Index.AEVT, { a: attribute });
     return rows.filter((datom) => datom.op).map((datom) => String(datom.v)).sort();
   } finally {
     dropped(restored);
@@ -274,7 +323,7 @@ const committedEid = async (
 ): Promise<number> => {
   const restored = await storage.restore(selected, ATTRIBUTES, READ_COMPATIBILITY);
   try {
-    const attribute = restored!.db.schema.attr(":item/name")!.id;
+    const attribute = restored!.db.schema.attr(TITLE)!.id;
     const rows = await restored!.db.datomsArray(Index.AEVT, { a: attribute });
     return rows[0]!.e;
   } finally {
@@ -787,7 +836,13 @@ browserTest(
         .toBe("observed");
       expect(await rawLayers(database)).toEqual([]);
       expect(reconciler.snapshot().layers).toEqual([]);
-      expect(await names(reconciler, storage, selected)).toEqual(["authoritative"]);
+      // What stands is exactly the authoritative snapshot the recording carried
+      // — compared against the committed replica itself rather than a pinned
+      // list, so re-recording against a different world stays honest.
+      const authoritative = await committedNames(storage, selected);
+      expect(authoritative.length).toBeGreaterThan(0);
+      expect(authoritative).not.toContain("committed-unobserved");
+      expect(await names(reconciler, storage, selected)).toEqual(authoritative);
     } finally {
       await session?.close();
       storage.close();

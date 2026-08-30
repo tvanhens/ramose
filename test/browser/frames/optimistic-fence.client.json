@@ -1,0 +1,55 @@
+{
+  "identity": {
+    "version": 1,
+    "server": "tX78aTJeDmD-m_sDVUtzVuiNDNTtMh9pKgYqJO50lNo",
+    "principal": "LipnRoE3p1pWvV27UWNu0d3lAAVyVfNlzSoJyNwcjJY",
+    "database": "jFHKC-G7-yFiANabz_M6d7aqTEyYxrDUXtwIlJ6tjdE",
+    "catalog": "sCe8Ibtfu7LSkOpRSlYMOCy9LUGiMjIl7Y1eHVsoI08",
+    "readView": "rgBjBvc7abj1XnCQ5RxBS2RURT1sifuWiyBKifLRepw",
+    "readCompatibilityHash": "oFEH3elwhyabwvowldKRf0enVD9xjLjEpntTY35ZWsw",
+    "graphLineage": [],
+    "authenticator": "hFjs1z7LoCENv0MNo-kMeIrbnfjGqQzg0ozhsGCABxs"
+  },
+  "attributes": [
+    {
+      "ident": ":conformanceIssue/key",
+      "valueType": ":db.type/string",
+      "index": true
+    },
+    {
+      "ident": ":conformanceIssue/org",
+      "valueType": ":db.type/string",
+      "index": true
+    },
+    {
+      "ident": ":conformanceIssue/owner",
+      "valueType": ":db.type/ref",
+      "index": true
+    },
+    {
+      "ident": ":conformanceIssue/parent",
+      "valueType": ":db.type/ref",
+      "index": true
+    },
+    {
+      "ident": ":conformanceIssue/title",
+      "valueType": ":db.type/string",
+      "index": true
+    },
+    {
+      "ident": ":conformanceUser/access",
+      "valueType": ":db.type/string",
+      "index": true
+    },
+    {
+      "ident": ":conformanceUser/sub",
+      "valueType": ":db.type/string",
+      "index": true
+    },
+    {
+      "ident": ":ramose/type",
+      "valueType": ":db.type/string",
+      "index": true
+    }
+  ]
+}

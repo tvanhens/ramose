@@ -69,6 +69,7 @@ bun run test:unit               # fast package tests (`--parallel=3`, no workerd
 bunx playwright install chromium # one-time local browser install
 bun run test:browser            # actual Chromium + actual browser APIs
 bun run test:local              # Alchemy local stack (serial, workerd)
+bun run record:frames           # re-record test/browser/frames/* from that stack
 bun run test                    # unit then local
 bun website/scripts/docs-check.mjs   # cited snippets + docs facts; blocks CI
 bun run dev:todos               # local peer on :1337
@@ -103,7 +104,7 @@ Allowed instrumentation wraps a real implementation and forwards to it:
 - `GET /__test__/db/:name/catalog-proof` — read the exact deployment-bound proof from the real test Worker registry so data-plane conformance requests cannot fabricate or copy a host-side deployment identity
 - `GET /__test__/db/:name/session|watch|subscribe` with a WebSocket upgrade — forward to the real Replica DO session/basis-watch endpoint or the real Transactor subscriber; a session `token` is verified by the deployed peer's real JWT verifier
 - `IndexedDbReplicaStorage.writeCounts()` — counters incremented immediately after the real IndexedDB transactions that stored a node, manifest, head, or staged chunk actually committed; nothing reads them to make a decision
-- `test/browser/frames/*.ndjson` — a **recorded replication frame fixture**, streamed verbatim over the browser lane's own dev server (`vitest.browser.config.ts`) so the real `ReplicationSession`, the real NDJSON decoder, real IndexedDB, and the real observation fence are exercised through the real network path. The other browser suites already feed the identical frame values to that same real storage by direct call; this only makes the delivery real. It is not a peer: no protocol state machine, no request parsing, no per-call scripting, and no conditional behavior — one committed file, chosen by the database name already in the URL, exactly as a static file server would
+- `test/browser/frames/*` — **recorded real server output**, produced only by `bun run record:frames` (`scripts/record-optimistic-fence-frames.ts` → `test/local/record-frames.ts`), which opens one authenticated `/db/:name/replicate` activation against the deployed Alchemy local stack and writes the verbatim wire lines the real Worker produced. The browser lane's own dev server (`vitest.browser.config.ts`) streams that file back, so the real `ReplicationSession`, the real NDJSON decoder, real IndexedDB, and the real observation fence run over the real network path — the one client path no lane could otherwise reach, since the browser lane has no Worker. It is not a peer: no protocol state machine, no request parsing, no per-call scripting, no conditional behavior — one recorded file, chosen by the database name already in the URL, exactly as a static file server would. Never hand-edit it; the browser suite re-decodes every line through the product's own frame codec before any other assertion, so a protocol change fails loudly and the fix is to re-record. Provenance: [`test/browser/frames/PROVENANCE.md`](test/browser/frames/PROVENANCE.md)
 
 These routes are 404 unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`. They must not invent a successful transact, query, or frame.
 
