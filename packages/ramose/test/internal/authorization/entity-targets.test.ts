@@ -614,11 +614,17 @@ describe("sealed handles at declared input entity-ref positions", () => {
     }
   });
 
-  test("a cyclic input terminates rather than exhausting the stack", () => {
+  test("a cyclic or deeply nested input terminates rather than exhausting the stack", async () => {
     // Request bodies are parsed JSON and acyclic, but this walk is reached from
     // the public edge and must not depend on that.
     const cyclic: Record<string, unknown> = { title: "x" };
     cyclic.self = cyclic;
     expect(mayCarrySealedEntityId(cyclic)).toBe(false);
+
+    // Depth is caller-chosen at the public edge, so the walk carries its own
+    // stack rather than the interpreter's.
+    let deep: unknown = await handleFor(4242);
+    for (let level = 0; level < 200_000; level++) deep = [deep];
+    expect(mayCarrySealedEntityId(deep)).toBe(true);
   });
 });

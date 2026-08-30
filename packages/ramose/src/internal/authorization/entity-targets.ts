@@ -561,19 +561,29 @@ const mayBeSealedEntityId = (value: string): boolean =>
  * `update-required` answer reachable for a handle from a newer codec (WR-17c).
  */
 export const mayCarrySealedEntityId = (input: unknown): boolean => {
+  // An explicit stack rather than recursion: this is the first thing the public
+  // `/op` edge does with a caller-supplied body, and the caller chooses its
+  // nesting depth. Everything downstream — the deployed codec, the canonical
+  // digest — walks the same value, so this changes no limit; it just declines
+  // to be the place a hostile body finds one.
   const seen = new Set<object>();
-  const visit = (value: unknown): boolean => {
-    if (typeof value === "string") return mayBeSealedEntityId(value);
-    if (typeof value !== "object" || value === null) return false;
+  const pending: unknown[] = [input];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "string") {
+      if (mayBeSealedEntityId(value)) return true;
+      continue;
+    }
+    if (typeof value !== "object" || value === null) continue;
     // Request bodies are parsed JSON and therefore acyclic, but this walk is
     // reached from the public edge and must not depend on that.
-    if (seen.has(value)) return false;
+    if (seen.has(value)) continue;
     seen.add(value);
-    return Array.isArray(value)
-      ? value.some(visit)
-      : Object.values(value).some(visit);
-  };
-  return visit(input);
+    for (const child of Array.isArray(value) ? value : Object.values(value)) {
+      pending.push(child);
+    }
+  }
+  return false;
 };
 
 /**
