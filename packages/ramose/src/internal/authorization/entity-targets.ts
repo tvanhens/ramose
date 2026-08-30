@@ -595,14 +595,6 @@ export const mayCarrySealedEntityId = (input: unknown): boolean => {
  * *looks* like it carries a handle is never dragged into one. A declared ref
  * holding a number is left out and keeps its previous path through the codec,
  * byte for byte.
- *
- * The shape describes the *decoded* value and this walks the wire body, the
- * same correspondence {@link extractAllocations} relies on to read a declared
- * slot out of materialized output. An input codec that transforms structure at
- * or above a ref position therefore presents no string at the declared path:
- * nothing is opened, and the ordinary refusal stands. That is the safe
- * direction — a wrong entity is never named — and it is the stated boundary of
- * **WR-17**, not an oversight.
  */
 export const inputEntityRefHandles = (
   shape: OperationInputShape,

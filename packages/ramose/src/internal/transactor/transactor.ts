@@ -1048,24 +1048,6 @@ export class Transactor {
                 this.stats.rejected++;
                 p.resolve({ _tag: tag });
               };
-              // A pin the caller supplied and the deployment no longer has
-              // decides before *any* of the current contract is used to
-              // interpret this invocation.
-              //
-              // The deployed shape is what says which input positions are
-              // entity references, and a queued invocation pinned to an older
-              // contract may hold a value the new shape reads differently — an
-              // ordinary string where a `ref` now stands. Refusing that as a
-              // malformed handle would answer from a contract the caller never
-              // agreed to, and would leave a durable outbox retrying a denial
-              // forever instead of taking its update-required path. The same
-              // reason already puts this above the current-shape target check
-              // ("a stale pin is decided before the deployed shape refuses
-              // it"); an input shape is no different.
-              if (supplied !== undefined && supplied !== operationVersion) {
-                await resolveCompatibility("OperationChanged");
-                continue;
-              }
               // Opaque handle translation, at the authoritative edge and
               // before the #487 primitive sees anything. Resolution is a
               // bounded decrypt that grants nothing: it only replaces the
@@ -1104,13 +1086,19 @@ export class Transactor {
                 await resolveCompatibility("UpdateRequired");
                 continue;
               }
-              // Prepared over the *resolved* invocation, so the canonical
-              // digest covers private eids rather than the handles that named
-              // them (WR-17a). A malformed invocation id or an unverified
-              // principal still keeps its ordinary invalid-request answer here.
+              // Prepared first so a malformed invocation id or an unverified
+              // principal keeps its ordinary invalid-request answer.
               const prepared = await Effect.runPromise(
                 prepareInvocationReceipt(operation, operationVersion),
               );
+              // A pin the caller supplied and the deployment no longer has
+              // decides before the durable row is read at all: an explicit
+              // expectation is never satisfied by a receipt minted under a
+              // different version.
+              if (supplied !== undefined && supplied !== operationVersion) {
+                await resolveCompatibility("OperationChanged");
+                continue;
+              }
               const inspected = this.inspectInvocationReceipt(prepared);
               if (
                 inspected._tag === "OperationChanged" ||
