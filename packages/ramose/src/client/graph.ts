@@ -303,11 +303,18 @@ export class GraphRegistry {
     readonly holders: Set<object>;
   }>();
   private readonly lineages = new Map<string, readonly string[]>();
+  private readonly closing = new Set<Promise<void>>();
 
   constructor(
     private readonly factory: GraphDatabaseFactory,
     private readonly membershipChanged: () => void,
   ) {}
+
+  private release(handle: ClientDatabaseHandle): void {
+    const settled = handle.close().catch(() => undefined);
+    this.closing.add(settled);
+    void settled.then(() => this.closing.delete(settled));
+  }
 
   acquire(
     stable: string,
@@ -321,7 +328,7 @@ export class GraphRegistry {
         return existing.handle;
       }
       this.databases.delete(stable);
-      void existing.handle.close();
+      this.release(existing.handle);
     }
     const handle = this.factory({
       graphPath,
@@ -351,7 +358,7 @@ export class GraphRegistry {
     if (existing.holders.size > 0) return;
     this.databases.delete(stable);
     this.lineages.delete(stable);
-    void existing.handle.close();
+    this.release(existing.handle);
     this.membershipChanged();
   }
 
@@ -367,7 +374,8 @@ export class GraphRegistry {
     const handles = [...this.databases.values()].map(({ handle }) => handle);
     this.databases.clear();
     this.lineages.clear();
-    await Promise.all(handles.map((handle) => handle.close()));
+    for (const handle of handles) this.release(handle);
+    while (this.closing.size > 0) await Promise.all([...this.closing]);
   }
 }
 
