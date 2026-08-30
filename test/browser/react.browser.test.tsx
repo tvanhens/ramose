@@ -1,6 +1,7 @@
-import { act, memo, StrictMode, type ReactNode } from "react";
+import { act, memo, StrictMode, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { expect } from "vitest";
+import * as EffectSchema from "effect/Schema";
 import { compileReadAuthorization } from "../../packages/ramose/src/internal/authorization/index.ts";
 import { Catalog } from "../../packages/ramose/src/Catalog.ts";
 import {
@@ -14,14 +15,17 @@ import {
   createClient,
   type Client,
   type ClientDatabase,
+  type Receipt,
 } from "../../packages/ramose/src/client/index.ts";
 import { installClientCatalog } from "../../packages/ramose/src/client/catalog.ts";
 import {
   RamoseProvider,
   useDb,
   useQuery,
+  useReceipt,
   useSyncState,
   type QueryState,
+  type ReceiptView,
 } from "../../packages/ramose/src/react/index.ts";
 import { heldStoreCount } from "../../packages/ramose/src/react/store.ts";
 import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
@@ -48,6 +52,17 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const Note = Entity("note", {
   title: Field.unique(string(), "strict"),
   rank: string(),
+}, {
+  operations: (Operation) => ({
+    createNote: Operation({
+      self: false,
+      input: EffectSchema.Struct({ title: EffectSchema.String }),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
 });
 const Notes = Schema({ note: Note });
 const NotesCatalog = Catalog("react-notes", {
@@ -71,7 +86,10 @@ const deleteDatabase = (name: string): Promise<void> =>
 
 type SeededNote = { readonly entity: string; readonly title: string; readonly rank: string };
 
-const seed = async (name: string, notes: readonly SeededNote[]): Promise<void> => {
+const seed = async (
+  name: string,
+  notes: readonly SeededNote[],
+): Promise<ReplicationIdentity> => {
   const installed = await installClientCatalog(NotesCatalog);
   const identity: ReplicationIdentity = {
     version: 1,
@@ -120,6 +138,7 @@ const seed = async (name: string, notes: readonly SeededNote[]): Promise<void> =
   } finally {
     storage.close();
   }
+  return identity;
 };
 
 const offlineClient = (name: string): Client =>
@@ -534,3 +553,276 @@ browserTest("a stale→ready confirmation does not re-render a child memoized on
     await deleteDatabase(name);
   }
 });
+
+type Seen = ReceiptView[];
+
+const distinct = (seen: Seen): readonly string[] =>
+  seen.map((state) => state.status)
+    .filter((status, index, all) => status !== all[index - 1]);
+
+const Invocation = (
+  { receipt, seen }: {
+    readonly receipt?: Receipt | null;
+    readonly seen: Seen;
+  },
+): ReactNode => {
+  const state = useReceipt(receipt);
+  seen.push(state);
+  return <span>{state.status}</span>;
+};
+
+const Composer = (
+  { db, seen, created }: {
+    readonly db: ClientDatabase;
+    readonly seen: Seen;
+    readonly created: Receipt[];
+  },
+): ReactNode => {
+  const [receipt, setReceipt] = useState<Receipt | null>(null);
+  const state = useReceipt(receipt);
+  seen.push(state);
+  return (
+    <button
+      onClick={() => {
+        const started = db.mutate.createNote({ title: "Written offline" });
+        created.push(started);
+        setReceipt(started);
+      }}
+    >
+      {state.status}
+    </button>
+  );
+};
+
+const press = async (container: HTMLElement): Promise<void> => {
+  const button = container.querySelector("button");
+  expect(button).not.toBeNull();
+  await act(() => {
+    button!.click();
+  });
+};
+
+const settle = async (
+  client: Client,
+  identity: ReplicationIdentity,
+  state: unknown,
+): Promise<void> => {
+  await act(async () => {
+    await (client as unknown as {
+      submissions: () => {
+        settle: (progress: readonly unknown[]) => Promise<void>;
+      };
+    }).submissions().settle([{
+      partition: "react",
+      receiver: {
+        server: identity.server,
+        principal: identity.principal,
+        database: identity.database,
+      },
+      state,
+    }]);
+  });
+};
+
+browserTest(
+  "a receipt renders idle, pending, queued and then committed",
+  async ({ browser }) => {
+    const name = `ramose-react-receipt-${browser.uniqueId}`;
+    const identity = await seed(name, [
+      { entity: opaque("e"), title: "seeded", rank: "a" },
+    ]);
+    const client = offlineClient(name);
+    try {
+      const db = client.open();
+      const seen: Seen = [];
+      const created: Receipt[] = [];
+      const root = await mount(
+        browser.root,
+        <Composer db={db} seen={seen} created={created} />,
+      );
+      expect(text(browser.root)).toBe("idle");
+
+      await press(browser.root);
+      expect(text(browser.root)).toBe("pending");
+
+      await until(() => text(browser.root) === "queued", "the durable outbox row");
+
+      const receipt = created[0]!;
+      await settle(client, identity, {
+        _tag: "Committed",
+        invocation: receipt.invocation,
+      });
+
+      expect(text(browser.root)).toBe("committed");
+      expect(distinct(seen)).toEqual(["idle", "pending", "queued", "committed"]);
+      expect(receipt.getSnapshot().status).toBe("committed");
+
+      await unmount(root);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest("a refused invocation renders rejected with its code", async ({ browser }) => {
+  const name = `ramose-react-rejected-${browser.uniqueId}`;
+  const identity = await seed(name, [
+    { entity: opaque("e"), title: "seeded", rank: "a" },
+  ]);
+  const client = offlineClient(name);
+  try {
+    const db = client.open();
+    const seen: Seen = [];
+    const created: Receipt[] = [];
+    const root = await mount(
+      browser.root,
+      <Composer db={db} seen={seen} created={created} />,
+    );
+    await press(browser.root);
+    await until(() => text(browser.root) === "queued", "the durable outbox row");
+
+    await settle(client, identity, {
+      _tag: "Rejected",
+      invocation: created[0]!.invocation,
+      code: "operation_rejected",
+    });
+
+    expect(text(browser.root)).toBe("rejected");
+    const last = seen.at(-1)!;
+    expect(last.status).toBe("rejected");
+    expect((last as { readonly error: { readonly code: string } }).error.code)
+      .toBe("operation_rejected");
+    expect(distinct(seen)).toEqual(["idle", "pending", "queued", "rejected"]);
+
+    await unmount(root);
+  } finally {
+    await client.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest(
+  "an invocation that never reached the outbox renders failed",
+  async ({ browser }) => {
+    const name = `ramose-react-failed-${browser.uniqueId}`;
+    const client = createClient({
+      url: OFFLINE,
+      root: ROOT,
+      catalog: NotesCatalog,
+      auth: () => {
+        throw new Error("refresh token expired");
+      },
+      storageName: name,
+    });
+    try {
+      const db = client.open();
+      const seen: Seen = [];
+      const created: Receipt[] = [];
+      const root = await mount(
+        browser.root,
+        <Composer db={db} seen={seen} created={created} />,
+      );
+      await press(browser.root);
+      expect(text(browser.root)).toBe("pending");
+
+      await until(() => text(browser.root) === "failed", "the pre-queue failure");
+      expect(distinct(seen)).toEqual(["idle", "pending", "failed"]);
+      expect((seen.at(-1) as { readonly error: Error }).error)
+        .toBeInstanceOf(Error);
+
+      await unmount(root);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "Strict Mode does not duplicate an invocation or lose its transitions",
+  async ({ browser }) => {
+    const name = `ramose-react-receipt-strict-${browser.uniqueId}`;
+    const identity = await seed(name, [
+      { entity: opaque("e"), title: "seeded", rank: "a" },
+    ]);
+    const client = offlineClient(name);
+    try {
+      const db = client.open();
+      const seen: Seen = [];
+      const created: Receipt[] = [];
+      const root = await mount(
+        browser.root,
+        <StrictMode>
+          <Composer db={db} seen={seen} created={created} />
+        </StrictMode>,
+      );
+      await press(browser.root);
+      expect(created).toHaveLength(1);
+      await until(() => text(browser.root) === "queued", "the durable outbox row");
+
+      await settle(client, identity, {
+        _tag: "Committed",
+        invocation: created[0]!.invocation,
+      });
+
+      expect(distinct(seen)).toEqual(["idle", "pending", "queued", "committed"]);
+      expect(text(browser.root)).toBe("committed");
+      await unmount(root);
+
+      const resumed: Seen = [];
+      const again = await mount(
+        browser.root,
+        <StrictMode>
+          <Invocation receipt={created[0]!} seen={resumed} />
+        </StrictMode>,
+      );
+      expect(distinct(resumed)).toEqual(["committed"]);
+      await unmount(again);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "two components mounting together into a warm observation share one store",
+  async ({ browser }) => {
+    const name = `ramose-react-warm-${browser.uniqueId}`;
+    await seed(name, [{ entity: opaque("e"), title: "warm", rank: "a" }]);
+    const client = offlineClient(name);
+    const db = client.open();
+    try {
+      const warming: Rows[] = [];
+      const warm = await mount(
+        browser.root,
+        <RamoseProvider client={client}><Titles seen={warming} /></RamoseProvider>,
+      );
+      await until(() => text(browser.root) === "warm", "the first observation");
+      await unmount(warm);
+      expect(heldStoreCount(db)).toBe(0);
+
+      const left: Rows[] = [];
+      const right: Rows[] = [];
+      const root = await mount(
+        browser.root,
+        <RamoseProvider client={client}>
+          <Titles seen={left} />
+          <Titles seen={right} />
+        </RamoseProvider>,
+      );
+
+      expect(left[0]!.status).not.toBe("pending");
+      expect(left[0]).toBe(right[0]);
+      expect(heldStoreCount(db)).toBe(1);
+      expect(text(browser.root)).toBe("warmwarm");
+
+      await unmount(root);
+      expect(heldStoreCount(db)).toBe(0);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);

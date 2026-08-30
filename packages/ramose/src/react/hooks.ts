@@ -12,10 +12,12 @@ import type {
   Client,
   ClientDatabase,
   ClientValue,
+  Receipt,
   Subscription,
   SyncState,
 } from "../client/index.ts";
 import { PENDING, type QueryState } from "./query-state.ts";
+import { IDLE, type ReceiptView } from "./receipt-state.ts";
 import { queryStore } from "./store.ts";
 
 const ClientContext = createContext<Client | undefined>(undefined);
@@ -104,6 +106,52 @@ export const useQuery = <Row, Out>(
   const store = queryStore<ClientValue<Out>>(db, key, () => db.observe(query));
   return useSyncExternalStore(store.subscribe, store.getSnapshot, pendingOnServer);
 };
+
+const stopNothing = (): void => undefined;
+const observeNothing = (): (() => void) => stopNothing;
+const readIdle = (): ReceiptView => IDLE;
+
+/**
+ * Observe one invocation and re-render as it settles.
+ *
+ * ```tsx
+ * const [receipt, setReceipt] = useState<Receipt | null>(null);
+ * const state = useReceipt(receipt);
+ * return (
+ *   <>
+ *     <button onClick={() => setReceipt(db.mutate.createIssue({ title }))}>
+ *       {state.status === "pending" || state.status === "queued"
+ *         ? "Saving…"
+ *         : "Save"}
+ *     </button>
+ *     {state.status === "rejected" ? <Refused code={state.error.code} /> : null}
+ *   </>
+ * );
+ * ```
+ *
+ * A receipt is already the external store this hook needs — it carries its own
+ * `subscribe` and `getSnapshot`, both frozen onto it when the invocation was
+ * created — so there is nothing to intern. Two receipts are two invocations,
+ * never the same one under a different name, and a receipt is reachable only
+ * from the code that holds it: the query cache exists because a query *value*
+ * is rebuilt on every render and must select an existing observation, and
+ * neither half of that applies here.
+ *
+ * `null` and `undefined` read as `idle`, so a component may call this hook
+ * unconditionally on the render before its user acts. Hold the receipt in state
+ * rather than rebuilding it: calling a mutation while rendering would invoke
+ * once per render.
+ *
+ * Nothing is cancelled by unmounting. A queued invocation is durable and
+ * proceeds without an observer; a later component given the same receipt reads
+ * whatever state it reached in the meantime, terminal states included.
+ */
+export const useReceipt = (receipt?: Receipt | null): ReceiptView =>
+  useSyncExternalStore<ReceiptView>(
+    receipt?.subscribe ?? observeNothing,
+    receipt?.getSnapshot ?? readIdle,
+    receipt?.getSnapshot ?? readIdle,
+  );
 
 export const useSyncState = (source?: Client | ClientDatabase): SyncState => {
   const provided = useContext(ClientContext);

@@ -13,12 +13,14 @@ class QueryStore<A> {
     private readonly database: ClientDatabase,
     private readonly key: string,
     private readonly source: QuerySubscription<A>,
-  ) {}
+  ) {
+    adopt(database, key, this.erased());
+  }
 
   readonly subscribe = (onChange: () => void): (() => void) => {
-    if (this.listeners === 0) adopt(this.database, this.key, this.erased());
-    this.listeners++;
+    adopt(this.database, this.key, this.erased());
     const stop = this.source.subscribe(onChange);
+    this.listeners++;
     let released = false;
     return () => {
       if (released) return;
