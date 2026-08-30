@@ -27,7 +27,11 @@ import type {
 } from "../internal/authorization/expr.ts";
 import { fieldKey } from "../internal/authorization/validation/common.ts";
 import type { AuthenticatedCaller, AuthorizedRequestContext } from "../internal/authorization/request.ts";
-import { operationGrantAllows } from "../internal/authorization/operation-grant.ts";
+import {
+  operationGrantAllows,
+  principalValuesEqual,
+  projectPrincipalTerm,
+} from "../internal/authorization/operation-grant.ts";
 import type { AuthoritativeInvocationResult } from "../internal/authorization/invocation-receipts.ts";
 import { runOneShotRead } from "../internal/authorization/reads.ts";
 import { Index, ValueTag } from "../internal/core/datom.ts";
@@ -182,21 +186,27 @@ type ResolvedField = { readonly name: string; readonly ident: string };
 /** Three-valued: `undefined` means the outcome depends on the row. */
 type StaticTruth = boolean | undefined;
 
-const projectableTerm = (term: CanonicalValueTerm): boolean =>
-  term._tag === "lit" || term._tag === "subject" || term._tag === "claim";
-
 /**
  * Evaluate one read rule against the principal alone.
  *
- * Returns `undefined` — "cannot say" — the moment the rule depends on the row
- * being tested (`me`, a ref traversal, a comparison over either). Only a
- * definite `false` is ever acted on, so an imprecise answer can withhold a
- * field but never expose one.
+ * The term and comparison semantics are the deployed operation-grant
+ * evaluator's, imported rather than restated so the two readings of a rule
+ * cannot drift. The only difference is arity: that evaluator is two-valued
+ * and folds a row-relative term into `false`, which is right when assembly
+ * has already proven the rule principal-only. Read rules carry no such
+ * guarantee, so a row-relative term becomes `undefined` — "cannot say" — and
+ * the filtered `Db` settles it later.
+ *
+ * Only a definite `false` is ever acted on, so an imprecise answer can
+ * withhold a field but never expose one.
  */
 const staticRuleTruth = (
   expr: CanonicalAuthorizationExpr,
   caller: AuthenticatedCaller,
+  subject: string,
 ): StaticTruth => {
+  const project = (term: CanonicalValueTerm) =>
+    projectPrincipalTerm(term, caller, subject);
   switch (expr._tag) {
     case "const":
       return expr.value;
@@ -205,7 +215,7 @@ const staticRuleTruth = (
     case "and": {
       let unknown = false;
       for (const part of expr.exprs) {
-        const truth = staticRuleTruth(part, caller);
+        const truth = staticRuleTruth(part, caller, subject);
         if (truth === false) return false;
         if (truth === undefined) unknown = true;
       }
@@ -214,24 +224,39 @@ const staticRuleTruth = (
     case "or": {
       let unknown = false;
       for (const part of expr.exprs) {
-        const truth = staticRuleTruth(part, caller);
+        const truth = staticRuleTruth(part, caller, subject);
         if (truth === true) return true;
         if (truth === undefined) unknown = true;
       }
       return unknown ? undefined : false;
     }
     case "not": {
-      const truth = staticRuleTruth(expr.expr, caller);
+      const truth = staticRuleTruth(expr.expr, caller, subject);
       return truth === undefined ? undefined : !truth;
     }
-    case "eq":
-      return projectableTerm(expr.left) && projectableTerm(expr.right)
-        ? undefined
-        : undefined;
-    case "has":
-      return projectableTerm(expr.term) ? undefined : undefined;
-    case "in":
-      return undefined;
+    case "eq": {
+      // Mirrors the grant evaluator: both sides must be present to compare,
+      // and an absent claim compares false rather than unknown.
+      const left = project(expr.left);
+      const right = project(expr.right);
+      if (left._tag === "invalid" || right._tag === "invalid") return undefined;
+      return left._tag === "present" && right._tag === "present" &&
+        principalValuesEqual(left.value, right.value);
+    }
+    case "has": {
+      const term = project(expr.term);
+      return term._tag === "invalid" ? undefined : term._tag === "present";
+    }
+    case "in": {
+      const value = project(expr.value);
+      const collection = project(expr.collection);
+      if (value._tag === "invalid" || collection._tag === "invalid") {
+        return undefined;
+      }
+      return value._tag === "present" && collection._tag === "present" &&
+        Array.isArray(collection.value) &&
+        collection.value.some((item) => principalValuesEqual(value.value, item));
+    }
   }
 };
 
@@ -259,16 +284,17 @@ const staticallyHidden = (
     (entry) => fieldKey(entry.target) === fieldKey(field.id),
   )?.decision;
   if (decision === undefined) return false;
+  const subject = context.principal.subject;
   const rules = new Map(context.unit.policy.rules.map((rule) => [rule.id, rule]));
   for (const id of decision.deny) {
     const rule = rules.get(id);
     if (rule === undefined) return true;
-    if (staticRuleTruth(rule.expr, caller) === true) return true;
+    if (staticRuleTruth(rule.expr, caller, subject) === true) return true;
   }
   for (const id of decision.allow) {
     const rule = rules.get(id);
     if (rule === undefined) continue;
-    if (staticRuleTruth(rule.expr, caller) !== false) return false;
+    if (staticRuleTruth(rule.expr, caller, subject) !== false) return false;
   }
   return true;
 };

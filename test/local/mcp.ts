@@ -282,6 +282,26 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
           limit: 1,
         })).toEqual({ rows: [], truncated: false });
       }
+
+      // The same must hold for a rule that is decidable from the principal
+      // alone but not by class: `tenantOnly` is allowed only when the caller's
+      // `tenant` claim is `acme`. For a caller without it the rule is
+      // definitely false, so the field must leave by the unknown-name door…
+      expect(await read({
+        version: 1,
+        from: { entity: "nativeEncoded" },
+        select: ["tenantOnly"],
+        limit: 1,
+      })).toEqual({ rows: [], truncated: false });
+      // …while a caller the same rule admits still reads it.
+      const acme = await signToken("mcp", "member", "user_acme", { tenant: "acme" });
+      expect((await ok(base, database, acme, "query", {
+        query: {
+          version: 1,
+          from: { entity: "nativeEncoded" },
+          select: ["tenantOnly"],
+        },
+      })).rows).toEqual([{ tenantOnly: "acme-only" }]);
       // …while the same rows are plainly there through a visible field.
       expect((await read({
         version: 1,

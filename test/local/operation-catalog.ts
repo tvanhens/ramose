@@ -226,6 +226,7 @@ const encodedRow = (label: string) => ({
   blob: new Uint8Array([1, 2, 3, 250]),
   key: "8f14e45f-ceea-467a-9c8b-4e2f9b7c1a30",
   secret: "policy-hidden",
+  tenantOnly: "acme-only",
 });
 
 /**
@@ -240,6 +241,8 @@ export const Encoded = Entity("nativeEncoded", {
   key: uuid(),
   /** Declared on a readable entity but denied to `member` by policy. */
   secret: string(),
+  /** Readable only by a principal whose `tenant` claim is `acme`. */
+  tenantOnly: string(),
 }, {
   operations: (Operation) => ({
     create: Operation({
@@ -276,6 +279,7 @@ export const OperationSchema = Schema({
 const policy = await Effect.runPromise(Policy.compileReadAuthorization({
   schema: OperationSchema,
   classes: ["member", "reader", "operator"],
+  claims: [{ key: "tenant", optional: true, shape: { _tag: "scalar", valueType: "string" } }],
   rules: [
     Policy.read(Item).when(Policy.any(Policy.hasClass("member"), Policy.hasClass("reader"))),
     Policy.read(Other).when(Policy.hasClass("reader")),
@@ -297,6 +301,11 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     Policy.invoke(Other[OwnedOperations].create).when(Policy.hasClass("member")),
     Policy.read(Encoded).when(Policy.hasClass("member")),
     Policy.read(Encoded.secret).deny(Policy.hasClass("member")),
+    // Decidable from the principal alone: no row is consulted to know whether
+    // this caller's `tenant` claim is `acme`.
+    Policy.read(Encoded.tenantOnly).when(
+      Policy.eq(Policy.claim("tenant"), "acme"),
+    ),
     Policy.invoke(Encoded[OwnedOperations].create).when(Policy.hasClass("member")),
     Policy.invoke(Encoded[OwnedOperations].createRenamed).when(Policy.hasClass("member")),
   ],

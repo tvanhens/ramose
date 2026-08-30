@@ -9,16 +9,27 @@ import type { InstalledCatalogUnitV2 } from "./catalog-unit.ts";
 import type { AuthenticatedCaller } from "./request.ts";
 import { operationKey } from "./validation/common.ts";
 
-type Projected =
+/**
+ * One value term seen from the principal alone.
+ *
+ * `invalid` means the term is *row-relative* — it cannot be settled without
+ * the row being tested. Consumers decide what that means for them: operation
+ * grants fail closed on it, while a read pre-filter treats it as "cannot say".
+ */
+export type PrincipalProjection =
   | { readonly _tag: "present"; readonly value: unknown }
   | { readonly _tag: "absent" }
   | { readonly _tag: "invalid" };
 
-const absent: Projected = { _tag: "absent" };
-const invalid: Projected = { _tag: "invalid" };
-const present = (value: unknown): Projected => ({ _tag: "present", value });
+const absent: PrincipalProjection = { _tag: "absent" };
+const invalid: PrincipalProjection = { _tag: "invalid" };
+const present = (value: unknown): PrincipalProjection => ({
+  _tag: "present",
+  value,
+});
 
-const equal = (left: unknown, right: unknown): boolean => {
+/** Value equality as authorization rules compare it: scalars, then arrays. */
+export const principalValuesEqual = (left: unknown, right: unknown): boolean => {
   if (Object.is(left, right)) return true;
   if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
     return false;
@@ -26,11 +37,18 @@ const equal = (left: unknown, right: unknown): boolean => {
   return left.every((value, index) => Object.is(value, right[index]));
 };
 
-const project = (
+/**
+ * Project one canonical value term against the principal.
+ *
+ * Shared so every principal-only reading of a rule — the operation grant here
+ * and the read pre-filter in the MCP kernel — interprets terms identically
+ * instead of growing a parallel rule language.
+ */
+export const projectPrincipalTerm = (
   term: CanonicalValueTerm,
   caller: AuthenticatedCaller,
   subject: string,
-): Projected => {
+): PrincipalProjection => {
   switch (term._tag) {
     case "lit":
       return present(term.value);
@@ -40,13 +58,17 @@ const project = (
       return Object.hasOwn(caller.claims, term.key)
         ? present(caller.claims[term.key])
         : absent;
-    // Operation grants are validated at assembly as principal-only. Keep the
-    // runtime fail-closed if an unsealed/corrupt expression reaches this seam.
+    // Row-relative: nothing about the principal settles these.
     case "me":
     case "ref":
       return invalid;
   }
 };
+
+const equal = principalValuesEqual;
+// Operation grants are validated at assembly as principal-only. Keep the
+// runtime fail-closed if an unsealed/corrupt expression reaches this seam.
+const project = projectPrincipalTerm;
 
 const evaluate = (
   expr: CanonicalAuthorizationExpr,
