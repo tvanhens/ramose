@@ -115,12 +115,35 @@ function buildGoalData(size: number, points: Array<[number, number, number]>): F
   return goals;
 }
 
-/** Initial state: positions scattered across the visible world, zero velocity. */
-function buildSeedData(size: number, aspect: number): Float32Array {
+/** JS twin of markTheta() in the shaders — keep the two in sync. */
+function markThetaAt(time: number, inner: number): number {
+  const turnsPerSecond = inner ? 0.045 : -0.03;
+  return 6.2831853 * turnsPerSecond * time + 0.05 * Math.sin(time * 0.7 + inner * 2.1);
+}
+
+/**
+ * Initial state: every particle starts exactly on its projected home at the
+ * current rotation angle, so the logo is fully formed on the very first
+ * frame — no visible fly-in. The stray halo then drifts out on its own.
+ */
+function buildSeedData(
+  size: number,
+  goals: Float32Array,
+  markCenter: readonly [number, number],
+  time: number,
+): Float32Array {
   const seed = new Float32Array(size * size * 4);
   for (let i = 0; i < size * size; i++) {
-    seed[i * 4] = (Math.random() * 2 - 1) * aspect;
-    seed[i * 4 + 1] = Math.random() * 2 - 1;
+    const gx = goals[i * 4];
+    const gy = goals[i * 4 + 1];
+    const inner = goals[i * 4 + 2];
+    const gz = goals[i * 4 + 3];
+    const theta = markThetaAt(time, inner);
+    const x3 = gx * Math.cos(theta) - gz * Math.sin(theta);
+    const z3 = gx * Math.sin(theta) + gz * Math.cos(theta);
+    const persp = 1 / (1 + z3 * 0.5);
+    seed[i * 4] = markCenter[0] + x3 * persp;
+    seed[i * 4 + 1] = markCenter[1] + gy * persp;
   }
   return seed;
 }
@@ -218,7 +241,14 @@ export async function startHeroParticles(
           GPUTextureUsage.COPY_DST,
       }),
     );
-    const seedData = buildSeedData(size, cssWidth / cssHeight);
+    const goalData = buildGoalData(size, await rasterizeMarkPoints());
+    const startTime = frozenTime() ?? performance.now() / 1000;
+    const seedData = buildSeedData(
+      size,
+      goalData,
+      [(cssWidth / cssHeight) * MARK_CENTER[0], MARK_CENTER[1]],
+      startTime,
+    );
     for (const texture of stateTextures) {
       device.queue.writeTexture({ texture }, seedData, { bytesPerRow: size * 16 }, [size, size]);
     }
@@ -228,7 +258,6 @@ export async function startHeroParticles(
       format: "rgba32float",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
-    const goalData = buildGoalData(size, await rasterizeMarkPoints());
     device.queue.writeTexture({ texture: goalTexture }, goalData, { bytesPerRow: size * 16 }, [
       size,
       size,
