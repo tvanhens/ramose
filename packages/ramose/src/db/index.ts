@@ -152,21 +152,17 @@ export {
 } from "./allocations.ts";
 export { tempid, type Tempid } from "./entityArg.ts";
 // ── optimistic projections (#476) ──────────────────────────────────────────
-export {
-  DEFAULT_PROJECTION_REVISION,
-  normalizeProjectionRevision,
-  runProjection,
-  type AnyOptimisticProjection,
-  type OptimisticProjection,
-  type ProjectionChangeset,
-  type ProjectionContext,
-  type ProjectionEntity,
-  type ProjectionField,
-  type ProjectionInvocation,
-  type ProjectionOp,
-  type ProjectionOutcome,
-  type ProjectionTx,
-  type ProjectionValue,
+// The authoring vocabulary only. Running a projection, its changeset data
+// model, and the revision normalizer are the client engine's, not an
+// application's, so they stay off the portable surface until something public
+// consumes them.
+export type {
+  AnyOptimisticProjection,
+  OptimisticProjection,
+  ProjectionContext,
+  ProjectionEntity,
+  ProjectionField,
+  ProjectionTx,
 } from "./Projection.ts";
 // the pattern-side types too, so pull helpers can accept exactly what
 // `db.pull` accepts (type-only: the runtime surface is unchanged)
