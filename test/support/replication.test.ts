@@ -53,3 +53,31 @@ test("replication NDJSON decoder bounds coalesced transport data per frame", asy
   }
   expect(decoded).toEqual(Array.from({ length: frameCount }, () => frame));
 });
+
+test("a stream cut mid-frame is a truncation, not a malformed frame", async () => {
+  const wire = encodeReplicationFrame({
+    type: "KeepAlive",
+    protocol: 1,
+    identity,
+  });
+  const bytes = new TextEncoder().encode(`${wire}\n${wire.slice(0, 20)}`);
+  const chunks = (async function* () {
+    yield bytes;
+  })();
+
+  const decoded = [];
+  const consume = async () => {
+    for await (const observed of decodeReplicationNdjson(chunks)) {
+      decoded.push(observed.frame);
+    }
+  };
+
+  // The Worker writes every frame newline-terminated, so an unterminated tail
+  // can only be a dropped connection. Reporting it as the product's own
+  // `malformed` protocol error would blame a real transport failure on the
+  // frame codec.
+  await expect(consume()).rejects.toThrow(
+    "replication stream ended without a newline",
+  );
+  expect(decoded).toHaveLength(1);
+});

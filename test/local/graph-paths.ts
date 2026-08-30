@@ -20,7 +20,7 @@ import {
   collectCommittedSnapshot,
   readReplicationNdjson,
 } from "../support/replication.ts";
-import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
+import { json, openStream, testAdmin, type LocalUrls } from "./fixtures.ts";
 import {
   GateHidden,
   GateLink,
@@ -126,7 +126,7 @@ const nestedLive = (
   base: string,
   token: string,
   at: readonly string[],
-): Promise<Response> => fetch(
+): Promise<Response> => openStream(
   `${base.replace(/\/+$/, "")}/db/${GRAPH_PATH_ROOT_DATABASE}/live`,
   {
     method: "POST",
@@ -136,6 +136,7 @@ const nestedLive = (
     },
     body: JSON.stringify({ at, query: nestedNotesQuery }),
   },
+  "nested live",
 );
 
 const nestedReplication = (
@@ -143,7 +144,7 @@ const nestedReplication = (
   token: string,
   at: readonly string[],
   resumeRevision?: string,
-): Promise<Response> => fetch(
+): Promise<Response> => openStream(
   `${base.replace(/\/+$/, "")}/db/${GRAPH_PATH_ROOT_DATABASE}/replicate`,
   {
     method: "POST",
@@ -160,6 +161,7 @@ const nestedReplication = (
       ...(resumeRevision === undefined ? {} : { resumeRevision }),
     }),
   },
+  "nested replicate",
 );
 
 const rootEntity = (

@@ -68,7 +68,16 @@ export async function* decodeReplicationNdjson(
     if (wire.length > 0) yield decodeLine(wire);
   }
   if (final.unfinished.trim().length > 0) {
-    yield decodeLine(final.unfinished);
+    // The Worker writes every frame newline-terminated
+    // (`src/worker/authorized-replication.ts`), and the product decoder in
+    // `internal/replication/transport.ts` fails an unterminated tail with
+    // "replication stream ended without a newline". A leftover fragment is
+    // therefore a truncated transport, never a frame. Decoding it produced a
+    // `ReplicationProtocolError { reason: "malformed" }` that read as a
+    // protocol violation by the product when the connection had merely been
+    // cut mid-frame. Report the truncation so `malformed` keeps meaning
+    // exactly one thing: a complete frame the product got wrong.
+    throw new Error("replication stream ended without a newline");
   }
 }
 
@@ -113,19 +122,58 @@ export const applyObservedFrame = (
   return next.success;
 };
 
+const withDeadline = async <A>(
+  promise: Promise<A>,
+  milliseconds: number,
+  message: string,
+): Promise<A> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), milliseconds);
+  });
+  try {
+    return await Promise.race([promise, expired]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
 export type CollectedSnapshot = {
   readonly state: ClientReplicationState;
   readonly frames: readonly ObservedReplicationFrame[];
 };
 
+/**
+ * Every other read in these suites is bounded (`withTimeout(next, 7_000)`).
+ * This one was not, so a stalled transport spent the caller's whole 90s
+ * default test budget and then reported only "timed out after 90000ms" with
+ * no indication of where. Bound the whole collection instead: a snapshot for
+ * these fixtures commits in milliseconds, so the deadline never fires on a
+ * healthy stack, and when the transport does stall the failure names itself
+ * with time left for the rest of the file.
+ */
+const SNAPSHOT_DEADLINE_MS = 20_000;
+
 export const collectCommittedSnapshot = async (
   iterator: AsyncIterator<ObservedReplicationFrame>,
   initial: ClientReplicationState = emptyClientReplicationState(),
+  deadlineMs: number = SNAPSHOT_DEADLINE_MS,
 ): Promise<CollectedSnapshot> => {
   let state = initial;
   const frames: ObservedReplicationFrame[] = [];
+  const expiry = Date.now() + deadlineMs;
   for (;;) {
-    const next = await iterator.next();
+    const remaining = expiry - Date.now();
+    if (remaining <= 0) {
+      throw new Error(
+        `replication snapshot did not commit within ${deadlineMs}ms`,
+      );
+    }
+    const next = await withDeadline(
+      iterator.next(),
+      remaining,
+      `replication snapshot did not commit within ${deadlineMs}ms`,
+    );
     if (next.done) throw new Error("replication closed before snapshot commit");
     frames.push(next.value);
     state = applyObservedFrame(state, next.value);

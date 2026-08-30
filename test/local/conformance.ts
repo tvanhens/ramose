@@ -29,7 +29,7 @@ import {
   conformanceProof,
   loadConformanceProof,
 } from "./conformance-proof.ts";
-import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
+import { json, openStream, testAdmin, type LocalUrls } from "./fixtures.ts";
 
 const TITLES =
   "[:find [?title ...] :where [?e :conformanceIssue/title ?title]]";
@@ -429,15 +429,19 @@ const openLive = async (
   base: string,
   database: string,
   token: string,
-): Promise<Response> => fetch(`${base.replace(/\/+$/, "")}/db/${database}/live`, {
-  method: "POST",
-  headers: {
-    authorization: `Bearer ${token}`,
-    "content-type": "application/json",
-    ...originHeaders,
+): Promise<Response> => openStream(
+  `${base.replace(/\/+$/, "")}/db/${database}/live`,
+  {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      ...originHeaders,
+    },
+    body: JSON.stringify({ ...conformanceProof, query: TITLES }),
   },
-  body: JSON.stringify({ ...conformanceProof, query: TITLES }),
-});
+  `live ${database}`,
+);
 
 export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
   describe("required real-stack filtered-Db conformance", () => {

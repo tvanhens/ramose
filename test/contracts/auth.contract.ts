@@ -98,11 +98,10 @@ export function registerAuthContract(target: AuthTarget): void {
     test("authentication denial has one opaque response body", async () => {
       const { policyUrl } = target.urls();
       const diagnosticToken = "not.a.jwt-with-private-diagnostic";
-      const response = await fetch(
-        `${policyUrl.replace(/\/+$/, "")}/db/-invalid/info`,
-        { headers: { authorization: `Bearer ${diagnosticToken}` } },
-      );
-      const text = await response.text();
+      const response = await json(policyUrl, "/db/-invalid/info", {
+        token: diagnosticToken,
+      });
+      const text = response.text;
 
       expect(response.status).toBe(401);
       expect(text).toBe('{"error":"unauthorized"}');

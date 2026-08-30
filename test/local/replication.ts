@@ -33,7 +33,7 @@ import {
   seedWorld,
   type World,
 } from "./conformance.ts";
-import { json, post, testAdmin, type LocalUrls } from "./fixtures.ts";
+import { json, openStream, post, testAdmin, type LocalUrls } from "./fixtures.ts";
 
 const SNAPSHOT_DATABASE = CONFORMANCE_DATABASES[10]!;
 const RESUME_DATABASE = CONFORMANCE_DATABASES[11]!;
@@ -72,7 +72,7 @@ export const openReplication = (
   protocol = 1,
   signal?: AbortSignal,
   readCompatibilityHash = conformanceReadCompatibilityHash,
-): Promise<Response> => fetch(
+): Promise<Response> => openStream(
   `${base.replace(/\/+$/, "")}/db/${encodeURIComponent(database)}/replicate`,
   {
     method: "POST",
@@ -91,6 +91,7 @@ export const openReplication = (
     }),
     ...(signal === undefined ? {} : { signal }),
   },
+  `replicate ${database}`,
 );
 
 const titlesOf = (state: ClientReplicationState): string[] =>
@@ -563,20 +564,13 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         });
       }
 
-      const session = await fetch(
-        `${base.replace(/\/+$/, "")}/db/${world.database}/session`,
-        {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${world.member}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ op: "open", t: 42 }),
-        },
+      const session = await json(
+        base,
+        `/db/${encodeURIComponent(world.database)}/session`,
+        post({ op: "open", t: 42 }, world.member),
       );
       expect(session.status).toBe(401);
-      const sessionBody = await session.json() as unknown;
-      expect(sessionBody).toEqual({ error: "unauthorized" });
+      expect(session.body).toEqual({ error: "unauthorized" });
     });
 
     test("unchanged resume is one-shot and zero/hidden physical worlds are byte/checkpoint-identical", async () => {

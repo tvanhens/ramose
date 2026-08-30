@@ -73,11 +73,74 @@ const isProxyBlip = (status: number, body: unknown): boolean => {
   return err?._tag === "ProxyError" || err === undefined;
 };
 
+/**
+ * Codes Bun attaches when the Alchemy dev proxy drops a connection before it
+ * produces a response. `fetch` only rejects while it is still establishing
+ * the exchange — a reset *during* a streamed body rejects the body reader
+ * instead — so a rejection here proves no response was produced and no bytes
+ * were consumed.
+ */
+const PRE_RESPONSE_CODES: ReadonlySet<string> = new Set([
+  "ConnectionRefused",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ConnectionClosed",
+]);
+
+const isPreResponseFailure = (error: unknown): boolean => {
+  const code = (error as { readonly code?: unknown } | null)?.code;
+  return typeof code === "string" && PRE_RESPONSE_CODES.has(code);
+};
+
+const STREAM_ATTEMPTS = 3;
+
+/**
+ * Open a long-lived streaming read (`/replicate`, `/live`) through the dev
+ * proxy.
+ *
+ * `json` cannot serve these: it drains the body to inspect it, and these
+ * responses are streams the caller must consume frame by frame. The retry is
+ * deliberately narrower than `json`'s, and covers only failures that prove
+ * the Worker never answered:
+ *
+ *   - HTTP 502 — the proxy's own gateway failure. These routes answer 200,
+ *     401, 403 or 409, never 502, so a 502 is always the proxy.
+ *   - a `fetch` rejection carrying a transport code — nothing was read, so
+ *     re-issuing loses no frame. A reset *inside* an open stream surfaces on
+ *     the body reader and is never retried here.
+ *
+ * Bounded at three attempts. Any status the Worker actually produced is
+ * returned untouched on the first attempt, so no product answer can be
+ * masked. Only read-only openers may use this: re-issuing a request that
+ * commits would double-apply it.
+ */
+export const openStream = async (
+  url: string,
+  init: RequestInit,
+  label: string,
+): Promise<Response> => {
+  let last: unknown;
+  for (let attempt = 0; attempt < STREAM_ATTEMPTS; attempt++) {
+    if (attempt > 0) await Bun.sleep(50 * attempt);
+    init.signal?.throwIfAborted();
+    try {
+      const response = await fetch(url, init);
+      if (response.status !== 502) return response;
+      await response.body?.cancel();
+      last = new Error(`${label}: dev proxy answered 502`);
+    } catch (error) {
+      if (!isPreResponseFailure(error)) throw error;
+      last = error;
+    }
+  }
+  throw last;
+};
+
 export const json = async (
   base: string,
   path: string,
   init: RequestInit & { token?: string } = {},
-): Promise<{ status: number; body: any; res: Response }> => {
+): Promise<{ status: number; body: any; text: string; res: Response }> => {
   const { token, ...rest } = init;
   const headers = new Headers(rest.headers);
   if (token !== undefined) headers.set("authorization", `Bearer ${token}`);
@@ -98,7 +161,7 @@ export const json = async (
       await Bun.sleep(50 * (attempt + 1));
       continue;
     }
-    return { status: res.status, body, res };
+    return { status: res.status, body, text, res };
   }
 };
 
