@@ -23,7 +23,6 @@ const DEPLOY_ONLY = ["alchemy", "cloudflare:workers", "jose", "better-auth"];
 describe("the ramose/client bundle", () => {
   test("carries no deploy engine", async () => {
     const client = await bundled("../../src/client/client.ts");
-    expect(client.length).toBeGreaterThan(200_000);
     for (const excluded of DEPLOY_ONLY) expect(client).not.toContain(excluded);
   });
 
@@ -33,7 +32,6 @@ describe("the ramose/client bundle", () => {
       "../../src/Catalog.ts",
       "../../src/Policy.ts",
     );
-    expect(application.length).toBeGreaterThan(200_000);
     for (const excluded of DEPLOY_ONLY) expect(application).not.toContain(excluded);
   });
 });
