@@ -886,11 +886,20 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
   }
   if (!Array.isArray(value.allocations) || !Array.isArray(value.inputRefs)) return undefined;
   const allocations: QueuedAllocation[] = [];
+  const slots = new Set<string>();
+  const claimed = new Set<string>();
   for (const allocation of value.allocations) {
     if (
       !isPlainObject(allocation) || !isAllocationSlotName(allocation.slot) ||
       !isClientRef(allocation.clientRef)
     ) return undefined;
+    // The builder's own uniqueness, reapplied. A row repeating a slot under two
+    // refs, or one ref under two slots, cannot be mapped unambiguously, and a
+    // submission that acted on it would bind a durable client identity by
+    // coincidence — so it stays quarantined instead.
+    if (slots.has(allocation.slot) || claimed.has(allocation.clientRef)) return undefined;
+    slots.add(allocation.slot);
+    claimed.add(allocation.clientRef);
     allocations.push(Object.freeze({ slot: allocation.slot, clientRef: allocation.clientRef }));
   }
   const inputRefs: QueuedInputRef[] = [];

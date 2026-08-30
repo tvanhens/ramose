@@ -302,6 +302,31 @@ describe("building one durable queue record", () => {
     ).toBeUndefined();
   });
 
+  test("a stored row may not repeat a slot or a client ref", () => {
+    const one = clientRef();
+    const two = clientRef();
+    const stored = JSON.parse(JSON.stringify(
+      buildOutboxRecord(
+        draft({
+          allocations: [{ slot: "issue", clientRef: one }, { slot: "note", clientRef: two }],
+        }),
+        scopeKey,
+        1,
+      ),
+    )) as Record<string, unknown>;
+    expect(decodeOutboxRecord(stored)).toBeDefined();
+    for (
+      const ambiguous of [
+        // One slot, two entities.
+        [{ slot: "issue", clientRef: one }, { slot: "issue", clientRef: two }],
+        // One entity, two slots.
+        [{ slot: "issue", clientRef: one }, { slot: "note", clientRef: one }],
+      ]
+    ) {
+      expect(decodeOutboxRecord({ ...stored, allocations: ambiguous })).toBeUndefined();
+    }
+  });
+
   test("a declared position must be a path the decoder can read back", () => {
     const ref = clientRef();
     // An empty property name is not addressable. Accepting it here would
