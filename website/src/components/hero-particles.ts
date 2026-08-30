@@ -1,8 +1,7 @@
 /**
- * WebGPU runtime for the landing-page hero: a particle simulation whose
- * 36-second choreography cycles cloud → network graph → cloud → the rotating
- * extruded Ramose mark. Shader source and the choreography tuning live in
- * hero-particles-shaders.ts.
+ * WebGPU runtime for the landing-page hero: the extruded Ramose mark as a
+ * slowly counter-rotating particle swarm. Shader source and the motion
+ * tuning live in hero-particles-shaders.ts.
  *
  * Written against raw WebGPU: the sim needs rgba32float ping-pong render
  * targets seeded via writeTexture and a point-list pipeline with additive
@@ -26,8 +25,8 @@ export interface HeroParticlesHandle {
   stop: () => void;
 }
 
-/** Seconds per choreography cycle. Must match phaseCyc() in the shaders. */
-const CYCLE_SECONDS = 36;
+/** Time scale for the ?hero-pin dev aid (seconds per unit of the pin). */
+const PIN_SECONDS = 36;
 
 /** Height of the Ramose mark in world units (world y spans [-1, 1]). */
 const MARK_SCALE = 0.92;
@@ -127,15 +126,15 @@ function buildSeedData(size: number, aspect: number): Float32Array {
 }
 
 /**
- * Dev aid: ?hero-phase=0.769 pins the choreography phase (0..1) so any moment
- * of the cycle can be inspected statically (dt still flows, so the particles
- * settle into the pinned pose).
+ * Dev aid: ?hero-pin=0.5 pins the animation clock (in units of PIN_SECONDS)
+ * so any rotation angle can be inspected statically (dt still flows, so the
+ * particles settle into the pinned pose).
  */
 function frozenTime(): number | null {
-  const raw = new URLSearchParams(location.search).get("hero-phase");
+  const raw = new URLSearchParams(location.search).get("hero-pin");
   if (raw === null) return null;
-  const phase = Number.parseFloat(raw);
-  return Number.isFinite(phase) ? phase * CYCLE_SECONDS : null;
+  const pin = Number.parseFloat(raw);
+  return Number.isFinite(pin) ? pin * PIN_SECONDS : null;
 }
 
 export async function startHeroParticles(
@@ -143,6 +142,24 @@ export async function startHeroParticles(
   hero: HTMLElement,
   options: HeroParticlesOptions = {},
 ): Promise<HeroParticlesHandle> {
+  // Layout gate: before the page styles apply (dev-server CSS races) the
+  // canvas can transiently measure as a 1px-wide, document-tall strip.
+  // Sizing the swap chain, picking the particle tier, or seeding particle
+  // positions from that measurement produces garbage, so wait for a
+  // plausible layout first. Hidden documents deliver it with their first
+  // rendered frame.
+  await new Promise<void>((resolve) => {
+    const plausible = () => canvas.clientWidth >= 8 && canvas.clientHeight >= 8;
+    if (plausible()) return resolve();
+    const observer = new ResizeObserver(() => {
+      if (plausible()) {
+        observer.disconnect();
+        resolve();
+      }
+    });
+    observer.observe(canvas);
+  });
+
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("No WebGPU adapter");
   const device = await adapter.requestDevice();
@@ -176,9 +193,14 @@ export async function startHeroParticles(
     const context = canvas.getContext("webgpu");
     if (!context) throw new Error("No WebGPU canvas context");
     const surfaceFormat = navigator.gpu.getPreferredCanvasFormat();
+    // Clamp to the device's texture limit: before the page styles apply the
+    // canvas can transiently measure as tall as the whole document (dev-mode
+    // CSS races), and an oversized swap chain is a validation error. The
+    // ResizeObserver below corrects the size once real layout lands.
+    const maxDim = device.limits.maxTextureDimension2D;
     const applyCanvasSize = () => {
-      canvas.width = Math.max(1, Math.floor(cssWidth * dpr));
-      canvas.height = Math.max(1, Math.floor(cssHeight * dpr));
+      canvas.width = Math.min(maxDim, Math.max(1, Math.floor(cssWidth * dpr)));
+      canvas.height = Math.min(maxDim, Math.max(1, Math.floor(cssHeight * dpr)));
     };
     applyCanvasSize();
     context.configure({ device, format: surfaceFormat, alphaMode: "opaque" });
@@ -376,8 +398,10 @@ export async function startHeroParticles(
       const dt = (now - last) / 1000;
       last = now;
       // Don't render a hidden page; on return the substeps below catch the
-      // sim up with the real-time phase clock in a few capped steps.
-      if (document.hidden) return;
+      // sim up with the real-time clock in a few capped steps. A pinned
+      // clock (dev aid) renders regardless so pinned poses can be captured
+      // from headless or hidden views.
+      if (document.hidden && pinnedTime === null) return;
       pointer.force *= 0.9;
       const steps = Math.min(Math.ceil(dt / MAX_STEP_SECONDS), MAX_SUBSTEPS);
       for (let i = 0; i < steps; i++) {

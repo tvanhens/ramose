@@ -4,11 +4,13 @@
  * Two shader modules share one particle state: a fullscreen fragment pass
  * that advances a WIDTH x WIDTH rgba32float position/velocity texture
  * (ping-pong), and a point-list pass that draws one additively blended 1px
- * point per texel. Both modules embed the same hash/noise and choreography
- * blocks below, so phase timing and per-particle hashes cannot drift apart.
+ * point per texel. Both modules embed the same hash/noise and rotation
+ * blocks below, so per-particle hashes and angles cannot drift apart.
  *
- * The choreography constants are tuned as a set; see the timeline comment on
- * the phase block before changing any of them.
+ * The animation is a single continuous state: the extruded Ramose mark as a
+ * slowly counter-rotating particle swarm — most particles track their home
+ * point on the mark with individually varying stiffness, and a small stray
+ * fraction floats loosely around it as an ambient halo.
  */
 
 /** Hash / value-noise / fbm helpers shared by the sim and draw passes. */
@@ -40,84 +42,15 @@ const HASH_WGSL = /* wgsl */ `
   }
 `;
 
-/**
- * Choreography shared by the sim and draw passes: the 36s cycle timeline,
- * the logo rotation, and the morphing network graph.
- */
-const PHASE_WGSL = /* wgsl */ `
-  fn phaseCyc(time: f32) -> f32 { return fract(time / 36.0); }
-
-  // 36s timeline — clouds are only brief beats between organized states:
-  //   graph coalesces over ~5s (0.03-0.17, pulses/motion live the whole
-  //   way) · fully formed 0.17-0.25 (~3s) · melts 0.25-0.35 · quick cloud
-  //   0.35-0.39 · logo rotation+assembly 0.39-0.775 · crisp, still
-  //   turning, near 0.79 · melting 0.8-0.91 · quick cloud to wrap.
-  fn sLogo(time: f32) -> f32 {
-    let c = phaseCyc(time);
-    return smoothstep(0.4, 0.775, c) * (1.0 - smoothstep(0.8, 0.91, c));
-  }
-
-  fn sNet(time: f32) -> f32 {
-    let c = phaseCyc(time);
-    return smoothstep(0.03, 0.17, c) * (1.0 - smoothstep(0.25, 0.35, c));
-  }
-
+/** The mark's rotation, shared by the sim and draw passes. */
+const ROTATION_WGSL = /* wgsl */ `
   fn markTheta(time: f32, inner: f32) -> f32 {
-    // The rotation never stops: the window runs through the melt,
-    // decelerating to a slow but nonzero turn. Turn counts are scaled so
-    // both squares pass exactly through face-on at the crisp moment
-    // (p = 0.769, cyc ~0.79), then keep drifting as the logo dissolves.
-    let p = clamp((phaseCyc(time) - 0.39) / 0.52, 0.0, 1.0);
-    let ease = mix(p, 1.0 - (1.0 - p) * (1.0 - p), 0.6);
-    // Different magnitudes, opposite signs (equal-and-opposite reads as
-    // synchronized in projection). The small sine sway keeps the logo
-    // breathing on top of the drift.
-    let turns = mix(-2.283, 3.4245, inner);
-    return 6.2831853 * turns * ease + 0.05 * sin(time * 0.7 + inner * 2.1);
-  }
-
-  // Morphing triangular graph: staggered 7x5 lattice whose nodes wander
-  // on slow noise, so the graph deforms organically while staying a graph.
-  fn netNode(col: f32, row: f32, time: f32, aspect: f32) -> vec2f {
-    // The lattice only fixes topology; positions are heavily randomized.
-    // Each 36s epoch reshuffles the layout (invisible: the swap happens
-    // mid-cloud-phase, while sNet is zero), and nodes glide continuously on
-    // noise while the graph is up, so it reads as a random organic graph,
-    // never the same twice.
-    let epoch = floor(time / 36.0);
-    let stagger = (row - floor(row * 0.5) * 2.0) * 0.5;
-    // Overscanned: outer nodes sit past the frame so the graph never
-    // feels contained by the viewport.
-    let base = vec2f(
-      ((col + stagger) / 6.0 - 0.5) * 2.0 * aspect * 1.15,
-      ((row + 0.5) / 5.0 - 0.5) * 2.0 * 1.15
-    );
-    let id = vec2f(col + epoch * 13.7, row + epoch * 7.9);
-    let jitter = vec2f(hash21(id + vec2f(1.2, 8.4)), hash21(id + vec2f(6.6, 2.3))) - 0.5;
-    let wander = vec2f(
-      fbm(vec2f(col * 1.7 + 0.3, row * 2.3) + epoch * 3.1 + time * 0.05) - 0.5,
-      fbm(vec2f(row * 1.9 + 5.1, col * 1.3) + epoch * 5.7 + time * 0.045 + 9.7) - 0.5
-    ) * 0.42;
-    return base + jitter * 0.34 + wander;
-  }
-
-  // Each particle lives on one lattice edge: right, down-left or down-right
-  // from its home node. Returns (col, row, col2, row2).
-  fn netEdge(seed: vec2f) -> vec4f {
-    let col = floor(hash21(seed + vec2f(3.3, 1.7)) * 7.0);
-    let row = floor(hash21(seed + vec2f(8.1, 4.9)) * 5.0);
-    let dir = floor(hash21(seed + vec2f(6.7, 2.9)) * 3.0);
-    let parity = row - floor(row * 0.5) * 2.0;
-    var c2 = col + 1.0;
-    var r2 = row;
-    if (dir > 0.5 && dir < 1.5) { c2 = col + parity - 1.0; r2 = row + 1.0; }
-    if (dir >= 1.5) { c2 = col + parity; r2 = row + 1.0; }
-    // Redirect out-of-range neighbors inward so no edge degenerates into a
-    // point (degenerate a==b edges render as garbage perpendicular dashes).
-    if (c2 > 6.0) { c2 = col - 1.0; }
-    if (c2 < 0.0) { c2 = col + 1.0; }
-    if (r2 > 4.0) { r2 = row - 1.0; }
-    return vec4f(col, row, c2, r2);
+    // Continuous counter-rotation. Different magnitudes, opposite signs:
+    // equal-and-opposite rates foreshorten in sync and read as spinning
+    // together in projection. The small sine sway keeps the mark breathing
+    // on top of the steady turn.
+    let turnsPerSecond = mix(-0.03, 0.045, inner);
+    return 6.2831853 * turnsPerSecond * time + 0.05 * sin(time * 0.7 + inner * 2.1);
   }
 `;
 
@@ -147,7 +80,7 @@ const UNIFORMS_WGSL = /* wgsl */ `
  */
 export const SIM_SHADER_WGSL =
   HASH_WGSL +
-  PHASE_WGSL +
+  ROTATION_WGSL +
   UNIFORMS_WGSL +
   /* wgsl */ `
   @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -172,12 +105,8 @@ export const SIM_SHADER_WGSL =
     // vertex index so per-particle hashes agree between the two shaders.
     let seed = fragPos.xy;
     let time = u.time;
-    let dt = u.dt;
-    let aspect = u.aspect;
-    let sL = sLogo(time);
-    let sN = sNet(time);
 
-    // Free drift from a slowly evolving curl field.
+    // Shimmer from a slowly evolving curl field.
     let e = 0.11;
     let np = pos * 0.9 + hash21(seed) * 0.13;
     let drift = vec2f(
@@ -194,96 +123,26 @@ export const SIM_SHADER_WGSL =
     let persp = 1.0 / (1.0 + z3 * 0.5);
     let goal = u.markCenter + vec2f(x3, g.y) * persp;
 
-    // Network phase: a partial, ever-changing graph. Each edge has a life
-    // cycle (fades in, lingers, fades out, staggered per edge) so the graph
-    // is never fully connected; particles whose edge is currently down fall
-    // back to cloud behavior. A loose spring plus per-particle perpendicular
-    // scatter keeps edges as fuzzy particle bands, not resolved lines.
-    let eg = netEdge(seed);
-    let na = netNode(eg.x, eg.y, time, aspect);
-    let nb = netNode(eg.z, eg.w, time, aspect);
-    let tE = hash21(seed + vec2f(9.9, 0.3));
-    let edgeVec = nb - na + vec2f(1e-4, 0.0);
-    let edgePerp = normalize(vec2f(-edgeVec.y, edgeVec.x));
-    // Thin bands with per-edge character: each edge has its own width and
-    // particle density (close but not uniform), and the triangular scatter
-    // distribution gives a dense core with feathered borders.
-    let widthK = 0.55 + 0.9 * hash21(eg.xy * 2.6 + eg.zw * 8.8);
-    let scatter = (hash21(seed + vec2f(0.7, 5.5)) + hash21(seed + vec2f(5.2, 1.1)) - 1.0) * 0.005 * widthK;
-    let netT = mix(na, nb, tE) + edgePerp * scatter;
-    let ePhase = fract(hash21(eg.xy * 3.7 + eg.zw * 1.9) + time * 0.014);
-    let dens = step(hash21(seed + vec2f(4.4, 7.2)), 0.55 + 0.45 * hash21(eg.xy * 1.9 + eg.zw * 5.3));
-    let presence = smoothstep(0.05, 0.25, ePhase) * (1.0 - smoothstep(0.75, 0.95, ePhase)) * dens;
-    let sNp = sN * presence;
-    let s = max(sL, sNp);
-
-    // Residual drift never fully dies, so even the held logo keeps a
-    // faint shimmer of motion.
-    var accel = drift * 0.12 * (1.0 - s * 0.85);
-    accel += (goal - pos) * sL * 9.0;
-    // Edge thinness is limited by spring lag, not just scatter: this spring
-    // constant and the node-wander speeds are tuned together.
-    accel += (netT - pos) * sNp * 11.0;
-    accel -= vel * (0.55 + s * 5.5);
-
-    // Free phase: each particle belongs to one of six slowly wandering
-    // vortices — weak attraction plus a tangential swirl (spin direction
-    // alternating per vortex) organizes the dispersed particles into
-    // several distinct turbulent clouds instead of a uniform haze.
-    let freeS = 1.0 - s;
-    // Cluster membership slowly migrates: each particle re-rolls its vortex
-    // roughly once a minute, staggered, so streams of particles trade
-    // between clouds instead of the same six populations reforming forever.
-    let k = floor(fract(hash21(seed + vec2f(5.9, 12.3)) + time * 0.004) * 6.0);
-    // Centers tour the whole screen on incommensurate two-sine paths — the
-    // composition never repeats on any cycle-length timescale.
-    let ck = vec2f(
-      (sin(time * 0.047 + k * 4.13) * 0.62 + sin(time * 0.0211 + k * 1.91) * 0.42) * aspect,
-      cos(time * 0.039 + k * 2.71) * 0.5 + sin(time * 0.0257 + k * 5.37) * 0.38
-    );
-    // Organic deformation: the attractor each particle chases is warped by
-    // position-dependent noise, so clouds are ragged tendrilled blobs, not
-    // disks; and each vortex waxes and wanes on its own slow cycle, so
-    // clouds continually dissolve and reform.
-    let wob = vec2f(
-      fbm(pos * 1.3 + vec2f(time * 0.05, k * 3.7)) - 0.5,
-      fbm(pos * 1.3 + vec2f(k * 5.1, time * 0.06) + 7.3) - 0.5
-    ) * 0.9;
-    let liveK = clamp(0.55 + 0.95 * sin(time * (0.13 + k * 0.031) + k * 2.61), 0.05, 1.4);
-    let toC = (ck + wob) - pos;
-    let dC = max(length(toC), 0.08);
-    let dirC = toC / dC;
-    let spinDir = mix(1.0, -1.0, step(0.5, hash21(vec2f(k, 9.4))));
-    let tangC = vec2f(-dirC.y, dirC.x) * spinDir;
-    // Velocity steering, not force pumping: each particle chases a target
-    // spiral-inflow velocity around its vortex. Constant tangential forcing
-    // would pump orbits out to off-screen radii; steering bounds them, and
-    // per-particle weights spread the settled radii into fuzzy filled disks.
-    let wAttract = 0.5 + 1.0 * hash21(seed + vec2f(2.2, 6.6));
-    let wSwirl = 0.4 + 1.2 * hash21(seed + vec2f(8.8, 0.7));
-    let swirlV = tangC * (0.7 * wSwirl / (1.0 + dC * dC * 4.0));
-    let inV = dirC * (0.45 * wAttract * clamp(dC * 2.0, 0.3, 1.0));
-    let gain = (0.7 + 0.6 * hash21(seed + vec2f(6.4, 3.9))) * liveK;
-    accel += ((swirlV + inV) - vel) * freeS * 1.6 * gain;
-    // A second, finer-scale curl field keeps the interiors churning.
-    let np2 = pos * 2.6 + vec2f(time * 0.07, -time * 0.05);
-    let drift2 = vec2f(
-      fbm(np2 + vec2f(0.0, e)) - fbm(np2 - vec2f(0.0, e)),
-      -(fbm(np2 + vec2f(e, 0.0)) - fbm(np2 - vec2f(e, 0.0)))
-    ) / (2.0 * e);
-    accel += drift2 * 0.3 * freeS;
+    // Swarm character: spring stiffness varies per particle (soft laggards
+    // smear behind the turn, stiff ones hold the form), and a small stray
+    // fraction barely tracks the mark at all, floating around it as a
+    // drifting halo.
+    let springK = 9.0 * (0.45 + 0.9 * hash21(seed + vec2f(2.2, 6.6)));
+    let stray = smoothstep(0.86, 1.0, hash21(seed + vec2f(8.8, 0.7)));
+    var accel = drift * mix(0.06, 0.55, stray);
+    accel += (goal - pos) * springK * mix(1.0, 0.12, stray);
+    accel -= vel * 5.5;
 
     // Gentle pointer repulsion; force decays on the CPU side.
     let pd = pos - u.pointer;
     accel += pd * exp(-dot(pd, pd) * 14.0) * u.pointerForce * 3.0;
 
-    vel += accel * dt;
-    pos += vel * dt;
+    vel += accel * u.dt;
+    pos += vel * u.dt;
 
-    // Soft wrap, wide enough to cover the overscanned graph nodes
-    // (lattice scale 1.15 plus wander and jitter) so no organized particle
-    // ever wraps and streaks across the frame.
-    let bound = vec2f(aspect * 1.45, 1.45);
+    // Soft wrap safety net, generous enough that strays never visibly
+    // teleport at a frame edge.
+    let bound = vec2f(u.aspect * 1.45, 1.45);
     pos = ((pos + bound) - floor((pos + bound) / (2.0 * bound)) * (2.0 * bound)) - bound;
 
     return vec4f(pos, vel);
@@ -297,7 +156,7 @@ export const SIM_SHADER_WGSL =
  */
 export const DRAW_SHADER_WGSL =
   HASH_WGSL +
-  PHASE_WGSL +
+  ROTATION_WGSL +
   UNIFORMS_WGSL +
   /* wgsl */ `
   override STATE_SIZE: u32 = 512u;
@@ -322,44 +181,19 @@ export const DRAW_SHADER_WGSL =
     let speed = length(st.zw);
     var fade = clamp(0.35 + speed * 1.4, 0.35, 1.0);
 
-    // Depth cue while converged: recompute this particle's rotated z and
-    // brighten the near side of each solid, dim the far side.
+    // Depth cue: recompute this particle's rotated z and brighten the near
+    // side of each solid, dim the far side.
     let g = textureLoad(goals, xy, 0);
     let th = markTheta(u.time, g.z);
     let z3 = g.x * sin(th) + g.w * cos(th);
-    let s = sLogo(u.time);
-    let depthShade = clamp(1.15 - z3 * 2.4, 0.2, 1.7);
-    fade *= mix(1.0, depthShade, s);
+    fade *= clamp(1.15 - z3 * 2.4, 0.2, 1.7);
 
-    // Ember orange in the cloud; the outer square resolves to white as the
-    // logo assembles (the mark's stroke is currentColor on the site).
+    // The outer square is white (the mark's stroke is currentColor on the
+    // site); the inner diamond keeps the ember orange.
     let ember = vec3f(0.55, 0.16, 0.03);
     let stroke = vec3f(0.30, 0.29, 0.28);
-    var tint = mix(ember, stroke, s * (1.0 - g.z));
-
-    // Network phase: a bright packet travels along each edge; particles
-    // light up hot as it passes.
-    let sN = sNet(u.time);
-    if (sN > 0.001) {
-      let eg = netEdge(seed);
-      let tE = hash21(seed + vec2f(9.9, 0.3));
-      // Same edge life cycle as the sim: particles on a downed edge are in
-      // cloud mode and keep their normal cloud brightness.
-      let ePhase = fract(hash21(eg.xy * 3.7 + eg.zw * 1.9) + u.time * 0.014);
-      let dens = step(hash21(seed + vec2f(4.4, 7.2)), 0.55 + 0.45 * hash21(eg.xy * 1.9 + eg.zw * 5.3));
-      let presence = smoothstep(0.05, 0.25, ePhase) * (1.0 - smoothstep(0.75, 0.95, ePhase)) * dens;
-      let sNp = sN * presence;
-      let edgeSeed = hash21(eg.xy * 7.3 + eg.zw * 3.1);
-      let flowDir = mix(1.0, -1.0, step(0.5, hash21(eg.xy + eg.zw * 2.7)));
-      let front = fract(u.time * 0.22 * flowDir + edgeSeed * 7.9);
-      let dP = abs(fract(tE - front + 0.5) - 0.5);
-      let pulse = exp(-dP * dP * 220.0);
-      fade *= mix(1.0, 0.6 + 1.5 * pulse, sNp);
-      tint += vec3f(0.45, 0.08, 0.0) * pulse * sNp;
-    }
-
     out.fade = fade;
-    out.tint = tint;
+    out.tint = mix(ember, stroke, 1.0 - g.z);
     return out;
   }
 
