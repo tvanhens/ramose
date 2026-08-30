@@ -41,33 +41,33 @@ const HASH_WGSL = /* wgsl */ `
 `;
 
 /**
- * Choreography shared by the sim and draw passes: the 34s cycle timeline,
+ * Choreography shared by the sim and draw passes: the 36s cycle timeline,
  * the logo rotation, and the morphing network graph.
  */
 const PHASE_WGSL = /* wgsl */ `
-  fn phaseCyc(time: f32) -> f32 { return fract(time / 34.0); }
+  fn phaseCyc(time: f32) -> f32 { return fract(time / 36.0); }
 
-  // 34s timeline — clouds are only brief beats between organized states:
-  //   graph coalesces over ~5s (0.03-0.18, pulses/motion live the whole
-  //   way) · fully formed for only ~0.5s (to 0.195) · melts 0.195-0.30 ·
-  //   quick cloud 0.30-0.34 · logo rotation+assembly 0.34-0.75 · crisp,
-  //   still turning, near 0.765 · melting 0.78-0.89 · quick cloud to wrap.
+  // 36s timeline — clouds are only brief beats between organized states:
+  //   graph coalesces over ~5s (0.03-0.17, pulses/motion live the whole
+  //   way) · fully formed 0.17-0.25 (~3s) · melts 0.25-0.35 · quick cloud
+  //   0.35-0.39 · logo rotation+assembly 0.39-0.775 · crisp, still
+  //   turning, near 0.79 · melting 0.8-0.91 · quick cloud to wrap.
   fn sLogo(time: f32) -> f32 {
     let c = phaseCyc(time);
-    return smoothstep(0.35, 0.75, c) * (1.0 - smoothstep(0.78, 0.89, c));
+    return smoothstep(0.4, 0.775, c) * (1.0 - smoothstep(0.8, 0.91, c));
   }
 
   fn sNet(time: f32) -> f32 {
     let c = phaseCyc(time);
-    return smoothstep(0.03, 0.18, c) * (1.0 - smoothstep(0.195, 0.3, c));
+    return smoothstep(0.03, 0.17, c) * (1.0 - smoothstep(0.25, 0.35, c));
   }
 
   fn markTheta(time: f32, inner: f32) -> f32 {
     // The rotation never stops: the window runs through the melt,
     // decelerating to a slow but nonzero turn. Turn counts are scaled so
     // both squares pass exactly through face-on at the crisp moment
-    // (p = 0.769, cyc ~0.763), then keep drifting as the logo dissolves.
-    let p = clamp((phaseCyc(time) - 0.34) / 0.55, 0.0, 1.0);
+    // (p = 0.769, cyc ~0.79), then keep drifting as the logo dissolves.
+    let p = clamp((phaseCyc(time) - 0.39) / 0.52, 0.0, 1.0);
     let ease = mix(p, 1.0 - (1.0 - p) * (1.0 - p), 0.6);
     // Different magnitudes, opposite signs (equal-and-opposite reads as
     // synchronized in projection). The small sine sway keeps the logo
@@ -80,11 +80,11 @@ const PHASE_WGSL = /* wgsl */ `
   // on slow noise, so the graph deforms organically while staying a graph.
   fn netNode(col: f32, row: f32, time: f32, aspect: f32) -> vec2f {
     // The lattice only fixes topology; positions are heavily randomized.
-    // Each 34s epoch reshuffles the layout (invisible: the swap happens
+    // Each 36s epoch reshuffles the layout (invisible: the swap happens
     // mid-cloud-phase, while sNet is zero), and nodes glide continuously on
     // noise while the graph is up, so it reads as a random organic graph,
     // never the same twice.
-    let epoch = floor(time / 34.0);
+    let epoch = floor(time / 36.0);
     let stagger = (row - floor(row * 0.5) * 2.0) * 0.5;
     // Overscanned: outer nodes sit past the frame so the graph never
     // feels contained by the viewport.
@@ -301,6 +301,9 @@ export const DRAW_SHADER_WGSL =
   UNIFORMS_WGSL +
   /* wgsl */ `
   override STATE_SIZE: u32 = 512u;
+  // Per-particle brightness; the host raises it on lower particle tiers so
+  // small screens keep a present, legible animation instead of a faint one.
+  override BRIGHTNESS: f32 = 0.16;
 
   @group(0) @binding(0) var<uniform> u: Uniforms;
   @group(0) @binding(1) var state: texture_2d<f32>;
@@ -361,6 +364,6 @@ export const DRAW_SHADER_WGSL =
   }
 
   @fragment fn fs(@location(0) fade: f32, @location(1) tint: vec3f) -> @location(0) vec4f {
-    return vec4f(tint * 0.16 * fade, 1.0);
+    return vec4f(tint * BRIGHTNESS * fade, 1.0);
   }
 `;

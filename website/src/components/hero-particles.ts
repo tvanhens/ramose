@@ -1,6 +1,6 @@
 /**
  * WebGPU runtime for the landing-page hero: a particle simulation whose
- * 34-second choreography cycles cloud → network graph → cloud → the rotating
+ * 36-second choreography cycles cloud → network graph → cloud → the rotating
  * extruded Ramose mark. Shader source and the choreography tuning live in
  * hero-particles-shaders.ts.
  *
@@ -27,7 +27,7 @@ export interface HeroParticlesHandle {
 }
 
 /** Seconds per choreography cycle. Must match phaseCyc() in the shaders. */
-const CYCLE_SECONDS = 34;
+const CYCLE_SECONDS = 36;
 
 /** Height of the Ramose mark in world units (world y spans [-1, 1]). */
 const MARK_SCALE = 0.92;
@@ -231,6 +231,12 @@ export async function startHeroParticles(
       fragment: {
         module: drawModule,
         entryPoint: "fs",
+        // Lower particle tiers spread fewer points over the same shapes;
+        // scaling brightness by the tier ratio (plus a small extra boost)
+        // keeps the animation present on small screens.
+        constants: {
+          BRIGHTNESS: 0.16 * (512 / size) * (size < 512 ? 1.25 : 1),
+        },
         targets: [
           {
             format: surfaceFormat,
