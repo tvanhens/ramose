@@ -623,6 +623,23 @@ browserTest("an authoritative mapping is immutable and belongs to its allocation
     ).toBe("ClientRefMappingRefused");
     expect((await dumpMutations(name))["mutation-client-ref-mappings-v1"]).toEqual([]);
 
+    // A timestamp the decoder would refuse must not be written: the mapping is
+    // immutable, so it could never release its dependents and never be
+    // repaired either.
+    for (const mappedAt of [Number.NaN, Number.POSITIVE_INFINITY, 1.5, -1]) {
+      expect(
+        await rejectedTag(
+          outbox.recordMappings(
+            receiver,
+            create.invocation,
+            [{ clientRef: allocation, entityId: mapped }],
+            mappedAt,
+          ),
+        ),
+      ).toBe("ClientRefMappingRefused");
+    }
+    expect((await dumpMutations(name))["mutation-client-ref-mappings-v1"]).toEqual([]);
+
     await outbox.recordMappings(receiver, create.invocation, [
       { clientRef: allocation, entityId: mapped },
     ]);

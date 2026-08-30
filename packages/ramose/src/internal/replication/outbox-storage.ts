@@ -235,7 +235,8 @@ export class ClientRefMappingRefused extends Data.TaggedError(
     | "not-a-ref-pair"
     | "unreadable-handle"
     | "not-allocated-here"
-    | "already-mapped";
+    | "already-mapped"
+    | "unreadable-timestamp";
 }> {}
 
 /**
@@ -615,6 +616,16 @@ export class IndexedDbOutbox {
   ): Promise<void> {
     const store = transaction.objectStore(MUTATION_MAPPINGS);
     const refs = transaction.objectStore(MUTATION_CLIENT_REFS);
+    // Checked before anything is written, exactly as the decoder checks it. A
+    // mapping is immutable once stored, so one the decoder would later refuse
+    // could never release its dependents *and* could never be repaired.
+    if (!Number.isSafeInteger(mappedAt) || mappedAt < 0) {
+      throw new ClientRefMappingRefused({
+        partition,
+        clientRef: "",
+        reason: "unreadable-timestamp",
+      });
+    }
     for (const mapping of mappings) {
       if (!isClientRef(mapping.clientRef) || !isEntityId(mapping.entityId)) {
         throw new ClientRefMappingRefused({
