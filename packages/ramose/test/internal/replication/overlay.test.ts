@@ -643,6 +643,31 @@ describe("slice-1 gate carry-forwards (#476 slice 2)", () => {
     ).toEqual(["0:undeclared-ref"]);
   });
 
+  test("a ref one layer declared is not nameable by another", async () => {
+    // Nameability is per layer. The shared resolution map must not turn a ref
+    // the first layer legitimately owns into one the second may name — that is
+    // the closed rule's whole point, and it is only closed if the declaration
+    // is checked before the map is consulted.
+    const mine = clientRef();
+    const owner = layer(authored((tx) => tx.create("draft", Issue), { draft: mine }), {
+      declared: [mine],
+    });
+    const foreign = layer(authored((tx) => tx.set(mine, title, "borrowed")), {
+      declared: [],
+    });
+    expect(await refusalsOf([owner, foreign])).toEqual(["0:undeclared-ref"]);
+    // And the owning layer still resolves it, in the same view.
+    expect((await overlay([owner, foreign])).db).toBeDefined();
+    expect(await titles(await view([owner, foreign]))).toEqual(["alpha", "beta"]);
+    // Declared by both, it is nameable by both.
+    const shared = layer(authored((tx) => tx.set(mine, title, "borrowed")), {
+      declared: [mine],
+    });
+    expect(await refusalsOf([owner, shared])).toEqual([]);
+    expect(await titles(await view([owner, shared])))
+      .toEqual(["alpha", "beta", "borrowed"]);
+  });
+
   test("admits a ref the input supplied, a slot minted, or a mapping resolves", async () => {
     const supplied = clientRef();
     expect(

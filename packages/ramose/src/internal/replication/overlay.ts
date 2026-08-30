@@ -181,13 +181,16 @@ export const projectOverlay = async (
    * reported as itself instead of as an unknown entity.
    */
   const resolve = (ref: MutationRef): number | OverlayOperationRefusalReason => {
-    const direct = entities.get(ref);
-    if (direct !== undefined) return direct;
     if (isClientRef(ref)) {
       const mapped = resolver.mapping(ref);
-      // Closed by construction: a ref this layer neither owns nor was given,
-      // and that no committed mapping resolves, brings nothing into view.
+      // Closed by construction, and decided *before* the shared resolution map
+      // is consulted. Nameability is a property of the layer, not of the view:
+      // consulting `entities` first would let a ref that some *other* layer
+      // declared become nameable here simply because that layer had already
+      // resolved it — weaker than the rule this enforces.
       if (mapped === undefined && !declared.has(ref)) return "undeclared-ref";
+      const direct = entities.get(ref);
+      if (direct !== undefined) return direct;
       const key = mapped ?? ref;
       let eid = entities.get(key);
       if (eid === undefined) {
@@ -204,6 +207,10 @@ export const projectOverlay = async (
       entities.set(ref, eid);
       return eid;
     }
+    // A sealed handle carries no per-layer declaration: it names an authority
+    // this device was given, so an alias any layer bound resolves for all.
+    const direct = entities.get(ref);
+    if (direct !== undefined) return direct;
     const eid = resolver.entity(ref as EntityId);
     if (eid === undefined) return "unknown-entity";
     entities.set(ref, eid);

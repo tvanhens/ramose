@@ -870,6 +870,14 @@ or validated input, or minted by one of its declared allocation slots.
 Anything else is the `undeclared-ref` refusal — recorded and skipped, never a
 speculative entity no durable record accounts for.
 
+Nameability is a property of the **layer**, not of the assembled view. The
+declaration is therefore checked *before* the shared resolution map is
+consulted: reading that map first would let a ref one layer legitimately owns
+become nameable by every later layer, simply because the owner had already
+resolved it. A sealed `EntityId` is different — it names an authority the
+device was given rather than one an invocation declared — so an alias any layer
+bound resolves for all, which is exactly what makes resolution order-symmetric.
+
 Aliases are bound in one pass over `(layer, operation)` order *before* the fold,
 so resolution is order-symmetric: naming a mapped handle before the client ref
 that aliases it resolves exactly as naming it after does, and the entity is

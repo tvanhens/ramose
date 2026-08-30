@@ -25,9 +25,13 @@ const replicationFrameFixtures = (root: string): Plugin => ({
   configureServer(server) {
     server.middlewares.use((request, response, next) => {
       const path = (request.url ?? "").split("?", 1)[0] ?? "";
-      const match = /^\/db\/([^/]+)\/replicate$/.exec(path);
+      // The database name is constrained to a traversal-free alphabet *before*
+      // it reaches `join`, and never percent-decoded: `%2F` would otherwise
+      // become a separator after the pattern had already accepted the segment,
+      // and `..` would escape the fixture directory.
+      const match = /^\/db\/([A-Za-z0-9_-]+)\/replicate$/.exec(path);
       if (match === null) return next();
-      const file = join(root, "test/browser/frames", `${decodeURIComponent(match[1]!)}.ndjson`);
+      const file = join(root, "test/browser/frames", `${match[1]!}.ndjson`);
       if (!existsSync(file)) return next();
       response.statusCode = 200;
       response.setHeader("content-type", "application/x-ndjson");

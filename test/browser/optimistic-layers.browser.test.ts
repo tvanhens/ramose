@@ -636,6 +636,58 @@ browserTest(
 );
 
 browserTest(
+  "the fence confirms the authoritative replica before it removes anything",
+  async ({ browser }) => {
+    const database = `ramose-layer-confirm-${browser.uniqueId}`;
+    const selected = identity();
+    const receiver = replicaDatabaseScopeOf(selected);
+    const scope = replicaScopeOf(selected);
+    const storage = await IndexedDbReplicaStorage.open(database);
+    try {
+      await install(storage, selected, "left");
+      const outbox = storage.outbox();
+      const allocation = clientRef();
+      const record = await enqueueProjected(storage, receiver, scope, {
+        input: { name: "still-optimistic" },
+        allocations: [{ slot: "issue", clientRef: allocation }],
+      });
+      await outbox.acknowledge(record, {
+        _tag: "Committed",
+        output: null,
+        mappings: [{ clientRef: allocation, entityId: await handleFor(receiver, 21) }],
+      });
+      const reconciler = new OptimisticReconciler(outbox, receiver, catalog());
+      const activation = await reconciler.restart();
+
+      // The replica this fence exists to observe is evicted between the
+      // acknowledgement and the outcome. Nothing may be removed on the strength
+      // of an outcome whose authoritative state this transaction cannot see.
+      await storage.evictDatabase(receiver);
+      expect(await revisionOf(storage.restore(selected, ATTRIBUTES, READ_COMPATIBILITY)))
+        .toBeUndefined();
+      await expect(reconciler.outcome(activation)()).rejects.toMatchObject({
+        _tag: "OutboxRecordInvalid",
+      });
+      expect((await outbox.receipt(receiver, record.invocation))?.observation)
+        .toBe("unobserved");
+      expect(await rawLayers(database)).toHaveLength(1);
+
+      // A fresh snapshot lands and the *same* activation's next settled frame
+      // converges: the fence was never consumed by the attempt that refused.
+      await install(storage, selected, "left", "reinstalled");
+      await reconciler.outcome(activation)();
+      expect((await outbox.receipt(receiver, record.invocation))?.observation)
+        .toBe("observed");
+      expect(await rawLayers(database)).toEqual([]);
+      expect(reconciler.snapshot().layers).toEqual([]);
+    } finally {
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+browserTest(
   "a rejection removes exactly its layer and the later ones replay at once",
   async ({ browser }) => {
     const database = `ramose-layer-reject-${browser.uniqueId}`;
