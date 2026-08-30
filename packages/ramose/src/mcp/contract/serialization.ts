@@ -73,6 +73,73 @@ import { RESERVED_MRTR_ARGUMENT_NAMES } from "./json-schema.ts";
 /** The canonical JSON profile every public value is serialized under. */
 export const CONTRACT_CANONICAL_JSON_VERSION = "rfc8785-jcs/1" as const;
 
+// ---------------------------------------------------------------------------
+// Well-formed UTF-16
+// ---------------------------------------------------------------------------
+//
+// RFC 8785 §3.2.2.2 requires lone surrogates to terminate serialization, and
+// the engine's canonicalizer does exactly that. A public string is therefore
+// only publishable if it is well-formed UTF-16 — and, critically, that has to
+// be established *before* a result is committed to, because a string that
+// cannot be canonicalized cannot be rendered either. The failure would land
+// after the work it describes had already happened.
+//
+// Two things can produce an ill-formed string: an author writing one directly,
+// and this contract's own bounding cutting a surrogate pair in half. Both are
+// handled here so every producer gets the same answer.
+
+const REPLACEMENT_CHARACTER = "�";
+
+const isHighSurrogate = (code: number): boolean =>
+  code >= 0xd800 && code <= 0xdbff;
+
+const isLowSurrogate = (code: number): boolean =>
+  code >= 0xdc00 && code <= 0xdfff;
+
+/**
+ * Replace every unpaired surrogate with U+FFFD.
+ *
+ * Length is preserved — one ill-formed code unit becomes one replacement — so
+ * this composes with a length bound in either order. It is lossless for every
+ * well-formed string, which is every string anyone meant to write.
+ */
+export const replaceLoneSurrogates = (value: string): string => {
+  let out = "";
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (isHighSurrogate(code)) {
+      // `charCodeAt` past the end is NaN, and NaN fails the range check.
+      if (isLowSurrogate(value.charCodeAt(index + 1))) {
+        out += value.slice(index, index + 2);
+        index += 1;
+      } else {
+        out += REPLACEMENT_CHARACTER;
+      }
+      continue;
+    }
+    out += isLowSurrogate(code) ? REPLACEMENT_CHARACTER : value[index]!;
+  }
+  return out;
+};
+
+/**
+ * Take at most `units` UTF-16 code units without splitting a surrogate pair.
+ *
+ * A cut that lands between the halves of a supplementary character — an emoji
+ * is the everyday case — would leave an unpaired high surrogate and make the
+ * whole result unserializable. Backing off one unit costs at most one
+ * character and cannot itself create a lone surrogate: the unit before a high
+ * surrogate is never a low one in well-formed text.
+ */
+export const sliceWholeCodePoints = (value: string, units: number): string => {
+  if (units <= 0) return "";
+  if (value.length <= units) return value;
+  const boundary = isHighSurrogate(value.charCodeAt(units - 1))
+    ? units - 1
+    : units;
+  return value.slice(0, boundary);
+};
+
 /**
  * Refuse a value the canonical writer is not allowed to see.
  *

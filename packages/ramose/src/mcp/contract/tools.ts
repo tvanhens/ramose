@@ -255,18 +255,34 @@ export type QueryRowV1 = {
   readonly at?: GraphPathType;
 };
 
+/**
+ * Execute one query document.
+ *
+ * `cursor` continues a previous page. It is a tool argument rather than a
+ * member of the query document, and deliberately so: whether a call is the
+ * first page or the fourth is not part of what the query *means*, and keeping
+ * it out means the same document is re-sent byte-for-byte to walk a listing.
+ * That is what makes "the rest of the request unchanged" a checkable rule
+ * instead of a convention — and it is the same shape `describe` already uses,
+ * so one continuation idiom covers both read tools.
+ *
+ * A cursor carries the catalog it was minted under; see {@link CursorV1} for
+ * how that interacts with `ifCatalog`.
+ */
 export const QueryInputV1 = Schema.Struct({
   at: OptionalAt,
   query: QueryDocumentEnvelopeV1,
+  cursor: Schema.optionalKey(CursorV1),
   ifCatalog: OptionalIfCatalog,
   delivery: Schema.optionalKey(DeliveryRequestV1),
 }).annotate({
   description:
-    "Execute one versioned, plain-data query document against the graph selected by at.",
+    "Execute one versioned, plain-data query document against the graph selected by at. To continue a page, resend the identical request plus the cursor the previous result returned.",
 });
 export type QueryInputV1 = {
   readonly at?: GraphPathType;
   readonly query: QueryDocumentType;
+  readonly cursor?: string;
   readonly ifCatalog?: string;
   readonly delivery?: DeliveryRequestType;
 };

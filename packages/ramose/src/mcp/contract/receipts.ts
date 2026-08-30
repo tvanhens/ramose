@@ -32,6 +32,10 @@ import type {
 } from "../../internal/authorization/invocation-receipts.ts";
 import { MAX_ERROR_MESSAGE_LENGTH } from "./bounds.ts";
 import { errorEnvelope, type ErrorEnvelopeV1 } from "./errors.ts";
+import {
+  replaceLoneSurrogates,
+  sliceWholeCodePoints,
+} from "./serialization.ts";
 import { InvocationIdV1, type JsonValueV1 } from "./primitives.ts";
 
 /**
@@ -81,30 +85,47 @@ export const mutationReceipt = (
 export const MESSAGE_TRUNCATION_MARKER = "… (truncated)";
 
 /**
- * Bring an author-written rejection message inside the public bound.
+ * Bring an author-written rejection message inside the public bound, and make
+ * it serializable.
  *
  * The engine stores an operation's rejection message as the author wrote it —
- * it has no public length bound, because durably it does not need one. The
- * wire does: `ErrorEnvelopeV1.message` is bounded, and if the projection
- * forwarded a 2 KB message verbatim the resulting result would fail its own
- * output schema. The transport would then have an authoritative `rejected`
- * outcome it could not return as schema-valid `structuredContent` — the worst
- * possible failure mode, since the write already happened and the caller needs
- * the receipt.
+ * no public length bound, no encoding requirement, because durably it needs
+ * neither. The wire needs both, and both failures land in the same terrible
+ * place: after the operation has already run, when the caller needs its
+ * receipt and the transport has nothing valid to return.
  *
- * So this projection is total over everything the engine can store: any string
- * becomes a bounded one, an over-long message is cut deterministically at a
- * visible marker, and a missing or empty message becomes the same sealed
- * sentence a bare refusal uses. Truncation is never silent — the marker says
- * it happened, and `receipt.status` still carries the authoritative outcome.
+ * There are three ways a stored message can be unreturnable, and this is total
+ * over all of them:
+ *
+ * 1. **Too long** for `ErrorEnvelopeV1.message`, which would fail the output
+ *    schema. Cut at a visible marker.
+ * 2. **Ill-formed UTF-16** — an author can write a lone surrogate, and RFC 8785
+ *    requires the canonicalizer to reject one, so the result would validate
+ *    and then fail to render. Replace unpaired surrogates.
+ * 3. **Missing or empty**, which fails the envelope's `minLength: 1`. Fall
+ *    back to the sealed sentence a bare refusal uses.
+ *
+ * The cut itself is the subtle one: slicing UTF-16 units can split a
+ * supplementary character and *create* case 2 out of a perfectly good message,
+ * so it lands on a code-point boundary. That makes the bound "at most
+ * `MAX_ERROR_MESSAGE_LENGTH`" rather than exactly it — one character of
+ * headroom, in exchange for a message that can always be rendered.
+ *
+ * Nothing here is silent: the marker says the message was cut, and
+ * `receipt.status` still carries the authoritative outcome either way.
  */
 export const boundedRejectionMessage = (raw: unknown): string => {
   if (typeof raw !== "string" || raw.length === 0) {
     return "The operation refused this request.";
   }
-  if (raw.length <= MAX_ERROR_MESSAGE_LENGTH) return raw;
+  // Length-preserving, so it composes with the bound in either order.
+  const wellFormed = replaceLoneSurrogates(raw);
+  if (wellFormed.length <= MAX_ERROR_MESSAGE_LENGTH) return wellFormed;
   return `${
-    raw.slice(0, MAX_ERROR_MESSAGE_LENGTH - MESSAGE_TRUNCATION_MARKER.length)
+    sliceWholeCodePoints(
+      wellFormed,
+      MAX_ERROR_MESSAGE_LENGTH - MESSAGE_TRUNCATION_MARKER.length,
+    )
   }${MESSAGE_TRUNCATION_MARKER}`;
 };
 

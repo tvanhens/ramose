@@ -116,11 +116,28 @@ export type CatalogTokenV1 = string;
  * Opaque continuation handle. A cursor is only meaningful to the server that
  * minted it, is bound to the request that produced it, and expires; it never
  * widens what its bearer may see.
+ *
+ * ## A cursor carries its own catalog
+ *
+ * Deterministic paging is a contract invariant: continuing a listing must not
+ * silently drop or duplicate entries, and it must not quietly reinterpret the
+ * remainder against a catalog the caller never saw. So the catalog a cursor was
+ * minted under travels with the cursor, and continuing is pinned to it whether
+ * or not the caller restates the pin:
+ *
+ * - send `ifCatalog` and it must be the cursor's catalog — a different one is
+ *   `invalid_input`, because the two arguments would be asking for different
+ *   worlds;
+ * - omit `ifCatalog` and the cursor's catalog is still used, not the current
+ *   one. A cursor is not a way to opt out of the pin;
+ * - if that catalog is no longer available, the continuation is
+ *   `catalog_changed` and the caller restarts the listing. Never a silent
+ *   restart, and never a page interpreted against something else.
  */
 export const CursorV1 = opaqueHandle(
   CURSOR_PREFIX,
   "CursorV1",
-  "Opaque pagination cursor. A result carries one exactly when more entries exist; pass it back unchanged as the next request's cursor to continue that one listing. Never parse or construct one.",
+  "Opaque pagination cursor. A result carries one exactly when more entries exist; pass it back unchanged as the next request's cursor to continue that one listing, with the rest of the request unchanged. A cursor is pinned to the catalog it was minted under: an ifCatalog naming a different catalog is invalid_input, omitting ifCatalog still uses the cursor's catalog, and a catalog that has moved on is catalog_changed. Never parse or construct one.",
 );
 export type CursorV1 = string;
 

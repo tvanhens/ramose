@@ -150,6 +150,35 @@ describe("constraint keywords", () => {
   const constrained = (constraints: Node): Node =>
     object({ value: { type: "string", ...constraints } }, ["value"]);
 
+  test("adding a type tightens; removing one loosens", () => {
+    const untyped = object({ value: {} }, ["value"]);
+    const typed = object({ value: { type: "string" } }, ["value"]);
+    // Adding it rejects requests that used to validate.
+    expect(verdict(untyped, typed, "input")).toBe("breaking");
+    expect(verdict(untyped, typed, "output")).toBe("additive");
+    // Removing it admits values an older client's schema does not expect.
+    expect(verdict(typed, untyped, "output")).toBe("breaking");
+    expect(verdict(typed, untyped, "input")).toBe("additive");
+  });
+
+  test("the reason names type, not some other keyword", () => {
+    const change = classifyContractChange(
+      object({ value: { type: "string" } }, ["value"]),
+      object({ value: {} }, ["value"]),
+      "output",
+    );
+    expect(change.kind).toBe("breaking");
+    if (change.kind !== "breaking") throw new Error("unreachable");
+    expect(change.reasons.join(" ")).toContain("output type loosened");
+  });
+
+  test("a change between two types is undecidable, so it is reported both ways", () => {
+    const before = object({ value: { type: "string" } }, ["value"]);
+    const after = object({ value: { type: "number" } }, ["value"]);
+    expect(verdict(before, after, "input")).toBe("breaking");
+    expect(verdict(before, after, "output")).toBe("breaking");
+  });
+
   test("a lower bound raised tightens; lowered or dropped loosens", () => {
     const loose = constrained({});
     const tight = constrained({ minLength: 8 });

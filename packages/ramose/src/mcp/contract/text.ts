@@ -40,7 +40,10 @@
  */
 
 import type { JsonValue } from "../../internal/authorization/json.ts";
-import { canonicalizeContractJson } from "./serialization.ts";
+import {
+  canonicalizeContractJson,
+  sliceWholeCodePoints,
+} from "./serialization.ts";
 
 /** Lines a rendered result may occupy before it is explicitly cut short. */
 export const MAX_TEXT_LINES = 400;
@@ -59,14 +62,17 @@ const INDENT = "  ";
  * text can unambiguously decode back to the structured value.
  *
  * Elision happens *after* escaping, so the bound applies to what is actually
- * emitted, and the cut can never land inside an escape in a way that produces
- * a line break. Trailing backslashes are trimmed so the elided form does not
- * end mid-escape.
+ * emitted and the cut can never land inside an escape in a way that produces a
+ * line break. Two things still have to be true of the cut itself: it must not
+ * split a surrogate pair — `JSON.stringify` leaves supplementary characters
+ * such as emoji as raw pairs — and it must not end mid-escape, so trailing
+ * backslashes are trimmed.
  */
 const renderString = (value: string): string => {
   const escaped = JSON.stringify(value);
   if (escaped.length <= MAX_TEXT_SCALAR_LENGTH) return escaped;
-  const cut = escaped.slice(0, MAX_TEXT_SCALAR_LENGTH).replace(/\\+$/, "");
+  const cut = sliceWholeCodePoints(escaped, MAX_TEXT_SCALAR_LENGTH)
+    .replace(/\\+$/, "");
   return `${cut}… (elided, see structuredContent)`;
 };
 

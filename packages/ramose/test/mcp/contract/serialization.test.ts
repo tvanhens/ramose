@@ -1,6 +1,7 @@
 /** Canonical serialization and the public seal (#485). */
 
 import { describe, expect, test } from "bun:test";
+import { hasLoneSurrogate } from "../../../src/internal/authorization/canonical-json.ts";
 import {
   CONTRACT_CANONICAL_JSON_VERSION,
   KERNEL_TOOLS,
@@ -8,7 +9,9 @@ import {
   APPLICATION_OWNED_MEMBERS,
   assertSealedPublicJson,
   canonicalizeContractJson,
+  replaceLoneSurrogates,
   sealPublicJson,
+  sliceWholeCodePoints,
 } from "../../../src/mcp/contract/index.ts";
 import {
   closeIssue,
@@ -35,6 +38,13 @@ describe("canonical form", () => {
     expect(canonicalizeContractJson({ b: 1, a: 2 }))
       .toBe(canonicalizeContractJson({ a: 2, b: 1 }));
     expect(canonicalizeContractJson({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
+  });
+
+  test("refuses a string the canonicalizer cannot serialize", () => {
+    // RFC 8785 requires a lone surrogate to terminate serialization, so a
+    // producer has to establish well-formedness before committing to a result.
+    expect(() => canonicalizeContractJson({ note: "\ud83d" }))
+      .toThrow(/lone surrogates/);
   });
 
   test("refuses a value that is not JSON", () => {
@@ -124,6 +134,47 @@ describe("the public seal", () => {
   test("sealPublicJson refuses rather than quietly stripping", () => {
     expect(() => sealPublicJson({ eid: 1 } as never)).toThrow();
     expect(sealPublicJson({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
+  });
+});
+
+describe("well-formed UTF-16", () => {
+  test("replaces every unpaired surrogate and preserves length", () => {
+    const ill = "a\ud83db\udc00c";
+    const fixed = replaceLoneSurrogates(ill);
+    expect(fixed).toBe("a�b�c");
+    expect(fixed.length).toBe(ill.length);
+    expect(hasLoneSurrogate(fixed)).toBe(false);
+  });
+
+  test("leaves a well-formed string untouched, pairs included", () => {
+    for (const value of ["plain", "emoji 😀 here", "", "😀"]) {
+      expect(replaceLoneSurrogates(value)).toBe(value);
+    }
+  });
+
+  test("slicing backs off rather than splitting a surrogate pair", () => {
+    // "a😀b": units are a, D83D, DE00, b. Cutting at 2 would split the pair.
+    expect(sliceWholeCodePoints("a😀b", 2)).toBe("a");
+    expect(sliceWholeCodePoints("a😀b", 3)).toBe("a😀");
+    expect(sliceWholeCodePoints("a😀b", 4)).toBe("a😀b");
+    expect(hasLoneSurrogate(sliceWholeCodePoints("a😀b", 2))).toBe(false);
+  });
+
+  test("slicing is a plain prefix when no pair is in the way", () => {
+    expect(sliceWholeCodePoints("abcdef", 3)).toBe("abc");
+    expect(sliceWholeCodePoints("abc", 10)).toBe("abc");
+    expect(sliceWholeCodePoints("abc", 0)).toBe("");
+    expect(sliceWholeCodePoints("abc", -1)).toBe("");
+  });
+
+  test("a cut at every offset of a pair-dense string stays serializable", () => {
+    const dense = "😀😀😀😀😀";
+    for (let units = 0; units <= dense.length + 1; units++) {
+      const cut = sliceWholeCodePoints(dense, units);
+      expect({ units, lone: hasLoneSurrogate(cut) })
+        .toEqual({ units, lone: false });
+      expect(() => canonicalizeContractJson({ cut })).not.toThrow();
+    }
   });
 });
 

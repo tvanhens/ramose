@@ -343,12 +343,20 @@ export const classifyContractChange = (
       seenAgainst.add(right);
     }
 
-    if (
-      left.type !== undefined && right.type !== undefined &&
-      !sameScalar(left.type, right.type)
-    ) {
-      reasons.push(`${describe(path)}: type changed`);
-      return;
+    // `type` is a constraint like any other, so its appearance and its
+    // disappearance carry polarity too: adding one rejects values that used
+    // to validate, and removing one admits values a client's older schema
+    // does not expect. Only a change *between* two types is undecidable, and
+    // that is reported in both directions.
+    if (!sameScalar(left.type, right.type)) {
+      if (left.type === undefined) {
+        reportPolarity(path, "type", "tightened");
+      } else if (right.type === undefined) {
+        reportPolarity(path, "type", "loosened");
+      } else {
+        reasons.push(`${describe(path)}: type changed`);
+        return;
+      }
     }
 
     const leftEnum = enumValues(left);

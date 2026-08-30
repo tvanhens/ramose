@@ -12,6 +12,7 @@ import {
   QUERY_TOOL,
   RESERVED_MRTR_ARGUMENT_NAMES,
   assertNoReservedArgumentNames,
+  pageInfo,
   isDescribeInput,
   isDescribeOutput,
   isMutateInput,
@@ -25,6 +26,7 @@ import {
   closeIssue,
   describeCard,
   describeListing,
+  listingCursor,
   mutateRequest,
   mutateResult,
   queryRequest,
@@ -172,6 +174,18 @@ describe("required argument sets", () => {
     expect(required(QUERY_TOOL.inputSchema)).toEqual(["query"]);
   });
 
+  test("every paged tool accepts the cursor it hands back", () => {
+    // A result that says hasMore and returns a cursor has to have somewhere
+    // to send that cursor. Both read tools are paged, so both accept one.
+    for (const tool of [DESCRIBE_TOOL, QUERY_TOOL]) {
+      const properties = tool.inputSchema.properties as Node;
+      expect({ tool: tool.name, accepts: Object.hasOwn(properties, "cursor") })
+        .toEqual({ tool: tool.name, accepts: true });
+      expect((properties.cursor as Node).$ref).toBe("#/$defs/CursorV1");
+      expect(required(tool.inputSchema)).not.toContain("cursor");
+    }
+  });
+
   test("every tool accepts an optional catalog pin", () => {
     for (const tool of KERNEL_TOOLS) {
       const properties = tool.inputSchema.properties as Node;
@@ -307,6 +321,37 @@ describe("structuredContent validation", () => {
   test("rejects a mutation that omits the invocation id", () => {
     const { invocationId: _dropped, ...withoutId } = mutateRequest;
     expect(isMutateInput(withoutId)).toBe(false);
+  });
+
+  test("a paged query result can actually be continued", () => {
+    // The round trip the contract promises: take the cursor a result handed
+    // back, resend the identical request plus that cursor.
+    const first = {
+      ...queryRequest,
+      query: { ...queryRequest.query },
+    } as Record<string, unknown>;
+    expect(isQueryInput(first)).toBe(true);
+
+    const page = pageInfo({ limit: 25, returned: 25, cursor: listingCursor });
+    expect(page.hasMore).toBe(true);
+    expect(page.cursor).toBe(listingCursor);
+
+    const next = { ...first, cursor: page.cursor };
+    expect(isQueryInput(next)).toBe(true);
+  });
+
+  test("a cursor is accepted with or without a restated catalog pin", () => {
+    // Omitting ifCatalog does not opt out of the pin: the cursor carries the
+    // catalog it was minted under. Both spellings are well-formed requests.
+    const { ifCatalog: _dropped, ...unpinned } = queryRequest;
+    expect(isQueryInput({ ...unpinned, cursor: listingCursor })).toBe(true);
+    expect(
+      isQueryInput({ ...queryRequest, cursor: listingCursor, ifCatalog: catalogToken }),
+    ).toBe(true);
+  });
+
+  test("rejects a query cursor from the wrong handle family", () => {
+    expect(isQueryInput({ ...queryRequest, cursor: catalogToken })).toBe(false);
   });
 
   test("rejects a query document that is a string, not an object", () => {

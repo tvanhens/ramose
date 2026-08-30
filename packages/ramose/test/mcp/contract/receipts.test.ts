@@ -6,6 +6,7 @@ import {
   type AuthoritativeInvocationResult,
   type PublicInvocationReceipt,
 } from "../../../src/internal/authorization/invocation-receipts.ts";
+import { hasLoneSurrogate } from "../../../src/internal/authorization/canonical-json.ts";
 import {
   MAX_ERROR_MESSAGE_LENGTH,
   MESSAGE_TRUNCATION_MARKER,
@@ -15,6 +16,7 @@ import {
   isMutateOutput,
   mutationOutcome,
   mutationReceipt,
+  renderResultText,
 } from "../../../src/mcp/contract/index.ts";
 
 const invocationId = "01K5Q0R7VYX3S6ZB2A9C4D8E1F";
@@ -127,6 +129,58 @@ describe("mutationOutcome", () => {
     expect(outcome.error.message.length).toBe(MAX_ERROR_MESSAGE_LENGTH);
     expect(outcome.error.message.endsWith(MESSAGE_TRUNCATION_MARKER)).toBe(true);
     expect(isMutateOutput(wireResult(outcome))).toBe(true);
+  });
+
+  test("a supplementary character straddling the cutoff is never split", () => {
+    // Place an emoji so the naive UTF-16 cut would land between its halves.
+    const head = "a".repeat(
+      MAX_ERROR_MESSAGE_LENGTH - MESSAGE_TRUNCATION_MARKER.length - 1,
+    );
+    const outcome = mutationOutcome({
+      _tag: "Rejected",
+      receipt: receipt("rejected"),
+      rejection: {
+        kind: "operation_rejected",
+        message: `${head}😀${"b".repeat(2_000)}`,
+        operation: "close",
+      },
+    });
+    if (outcome.ok) throw new Error("unreachable");
+    const message = outcome.error.message;
+    expect(message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_LENGTH);
+    expect(hasLoneSurrogate(message)).toBe(false);
+    expect(isMutateOutput(wireResult(outcome))).toBe(true);
+    // The real proof: the whole rendering path, canonicalizer included, works.
+    expect(() => renderResultText(wireResult(outcome) as never)).not.toThrow();
+  });
+
+  test("an author's own lone surrogate cannot make the receipt unreturnable", () => {
+    const outcome = mutationOutcome({
+      _tag: "Rejected",
+      receipt: receipt("rejected"),
+      rejection: {
+        kind: "operation_rejected",
+        message: "refused \ud83d and also \udc00 here",
+        operation: "close",
+      },
+    });
+    if (outcome.ok) throw new Error("unreachable");
+    expect(hasLoneSurrogate(outcome.error.message)).toBe(false);
+    expect(outcome.error.message).toBe("refused � and also � here");
+    expect(() => renderResultText(wireResult(outcome) as never)).not.toThrow();
+  });
+
+  test("a well-formed emoji well inside the bound is left alone", () => {
+    expect(boundedRejectionMessage("done 😀")).toBe("done 😀");
+  });
+
+  test("the bound is at most, not exactly: headroom buys a renderable message", () => {
+    // Every code point supplementary, so the cut lands mid-pair every time.
+    const bounded = boundedRejectionMessage("😀".repeat(MAX_ERROR_MESSAGE_LENGTH));
+    expect(bounded.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_LENGTH);
+    expect(bounded.length).toBeGreaterThanOrEqual(MAX_ERROR_MESSAGE_LENGTH - 1);
+    expect(hasLoneSurrogate(bounded)).toBe(false);
+    expect(bounded.endsWith(MESSAGE_TRUNCATION_MARKER)).toBe(true);
   });
 
   test("truncation is deterministic and keeps the start of what the author wrote", () => {
