@@ -286,13 +286,81 @@ export type ReplicaEvictOutcome = {
 
 /**
  * A live participant that destructive maintenance must close before it
- * returns. #478 replaces the in-process registry with the all-tab barrier.
+ * returns. #478 replaces the same-realm registry with the all-tab barrier.
  */
 export type ReplicaScopeParticipant = {
   readonly scope: ReplicaScope;
   /** Absent means the participant spans the whole scope. */
   readonly database?: ReplicaDatabaseScope | undefined;
   readonly close: () => Promise<void>;
+};
+
+type LifecycleRegistry = {
+  readonly pins: Map<string, number>;
+  readonly participants: Set<ReplicaScopeParticipant>;
+};
+
+/**
+ * Pins and live sessions are properties of the stored database, not of one
+ * adapter handle: two handles opened on the same name in one tab read and
+ * write the very same records. Sharing the registry by database name is what
+ * stops one handle from evicting a database another handle's session is
+ * actively reading, or from clearing a scope without closing that session's
+ * now-dangling `Db`. Registries are per JS realm; #478 raises the same
+ * guarantee to the other tabs.
+ */
+const LIFECYCLE_REGISTRIES = new Map<string, LifecycleRegistry>();
+
+const confirmationRecords = (
+  identity: ReplicationIdentity,
+  confirmedAt: number,
+): readonly GenerationRecord[] => {
+  const scope = replicaScopeKey(replicaScopeOf(identity));
+  return [
+    { key: scope, kind: "scope", scope, generation: 1, confirmedAt, fencedAt: null },
+    {
+      key: replicaDatabaseKey(replicaDatabaseScopeOf(identity)),
+      kind: "database",
+      scope,
+      generation: 1,
+      confirmedAt,
+      fencedAt: null,
+    },
+  ];
+};
+
+/**
+ * Adopt the confirmations a pre-generation database already proves.
+ *
+ * Manifests, exact credential bindings, and cache candidates are written only
+ * from a server-authenticated response, so each one is durable evidence that
+ * its scope was confirmed. Without this seed a replica installed before the
+ * generation store existed would look unconfirmed forever — a session that
+ * restores an exact binding never revisits `bindAuthenticated` — and its owner
+ * could never clear their own local data.
+ */
+const seedConfirmedGenerations = (upgrade: IDBTransaction): void => {
+  const generations = upgrade.objectStore(GENERATIONS);
+  const confirmedAt = Date.now();
+  for (const family of [COMMITTED, ...IDENTITY_KEYED_FAMILIES]) {
+    const request = upgrade.objectStore(family).getAll();
+    request.addEventListener("success", () => {
+      const records = request.result as readonly { readonly identity: ReplicationIdentity }[];
+      for (const record of records) {
+        for (const seeded of confirmationRecords(record.identity, confirmedAt)) {
+          generations.put(seeded);
+        }
+      }
+    }, { once: true });
+  }
+};
+
+const lifecycleRegistry = (name: string): LifecycleRegistry => {
+  const existing = LIFECYCLE_REGISTRIES.get(name);
+  if (existing !== undefined) return existing;
+  const created: LifecycleRegistry = { pins: new Map(), participants: new Set() };
+  LIFECYCLE_REGISTRIES.set(name, created);
+  return created;
 };
 
 const requestResult = <T>(request: IDBRequest<T>): Promise<T> =>
@@ -626,13 +694,17 @@ export class IndexedDbReplicaStorage {
    * how #477's `clearLocalData()` makes the clearing client terminal.
    */
   private readonly clearedScopes = new Set<string>();
-  private readonly pins = new Map<string, number>();
-  private readonly participants = new Set<ReplicaScopeParticipant>();
+  /** Shared with every other handle on the same stored database. */
+  private readonly registry: LifecycleRegistry;
+  /** Registrations this handle owns, released when it closes. */
+  private readonly registrations = new Set<() => void>();
 
   private constructor(
     readonly name: string,
     private readonly database: IDBDatabase,
-  ) {}
+  ) {
+    this.registry = lifecycleRegistry(name);
+  }
 
   static async open(name = DEFAULT_REPLICA_DATABASE_NAME): Promise<IndexedDbReplicaStorage> {
     const request = indexedDB.open(name, DATABASE_VERSION);
@@ -678,6 +750,11 @@ export class IndexedDbReplicaStorage {
         // families and are deliberately untouched.
         const upgrade = request.transaction;
         for (const store of REPLICA_STORE_FAMILIES) upgrade.objectStore(store).clear();
+      } else if (
+        oldVersion >= STORAGE_V2_DATABASE_VERSION &&
+        oldVersion < LIFECYCLE_DATABASE_VERSION && request.transaction !== null
+      ) {
+        seedConfirmedGenerations(request.transaction);
       }
     });
     const database = await requestResult(request);
@@ -686,7 +763,20 @@ export class IndexedDbReplicaStorage {
   }
 
   close(): void {
+    for (const release of [...this.registrations]) release();
     this.database.close();
+  }
+
+  private register(release: () => void): () => void {
+    let released = false;
+    const once = (): void => {
+      if (released) return;
+      released = true;
+      this.registrations.delete(once);
+      release();
+    };
+    this.registrations.add(once);
+    return once;
   }
 
   /**
@@ -704,15 +794,13 @@ export class IndexedDbReplicaStorage {
    */
   pinDatabase(scope: ReplicaDatabaseScope): () => void {
     const key = replicaDatabaseKey(scope);
-    this.pins.set(key, (this.pins.get(key) ?? 0) + 1);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const held = (this.pins.get(key) ?? 1) - 1;
-      if (held > 0) this.pins.set(key, held);
-      else this.pins.delete(key);
-    };
+    const pins = this.registry.pins;
+    pins.set(key, (pins.get(key) ?? 0) + 1);
+    return this.register(() => {
+      const held = (pins.get(key) ?? 1) - 1;
+      if (held > 0) pins.set(key, held);
+      else pins.delete(key);
+    });
   }
 
   /**
@@ -722,8 +810,10 @@ export class IndexedDbReplicaStorage {
    * deterministic. #478 extends this to the other tabs.
    */
   enroll(participant: ReplicaScopeParticipant): () => void {
-    this.participants.add(participant);
-    return () => this.participants.delete(participant);
+    this.registry.participants.add(participant);
+    return this.register(() => {
+      this.registry.participants.delete(participant);
+    });
   }
 
   private assertScopeLive(scope: ReplicaScope): string {
@@ -735,9 +825,9 @@ export class IndexedDbReplicaStorage {
   private async closeMatching(
     match: (participant: ReplicaScopeParticipant) => boolean,
   ): Promise<void> {
-    for (const participant of [...this.participants]) {
+    for (const participant of [...this.registry.participants]) {
       if (!match(participant)) continue;
-      this.participants.delete(participant);
+      this.registry.participants.delete(participant);
       await participant.close();
     }
   }
@@ -850,7 +940,7 @@ export class IndexedDbReplicaStorage {
   async evictDatabase(scope: ReplicaDatabaseScope): Promise<ReplicaEvictOutcome> {
     const scopeKey = this.assertScopeLive(scope);
     const databaseKey = replicaDatabaseKey(scope);
-    const pins = this.pins.get(databaseKey) ?? 0;
+    const pins = this.registry.pins.get(databaseKey) ?? 0;
     if (pins > 0) throw new ReplicaDatabaseActiveError({ database: databaseKey, pins });
     const prefix = replicaDatabasePartitionPrefix(scope);
     const transaction = this.database.transaction([
@@ -1131,26 +1221,9 @@ export class IndexedDbReplicaStorage {
             transaction.objectStore(ROUTE_SLOTS).get([binding.route.scope, binding.route.pathKey]),
           ),
       ]);
-      const now = Date.now();
-      if (scopeRecord === undefined) {
-        generations.put({
-          key: scopeKey,
-          kind: "scope",
-          scope: scopeKey,
-          generation: 1,
-          confirmedAt: now,
-          fencedAt: null,
-        } satisfies GenerationRecord);
-      }
-      if (databaseRecord === undefined) {
-        generations.put({
-          key: databaseKey,
-          kind: "database",
-          scope: scopeKey,
-          generation: 1,
-          confirmedAt: now,
-          fencedAt: null,
-        } satisfies GenerationRecord);
+      for (const seeded of confirmationRecords(binding.identity, Date.now())) {
+        const existing = seeded.kind === "scope" ? scopeRecord : databaseRecord;
+        if (existing === undefined) generations.put(seeded);
       }
       if (options.lease !== undefined) {
         try {

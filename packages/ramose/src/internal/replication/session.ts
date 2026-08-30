@@ -12,6 +12,7 @@ import {
 } from "./indexeddb.ts";
 import { sameReplicationIdentity } from "./state.ts";
 import {
+  replicaDatabaseKey,
   replicaDatabaseScopeOf,
   replicaScopeOf,
   type ReplicaLease,
@@ -167,6 +168,7 @@ export class ReplicationSession {
    */
   private readonly lease: ReplicaLease;
   private tracking: readonly (() => void)[] = [];
+  private trackedDatabase: string | undefined;
 
   private constructor(
     private readonly storage: IndexedDbReplicaStorage,
@@ -188,15 +190,22 @@ export class ReplicationSession {
 
   /**
    * Pin the database this session reads and enroll the session so destructive
-   * maintenance closes it deterministically before deleting anything.
+   * maintenance closes it deterministically before deleting anything. A
+   * response that selects a different database than the restored one retargets
+   * both registrations, so the abandoned database is not left pinned and the
+   * newly authenticated one is the realm a clear or eviction acts on.
    */
   private track(identity: ReplicationIdentity): void {
-    if (this.tracking.length > 0) return;
+    const database = replicaDatabaseScopeOf(identity);
+    const key = replicaDatabaseKey(database);
+    if (this.trackedDatabase === key) return;
+    this.untrack();
+    this.trackedDatabase = key;
     this.tracking = [
-      this.storage.pinDatabase(replicaDatabaseScopeOf(identity)),
+      this.storage.pinDatabase(database),
       this.storage.enroll({
         scope: replicaScopeOf(identity),
-        database: replicaDatabaseScopeOf(identity),
+        database,
         close: () => this.close(),
       }),
     ];
@@ -205,6 +214,7 @@ export class ReplicationSession {
   private untrack(): void {
     for (const release of this.tracking) release();
     this.tracking = [];
+    this.trackedDatabase = undefined;
   }
 
   static async open(options: ReplicationSessionOptions): Promise<ReplicationSession> {

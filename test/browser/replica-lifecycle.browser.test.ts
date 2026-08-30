@@ -529,6 +529,129 @@ browserTest("unconfirmed and wrong-scope requests are typed failures that delete
   }
 });
 
+/** The store families a version-5 database carried before generations existed. */
+const PRE_GENERATION_STORES: readonly (readonly [string, string | string[]])[] = [
+  ["replica-committed-v1", "partition"],
+  ["replica-committed-heads-v1", "partition"],
+  ["replica-staging-v1", "partition"],
+  ["replica-staging-chunks-v1", ["partition", "index"]],
+  ["replica-nodes-v1", ["partition", "hash"]],
+  ["replica-credential-bindings-v1", "fingerprint"],
+  ["replica-cache-candidates-v1", ["selector", "routeSlot"]],
+  ["replica-route-slots-v1", ["scope", "pathKey"]],
+];
+
+browserTest("a replica stored before generations existed stays clearable", async ({ browser }) => {
+  const name = `ramose-lifecycle-backfill-${browser.uniqueId}`;
+  const left = identity();
+  const partition = [
+    "ramose-replica-v2", left.server, left.principal, left.database, left.readView,
+    left.readCompatibilityHash,
+  ].join(":");
+  let storage: IndexedDbReplicaStorage | undefined;
+  try {
+    const legacy = await openNative(name, 5, (database) => {
+      for (const [store, keyPath] of PRE_GENERATION_STORES) {
+        database.createObjectStore(store, { keyPath: keyPath as string | string[] });
+      }
+    });
+    const seed = legacy.transaction(
+      ["replica-committed-v1", "replica-nodes-v1", "replica-credential-bindings-v1"],
+      "readwrite",
+    );
+    seed.objectStore("replica-committed-v1").put({
+      partition, storageVersion: 2, identity: left,
+      readCompatibilityHash: left.readCompatibilityHash, revision: opaque("1"),
+      datoms: [], attributes: [], entityIds: [], attributeIds: [], roots: {}, nextLocalId: 1000,
+    });
+    seed.objectStore("replica-nodes-v1").put({
+      partition, hash: "stored-node", body: new Uint8Array([1, 2, 3]),
+    });
+    // Written only from an authenticated response, so it proves confirmation.
+    seed.objectStore("replica-credential-bindings-v1").put({
+      fingerprint: "pre-generation-fingerprint", identity: left,
+    });
+    await transactionDone(seed);
+    legacy.close();
+
+    storage = await IndexedDbReplicaStorage.open(name);
+    const upgraded = await dump(name);
+    const generations = upgraded["replica-generations-v1"] as {
+      readonly key: string;
+      readonly generation: number;
+    }[];
+    expect(generations.map((record) => record.key).sort()).toEqual([
+      replicaDatabaseKey(databaseOf(left)),
+      replicaScopeKey(scopeOf(left)),
+    ].sort());
+
+    // The owner of a pre-generation replica can still delete their own data.
+    const outcome = await storage.clearScope(scopeOf(left));
+    expect(outcome.partitions).toBe(1);
+    expect(outcome.nodes).toBe(1);
+    expect(outcome.bindings).toBe(1);
+    expect(outcome.generation).toBe(2);
+    const cleared = await dump(name);
+    expect(cleared["replica-committed-v1"]).toEqual([]);
+    expect(cleared["replica-nodes-v1"]).toEqual([]);
+    expect(cleared["replica-credential-bindings-v1"]).toEqual([]);
+  } finally {
+    storage?.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("two handles on one stored database share pins and live sessions", async ({ browser }) => {
+  const name = `ramose-lifecycle-shared-${browser.uniqueId}`;
+  const left = identity();
+  const reader = await IndexedDbReplicaStorage.open(name);
+  const maintainer = await IndexedDbReplicaStorage.open(name);
+  const cleaner = await IndexedDbReplicaStorage.open(name);
+  try {
+    await installSnapshot(reader, left, opaque("1"), "left-root");
+    await confirm(reader, left, "left");
+
+    let closed = 0;
+    const pin = reader.pinDatabase(databaseOf(left));
+    const enrolled = reader.enroll({
+      scope: scopeOf(left),
+      database: databaseOf(left),
+      close: async () => {
+        closed++;
+      },
+    });
+    // The other handle sees the pin and refuses to evict data still in use.
+    await expect(maintainer.evictDatabase(databaseOf(left))).rejects.toMatchObject({
+      _tag: "ReplicaDatabaseActiveError",
+      pins: 1,
+    });
+    pin();
+    // Clearing from a third handle still closes the reader's live session.
+    await cleaner.clearScope(scopeOf(left));
+    expect(closed).toBe(1);
+    enrolled();
+
+    // Closing a handle withdraws only its own registrations.
+    const survivor = await IndexedDbReplicaStorage.open(name);
+    const doomed = await IndexedDbReplicaStorage.open(name);
+    const survivorPin = survivor.pinDatabase(databaseOf(left));
+    doomed.pinDatabase(databaseOf(left));
+    doomed.close();
+    await expect(maintainer.evictDatabase(databaseOf(left))).rejects.toMatchObject({
+      _tag: "ReplicaDatabaseActiveError",
+      pins: 1,
+    });
+    survivorPin();
+    survivor.close();
+    await expect(maintainer.evictDatabase(databaseOf(left))).resolves.toBeDefined();
+  } finally {
+    reader.close();
+    maintainer.close();
+    cleaner.close();
+    await deleteDatabase(name);
+  }
+});
+
 browserTest("destructive maintenance closes the sessions bound to the affected realm", async ({ browser }) => {
   const name = `ramose-lifecycle-sessions-${browser.uniqueId}`;
   const left = identity();
