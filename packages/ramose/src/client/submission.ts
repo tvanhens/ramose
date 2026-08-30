@@ -51,9 +51,14 @@ export type SubmissionContext = {
   readonly live: () => boolean;
 };
 
+type TrackedReceipt = {
+  readonly receiver: ReplicaDatabaseScope;
+  readonly driver: ReceiptDriver;
+};
+
 /** The receipts this session is holding, and the passes that settle them. */
 export class SubmissionLoop {
-  private readonly receipts = new Map<InvocationId, ReceiptDriver>();
+  private readonly receipts = new Map<InvocationId, TrackedReceipt>();
   private readonly pending = new Map<string, Promise<void>>();
   private readonly again = new Set<string>();
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
@@ -61,8 +66,28 @@ export class SubmissionLoop {
 
   constructor(private readonly context: SubmissionContext) {}
 
-  track(driver: ReceiptDriver): void {
-    this.receipts.set(driver.receipt.invocation, driver);
+  track(receiver: ReplicaDatabaseScope, driver: ReceiptDriver): void {
+    this.receipts.set(driver.receipt.invocation, { receiver, driver });
+  }
+
+  /**
+   * Settle the receipts this tab is holding from their durable records.
+   *
+   * Only the leader submits, so a follower's invocation is acknowledged by
+   * another tab: the durable receipt is where its outcome lands, and this is
+   * how the follower's own receipt reaches it.
+   */
+  async settleFromDurable(): Promise<void> {
+    if (this.receipts.size === 0 || !this.context.live()) return;
+    const outbox = (await this.context.storage()).outbox();
+    for (const [invocation, tracked] of [...this.receipts]) {
+      const record = await outbox.receipt(tracked.receiver, invocation)
+        .catch(() => undefined);
+      if (record === undefined || record.state === "queued") continue;
+      this.receipts.delete(invocation);
+      if (record.state === "committed") tracked.driver.commit();
+      else tracked.driver.reject(record.failure?.code ?? "rejected");
+    }
   }
 
   request(scope: ReplicaScope): void {
@@ -131,10 +156,10 @@ export class SubmissionLoop {
     for (const entry of progress) {
       const state = entry.state;
       if (state._tag === "Committed") {
-        this.receipts.get(state.invocation)?.commit();
+        this.receipts.get(state.invocation)?.driver.commit();
         this.receipts.delete(state.invocation);
       } else if (state._tag === "Rejected") {
-        this.receipts.get(state.invocation)?.reject(state.code);
+        this.receipts.get(state.invocation)?.driver.reject(state.code);
         this.receipts.delete(state.invocation);
       }
     }

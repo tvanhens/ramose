@@ -550,6 +550,49 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.releaseSession = session.observe((snapshot) => this.accept(snapshot));
   }
 
+  /**
+   * Read the durable committed head again and republish what changed.
+   *
+   * Another tab of this scope installs into the same IndexedDB records, so a
+   * tab whose own stream has ended still renders what the scope committed.
+   */
+  async refreshCommitted(): Promise<void> {
+    if (!this.live()) return;
+    await this.session?.refreshFromDurable().catch(() => false);
+  }
+
+  /**
+   * Read the durable optimistic layers, mappings, and activation fence again
+   * and republish the local value, the pending sidecars, and the observers
+   * they feed.
+   */
+  async refreshOptimistic(): Promise<void> {
+    if (!this.live()) return;
+    await this.reconciler?.refresh().catch(() => undefined);
+  }
+
+  /**
+   * Open the session again for a database whose durable identity is still
+   * unconfirmed, so a route another tab has since confirmed is read rather
+   * than waited for.
+   */
+  reactivateUnconfirmed(): void {
+    if (!this.live() || this.identity !== undefined) return;
+    if (this.activation === undefined || this.context.graphPath.length === 0) return;
+    const session = this.session;
+    const status = session?.snapshot().status;
+    if (
+      session !== undefined && status !== "failed" && status !== "terminal" &&
+      status !== "closed"
+    ) return;
+    this.releaseSession?.();
+    this.releaseSession = undefined;
+    this.session = undefined;
+    this.activation = undefined;
+    if (session !== undefined) this.spawn(session.close());
+    void this.activate();
+  }
+
   async reconcileSubmissions(
     progress: readonly QueueProgress[],
   ): Promise<void> {

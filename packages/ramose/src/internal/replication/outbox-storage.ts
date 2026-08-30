@@ -23,6 +23,11 @@ import {
   type OptimisticLayerRecord,
 } from "./overlay-records.ts";
 import type { LeadershipFence } from "./leadership.ts";
+import {
+  replicaNotice,
+  type ReplicaNotice,
+  type ReplicaNoticeKind,
+} from "./notices.ts";
 import type { ProjectionIdentity } from "./projection-binding.ts";
 import {
   REPLICA_COMMITTED_HEADS_STORE,
@@ -290,7 +295,15 @@ export class IndexedDbOutbox {
     private readonly assertScopeLive: (scope: ReplicaScope) => void,
     private readonly leader: (() => LeadershipFence | undefined) | undefined =
       undefined,
+    private readonly announce: (notice: ReplicaNotice) => void = () => undefined,
   ) {}
+
+  private announceReceiver(
+    kind: ReplicaNoticeKind,
+    receiver: ReplicaDatabaseScope,
+  ): void {
+    this.announce(replicaNotice(kind, receiver, receiver));
+  }
 
   async enqueue(
     draft: OutboxDraft,
@@ -316,7 +329,7 @@ export class IndexedDbOutbox {
     const transaction = this.database.transaction([...ENQUEUE_STORES], "readwrite");
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
-      return await this.stageEnqueue(
+      const record = await this.stageEnqueue(
         transaction,
         snapshot,
         options,
@@ -324,6 +337,8 @@ export class IndexedDbOutbox {
         partition,
         observed,
       );
+      this.announceReceiver("layer", receiver);
+      return record;
     } catch (error) {
       await abortTransaction(transaction);
       throw error;
@@ -691,6 +706,7 @@ export class IndexedDbOutbox {
       throw error;
     }
     await commitTransaction(transaction);
+    this.announceReceiver("layer", receiver);
   }
 
   async acknowledge(
@@ -729,6 +745,8 @@ export class IndexedDbOutbox {
       await this.boundaries.checkpoint("outbox.acknowledge");
       this.assertScopeLive(record.receiver);
       await commitTransaction(transaction);
+      this.announceReceiver("receipt", record.receiver);
+      this.announceReceiver("layer", record.receiver);
       return receipt;
     } catch (error) {
       await abortTransaction(transaction);
@@ -983,6 +1001,7 @@ export class IndexedDbOutbox {
       await this.boundaries.checkpoint("outbox.activation");
       this.assertScopeLive(receiver);
       await commitTransaction(transaction);
+      this.announceReceiver("fence", receiver);
       return activation;
     } catch (error) {
       await abortTransaction(transaction);
@@ -1052,6 +1071,8 @@ export class IndexedDbOutbox {
       await this.boundaries.checkpoint("outbox.fence");
       this.assertScopeLive(receiver);
       await commitTransaction(transaction);
+      this.announceReceiver("fence", receiver);
+      this.announceReceiver("receipt", receiver);
       return Object.freeze({
         receiver,
         activation,

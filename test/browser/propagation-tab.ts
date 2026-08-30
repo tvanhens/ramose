@@ -1,0 +1,516 @@
+import * as EffectSchema from "effect/Schema";
+import { Catalog } from "../../packages/ramose/src/Catalog.ts";
+import {
+  Entity,
+  Field,
+  Graph,
+  Schema,
+  string,
+  type CodeDefinition,
+} from "../../packages/ramose/src/db/internal.ts";
+import { compileReadAuthorization } from "../../packages/ramose/src/internal/authorization/index.ts";
+import {
+  createClient,
+  type Client,
+  type ClientDatabase,
+} from "../../packages/ramose/src/client/index.ts";
+import { installClientCatalog } from "../../packages/ramose/src/client/catalog.ts";
+import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
+import type { ReplicationIdentity } from "../../packages/ramose/src/internal/replication/protocol.ts";
+import type { OutboxDraft } from "../../packages/ramose/src/internal/replication/outbox.ts";
+import type { OperationVersion } from "../../packages/ramose/src/internal/authorization/identities.ts";
+import { invocationId } from "../../packages/ramose/src/db/refs.ts";
+import {
+  replicaDatabaseScopeOf,
+  replicaScopeOf,
+  type ReplicaDatabaseScope,
+} from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
+import {
+  platformLocks,
+  replicaLeaderKey,
+  SyncLeadership,
+} from "../../packages/ramose/src/internal/replication/leadership.ts";
+import { SubmissionLoop } from "../../packages/ramose/src/client/submission.ts";
+import {
+  replicaRoutePathKey,
+  replicaRouteScope,
+  rootReplicaRouteSlot,
+  stableReplicaRouteSlot,
+} from "../../packages/ramose/src/internal/replication/route-slot.ts";
+import {
+  replicationActivationAddress,
+  replicationCacheSelector,
+  replicationCredentialFingerprint,
+} from "../../packages/ramose/src/internal/replication/transport.ts";
+import { changeFrame, snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
+import type { Receipt, ReceiptState } from "../../packages/ramose/src/client/receipt.ts";
+import { serveTab } from "./tab-harness.ts";
+
+export const OFFLINE = "http://127.0.0.1:1";
+export const ROOT = "app";
+export const TOKEN = "bearer-a";
+export const CACHE_KEY = "account-a";
+
+export const opaque = (character: string): string => character.repeat(43);
+
+export const Note = Entity("note", {
+  title: Field.unique(string(), "strict"),
+  rank: string(),
+}, {
+  operations: (Operation) => ({
+    rename: Operation({
+      input: EffectSchema.Struct({ title: EffectSchema.String }),
+      output: EffectSchema.Struct({}),
+      optimistic: ({ input, self, tx }) => {
+        if (self !== undefined) tx.set(self, Note.title, input.title);
+      },
+      run() {
+        return {};
+      },
+    }),
+  }),
+});
+
+const Child = { key: "child", schema: Schema({}) } satisfies CodeDefinition;
+
+export const Workspace = Entity("workspace", {
+  slug: Field.unique(string(), "strict"),
+}, { traits: [Graph(Child)] });
+
+const Notes = Schema({ note: Note, workspace: Workspace });
+
+export const NotesCatalog = Catalog("propagation-notes", {
+  schema: Notes,
+  policy: compileReadAuthorization({ schema: Notes, rules: [] }),
+});
+
+export const CHILD_PATH = ["acme-workspace"] as const;
+
+export const CHILD_LINEAGE = [opaque("1")];
+
+export type SeededNote = {
+  readonly entity: string;
+  readonly title: string;
+  readonly rank: string;
+};
+
+export const identityFor = async (
+  database: string,
+  graphLineage: readonly string[] = [],
+): Promise<ReplicationIdentity> => ({
+  version: 1,
+  server: opaque("s"),
+  principal: opaque("p"),
+  database,
+  catalog: opaque("c"),
+  readView: opaque("v"),
+  readCompatibilityHash: (await installClientCatalog(NotesCatalog))
+    .readCompatibilityHash,
+  graphLineage,
+  authenticator: opaque("a"),
+});
+
+type NoteDatom = {
+  readonly entity: string;
+  readonly field: string;
+  readonly value: { readonly type: "string"; readonly value: string };
+  readonly op: "add";
+};
+
+const fact = (entity: string, field: string, value: string): NoteDatom => ({
+  entity,
+  field,
+  value: { type: "string", value },
+  op: "add",
+});
+
+export const noteDatoms = (
+  notes: readonly SeededNote[],
+): readonly NoteDatom[] =>
+  notes.flatMap((note) => [
+    fact(note.entity, ":ramose/type", ":note"),
+    fact(note.entity, ":note/title", note.title),
+    fact(note.entity, ":note/rank", note.rank),
+  ]);
+
+/** The graph row whose name is the one path segment of the child database. */
+export const workspaceDatoms = (entity: string): readonly NoteDatom[] => [
+  fact(entity, ":ramose/type", ":workspace"),
+  fact(entity, ":workspace/slug", "acme"),
+  fact(entity, ":graph/catalog", "child"),
+  fact(entity, ":graph/name", CHILD_PATH[0]),
+];
+
+export const REVISION = opaque("r");
+
+export type SeededDatabase = {
+  readonly identity: ReplicationIdentity;
+  readonly datoms: readonly NoteDatom[];
+  readonly graphPath?: readonly string[];
+  /** Write the durable route observation a confirming session writes. */
+  readonly observeRoute?: boolean;
+};
+
+export const childRouteSlot = (): Promise<string> =>
+  stableReplicaRouteSlot(CHILD_LINEAGE);
+
+const routeSlotOf = (entry: SeededDatabase): Promise<string> =>
+  (entry.graphPath ?? []).length === 0
+    ? rootReplicaRouteSlot()
+    : stableReplicaRouteSlot(entry.identity.graphLineage);
+
+/** Write the route observation a session writes once it confirms a child. */
+export const observeChildRoute = async (
+  name: string,
+  identity: ReplicationIdentity,
+): Promise<void> => {
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    const address = replicationActivationAddress({
+      server: OFFLINE, root: ROOT, graphPath: CHILD_PATH,
+    });
+    const slot = await childRouteSlot();
+    await storage.bindAuthenticated({
+      fingerprint: await replicationCredentialFingerprint(TOKEN, address, slot),
+      identity,
+      route: {
+        scope: await replicaRouteScope(address),
+        pathKey: await replicaRoutePathKey(CHILD_PATH),
+        slot,
+      },
+    });
+  } finally {
+    storage.close();
+  }
+};
+
+/** Install the snapshots and bearer bindings every tab opens against. */
+export const seedDatabases = async (
+  name: string,
+  entries: readonly SeededDatabase[],
+): Promise<void> => {
+  const installed = await installClientCatalog(NotesCatalog);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    for (const entry of entries) {
+      const identity = entry.identity;
+      const graphPath = entry.graphPath ?? [];
+      const snapshot = opaque("q");
+      await storage.startSnapshot({
+        type: "SnapshotStart", protocol: 1, identity, snapshot, revision: REVISION,
+      });
+      await storage.stageSnapshotChunk(snapshotChunk({
+        type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0,
+        datoms: entry.datoms,
+      }));
+      (await storage.commitSnapshot({
+        type: "SnapshotCommit", protocol: 1, identity, snapshot, revision: REVISION,
+        chunks: 1,
+      }, installed.attributes))?.release();
+      const address = replicationActivationAddress({
+        server: OFFLINE, root: ROOT, graphPath,
+      });
+      const routeSlot = await routeSlotOf(entry);
+      await storage.bindAuthenticated({
+        fingerprint: await replicationCredentialFingerprint(TOKEN, address, routeSlot),
+        identity,
+        ...(graphPath.length === 0
+          ? {
+            candidateKey: {
+              selector: await replicationCacheSelector(CACHE_KEY, address),
+              routeSlot,
+            },
+          }
+          : {}),
+        ...(graphPath.length > 0 && entry.observeRoute === true
+          ? {
+            route: {
+              scope: await replicaRouteScope(address),
+              pathKey: await replicaRoutePathKey(graphPath),
+              slot: routeSlot,
+            },
+          }
+          : {}),
+      });
+    }
+  } finally {
+    storage.close();
+  }
+};
+
+export const seed = (
+  name: string,
+  identity: ReplicationIdentity,
+  notes: readonly SeededNote[],
+): Promise<void> =>
+  seedDatabases(name, [{ identity, datoms: noteDatoms(notes) }]);
+
+type StartInput = {
+  readonly storageName: string;
+  readonly database: string;
+};
+
+type CommitInput = {
+  readonly storageName: string;
+  readonly database: string;
+  readonly note: SeededNote;
+  readonly from: string;
+  readonly revision: string;
+};
+
+type EnqueueInput = {
+  readonly storageName: string;
+  readonly database: string;
+  readonly title: string;
+  readonly child?: string;
+  readonly count?: number;
+};
+
+type QueryReport = {
+  readonly status: string;
+  readonly titles: readonly string[];
+  readonly pending: readonly boolean[];
+};
+
+type LoopReport = {
+  readonly leadership: string;
+  readonly passes: number;
+  readonly planned: readonly string[];
+  readonly overlapped: boolean;
+};
+
+let client: Client | undefined;
+let database: ClientDatabase | undefined;
+let notes: ReturnType<ClientDatabase["observe"]> | undefined;
+let releaseNotes: (() => void) | undefined;
+let storage: IndexedDbReplicaStorage | undefined;
+let receipt: Receipt | undefined;
+let releaseReceipt: (() => void) | undefined;
+let receiptState: ReceiptState = { status: "pending" };
+let leadership: SyncLeadership | undefined;
+let loop: SubmissionLoop | undefined;
+let passes = 0;
+let planned: string[] = [];
+let inPass = false;
+let overlapped = false;
+
+type NoteHandle = {
+  readonly data: { readonly title: string };
+  readonly local: { readonly pending: boolean };
+  readonly mutate: Record<string, (input: unknown) => Receipt>;
+};
+
+const rows = (): readonly NoteHandle[] => {
+  const data = notes?.getSnapshot().data;
+  return Array.isArray(data) ? data as readonly NoteHandle[] : [];
+};
+
+const report = (): QueryReport => ({
+  status: notes?.getSnapshot().status ?? "absent",
+  titles: rows().map((row) => row.data.title),
+  pending: rows().map((row) => row.local.pending),
+});
+
+const open = (storageName: string): ClientDatabase => {
+  client = createClient({
+    url: OFFLINE,
+    root: ROOT,
+    catalog: NotesCatalog,
+    auth: () => ({ token: TOKEN, cacheKey: CACHE_KEY }),
+    storageName,
+  });
+  database = client.open();
+  return database;
+};
+
+const observeNotes = (target: ClientDatabase): QueryReport => {
+  const observed = target.observe(target.query.from(Note).orderBy(Note.rank));
+  notes = observed;
+  releaseNotes = observed.subscribe(() => undefined);
+  return report();
+};
+
+const held = async (name: string): Promise<IndexedDbReplicaStorage> => {
+  storage ??= await IndexedDbReplicaStorage.open(name);
+  return storage;
+};
+
+const draft = (
+  receiver: ReplicaDatabaseScope,
+  title: string,
+): OutboxDraft => ({
+  invocation: invocationId(),
+  receiver,
+  operation: {
+    catalog: "propagation-notes" as never,
+    owner: { kind: "entity", name: "note" },
+    localName: "rename",
+  },
+  operationVersion: "b".repeat(64) as OperationVersion,
+  target: { type: "none" },
+  input: { title },
+  allocations: [],
+  inputRefs: [],
+  enqueuedAt: Date.now(),
+});
+
+/** The tab entry point: `openTab` loads this module and calls it. */
+export const serve = (id: string): void =>
+  serveTab(id, {
+    /**
+     * Leave this realm without `BroadcastChannel`, which is the runtime a
+     * browser too old for it gives every consumer here.
+     */
+    withoutBroadcasts: (): boolean => {
+      Reflect.deleteProperty(globalThis, "BroadcastChannel");
+      return (globalThis as { readonly BroadcastChannel?: unknown })
+        .BroadcastChannel === undefined;
+    },
+
+    start: async ({ storageName }: StartInput): Promise<QueryReport> => {
+      database = open(storageName);
+      return observeNotes(database);
+    },
+
+    /** Observe the notes of the graph child one path segment down. */
+    startChild: async ({ storageName }: StartInput): Promise<QueryReport> => {
+      const root = open(storageName);
+      return observeNotes(
+        root.query.from(Workspace).where({ slug: "acme" }).one().db(),
+      );
+    },
+
+    report: (): QueryReport => report(),
+
+    sync: (): string => client?.sync.getSnapshot().status ?? "absent",
+
+    /** Rename through the public API, which enqueues durably in any tab. */
+    rename: async (
+      { from, to }: { readonly from: string; readonly to: string },
+    ): Promise<string> => {
+      const target = rows().find((row) => row.data.title === from);
+      if (target === undefined) throw new Error(`no note titled ${from}`);
+      const issued = target.mutate.rename!({ title: to });
+      receipt = issued;
+      receiptState = issued.getSnapshot();
+      releaseReceipt = issued.subscribe(() => {
+        receiptState = issued.getSnapshot();
+      });
+      await issued.queued;
+      return issued.invocation;
+    },
+
+    receipt: (): string => receiptState.status,
+
+    /** Install a durable change the way a leader's own stream installs one. */
+    commit: async (
+      { storageName, database: id, note, from, revision }: CommitInput,
+    ): Promise<string> => {
+      const opened = await held(storageName);
+      const identity = await identityFor(id);
+      const installed = await opened.applyChange(changeFrame({
+        type: "Change", protocol: 1, identity, from, revision,
+        datoms: noteDatoms([note]),
+      }));
+      const at = installed?.revision ?? "";
+      installed?.release();
+      return at;
+    },
+
+    /** Queue work for a receiver database without submitting it. */
+    enqueue: async (
+      { storageName, database: id, title, child, count }: EnqueueInput,
+    ): Promise<number> => {
+      const opened = await held(storageName);
+      const identity = await identityFor(id);
+      const receiver = child === undefined
+        ? replicaDatabaseScopeOf(identity)
+        : { ...replicaDatabaseScopeOf(identity), database: child };
+      const queued = Array.from({ length: count ?? 1 }, () =>
+        opened.outbox().enqueue(draft(receiver, title), {
+          scope: replicaScopeOf(identity),
+        }));
+      await Promise.all(queued);
+      return queued.length;
+    },
+
+    /**
+     * Stand for the scope's leadership and run the submission passes a leader
+     * runs, recording what each pass planned for.
+     */
+    lead: async (
+      { storageName, database: id }: StartInput,
+    ): Promise<LoopReport> => {
+      const opened = await held(storageName);
+      const identity = await identityFor(id);
+      const scope = replicaScopeOf(identity);
+      const key = replicaLeaderKey(replicaDatabaseScopeOf(identity), storageName);
+      const standing = SyncLeadership.begin({
+        name: key,
+        locks: platformLocks(),
+        claim: () => opened.claimLeadership(key, scope),
+        onLeading: () => loop?.request(scope),
+      });
+      leadership = standing;
+      loop = new SubmissionLoop({
+        storage: () => Promise.resolve(opened),
+        leadership: () => standing,
+        credential: async () => {
+          overlapped ||= inPass;
+          inPass = true;
+          passes++;
+          await Promise.resolve();
+          inPass = false;
+          return { token: TOKEN, cacheKey: CACHE_KEY };
+        },
+        endpoint: (receiver) => {
+          planned.push(receiver.database);
+          return undefined;
+        },
+        reconcile: () => Promise.resolve(),
+        live: () => true,
+      });
+      opened.notices((notice) => {
+        if (notice.kind === "layer") loop?.request(scope);
+      });
+      return {
+        leadership: standing.status(),
+        passes,
+        planned: [...planned],
+        overlapped,
+      };
+    },
+
+    loop: (): LoopReport => ({
+      leadership: leadership?.status() ?? "absent",
+      passes,
+      planned: [...planned],
+      overlapped,
+    }),
+
+    settle: async (): Promise<LoopReport> => {
+      await loop?.settled();
+      return {
+        leadership: leadership?.status() ?? "absent",
+        passes,
+        planned: [...planned],
+        overlapped,
+      };
+    },
+
+    close: async (): Promise<QueryReport> => {
+      const snapshot = report();
+      releaseNotes?.();
+      releaseReceipt?.();
+      loop?.close();
+      await leadership?.release();
+      await client?.close();
+      storage?.close();
+      client = undefined;
+      database = undefined;
+      notes = undefined;
+      storage = undefined;
+      receipt = undefined;
+      return snapshot;
+    },
+  });

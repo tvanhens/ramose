@@ -7,9 +7,12 @@ import type { ReplicationIdentity } from "../internal/replication/protocol.ts";
 import {
   replicaDatabaseKey,
   replicaDatabaseScopeOf,
+  replicaScopeKey,
   replicaScopeOf,
   type ReplicaDatabaseScope,
 } from "../internal/replication/replica-lifecycle.ts";
+import type { ReplicaNotice } from "../internal/replication/notices.ts";
+import { observeActivation } from "./activation.ts";
 import {
   platformLocks,
   replicaLeaderKey,
@@ -97,6 +100,9 @@ class RamoseClient implements Client {
   private submissionLoop: SubmissionLoop | undefined;
   private leadership: SyncLeadership | undefined;
   private leaderName: string | undefined;
+  private releaseInvalidation: (() => void) | undefined;
+  private releaseNotices: (() => void) | undefined;
+  private releaseActivation: (() => void) | undefined;
   private terminal: "closed" | "cleared" | "fenced" | undefined;
   private termination: Promise<void> | undefined;
   private clearing = false;
@@ -143,6 +149,76 @@ class RamoseClient implements Client {
     };
   }
 
+  private handles(): readonly ClientDatabaseHandle[] {
+    return [
+      ...(this.root === undefined ? [] : [this.root]),
+      ...(this.graph?.handles() ?? []),
+    ];
+  }
+
+  private handleByKey(key: string | undefined): readonly ClientDatabaseHandle[] {
+    if (key === undefined) return this.handles();
+    return this.handles().filter((handle) => {
+      const scope = handle.confirmedScope();
+      return scope !== undefined && replicaDatabaseKey(scope) === key;
+    });
+  }
+
+  /**
+   * Act on one durable change another holder of this storage namespace
+   * committed.
+   *
+   * The notice says what changed and where, never what it now says: every
+   * branch re-reads the durable records, so this tab reaches the same state it
+   * would have reached later on its own next activation.
+   */
+  private receive(notice: ReplicaNotice): void {
+    const identity = this.confirmed;
+    if (this.terminal !== undefined || identity === undefined) return;
+    const scope = replicaScopeOf(identity);
+    if (replicaScopeKey(scope) !== notice.scope) return;
+    switch (notice.kind) {
+      case "replica":
+      case "reset":
+        for (const handle of this.handleByKey(notice.database)) {
+          void handle.refreshCommitted();
+        }
+        return;
+      case "layer":
+        for (const handle of this.handleByKey(notice.database)) {
+          void handle.refreshOptimistic();
+        }
+        this.submissions().request(scope);
+        return;
+      case "receipt":
+      case "fence":
+        for (const handle of this.handleByKey(notice.database)) {
+          void handle.refreshOptimistic();
+        }
+        void this.submissions().settleFromDurable();
+        return;
+      case "selector":
+        for (const handle of this.handles()) handle.reactivateUnconfirmed();
+        return;
+    }
+  }
+
+  /**
+   * Read every durable record this tab renders or submits from, without
+   * waiting for a notice about any of them.
+   */
+  private wake(): void {
+    if (this.terminal !== undefined) return;
+    for (const handle of this.handles()) {
+      void handle.refreshCommitted();
+      void handle.refreshOptimistic();
+      handle.reactivateUnconfirmed();
+    }
+    void this.submissions().settleFromDurable();
+    const identity = this.confirmed;
+    if (identity !== undefined) this.submissions().request(replicaScopeOf(identity));
+  }
+
   private composition(): CompositionIndex {
     this.compositionIndex ??= compositionFromSchema(
       completeSchema(this.options.catalog),
@@ -166,7 +242,7 @@ class RamoseClient implements Client {
       storage: () => this.storage(),
       assertLive: (operation) => this.assertLive(operation),
       submit: (receiver) => this.submissions().request(receiver),
-      track: (_receiver, driver) => this.submissions().track(driver),
+      track: (receiver, driver) => this.submissions().track(receiver, driver),
     };
   }
 
@@ -200,8 +276,14 @@ class RamoseClient implements Client {
       },
     });
     this.leadership = leadership;
+    this.releaseInvalidation?.();
+    this.releaseInvalidation = undefined;
     void this.storage().then(
-      (storage) => storage.onInvalidated(() => void leadership.release()),
+      (storage) => {
+        const release = storage.onInvalidated(() => void leadership.release());
+        if (this.leadership === leadership) this.releaseInvalidation = release;
+        else release();
+      },
       () => undefined,
     );
   }
@@ -287,7 +369,13 @@ class RamoseClient implements Client {
   }
 
   private storage(): Promise<IndexedDbReplicaStorage> {
-    this.storageHandle ??= IndexedDbReplicaStorage.open(this.storageName());
+    this.storageHandle ??= IndexedDbReplicaStorage.open(this.storageName())
+      .then((storage) => {
+        if (this.terminal !== undefined) return storage;
+        this.releaseNotices = storage.notices((notice) => this.receive(notice));
+        this.releaseActivation ??= observeActivation(() => this.wake());
+        return storage;
+      });
     return this.storageHandle;
   }
 
@@ -374,6 +462,12 @@ class RamoseClient implements Client {
     reason: "closed" | "cleared" | "fenced",
   ): Promise<void> {
     this.terminal = reason;
+    this.releaseActivation?.();
+    this.releaseActivation = undefined;
+    this.releaseNotices?.();
+    this.releaseNotices = undefined;
+    this.releaseInvalidation?.();
+    this.releaseInvalidation = undefined;
     this.closeSubmissions();
     await this.submissionLoop?.settled();
     await this.leadership?.release();

@@ -65,6 +65,15 @@ import {
 } from "./replica-gc.ts";
 import type { LeadershipFence } from "./leadership.ts";
 import {
+  identityNotice,
+  platformBroadcast,
+  replicaNotice,
+  replicaNoticeChannelName,
+  ReplicaNoticeChannel,
+  type ReplicaNotice,
+  type ReplicaNoticeListener,
+} from "./notices.ts";
+import {
   identityInDatabase,
   identityInScope,
   REPLICA_COMMITTED_HEADS_STORE,
@@ -832,6 +841,7 @@ export class IndexedDbReplicaStorage {
     readonly name: string,
     private readonly database: IDBDatabase,
     private readonly boundaries: RuntimeBoundaries,
+    private readonly channel: ReplicaNoticeChannel,
   ) {
     this.registry = lifecycleRegistry(name);
   }
@@ -899,12 +909,37 @@ export class IndexedDbReplicaStorage {
       }
     });
     const database = await requestResult(request);
-    const storage = new IndexedDbReplicaStorage(name, database, boundaries);
+    const storage = new IndexedDbReplicaStorage(
+      name,
+      database,
+      boundaries,
+      ReplicaNoticeChannel.begin({
+        name: replicaNoticeChannelName(name),
+        broadcast: platformBroadcast(),
+      }),
+    );
     database.addEventListener("versionchange", () => {
       database.close();
       storage.invalidated();
     });
     return storage;
+  }
+
+  /**
+   * Run `listener` when another holder of this storage namespace commits a
+   * durable change. The notice names what changed and where; the listener
+   * reads the durable records to learn what it now says.
+   */
+  notices(listener: ReplicaNoticeListener): () => void {
+    return this.register(this.channel.subscribe(listener));
+  }
+
+  announces(): boolean {
+    return this.channel.announces();
+  }
+
+  private announce(notice: ReplicaNotice): void {
+    this.channel.post(notice);
   }
 
   /**
@@ -924,6 +959,7 @@ export class IndexedDbReplicaStorage {
 
   close(): void {
     for (const release of [...this.registrations]) release();
+    this.channel.close();
     this.database.close();
   }
 
@@ -957,6 +993,7 @@ export class IndexedDbReplicaStorage {
       this.boundaries,
       (scope) => void this.assertScopeLive(scope),
       leader,
+      (notice) => this.announce(notice),
     );
   }
 
@@ -1072,6 +1109,7 @@ export class IndexedDbReplicaStorage {
       throw error;
     }
     await commitTransaction(transaction);
+    this.announce(replicaNotice("reset", scope));
     await this.closeMatching((participant) =>
       replicaScopeKey(participant.scope) === scopeKey
     );
@@ -1177,6 +1215,7 @@ export class IndexedDbReplicaStorage {
       throw error;
     }
     await commitTransaction(transaction);
+    this.announce(replicaNotice("reset", scope, scope));
     await this.closeMatching((participant) =>
       participant.database !== undefined &&
       replicaDatabaseKey(participant.database) === databaseKey
@@ -1815,6 +1854,7 @@ export class IndexedDbReplicaStorage {
         } satisfies RouteSlotRecord);
       }
       await commitTransaction(transaction);
+      this.announce(identityNotice("selector", binding.identity));
     } finally {
       removeAbort();
     }
@@ -1900,6 +1940,7 @@ export class IndexedDbReplicaStorage {
       transaction.objectStore(STAGING).delete(partition);
       transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
       await commitTransaction(transaction);
+      this.announce(identityNotice("reset", identity));
     } finally {
       removeAbort();
     }
@@ -2074,11 +2115,15 @@ export class IndexedDbReplicaStorage {
     options: ReplicaInstallOptions = {},
   ): Promise<RestoredReplica | undefined> {
     this.assertScopeLive(replicaScopeOf(frame.identity));
-    return this.installWithQuotaRecovery(
+    const installed = await this.installWithQuotaRecovery(
       replicaPartitionKey(frame.identity),
       options.signal,
       () => this.commitSnapshotOnce(frame, attributes, options),
     );
+    if (installed !== undefined) {
+      this.announce(identityNotice("replica", frame.identity));
+    }
+    return installed;
   }
 
   private async commitSnapshotOnce(
@@ -2187,11 +2232,15 @@ export class IndexedDbReplicaStorage {
     options: ReplicaInstallOptions = {},
   ): Promise<RestoredReplica | undefined> {
     this.assertScopeLive(replicaScopeOf(frame.identity));
-    return this.installWithQuotaRecovery(
+    const installed = await this.installWithQuotaRecovery(
       replicaPartitionKey(frame.identity),
       options.signal,
       () => this.applyChangeOnce(frame, options),
     );
+    if (installed !== undefined) {
+      this.announce(identityNotice("replica", frame.identity));
+    }
+    return installed;
   }
 
   private async applyChangeOnce(

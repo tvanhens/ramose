@@ -25,6 +25,8 @@ export type TabHandle = {
   readonly id: string;
   /** Run a command in the tab and wait for its reply. */
   readonly call: <A>(command: string, payload?: unknown) => Promise<A>;
+  /** Deliver the activation event a browser sends when a tab comes back. */
+  readonly wake: () => void;
   /** Destroy the browsing context with no chance to clean up. */
   readonly crash: () => void;
   /** Let the tab shut down, then destroy it. */
@@ -80,6 +82,9 @@ export const openTab = async (moduleUrl: string): Promise<TabHandle> => {
   return {
     id,
     call,
+    wake: () => {
+      frame.contentWindow?.dispatchEvent(new Event("focus"));
+    },
     crash: destroy,
     close: async () => {
       await call("close").catch(() => undefined);
