@@ -763,15 +763,19 @@ export class Transactor {
                 this.stats.rejected++;
                 p.resolve({ _tag: tag });
               };
-              const staleSuppliedVersion = supplied !== undefined &&
-                supplied !== operationVersion;
-              if (staleSuppliedVersion) {
-                await resolveCompatibility("OperationChanged");
-                continue;
-              }
+              // Prepared first so a malformed invocation id or an unverified
+              // principal keeps its ordinary invalid-request answer.
               const prepared = await Effect.runPromise(
                 prepareInvocationReceipt(p.operation, operationVersion),
               );
+              // A pin the caller supplied and the deployment no longer has
+              // decides before the durable row is read at all: an explicit
+              // expectation is never satisfied by a receipt minted under a
+              // different version.
+              if (supplied !== undefined && supplied !== operationVersion) {
+                await resolveCompatibility("OperationChanged");
+                continue;
+              }
               const inspected = this.inspectInvocationReceipt(prepared);
               if (
                 inspected._tag === "OperationChanged" ||

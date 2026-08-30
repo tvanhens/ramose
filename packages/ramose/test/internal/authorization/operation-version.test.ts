@@ -105,6 +105,28 @@ const annotatedSchemaCatalog = () => {
   return CatalogSchema({ issue: Issue, note: Note });
 };
 
+/** Only the shared schema's `identifier` alias differs from the baseline. */
+const aliasedSchemaCatalog = (alias: string) => () => {
+  const taggable = Taggable();
+  const Shared = Schema.Struct({ note: Schema.String }).annotate({
+    identifier: alias,
+  });
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        input: Schema.Struct({ reason: Schema.String, first: Shared, second: Shared }),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run() {
+          return { ok: true };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string() });
+  return CatalogSchema({ issue: Issue, note: Note });
+};
+
 /** An unrelated entity, field, and operation added to the same catalog. */
 const unrelatedCatalog = () => {
   const taggable = Taggable();
@@ -333,11 +355,61 @@ describe("canonical operation version descriptor", () => {
         },
         required: ["description"],
       },
-      definitions: { Note: { type: "string" } },
+      // Unreferenced definitions still land in a deterministic slot.
+      definitions: { d0: { type: "string" } },
     });
     // An unrecognized document shape is hashed verbatim rather than guessed at.
     expect(normalizeContractRepresentation({ description: "not a document" }))
       .toEqual({ description: "not a document" });
+  });
+
+  test("renames definitions by structural position so wire aliases cannot rotate", () => {
+    const document = (first: string, second: string) => ({
+      dialect: "draft-2020-12",
+      schema: {
+        type: "object",
+        properties: {
+          // Sorted-key traversal, so `a` is reached before `b` whatever order
+          // the projection happened to emit.
+          b: { $ref: `#/$defs/${second}` },
+          a: { $ref: `#/$defs/${first}` },
+        },
+      },
+      definitions: {
+        [second]: { type: "number" },
+        // Self-recursive: the rename must terminate and stay consistent.
+        [first]: {
+          type: "object",
+          properties: { next: { $ref: `#/$defs/${first}` } },
+        },
+      },
+    });
+    const canonical = {
+      dialect: "draft-2020-12",
+      schema: {
+        type: "object",
+        properties: {
+          b: { $ref: "#/$defs/d1" },
+          a: { $ref: "#/$defs/d0" },
+        },
+      },
+      definitions: {
+        d0: { type: "object", properties: { next: { $ref: "#/$defs/d0" } } },
+        d1: { type: "number" },
+      },
+    };
+    expect(normalizeContractRepresentation(document("Alpha", "Beta")))
+      .toEqual(canonical);
+    expect(normalizeContractRepresentation(document("Renamed", "Other")))
+      .toEqual(canonical);
+    // A reference that names nothing in the map is left exactly as it is.
+    expect(normalizeContractRepresentation({
+      schema: { $ref: "https://example.test/other#/$defs/Alpha" },
+      definitions: { Alpha: { type: "string" } },
+    })).toEqual({
+      schema: { $ref: "https://example.test/other#/$defs/Alpha" },
+      definitions: { d0: { type: "string" } },
+    });
   });
 
   test("rejects a revision that is not a positive integer", () => {
@@ -410,6 +482,10 @@ describe("deployed operation versions", () => {
     expect(documented).toEqual(base);
     // Schema `title`/`description` annotations are documentation too.
     expect(annotated).toEqual(base);
+    // And an `identifier` rename is a wire alias, not a contract change.
+    expect(await versions(aliasedSchemaCatalog("Shared"))).toEqual(
+      await versions(aliasedSchemaCatalog("SharedRenamed")),
+    );
     expect(unrelated["issue.close"]).toBe(base["issue.close"]!);
     expect(unrelated["taggable.addTag"]).toBe(base["taggable.addTag"]!);
   });
