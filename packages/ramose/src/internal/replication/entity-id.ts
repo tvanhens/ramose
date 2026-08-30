@@ -107,9 +107,11 @@ const PREAMBLE_BYTES = SIV_AT;
  *
  * Callers that must decide, without a key, whether a string could be a handle
  * at all use this. The authoritative edge's provisioning predicate is one
- * (#475), and it is exact only because this bound and the resolver's agree.
+ * (#475), and it is exact only because this bound and the resolver's agree —
+ * so it is derived from the same constant the resolver compares against rather
+ * than written out beside it.
  */
-export const SEALED_ENTITY_ID_MIN_LENGTH = 23;
+export const SEALED_ENTITY_ID_MIN_LENGTH = Math.ceil(PREAMBLE_BYTES * 4 / 3);
 
 /**
  * Canonical unpadded base64url of exactly {@link ENVELOPE_BYTES} bytes.
