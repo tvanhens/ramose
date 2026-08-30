@@ -30,7 +30,7 @@ const steps = [
           <span class="rg-demo-live agent-mcp"><i></i>mcp</span>
         </div>
         <div class="agent-terminal__body">
-          <div class="agent-command"><b>›</b><span data-agent-command></span><i></i></div>
+          <div class="agent-command"><b>›</b><span data-agent-command></span></div>
           <div class="agent-log" data-agent-log="0.15"><span>•</span><p>Discovering the project model and allowed operations…</p></div>
           <div class="agent-log" data-agent-log="0.22"><span>✓</span><p><strong>ramose.describe</strong><code>{`{ at: ["acme", "launch"] }`}</code></p></div>
           <div class="agent-log is-result" data-agent-log="0.31"><span>↳</span><p>Visible: <b>Task</b> · <b>Task.setDone</b> · Task.delete not exposed</p></div>
@@ -123,7 +123,7 @@ const steps = [
 
   .agent-command {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr);
     align-items: baseline;
     gap: 0.55rem;
     min-height: 1.15rem;
@@ -137,12 +137,19 @@ const steps = [
     font-weight: 500;
   }
 
-  .agent-command i {
+  .agent-command [data-agent-command] {
+    min-width: 0;
+  }
+
+  .agent-command [data-agent-command]::after {
+    display: inline-block;
     width: 0.42rem;
     height: 0.86rem;
-    margin-left: -0.45rem;
+    margin-left: 0.18rem;
+    vertical-align: -0.1rem;
     background: #ff5b0a;
     animation: agent-caret 1.04s step-end infinite;
+    content: "";
   }
 
   .agent-log {
@@ -519,7 +526,7 @@ const steps = [
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .agent-command i {
+    .agent-command [data-agent-command]::after {
       animation: none;
     }
 
