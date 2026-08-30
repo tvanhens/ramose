@@ -245,6 +245,59 @@ browserTest("renders an exact bearer binding's replica offline and closes determ
   }
 });
 
+browserTest("reattaches a subscription that is resubscribed after its last listener left", async ({ browser }) => {
+  const name = `ramose-client-reattach-${browser.uniqueId}`;
+  await seed(name, [{ entity: opaque("e"), title: "kept", rank: "a" }]);
+  const client = offlineClient(name);
+  try {
+    const db = client.open();
+    const notes = titles(db);
+    const first = notes.subscribe(() => undefined);
+    expect((await waitFor(notes, (snapshot) => snapshot.status === "ready")).data)
+      .toEqual([{ title: "kept" }]);
+
+    // The last listener leaves, which releases the observation.
+    first();
+    // The same subscription value is subscribed again — the unmount/remount a
+    // framework performs. It must reattach to a live observation, not go on
+    // reading a detached one that no replica or overlay change will ever touch.
+    const second = notes.subscribe(() => undefined);
+    const reattached = await waitFor(notes, (snapshot) => snapshot.status === "ready");
+    expect(reattached.data).toEqual([{ title: "kept" }]);
+    // Reattached to *the* observation for this query, not to a private copy.
+    expect(titles(db).getSnapshot()).toBe(notes.getSnapshot());
+    second();
+  } finally {
+    await client.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("reports a oneOrFail miss as an error rather than as rows", async ({ browser }) => {
+  const name = `ramose-client-oneorfail-${browser.uniqueId}`;
+  await seed(name, [
+    { entity: opaque("e"), title: "first", rank: "a" },
+    { entity: opaque("f"), title: "second", rank: "b" },
+  ]);
+  const client = offlineClient(name);
+  try {
+    const db = client.open();
+    const only = db.observe(db.query.from(Note).select({ title: Note.title }).oneOrFail());
+    const held = only.subscribe(() => undefined);
+    // The query language reports a miss by returning its error, so a snapshot
+    // that took it for data would hand an application an error where its row
+    // belongs.
+    const failed = await waitFor(only, (snapshot) => snapshot.status !== "pending");
+    expect(failed.status).toBe("error");
+    expect(failed.data).toBeUndefined();
+    expect(failed.error?.message).toContain("exactly one row");
+    held();
+  } finally {
+    await client.close();
+    await deleteDatabase(name);
+  }
+});
+
 browserTest("renders nothing offline for a rotated bearer, with or without the cache key", async ({ browser }) => {
   const name = `ramose-client-rotated-${browser.uniqueId}`;
   await seed(name, [{ entity: opaque("e"), title: "hidden", rank: "a" }]);
@@ -370,6 +423,36 @@ browserTest("clearLocalData deletes only a confirmed scope and is terminal", asy
     )).toBeUndefined();
   } finally {
     storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a clear by one client leaves the other terminal rather than silently dead", async ({ browser }) => {
+  const name = `ramose-client-shared-${browser.uniqueId}`;
+  await seed(name, [{ entity: opaque("e"), title: "shared", rank: "a" }]);
+  // Two clients over one durable store, as two components of one application
+  // would be. One of them clears the principal.
+  const clearing = offlineClient(name);
+  const other = offlineClient(name);
+  try {
+    const watched = titles(other.open());
+    const held = watched.subscribe(() => undefined);
+    await waitFor(watched, (snapshot) => snapshot.status === "ready");
+    const owned = titles(clearing.open());
+    await waitFor(owned, (snapshot) => snapshot.status === "ready");
+
+    await clearing.clearLocalData();
+
+    // The other client's session was closed under it by the clear. Nothing can
+    // reactivate it, so it says so instead of sitting at a healthy status.
+    expect((await waitFor(other.sync, (state) => state.status === "closed")).status)
+      .toBe("closed");
+    expect(() => other.open()).toThrow();
+    expect(watched.getSnapshot().data).toBeUndefined();
+    held();
+  } finally {
+    await other.close();
+    await clearing.close();
     await deleteDatabase(name);
   }
 });

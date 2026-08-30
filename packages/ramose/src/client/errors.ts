@@ -15,14 +15,17 @@ export class ClientConfigurationError extends Data.TaggedError(
 )<{ readonly message: string }> {}
 
 /**
- * The client is terminal: `close()` released it, or `clearLocalData()` deleted
- * the scope it was bound to. A terminal client never repopulates storage, so
- * the application constructs a new one.
+ * The client is terminal. A terminal client never repopulates storage, so the
+ * application constructs a new one.
+ *
+ * - `closed` — `close()` released it.
+ * - `cleared` — `clearLocalData()` deleted the scope it was bound to.
+ * - `fenced` — destructive local maintenance (another client's clear, or a
+ *   database eviction) closed this client's session out from under it.
  */
 export class ClientClosedError extends Data.TaggedError("ClientClosedError")<{
   readonly operation: string;
-  /** `cleared` distinguishes the destructive terminal from an ordinary close. */
-  readonly reason: "closed" | "cleared";
+  readonly reason: "closed" | "cleared" | "fenced";
 }> {}
 
 /** Why `clearLocalData()` deleted nothing. */

@@ -1047,6 +1047,13 @@ export const refine =
 export interface LoweredKernelQuery {
   /** The JS-form wire query (`find`/`where`/`rules`/`order`/`limit`/`offset`). */
   readonly query: Record<string, unknown>;
+  /**
+   * Canonical identity of {@link LoweredKernelQuery.finalize}'s plan.
+   *
+   * The wire query says what is asked; this says what shape the answer comes
+   * back in. Two queries share one execution only when both are equal.
+   */
+  readonly shape: string;
   /** Reshape the peer's raw result rows into the query's rows. */
   readonly finalize: (result: unknown) => unknown;
 }
@@ -2053,6 +2060,19 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
 
   return {
     query,
+    // Everything `finalize` decides that the wire query does not already say:
+    // where each projected cell lands in the row, whether the answer is one
+    // scalar, whether it is one row or a page, and which aggregate empties to
+    // what. `.one()` and `.limit(1)` send the same query and return different
+    // shapes, and two selects that differ only in output key names send the
+    // same `:find`; a caller that intends to reuse one execution for two query
+    // values has to compare this as well as the query itself.
+    shape: JSON.stringify({
+      cells: flats.map((cell) => [cell.path, cell.agg ?? null]),
+      scalar,
+      take: take ?? null,
+      paged: seek !== undefined,
+    }),
     finalize: (result) => {
       if (scalar) {
         const cell = flats[0]!;

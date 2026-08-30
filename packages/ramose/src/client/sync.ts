@@ -65,11 +65,13 @@ export const syncState = (status: SyncStatus): SyncState => STATES[status];
  *
  * A client is only as synchronized as its least synchronized activated
  * database: one database that cannot be read at all is the fact an application
- * has to react to, and a `live` sibling does not soften it. `idle` is absent
- * because it describes the *absence* of activations rather than one of them,
- * and `closed` is absent because it is decided by the client, not aggregated.
+ * has to react to, and a `live` sibling does not soften it. `closed` leads
+ * because a database whose session was closed under it is terminal — nothing
+ * reactivates it, so reporting the client as healthy would be a lie. `idle` is
+ * absent because it describes the *absence* of activations rather than one.
  */
 const SEVERITY: readonly SyncStatus[] = Object.freeze([
+  "closed",
   "update-required",
   "authentication-required",
   "offline",

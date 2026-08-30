@@ -33,7 +33,20 @@ export type ReplicationActivationInput = {
 };
 
 export class ReplicationTransportError extends Error {
-  override readonly name = "ReplicationTransportError";
+  override readonly name: string = "ReplicationTransportError";
+}
+
+/**
+ * The server refused the credential.
+ *
+ * Distinct from every other transport failure on purpose: an unreachable server
+ * says nothing about authorization and leaves a confirmed replica readable,
+ * while a refusal is the server's own answer and must fence the partition that
+ * credential used to open. Without the distinction, a revoked or expired
+ * principal keeps reading its cached rows indefinitely.
+ */
+export class ReplicationUnauthorizedError extends ReplicationTransportError {
+  override readonly name = "ReplicationUnauthorizedError";
 }
 
 const fail = (message: string): never => {
@@ -141,6 +154,9 @@ export const openReplicationResponse = (
 });
 
 const validateResponse = (response: Response): void => {
+  if (response.status === 401 || response.status === 403) {
+    throw new ReplicationUnauthorizedError("replication credential was refused");
+  }
   if (response.status !== 200 && response.status !== 409) {
     fail("replication response was not successful");
   }

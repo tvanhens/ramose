@@ -79,7 +79,9 @@ describe("sync state", () => {
     expect(aggregateSyncStatus(["offline", "update-required"])).toBe("update-required");
     expect(aggregateSyncStatus(["update-required", "authentication-required"]))
       .toBe("update-required");
-    // A closed database is the client's own decision, never an aggregate input.
-    expect(aggregateSyncStatus(["closed", "live"])).toBe("live");
+    // A database whose session was closed under it is terminal, and no live
+    // sibling softens that.
+    expect(aggregateSyncStatus(["closed", "live"])).toBe("closed");
+    expect(aggregateSyncStatus(["closed", "update-required"])).toBe("closed");
   });
 });

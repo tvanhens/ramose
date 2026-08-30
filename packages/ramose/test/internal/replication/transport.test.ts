@@ -12,6 +12,8 @@ import {
   replicationActivationAddress,
   replicationCacheSelector,
   replicationCredentialFingerprint,
+  ReplicationTransportError,
+  ReplicationUnauthorizedError,
 } from "../../../src/internal/replication/transport.ts";
 import {
   provisionalReplicaRouteSlot,
@@ -185,4 +187,26 @@ test("HTTP 409 yields only one identity-free agreement or version terminal", asy
   await expect(collect(readReplicationFrames(conflict(
     `${encodeReplicationFrame({ ...updateRequired, code: "closed" })}\n`,
   )))).rejects.toThrow(/exactly one allowed terminal/);
+});
+
+test("a refused credential is distinguishable from an unreachable server", async () => {
+  // The server's own answer. A caller that read it as unreachable would leave a
+  // revoked or expired principal reading the partition that credential opened.
+  for (const status of [401, 403]) {
+    await expect(collect(readReplicationFrames(
+      new Response(null, {
+        status,
+        headers: { "cache-control": "no-store", "content-type": "application/x-ndjson" },
+      }),
+    ))).rejects.toBeInstanceOf(ReplicationUnauthorizedError);
+  }
+  // Every other unsuccessful status stays an ordinary transport failure.
+  const other = collect(readReplicationFrames(
+    new Response(null, {
+      status: 503,
+      headers: { "cache-control": "no-store", "content-type": "application/x-ndjson" },
+    }),
+  ));
+  await expect(other).rejects.toBeInstanceOf(ReplicationTransportError);
+  await expect(other).rejects.not.toBeInstanceOf(ReplicationUnauthorizedError);
 });

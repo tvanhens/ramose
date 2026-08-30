@@ -119,8 +119,12 @@ describe("queryObservationKey", () => {
       queryObservationKey(base.limit(1)),
       queryObservationKey(base.one()),
       queryObservationKey(base.oneOrFail()),
+      // Same `:find` on the wire, a page rather than an array in the answer.
+      queryObservationKey(base.after(null)),
       queryObservationKey(db.query.from(Note).orderBy(Note.title).where({ title: "a" })),
       queryObservationKey(base.select({ title: Note.title })),
+      // Same `:find` on the wire, a different output key in the answer.
+      queryObservationKey(base.select({ heading: Note.title })),
     ];
     expect(new Set(keys).size).toBe(keys.length);
   });

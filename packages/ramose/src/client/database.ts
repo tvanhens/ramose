@@ -10,6 +10,7 @@
  */
 
 import type { AnyComposer } from "../db/Composer.ts";
+import { NotOne } from "../db/Errors.ts";
 import type { EntityRow, FluentQuery } from "../db/query/fluent.ts";
 import {
   from as queryFrom,
@@ -77,20 +78,18 @@ export type QuerySubscription<Out> = Subscription<QuerySnapshot<Out>>;
  * resets its variable counter, so two independently built equal queries produce
  * identical text, which is what lets them share one execution.
  *
- * It does not carry the whole of *how the answer is shaped*: `.one()` lowers to
- * the same `limit: 1` as `.limit(1)` while returning a row instead of an array,
- * and a paged query returns `{ rows, cursor }`. Those decisions ride on the
- * query value rather than the wire form, so they are part of the identity too —
- * without them two questions with different answer shapes would share one
- * observation and one of them would read the other's rows.
+ * It carries none of *how the answer is shaped*. `.one()` sends the same
+ * `limit: 1` as `.limit(1)` and returns a row instead of an array; a first page
+ * sends no cursor and returns `{ rows, cursor }`; two selects that differ only
+ * in their output key names send the same `:find`. Sharing one execution across
+ * any of those pairs would hand one caller the other's runtime shape, so the
+ * lowering's own canonical description of its finalization plan is half of the
+ * identity.
  */
-export const queryObservationKey = (query: AnyQueryObject): string =>
-  JSON.stringify([
-    lowerQueryObject(query).query,
-    query.take ?? null,
-    query.stripCursor === true,
-    query.seek === undefined || query.seek === null ? null : "paged",
-  ]);
+export const queryObservationKey = (query: AnyQueryObject): string => {
+  const lowered = lowerQueryObject(query);
+  return JSON.stringify([lowered.query, lowered.shape]);
+};
 
 const PENDING: QuerySnapshot<never> = Object.freeze({
   status: "pending" as const,
@@ -98,6 +97,60 @@ const PENDING: QuerySnapshot<never> = Object.freeze({
   stale: true,
   error: undefined,
 });
+
+/** How a client reads one replication session snapshot. */
+export type SessionDisposition = {
+  readonly status: SyncStatus;
+  /**
+   * Whether the value the snapshot still carries may be published.
+   *
+   * A session keeps its last value across a terminal or a failure, which is
+   * right for an unreachable server and wrong for the server's own answer. A
+   * refused credential and a rotated authorized view are both answers: the
+   * credential no longer opens this partition, or this build can no longer read
+   * it. Neither may keep publishing what the session opened with.
+   */
+  readonly publishes: boolean;
+};
+
+/**
+ * The whole mapping from replication to public synchronization state.
+ *
+ * Pure, and exported for that reason: every branch is a decision about what an
+ * application is allowed to read, so each one is worth stating over ordinary
+ * input values rather than only where a network can be persuaded to produce it.
+ */
+export const readSessionSnapshot = (
+  snapshot: ReplicationSessionSnapshot,
+): SessionDisposition => {
+  switch (snapshot.status) {
+    case "open":
+      return {
+        status: snapshot.value?.stale === true ? "stale" : "live",
+        publishes: true,
+      };
+    case "connecting":
+      return {
+        status: snapshot.value === undefined ? "connecting" : "stale",
+        publishes: true,
+      };
+    case "terminal":
+      // `incompatible-version` and `update-required` both say this build cannot
+      // read what the server serves, so its value goes with the status. A
+      // stream that merely ended says nothing about authorization, so it reads
+      // as unreachable and its last confirmed value stays readable.
+      return snapshot.terminalCode === "update-required" ||
+          snapshot.terminalCode === "incompatible-version"
+        ? { status: "update-required", publishes: false }
+        : { status: "offline", publishes: true };
+    case "failed":
+      return snapshot.failure === "unauthorized"
+        ? { status: "authentication-required", publishes: false }
+        : { status: "offline", publishes: true };
+    case "closed":
+      return { status: "closed", publishes: false };
+  }
+};
 
 /** Everything a database handle needs from the client that owns it. */
 export type DatabaseContext = {
@@ -118,6 +171,11 @@ export type DatabaseContext = {
   readonly onSyncChange: () => void;
   /** An authenticated response confirmed this identity. */
   readonly onConfirmed: (identity: ReplicationIdentity) => void;
+  /**
+   * Destructive local maintenance closed this database's session. The client is
+   * terminal: nothing reactivates it, and the application constructs a new one.
+   */
+  readonly onFenced: () => void;
 };
 
 /**
@@ -154,6 +212,13 @@ class QueryObserver {
     }
     try {
       const rows = this.lowered.finalize(await runQuery(view, this.lowered.query));
+      // `oneOrFail()` reports a miss by *returning* its error rather than
+      // throwing, so a snapshot that took it for data would hand an application
+      // an error object where its rows belong.
+      if (rows instanceof NotOne) {
+        this.publish(generation, "error", undefined, stale, rows);
+        return;
+      }
       this.publish(generation, "ready", rows, stale, undefined);
     } catch (cause) {
       this.publish(
@@ -262,23 +327,45 @@ export class ClientDatabaseHandle implements ClientDatabase {
     const value = query as AnyQueryObject;
     const lowered = lowerQueryObject(value);
     const key = queryObservationKey(value);
-    const observer = this.observers.get(key) ??
-      this.install(key, new QueryObserver(lowered, () => {
-        this.observers.delete(key);
-      }));
+    // Resolved on every use, never captured. A subscription value outlives the
+    // observation it names — a framework unmounts, the last listener goes, the
+    // observation is released, and the *same* value is subscribed again on
+    // remount. Holding the released observer there would hand that remount a
+    // frozen snapshot that no replica or overlay change ever updates again.
+    const acquire = (): QueryObserver => this.acquire(key, lowered);
+    let last = acquire();
     void this.activate();
     return Object.freeze({
-      subscribe: (onChange: () => void) => observer.subscribe(onChange),
-      getSnapshot: () => observer.store.getSnapshot() as QuerySnapshot<Out>,
+      subscribe: (onChange: () => void) => {
+        last = acquire();
+        return last.subscribe(onChange);
+      },
+      getSnapshot: (): QuerySnapshot<Out> => {
+        const observer = this.observers.get(key);
+        if (observer !== undefined) last = observer;
+        return last.store.getSnapshot() as QuerySnapshot<Out>;
+      },
     });
   }
 
   /**
-   * Seed one newly interned observer against the view already computed, rather
-   * than by recomputing the whole database: a render that observes fifty
+   * The interned observation for one canonical query, installing it if this is
+   * the first (or the next) handle to ask for it.
+   *
+   * A newly installed observation is seeded against the view already computed
+   * rather than by recomputing the whole database: a render that observes fifty
    * queries must cost one run each, not fifty runs each.
    */
-  private install(key: string, observer: QueryObserver): QueryObserver {
+  private acquire(key: string, lowered: LoweredKernelQuery): QueryObserver {
+    const existing = this.observers.get(key);
+    if (existing !== undefined) return existing;
+    const observer = new QueryObserver(lowered, () => {
+      this.observers.delete(key);
+    });
+    // A closed database installs nothing: its observers were released and
+    // nothing will ever run again, so the fresh one is handed back detached
+    // with its `pending` snapshot rather than added to a map close() emptied.
+    if (this.closed) return observer;
     this.observers.set(key, observer);
     void observer.run(this.viewGeneration, this.viewValue, this.stale);
     return observer;
@@ -337,6 +424,15 @@ export class ClientDatabaseHandle implements ClientDatabase {
   /** Adopt one session snapshot: identity first, then value, then status. */
   private accept(snapshot: ReplicationSessionSnapshot): void {
     if (this.closed) return;
+    if (snapshot.status === "closed") {
+      // Not this handle's own close — that path sets `closed` first, and the
+      // guard above returns. Destructive local maintenance closed this session
+      // out from under the client, so the client is done: nothing reactivates
+      // it, and it must say so rather than sit at a status that reads healthy.
+      this.fence();
+      this.context.onFenced();
+      return;
+    }
     const value = snapshot.value;
     const identity = value?.identity;
     if (identity !== undefined) {
@@ -351,12 +447,39 @@ export class ClientDatabaseHandle implements ClientDatabase {
       void this.bindReconciler(identity);
     }
     this.lastSession = snapshot;
+    const disposition = readSessionSnapshot(snapshot);
     this.stale = value === undefined ? true : value.stale;
-    this.committed = value === undefined || this.catalog === undefined
-      ? undefined
-      : value.db.withComposition(this.catalog.composition);
+    this.committed =
+      !disposition.publishes || value === undefined || this.catalog === undefined
+        ? undefined
+        : value.db.withComposition(this.catalog.composition);
     this.publishStatus(this.statusOf(snapshot));
     void this.recompute();
+  }
+
+  /**
+   * Stop for good without going through `close()`.
+   *
+   * For when something outside this client ended its session: the durable scope
+   * it was reading was cleared or evicted. Every observation resets to pending
+   * and the status becomes terminal.
+   */
+  private fence(): void {
+    this.closed = true;
+    this.generation++;
+    this.committed = undefined;
+    this.viewValue = undefined;
+    this.viewGeneration = this.generation;
+    this.releaseOverlay?.();
+    this.releaseOverlay = undefined;
+    this.reconciler = undefined;
+    this.reconcilerPending = undefined;
+    this.reconcilerKey = undefined;
+    for (const observer of this.observers.values()) {
+      void observer.run(this.generation, undefined, true);
+    }
+    this.observers.clear();
+    this.syncStore.publish(syncState("closed"));
   }
 
   /**
@@ -382,26 +505,13 @@ export class ClientDatabaseHandle implements ClientDatabase {
     }
   }
 
+  /**
+   * The replication status, plus this database's own scope-wide layer
+   * quarantine — which the session knows nothing about.
+   */
   private statusOf(snapshot: ReplicationSessionSnapshot): SyncStatus {
     if (this.updateRequired) return "update-required";
-    switch (snapshot.status) {
-      case "open":
-        return snapshot.value?.stale === true ? "stale" : "live";
-      case "connecting":
-        return snapshot.value === undefined ? "connecting" : "stale";
-      case "terminal":
-        // `incompatible-version` and `update-required` both say this build
-        // cannot read what the server serves; a stream that merely ended says
-        // nothing about authorization, so it reads as unreachable.
-        return snapshot.terminalCode === "update-required" ||
-            snapshot.terminalCode === "incompatible-version"
-          ? "update-required"
-          : "offline";
-      case "failed":
-        return "offline";
-      case "closed":
-        return "closed";
-    }
+    return readSessionSnapshot(snapshot).status;
   }
 
   private publishStatus(status: SyncStatus): void {

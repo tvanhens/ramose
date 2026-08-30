@@ -118,7 +118,12 @@ class RamoseClient implements Client {
   private catalogBuild: Promise<ClientCatalog> | undefined;
   private storageHandle: Promise<IndexedDbReplicaStorage> | undefined;
   private confirmed: ReplicationIdentity | undefined;
-  private terminal: "closed" | "cleared" | undefined;
+  private terminal: "closed" | "cleared" | "fenced" | undefined;
+  /**
+   * Set while this client's own clear is running, so the session its clear
+   * closes is attributed to the clear rather than reported as a stranger's.
+   */
+  private clearing = false;
 
   constructor(
     private readonly options: ClientOptions,
@@ -144,6 +149,9 @@ class RamoseClient implements Client {
       onSyncChange: () => this.refreshSync(),
       onConfirmed: (identity) => {
         this.confirmed = identity;
+      },
+      onFenced: () => {
+        void this.terminate(this.clearing ? "cleared" : "fenced");
       },
     });
     this.root = root;
@@ -203,9 +211,11 @@ class RamoseClient implements Client {
       throw new ClientLocalDataError({ reason: "no-confirmed-scope" });
     }
     const storage = await this.storage();
+    this.clearing = true;
     try {
       await storage.clearScope(replicaScopeOf(identity));
     } catch (cause) {
+      this.clearing = false;
       // The clear is atomic: a failure leaves the scope exactly as it was, so
       // this client stays usable and the call may be retried.
       throw new ClientLocalDataError({ reason: "storage", cause });
@@ -237,7 +247,9 @@ class RamoseClient implements Client {
     });
   }
 
-  private async terminate(reason: "closed" | "cleared"): Promise<void> {
+  private async terminate(
+    reason: "closed" | "cleared" | "fenced",
+  ): Promise<void> {
     if (this.terminal !== undefined) return;
     this.terminal = reason;
     await this.root?.close();

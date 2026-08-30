@@ -31,6 +31,7 @@ import {
   replicationActivationAddress,
   replicationCacheSelector,
   replicationCredentialFingerprint,
+  ReplicationUnauthorizedError,
   type ReplicationActivationInput,
 } from "./transport.ts";
 import {
@@ -53,6 +54,15 @@ export type ReplicationSessionSnapshot = {
   readonly value?: ReplicationSessionValue;
   /** Present for a protocol terminal; absent for clean unexpected EOF. */
   readonly terminalCode?: "closed" | "incompatible-version" | "update-required";
+  /**
+   * Why a `failed` session failed.
+   *
+   * `unauthorized` is the server's own answer — the credential was refused —
+   * and is the one failure a caller must not read as an unreachable server. An
+   * unreachable server leaves a confirmed replica readable; a refusal fences
+   * the partition that credential used to open.
+   */
+  readonly failure?: "unauthorized" | "transport";
 };
 
 export type ReplicationSessionObserver = (snapshot: ReplicationSessionSnapshot) => void;
@@ -464,6 +474,9 @@ export class ReplicationSession {
           if (session.controller.signal.aborted || !session.current(generation)) return;
           session.publish({
             status: "failed",
+            failure: error instanceof ReplicationUnauthorizedError
+              ? "unauthorized"
+              : "transport",
             ...(session.state.value === undefined ? {} : { value: session.state.value }),
           });
           session.controller.abort(error);
