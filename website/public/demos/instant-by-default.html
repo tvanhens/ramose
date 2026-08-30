@@ -479,8 +479,18 @@ document.addEventListener('DOMContentLoaded', async function() {
             if (card.style.display !== 'grid') card.style.display = 'grid';
           });
           const bounds = strip.getBoundingClientRect();
+          const previous = strip.previousElementSibling;
+          const contentBottom = previous && previous.children.length
+            ? Math.max.apply(null, Array.from(previous.children, function(child) {
+                return child.getBoundingClientRect().bottom;
+              }))
+            : bounds.top;
+          const captionBounds = caption.getBoundingClientRect();
+          const bar = caption.querySelector('.ramose-mobile-narrative-bar');
+          const barInset = bar ? bar.getBoundingClientRect().top - captionBounds.top : 0;
+          const desiredTop = contentBottom + 8 - barInset;
           const maxTop = Math.max(0, document.documentElement.clientHeight - caption.offsetHeight);
-          const top = Math.round(Math.min(bounds.top, maxTop) * 100) / 100 + 'px';
+          const top = Math.round(Math.min(desiredTop, maxTop) * 100) / 100 + 'px';
           const left = Math.round(bounds.left * 100) / 100 + 'px';
           const width = Math.round(bounds.width * 100) / 100 + 'px';
           if (caption.style.top !== top) caption.style.top = top;
