@@ -16,6 +16,7 @@ import {
   EntityId,
   FieldId,
   OperationId,
+  OperationVersion,
   RuleId,
   SchemaFingerprint,
   TraitId,
@@ -200,10 +201,25 @@ export const OperationInputShape: Schema.Codec<OperationInputShape, OperationInp
 export const OperationInputDescriptor = OperationInputShape;
 export type OperationInputDescriptor = OperationInputShape;
 
+/** Author-declared executable revision; ordinary positive integer. */
+const OperationRevision = Schema.Int.check(
+  Schema.makeFilter((value: number) =>
+    value < 1 ? "operation revision must be a positive integer" : undefined
+  ),
+);
+
 export const OperationDescriptor = Schema.Struct({
   id: OperationId,
   input: OperationInputShape,
   output: OperationInputShape,
+  /**
+   * Operation-scoped compatibility version (#487). Deployment-free: it never
+   * moves with a redeploy or an unrelated catalog change. Compatibility
+   * decisions use this; `unitHash`/`bodyHash` remain deployment fences.
+   */
+  version: OperationVersion,
+  /** Author-declared executable revision folded into {@link version}. */
+  revision: OperationRevision,
   /** Hashes of the exact Effect Schema definitions retained by deployed code. */
   inputSchemaHash: DigestHex,
   outputSchemaHash: DigestHex,

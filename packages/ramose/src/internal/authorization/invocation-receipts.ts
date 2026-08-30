@@ -11,10 +11,18 @@ import { InvalidRequest } from "../../db/Errors.ts";
 import { sha256Hex } from "../core/bytes.ts";
 import { toJson } from "../core/json.ts";
 import { canonicalizeJson } from "./canonical-json.ts";
+import { OperationVersion } from "./identities.ts";
 import type { JsonValue } from "./json.ts";
 import type { OperationInvocation } from "./operations-runtime.ts";
 
-export const INVOCATION_RECEIPT_VERSION = 1 as const;
+/**
+ * Durable receipt generation. v2 scopes invocation compatibility to the
+ * operation-scoped {@link OperationVersion} instead of the deployment-wide
+ * catalog key and unit hash that v1 digested (#487).
+ */
+export const INVOCATION_RECEIPT_VERSION = 2 as const;
+/** Pre-correction rows. Never re-executed, never silently cleared. */
+export const LEGACY_INVOCATION_RECEIPT_VERSIONS: readonly number[] = [1];
 export const MAX_INVOCATION_ID_LENGTH = 256;
 
 /** Receipt wrapper around the existing authoritative operation input. */
@@ -23,8 +31,8 @@ export type AuthoritativeOperationInvocation = OperationInvocation & {
 };
 
 const INVOCATION_SCOPE_DIGEST_DOMAIN =
-  "ramose/authoritative-invocation-scope/v1\0";
-const INVOCATION_DIGEST_DOMAIN = "ramose/authoritative-invocation/v1\0";
+  "ramose/authoritative-invocation-scope/v2\0";
+const INVOCATION_DIGEST_DOMAIN = "ramose/authoritative-invocation/v2\0";
 const UTF8 = new TextEncoder();
 const DIGEST_RE = /^[0-9a-f]{64}$/;
 
@@ -34,8 +42,11 @@ export type InvocationReceiptStatus =
   | "failed"
   | "indeterminate";
 
-/** The complete receipt visible to callers. Internal scope and digests stay sealed. */
-export type PublicInvocationReceiptV1 = {
+/**
+ * The complete receipt visible to callers. Internal scope, operation version,
+ * and digests stay sealed; `version` is the durable receipt generation.
+ */
+export type PublicInvocationReceipt = {
   readonly version: typeof INVOCATION_RECEIPT_VERSION;
   readonly invocationId: string;
   readonly status: InvocationReceiptStatus;
@@ -64,7 +75,13 @@ type InvocationReceiptIdentity = {
    * JWT envelope metadata (token, key, issuer, audience, iat, exp) is excluded.
    */
   readonly scopeDigest: string;
-  /** Operation identity/version, target, input, and deployed-catalog preconditions. */
+  /**
+   * Operation-scoped compatibility version this receipt was claimed under.
+   * Stored beside the digest so a later operation change is a deterministic
+   * `OperationChanged`, never an indistinguishable digest conflict.
+   */
+  readonly operationVersion: OperationVersion;
+  /** Operation version, owner/local name, target, and input. No deployment identity. */
   readonly invocationDigest: string;
 };
 
@@ -150,6 +167,14 @@ export type InvocationReceiptDecision =
     readonly receipt: ClaimedInvocationReceipt;
   }
   | {
+    /** The stored row belongs to a different version of this operation. */
+    readonly _tag: "OperationChanged";
+  }
+  | {
+    /** A pre-correction row: not replayable, not re-executable, not cleared. */
+    readonly _tag: "UpdateRequired";
+  }
+  | {
     readonly _tag: "Replay";
     readonly receipt: TerminalInvocationReceipt;
   }
@@ -176,27 +201,38 @@ export type InvocationReceiptEvent =
 export type InvocationReceiptOutcome =
   | {
     readonly _tag: "Completed";
-    readonly receipt: PublicInvocationReceiptV1 & { readonly status: "completed" };
+    readonly receipt: PublicInvocationReceipt & { readonly status: "completed" };
     readonly committedT: number;
     readonly output: unknown;
   }
   | {
     readonly _tag: "Rejected";
-    readonly receipt: PublicInvocationReceiptV1 & { readonly status: "rejected" };
+    readonly receipt: PublicInvocationReceipt & { readonly status: "rejected" };
     readonly rejection: SealedInvocationRejection;
   }
   | {
     readonly _tag: "Failed";
-    readonly receipt: PublicInvocationReceiptV1 & { readonly status: "failed" };
+    readonly receipt: PublicInvocationReceipt & { readonly status: "failed" };
   }
   | {
     readonly _tag: "Indeterminate";
-    readonly receipt: PublicInvocationReceiptV1 & { readonly status: "indeterminate" };
+    readonly receipt: PublicInvocationReceipt & { readonly status: "indeterminate" };
   };
 
+/**
+ * Transport-neutral refusals that carry no receipt because they had no
+ * effect. `OperationChanged` means the supplied or stored
+ * {@link OperationVersion} is not the currently deployed one;
+ * `UpdateRequired` means a pre-correction receipt row exists and this caller
+ * must mint a fresh invocation instead. Both are sealed: neither names the
+ * deployed operation, and both are only reachable once admission has already
+ * established that this caller may see the operation (#419).
+ */
 export type AuthoritativeInvocationResult =
   | InvocationReceiptOutcome
-  | { readonly _tag: "Conflict" };
+  | { readonly _tag: "Conflict" }
+  | { readonly _tag: "OperationChanged" }
+  | { readonly _tag: "UpdateRequired" };
 
 const invalid = (message: string): InvalidRequest =>
   new InvalidRequest({ message });
@@ -250,14 +286,20 @@ export const invocationScopeMaterial = (
     },
 });
 
-/** Pure canonical invocation material. No callback/source/executable can enter it. */
+/**
+ * Pure canonical invocation material. No callback/source/executable can enter
+ * it, and neither can deployment identity: the operation is named by its
+ * operation-scoped {@link OperationVersion}, so an identical invocation stays
+ * compatible across redeploys and unrelated catalog changes. The deployed
+ * `catalogKey`/`unitHash` remain a separate private execution fence.
+ */
 export const invocationDigestMaterial = (
   invocation: AuthoritativeOperationInvocation,
+  operationVersion: OperationVersion,
 ): JsonValue => ({
   version: INVOCATION_RECEIPT_VERSION,
   operation: {
-    catalogKey: invocation.catalogKey,
-    unitHash: invocation.unitHash,
+    version: operationVersion,
     owner: {
       kind: invocation.owner.kind,
       name: invocation.owner.name,
@@ -283,23 +325,47 @@ const hashCanonical = Effect.fn("Authorization.hashInvocationReceiptMaterial")(
   },
 );
 
-/** Canonicalize and hash the exact scope and invocation before a durable claim. */
+/**
+ * A caller may pin the operation version its invocation was minted against.
+ * Anything that is not a canonical digest is an ordinary invalid request, not
+ * a compatibility answer.
+ */
+export const requireSuppliedOperationVersion = (
+  value: unknown,
+): OperationVersion | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !DIGEST_RE.test(value)) {
+    throw invalid("operationVersion must be a canonical operation version digest");
+  }
+  return OperationVersion.make(value);
+};
+
+/**
+ * Canonicalize and hash the exact scope and invocation before a durable
+ * claim. `operationVersion` is the version of the *currently deployed*
+ * operation, resolved by the caller before preparing.
+ */
 export const prepareInvocationReceipt = Effect.fn(
   "Authorization.prepareInvocationReceipt",
 )(function* (
   invocation: AuthoritativeOperationInvocation,
+  operationVersion: OperationVersion,
 ): Effect.fn.Return<PreparedInvocationReceipt, InvalidRequest> {
   const invocationId = requireInvocationId(invocation.invocationId);
   const principalId = invocationPrincipalId(invocation);
   const [scopeDigest, invocationDigest] = yield* Effect.all([
     hashCanonical(INVOCATION_SCOPE_DIGEST_DOMAIN, invocationScopeMaterial(invocation)),
-    hashCanonical(INVOCATION_DIGEST_DOMAIN, invocationDigestMaterial(invocation)),
+    hashCanonical(
+      INVOCATION_DIGEST_DOMAIN,
+      invocationDigestMaterial(invocation, operationVersion),
+    ),
   ]);
   return Object.freeze({
     version: INVOCATION_RECEIPT_VERSION,
     principalId,
     invocationId,
     scopeDigest,
+    operationVersion,
     invocationDigest,
   });
 });
@@ -312,6 +378,7 @@ const sameIdentity = (
   stored.principalId === prepared.principalId &&
   stored.invocationId === prepared.invocationId &&
   stored.scopeDigest === prepared.scopeDigest &&
+  stored.operationVersion === prepared.operationVersion &&
   stored.invocationDigest === prepared.invocationDigest;
 
 const hasExactKeys = (
@@ -474,11 +541,25 @@ const snapshotInvocationReplayFence = (
   });
 };
 
-/** Pure claim/replay/conflict/recovery decision for one durable key. */
+/**
+ * Pure claim/replay/conflict/recovery decision for one durable key.
+ *
+ * Order matters. A pre-correction row is `UpdateRequired` before anything
+ * else, so it is never cleared and never re-executed under the corrected
+ * digest. A row claimed under a different operation version is
+ * `OperationChanged` rather than a bare conflict, because the caller's
+ * invocation is still well-formed — the operation moved underneath it.
+ */
 export const decideInvocationReceipt = (
-  stored: StoredInvocationReceipt | undefined,
+  stored: StoredInvocationReceipt | LegacyInvocationReceiptRow | undefined,
   prepared: PreparedInvocationReceipt,
 ): InvocationReceiptDecision => {
+  if (stored !== undefined && isLegacyInvocationReceiptRow(stored)) {
+    return { _tag: "UpdateRequired" };
+  }
+  if (stored !== undefined && stored.operationVersion !== prepared.operationVersion) {
+    return { _tag: "OperationChanged" };
+  }
   if (stored === undefined) {
     return {
       _tag: "Claim",
@@ -531,7 +612,7 @@ export const transitionInvocationReceipt = (
 
 export const publicInvocationReceipt = (
   receipt: TerminalInvocationReceipt,
-): PublicInvocationReceiptV1 => Object.freeze({
+): PublicInvocationReceipt => Object.freeze({
   version: INVOCATION_RECEIPT_VERSION,
   invocationId: receipt.invocationId,
   status: receipt.status,
@@ -546,7 +627,7 @@ export const invocationReceiptOutcome = (
     case "completed":
       return {
         _tag: "Completed",
-        receipt: publicReceipt as PublicInvocationReceiptV1 & {
+        receipt: publicReceipt as PublicInvocationReceipt & {
           readonly status: "completed";
         },
         committedT: receipt.committedT,
@@ -555,7 +636,7 @@ export const invocationReceiptOutcome = (
     case "rejected":
       return {
         _tag: "Rejected",
-        receipt: publicReceipt as PublicInvocationReceiptV1 & {
+        receipt: publicReceipt as PublicInvocationReceipt & {
           readonly status: "rejected";
         },
         rejection: receipt.rejection,
@@ -563,14 +644,14 @@ export const invocationReceiptOutcome = (
     case "failed":
       return {
         _tag: "Failed",
-        receipt: publicReceipt as PublicInvocationReceiptV1 & {
+        receipt: publicReceipt as PublicInvocationReceipt & {
           readonly status: "failed";
         },
       };
     case "indeterminate":
       return {
         _tag: "Indeterminate",
-        receipt: publicReceipt as PublicInvocationReceiptV1 & {
+        receipt: publicReceipt as PublicInvocationReceipt & {
           readonly status: "indeterminate";
         },
       };
@@ -582,6 +663,8 @@ const isIdentity = (value: Record<string, unknown>): boolean =>
   typeof value.principalId === "string" && value.principalId.length > 0 &&
   typeof value.invocationId === "string" && value.invocationId.length > 0 &&
   typeof value.scopeDigest === "string" && DIGEST_RE.test(value.scopeDigest) &&
+  typeof value.operationVersion === "string" &&
+  DIGEST_RE.test(value.operationVersion) &&
   typeof value.invocationDigest === "string" &&
   DIGEST_RE.test(value.invocationDigest);
 
@@ -590,6 +673,7 @@ const IDENTITY_KEYS = Object.freeze([
   "principalId",
   "invocationId",
   "scopeDigest",
+  "operationVersion",
   "invocationDigest",
   "status",
 ] as const);
@@ -617,14 +701,45 @@ const isRejection = (value: unknown): value is SealedInvocationRejection => {
     ]);
 };
 
+/**
+ * A durable row written before the operation-scoped correction. It is
+ * recognized, never rewritten, and never re-executed; a replay that reaches
+ * one is `UpdateRequired`.
+ */
+export type LegacyInvocationReceiptRow = {
+  readonly _tag: "LegacyInvocationReceipt";
+  readonly version: number;
+};
+
+/** Durable rows are either the current generation or a recognized legacy one. */
+export const isLegacyInvocationReceiptRow = (
+  value: StoredInvocationReceipt | LegacyInvocationReceiptRow,
+): value is LegacyInvocationReceiptRow =>
+  (value as Partial<LegacyInvocationReceiptRow>)._tag === "LegacyInvocationReceipt";
+
+const isLegacyInvocationReceipt = (
+  record: Record<string, unknown>,
+): boolean =>
+  typeof record.version === "number" &&
+  LEGACY_INVOCATION_RECEIPT_VERSIONS.includes(record.version) &&
+  typeof record.principalId === "string" && record.principalId.length > 0 &&
+  typeof record.invocationId === "string" && record.invocationId.length > 0 &&
+  typeof record.status === "string";
+
 /** Fail closed on malformed durable rows; never reinterpret corruption as a miss. */
 export const parseStoredInvocationReceipt = (
   value: unknown,
-): StoredInvocationReceipt => {
+): StoredInvocationReceipt | LegacyInvocationReceiptRow => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("invalid durable invocation receipt");
   }
   const record = value as Record<string, unknown>;
+  if (isLegacyInvocationReceipt(record)) {
+    return Object.freeze({
+      _tag: "LegacyInvocationReceipt" as const,
+      version: record.version as number,
+    });
+  }
   if (!isIdentity(record)) throw new TypeError("invalid durable invocation receipt");
   if (
     (record.status === "claimed" || record.status === "failed" ||
@@ -680,6 +795,12 @@ export const parseAuthoritativeInvocationResult = (
   if (
     result._tag === "Conflict" && hasExactKeys(result, ["_tag"])
   ) return { _tag: "Conflict" };
+  if (
+    result._tag === "OperationChanged" && hasExactKeys(result, ["_tag"])
+  ) return { _tag: "OperationChanged" };
+  if (
+    result._tag === "UpdateRequired" && hasExactKeys(result, ["_tag"])
+  ) return { _tag: "UpdateRequired" };
   if (
     result._tag === "Completed" &&
     hasPublicReceipt(result.receipt, invocationId, "completed") &&

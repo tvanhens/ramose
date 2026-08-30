@@ -5,6 +5,7 @@ import {
   CatalogUnitHash,
   DatabaseId,
   decideInvocationReceipt,
+  OperationVersion,
   invocationDigestMaterial,
   invocationReceiptOutcome,
   invocationScopeMaterial,
@@ -18,6 +19,8 @@ import {
 } from "../../../src/internal/authorization/index.ts";
 
 const unitHash = CatalogUnitHash.make("ab".repeat(32));
+const operationVersion = OperationVersion.make("1f".repeat(32));
+const otherOperationVersion = OperationVersion.make("2e".repeat(32));
 
 const invocation = (
   overrides: Partial<AuthoritativeOperationInvocation> = {},
@@ -38,18 +41,21 @@ const invocation = (
   ...overrides,
 });
 
-const prepare = (value: AuthoritativeOperationInvocation) =>
-  Effect.runPromise(prepareInvocationReceipt(value));
+const prepare = (
+  value: AuthoritativeOperationInvocation,
+  version = operationVersion,
+) => Effect.runPromise(prepareInvocationReceipt(value, version));
 
 const digest = (byte: string): string => byte.repeat(64);
 
 const preparedFixture = (
   overrides: Partial<PreparedInvocationReceipt> = {},
 ): PreparedInvocationReceipt => ({
-  version: 1,
+  version: 2,
   principalId: "user-1",
   invocationId: "invocation-01",
   scopeDigest: digest("a"),
+  operationVersion,
   invocationDigest: digest("b"),
   ...overrides,
 });
@@ -99,17 +105,28 @@ describe("authoritative invocation receipt identity", () => {
     expect(reordered.invocationDigest).toBe(left.invocationDigest);
   });
 
-  test("operation identity, version, target, input, and scope changes are distinct", async () => {
+  test("operation version, identity, target, input, and scope changes are distinct", async () => {
     const base = await prepare(invocation());
     const changed = await Promise.all([
       prepare(invocation({ localName: "reopen" })),
-      prepare(invocation({ unitHash: CatalogUnitHash.make("cd".repeat(32)) })),
+      prepare(invocation({ owner: { kind: "trait", name: "issue" } })),
       prepare(invocation({ target: [":issue/key", "ISSUE-2"] })),
       prepare(invocation({ input: { reason: "other" } })),
+      prepare(invocation(), otherOperationVersion),
     ]);
     for (const candidate of changed) {
       expect(candidate.scopeDigest).toBe(base.scopeDigest);
       expect(candidate.invocationDigest).not.toBe(base.invocationDigest);
+    }
+
+    // Deployment identity is a separate private fence and never digested:
+    // a redeploy or an unrelated catalog change must not conflict a replay.
+    const redeployed = await Promise.all([
+      prepare(invocation({ unitHash: CatalogUnitHash.make("cd".repeat(32)) })),
+      prepare(invocation({ catalogKey: CatalogId.make("other-catalog") })),
+    ]);
+    for (const candidate of redeployed) {
+      expect(candidate).toEqual(base);
     }
 
     const authorizationChanged = await prepare(invocation({
@@ -123,13 +140,12 @@ describe("authoritative invocation receipt identity", () => {
     expect(authorizationChanged.invocationDigest).toBe(base.invocationDigest);
   });
 
-  test("canonical material contains data and deployment identity but no executable", () => {
+  test("canonical material contains data and the operation version but no executable or deployment", () => {
     const value = invocation();
-    expect(invocationDigestMaterial(value)).toEqual({
-      version: 1,
+    expect(invocationDigestMaterial(value, operationVersion)).toEqual({
+      version: 2,
       operation: {
-        catalogKey: "app",
-        unitHash,
+        version: operationVersion,
         owner: { kind: "entity", name: "issue" },
         localName: "close",
       },
@@ -140,7 +156,7 @@ describe("authoritative invocation receipt identity", () => {
       },
     });
     expect(invocationScopeMaterial(value)).toEqual({
-      version: 1,
+      version: 2,
       database: "receipts",
       principal: {
         claims: { sub: "user-1", org: "acme" },
@@ -148,9 +164,10 @@ describe("authoritative invocation receipt identity", () => {
       },
       graph: null,
     });
-    expect(JSON.stringify(invocationDigestMaterial(value))).not.toMatch(
-      /source|callback|bytecode|function|run/,
-    );
+    const material = JSON.stringify(invocationDigestMaterial(value, operationVersion));
+    expect(material).not.toMatch(/source|callback|bytecode|function|run/);
+    expect(material).not.toContain(unitHash);
+    expect(material).not.toContain("catalogKey");
   });
 });
 
@@ -211,6 +228,49 @@ describe("authoritative invocation receipt state machine", () => {
     }
   });
 
+  test("a stored row from another operation version is a changed operation, not a conflict", () => {
+    const prepared = preparedFixture();
+    const claim = decideInvocationReceipt(undefined, prepared);
+    if (claim._tag !== "Claim") throw new Error("expected claim");
+    const completed = transitionInvocationReceipt(claim.receipt, {
+      _tag: "Complete",
+      committedT: 12,
+      output: { id: 7 },
+      replayFence,
+    });
+    // Same caller, same invocation id, different deployed operation version:
+    // the digest necessarily differs too, but the answer must be specific.
+    expect(decideInvocationReceipt(completed, preparedFixture({
+      operationVersion: otherOperationVersion,
+      invocationDigest: digest("e"),
+    }))).toEqual({ _tag: "OperationChanged" });
+    // An unchanged operation with different data stays an ordinary conflict.
+    expect(decideInvocationReceipt(completed, preparedFixture({
+      invocationDigest: digest("e"),
+    }))).toEqual({ _tag: "Conflict" });
+  });
+
+  test("a pre-correction row is update-required: never replayed, re-executed, or cleared", () => {
+    const legacy = parseStoredInvocationReceipt({
+      version: 1,
+      principalId: "user-1",
+      invocationId: "invocation-01",
+      scopeDigest: digest("a"),
+      invocationDigest: digest("b"),
+      status: "completed",
+      committedT: 3,
+      output: { id: 1 },
+      replayFence,
+    });
+    expect(legacy).toEqual({ _tag: "LegacyInvocationReceipt", version: 1 });
+    expect(decideInvocationReceipt(legacy, preparedFixture()))
+      .toEqual({ _tag: "UpdateRequired" });
+    // Even a row whose stored operation version would have matched.
+    expect(decideInvocationReceipt(legacy, preparedFixture({
+      invocationDigest: digest("f"),
+    }))).toEqual({ _tag: "UpdateRequired" });
+  });
+
   test("an abandoned claim recovers once to an indeterminate replay", () => {
     const prepared = preparedFixture();
     const claim = decideInvocationReceipt(undefined, prepared);
@@ -237,7 +297,7 @@ describe("authoritative invocation receipt serialization", () => {
     });
     if (completed.status !== "completed") throw new Error("expected completion");
     expect(publicInvocationReceipt(completed)).toEqual({
-      version: 1,
+      version: 2,
       invocationId: "invocation-01",
       status: "completed",
     });
@@ -287,5 +347,14 @@ describe("authoritative invocation receipt serialization", () => {
       _tag: "Conflict",
       scopeDigest: "private",
     }, "invocation-01")).toThrow("invalid authoritative invocation result");
+    for (const tag of ["OperationChanged", "UpdateRequired"] as const) {
+      // Effect-free refusals carry no receipt and no engine metadata.
+      expect(parseAuthoritativeInvocationResult({ _tag: tag }, "invocation-01"))
+        .toEqual({ _tag: tag });
+      expect(() => parseAuthoritativeInvocationResult({
+        _tag: tag,
+        operationVersion: digest("a"),
+      }, "invocation-01")).toThrow("invalid authoritative invocation result");
+    }
   });
 });

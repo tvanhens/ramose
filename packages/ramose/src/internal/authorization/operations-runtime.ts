@@ -65,6 +65,7 @@ import type {
   CatalogId,
   CatalogUnitHash,
   DatabaseId,
+  OperationVersion,
   OwnerRef,
 } from "./identities.ts";
 import { operationGrantAllows } from "./operation-grant.ts";
@@ -94,6 +95,13 @@ export type OperationInvocation = {
   readonly unitHash: CatalogUnitHash;
   readonly owner: OwnerRef;
   readonly localName: string;
+  /**
+   * Optional caller expectation: the operation-scoped version this invocation
+   * was minted against (#487). A mismatch with the deployed operation is an
+   * `OperationChanged` outcome with no effect, never a silent execution
+   * against a different contract.
+   */
+  readonly operationVersion?: OperationVersion;
   readonly target?: EntityRef;
   readonly input: unknown;
   readonly caller: AuthenticatedCaller;
@@ -300,6 +308,19 @@ const bindingFor = (
   descriptorKey(binding.descriptor.id.owner, binding.descriptor.id.localName) ===
     descriptorKey(owner, localName)
 );
+
+/**
+ * The operation-scoped compatibility version of the currently deployed
+ * operation, or `undefined` when this deployment has no such operation.
+ * Callers must treat `undefined` as the ordinary sealed denial (#419) — it
+ * is the same answer an unauthorized caller gets.
+ */
+export const deployedOperationVersion = (
+  resolved: ResolvedOperationCatalog,
+  owner: OwnerRef,
+  localName: string,
+): OperationVersion | undefined =>
+  bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.version;
 
 const fieldIdent = (field: FieldDescriptor): string =>
   `:${field.id.owner.name}/${field.id.localName}`;

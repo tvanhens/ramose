@@ -5,6 +5,7 @@ import * as Result from "effect/Result";
 import {
   DatabaseId,
   MAX_INVOCATION_ID_LENGTH,
+  OperationVersion,
   parseAuthoritativeInvocationResult,
   type AuthoritativeInvocationResult,
   type AuthoritativeOperationInvocation,
@@ -168,6 +169,15 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
       `invocationId must be a non-empty string of at most ${MAX_INVOCATION_ID_LENGTH} characters`,
     );
   }
+  if (
+    body.operationVersion !== undefined &&
+    (typeof body.operationVersion !== "string" ||
+      !/^[0-9a-f]{64}$/.test(body.operationVersion))
+  ) {
+    return yield* bad(
+      "operationVersion must be a canonical operation version digest",
+    );
+  }
   const target = body.target === undefined ? undefined : fromJson(body.target);
   if (
     target !== undefined &&
@@ -184,6 +194,9 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
     owner,
     localName: record.localName,
     invocationId: body.invocationId,
+    ...(body.operationVersion === undefined ? {} : {
+      operationVersion: OperationVersion.make(body.operationVersion as string),
+    }),
     ...(target === undefined ? {} : {
       target: target as Exclude<OperationInvocation["target"], undefined>,
     }),
@@ -262,6 +275,18 @@ export const publicOperationResult = (
     return {
       status: 409,
       body: { error: "request rejected", code: "invocation_conflict" },
+    };
+  }
+  if (result._tag === "OperationChanged") {
+    return {
+      status: 409,
+      body: { error: "request rejected", code: "operation_changed" },
+    };
+  }
+  if (result._tag === "UpdateRequired") {
+    return {
+      status: 409,
+      body: { error: "request rejected", code: "invocation_update_required" },
     };
   }
   if (result._tag === "Completed") {

@@ -710,6 +710,8 @@ export interface UnboundOperation<
   readonly self: Self;
   /** Additional entity definitions made reachable and typed for authoring. */
   readonly writes: Writes;
+  /** Author-declared executable revision; `1` when undeclared. */
+  readonly revision: number;
   readonly doc: string | undefined;
   readonly run: UnboundOwnedRun<ICodec, OCodec, Self>;
 }
@@ -748,6 +750,8 @@ export interface OwnedOperation<
   readonly output: OCodec;
   readonly self: Self;
   readonly writes: Writes;
+  /** Author-declared executable revision; `1` when undeclared. */
+  readonly revision: number;
   readonly doc: string | undefined;
   readonly run: OwnedRun<Owner, ICodec, OCodec, Self, Writes>;
 }
@@ -761,6 +765,7 @@ export type AnyOwnedOperation = {
   readonly output: Schema.Top;
   readonly self: boolean;
   readonly writes: readonly AnyEntity[];
+  readonly revision: number;
   readonly doc: string | undefined;
   readonly run: (...args: never[]) => unknown;
 };
@@ -872,6 +877,24 @@ type CatalogEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
 
 const emptyOutput = Schema.Struct({});
 
+/** Revision assumed when an operation declares none. */
+export const DEFAULT_OPERATION_REVISION = 1;
+
+/**
+ * Normalize the author-declared executable revision. The operation-scoped
+ * compatibility version excludes executable source, so this is the author's
+ * explicit control for rotating a behavior-only change.
+ */
+export const normalizeOperationRevision = (value: unknown): number => {
+  if (value === undefined) return DEFAULT_OPERATION_REVISION;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error(
+      `ramose/schema: operation revision must be a positive integer, not ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
+};
+
 /** Define one legacy standalone named operation. */
 const defineNamedOperation = <
   Name extends string,
@@ -905,6 +928,13 @@ type OwnedOperationSpec<
   readonly output: OCodec;
   readonly self?: Self;
   readonly writes?: ValidWriteDefinitions<Writes>;
+  /**
+   * Author-declared executable revision (default `1`). The operation-scoped
+   * compatibility version (#487) excludes executable source, so bumping this
+   * is how an author rotates an operation whose declared input/output
+   * contract is unchanged but whose behavior is not.
+   */
+  readonly revision?: number;
   readonly doc?: string;
   readonly run: [Context] extends [never]
     ? UnboundOwnedRun<ICodec, OCodec, NormalizeOwnedSelf<Self>>
@@ -1035,6 +1065,7 @@ function defineOperation(
     output: nameOrSpec.output,
     self,
     writes: Object.freeze([...(nameOrSpec.writes ?? [])]),
+    revision: normalizeOperationRevision(nameOrSpec.revision),
     doc: normalizeDoc(nameOrSpec.doc),
     run: nameOrSpec.run,
   } as AnyUnboundOperation;
@@ -1194,6 +1225,7 @@ export const bindOwnedOperations = <
       output: operation.output,
       self: operation.self,
       writes: operation.writes,
+      revision: normalizeOperationRevision(operation.revision),
       doc: operation.doc,
       run: operation.run,
     } as unknown as AnyOwnedOperation;

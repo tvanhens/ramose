@@ -29,6 +29,8 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-response-expiry",
   "operations-denials",
   "operations-trusted",
+  "operations-version-compatibility",
+  "operations-version-changed",
 ]);
 
 const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(

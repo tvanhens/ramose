@@ -99,6 +99,26 @@ Projections must be pure and must not query the local database. Send desired sta
 
 An operation without a projection still queues offline. The UI can show its receipt and pending entity state without inventing a result.
 
+## Change an operation safely
+
+Every operation carries an operation-scoped version derived only from its own public contract: owner and name, target mode, declared input and output, the entity types it admits as a target, the entities it declares as writes, and an author-declared `revision`. Redeploying the Worker, changing an unrelated definition, and editing documentation all leave it alone.
+
+That version cannot see the body's source, so a behavior change behind an unchanged contract needs an explicit bump:
+
+```ts
+setDone: Operation({
+  revision: 2,
+  input: S.Struct({ done: S.Boolean }),
+  output: S.Struct({}),
+  run(op, { done }) {
+    op.self.set(Task.done, done)
+    return {}
+  },
+})
+```
+
+A queued invocation that pins an older version is refused with `operation_changed` and has no effect; the client re-mints it against the current operation. A queued invocation that merely predates a redeploy still executes, and an exact retry of one that already committed still returns its original receipt.
+
 ## Handle receipts
 
 Receipts expose queued, committed, and rejected transitions plus the stable public result. Treat `queued` as durable local acceptance, not server success. Treat `committed` as authoritative.

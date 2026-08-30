@@ -6,6 +6,7 @@
  * in logs and on internal Durable Object responses.
  */
 
+import { INVOCATION_RECEIPT_VERSION } from "../internal/authorization/invocation-receipts.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 
 export const PUBLIC_OBSERVATION_ALLOWLIST = Object.freeze({
@@ -57,13 +58,14 @@ const publicReceipt = (value: unknown): Record<string, unknown> | undefined => {
   }
   const receipt = value as Record<string, unknown>;
   if (
-    receipt.version !== 1 || typeof receipt.invocationId !== "string" ||
+    receipt.version !== INVOCATION_RECEIPT_VERSION ||
+    typeof receipt.invocationId !== "string" ||
     receipt.invocationId.length === 0 || receipt.invocationId.length > 256 ||
     typeof receipt.status !== "string" ||
     !RECEIPT_STATUSES.has(receipt.status)
   ) return undefined;
   return {
-    version: 1,
+    version: INVOCATION_RECEIPT_VERSION,
     invocationId: receipt.invocationId,
     status: receipt.status,
   };

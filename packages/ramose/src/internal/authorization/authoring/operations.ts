@@ -53,6 +53,11 @@ import {
 import {
   hashDomainSeparatedCanonicalJson,
 } from "../decode.ts";
+import {
+  hashOperationVersion,
+  requireOperationRevision,
+  type OperationVersionDescriptor,
+} from "../operation-version.ts";
 import type { JsonValue } from "../json.ts";
 
 const OPERATION_SCHEMA_HASH_DOMAIN_V1 = "ramose/operation-schema/v1\0";
@@ -134,6 +139,9 @@ export type OwnedOperationSnapshot = {
   readonly run: DeployedOperationRun;
   readonly implementationHashMaterial: JsonValue;
   readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
+  readonly revision: number;
+  /** Deployment-free descriptor hashed into the operation-scoped version. */
+  readonly versionDescriptor: OperationVersionDescriptor;
 };
 
 const invalid = (message: string): InvalidIR => new InvalidIR({ message });
@@ -726,21 +734,55 @@ export const snapshotOwnedOperations = (
           `targetless operation '${draft.owner.ns}.${draft.localName}' cannot reference self`,
         ));
       }
+      const writes = Object.freeze(operation.writes.map((entity) =>
+        deepFreeze(EntityId.make({ catalog, name: entity.ns }))
+      ));
+      const composers = Object.freeze(
+        draft.owner._tag === "Trait" && operation.self
+          ? draft.composers.map((entity) =>
+            deepFreeze(EntityId.make({ catalog, name: entity.ns }))
+          )
+          : [],
+      );
+      let revision: number;
+      try {
+        revision = requireOperationRevision(
+          operation.revision,
+          `${draft.owner.ns}.${draft.localName}`,
+        );
+      } catch (cause) {
+        return yield* Result.fail(invalid(
+          cause instanceof Error ? cause.message : String(cause),
+        ));
+      }
       snapshots.push(freeze({
         id: deepFreeze(id),
         owner: deepFreeze({ ...draft.ownerRef }),
         localName: draft.localName,
         self: operation.self,
-        writes: Object.freeze(operation.writes.map((entity) =>
-          deepFreeze(EntityId.make({ catalog, name: entity.ns }))
-        )),
-        composers: Object.freeze(
-          draft.owner._tag === "Trait" && operation.self
-            ? draft.composers.map((entity) =>
-              deepFreeze(EntityId.make({ catalog, name: entity.ns }))
-            )
-            : [],
-        ),
+        writes,
+        composers,
+        revision,
+        // Deployment-free by construction: only the semantic identity, the
+        // declared contracts, the public precondition/allocation behavior,
+        // and the author-declared revision reach the version digest.
+        versionDescriptor: deepFreeze({
+          catalog,
+          owner: { ...draft.ownerRef },
+          localName: draft.localName,
+          target: operation.self ? "required" : "none",
+          revision,
+          input: {
+            representation: inputSchemaBinding.projection as JsonValue,
+            shape: inputShape,
+          },
+          output: {
+            representation: outputSchemaBinding.projection as JsonValue,
+            shape: outputShape,
+          },
+          composers: composers.map((entity) => entity.name),
+          writes: writes.map((entity) => entity.name),
+        }) as OperationVersionDescriptor,
         inputShape: deepFreeze(inputShape),
         outputShape: deepFreeze(outputShape),
         inputSchemaMaterial: deepFreeze(inputSchemaMaterial),
@@ -776,7 +818,7 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
     const definitions: DeployedOperationDefinition[] = [];
 
     for (const snapshot of snapshots) {
-      const [inputSchemaHash, outputSchemaHash, implementationHash] =
+      const [inputSchemaHash, outputSchemaHash, implementationHash, version] =
         yield* Effect.all([
           hashOperationSchema(snapshot.inputSchemaMaterial),
           hashOperationSchema(snapshot.outputSchemaMaterial),
@@ -784,11 +826,14 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
             OPERATION_IMPLEMENTATION_HASH_DOMAIN_V1,
             snapshot.implementationHashMaterial,
           ),
+          hashOperationVersion(snapshot.versionDescriptor),
         ]);
       const descriptorInput = {
         id: snapshot.id,
         input: snapshot.inputShape,
         output: snapshot.outputShape,
+        version,
+        revision: snapshot.revision,
         inputSchemaHash,
         outputSchemaHash,
         bodyHash: implementationHash,

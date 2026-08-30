@@ -50,17 +50,18 @@ describe("public observation allowlist", () => {
       limit: 10,
       transaction: 17,
       receipt: {
-        version: 1,
+        version: 2,
         invocationId: "invocation-1",
         status: "failed",
         scopeDigest: "private",
+        operationVersion: "private",
         committedT: 17,
       },
     })).toEqual({
       error: "invalid request",
       code: "safe-code",
       receipt: {
-        version: 1,
+        version: 2,
         invocationId: "invocation-1",
         status: "failed",
       },

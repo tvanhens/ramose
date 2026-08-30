@@ -52,6 +52,16 @@ export const CatalogUnitHash = DigestHex.pipe(Schema.brand("CatalogUnitHash"));
 export type CatalogUnitHash = typeof CatalogUnitHash.Type;
 
 /**
+ * Operation-scoped compatibility version (#487). Canonical serialized form is
+ * {@link DigestHex} — the full SHA-256 of one operation's canonical
+ * descriptor. It rotates only when that operation's own public contract or
+ * its author-declared revision changes; deployments, catalog units, and
+ * unrelated definitions never enter it. See `operation-version.ts`.
+ */
+export const OperationVersion = DigestHex.pipe(Schema.brand("OperationVersion"));
+export type OperationVersion = typeof OperationVersion.Type;
+
+/**
  * Rule identity. Canonical serialized form is {@link DigestHex}.
  * One identity mapping to two different canonical bodies is an error;
  * silent interning overwrite is forbidden.

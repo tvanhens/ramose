@@ -387,6 +387,9 @@ export const handle = (
             owner: parsed.owner,
             localName: parsed.localName,
             invocationId: parsed.invocationId,
+            ...(parsed.operationVersion === undefined
+              ? {}
+              : { operationVersion: parsed.operationVersion }),
             ...(parsed.target === undefined ? {} : { target: parsed.target }),
             input: parsed.input,
           },

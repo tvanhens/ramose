@@ -192,7 +192,7 @@ export const create = async (
   expect(response.status).toBe(200);
   expect(typeof response.body.result.id).toBe("number");
   expect(response.body.receipt).toEqual({
-    version: 1,
+    version: 2,
     invocationId: expect.any(String),
     status: "completed",
   });
@@ -629,7 +629,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(completed.status).toBe(200);
       expect(completed.body).toEqual({
         result: { id: issue, title: "Original invocation" },
-        receipt: { version: 1, invocationId, status: "completed" },
+        receipt: { version: 2, invocationId, status: "completed" },
       });
 
       const transferred = await invoke(base, database, admin, {
@@ -713,7 +713,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(completed.status).toBe(200);
       expect(completed.body).toEqual({
         result: { title: "Original visible result" },
-        receipt: { version: 1, invocationId, status: "completed" },
+        receipt: { version: 2, invocationId, status: "completed" },
       });
       const absentReplay = await invoke(
         base,
@@ -840,7 +840,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(completed.status).toBe(200);
       expect(completed.body).toEqual({
         result: { id: issue },
-        receipt: { version: 1, invocationId, status: "completed" },
+        receipt: { version: 2, invocationId, status: "completed" },
       });
 
       const exactRetry = await invoke(
@@ -990,7 +990,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(completed.status).toBe(200);
       expect(completed.body).toEqual({
         result: { id: original },
-        receipt: { version: 1, invocationId, status: "completed" },
+        receipt: { version: 2, invocationId, status: "completed" },
       });
       expect((await entity(
         base,

@@ -1,6 +1,19 @@
 import { beforeAll, describe, expect, test } from "bun:test";
+import * as Effect from "effect/Effect";
+import * as EffectSchema from "effect/Schema";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { schemaTx } from "../../packages/ramose/src/db/internal.ts";
+import {
+  Entity,
+  EntityId as OperationEntityId,
+  Schema,
+  string,
+} from "ramose/db";
+import { lowerOwnedOperations } from "../../packages/ramose/src/internal/authorization/authoring/index.ts";
+import {
+  CatalogId,
+  DigestHex,
+} from "../../packages/ramose/src/internal/authorization/identities.ts";
 import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
 import {
   OperationSchema,
@@ -18,6 +31,7 @@ const invoke = async (
   input: unknown,
   target?: number,
   invocationId: string = crypto.randomUUID(),
+  operationVersion?: string,
 ) => json(base, `/db/${database}/op`, {
   method: "POST",
   token,
@@ -28,8 +42,54 @@ const invoke = async (
     operation,
     input,
     ...(target === undefined ? {} : { target }),
+    ...(operationVersion === undefined ? {} : { operationVersion }),
   }),
 });
+
+/**
+ * Operation-scoped versions (#487) as a *different* deployment computes them.
+ * The real lowering pipeline runs here against an artifact hash that is not
+ * the deployed Worker's, so any value accepted below is proof that the
+ * compatibility digest carries no deployment identity.
+ */
+const otherDeploymentVersions = async (): Promise<Map<string, string>> => {
+  const lowered = await Effect.runPromise(lowerOwnedOperations(
+    CatalogId.make("local-native-operations"),
+    OperationSchema,
+    DigestHex.make("5c".repeat(32)),
+  ));
+  return new Map(lowered.descriptors.map((descriptor) => [
+    `${descriptor.id.owner.name}/${descriptor.id.localName}`,
+    descriptor.version as string,
+  ]));
+};
+
+/**
+ * The same `nativeItem/create` contract under an author-declared revision
+ * bump — exactly what a semantics-changing redeploy of that one operation
+ * produces. At revision 1 it must reproduce the deployed version.
+ */
+const createVersionAtRevision = async (revision: number): Promise<string> => {
+  const Replica = Entity("nativeItem", { title: string() }, {
+    operations: (Operation) => ({
+      create: Operation({
+        self: false,
+        revision,
+        input: EffectSchema.Struct({ title: EffectSchema.String }),
+        output: EffectSchema.Struct({ id: OperationEntityId }),
+        run(op, input) {
+          return { id: op.create({ title: input.title }) };
+        },
+      }),
+    }),
+  });
+  const lowered = await Effect.runPromise(lowerOwnedOperations(
+    CatalogId.make("local-native-operations"),
+    Schema({ nativeItem: Replica }),
+    DigestHex.make("7d".repeat(32)),
+  ));
+  return lowered.descriptors[0]!.version as string;
+};
 
 const withoutReceipt = (body: Record<string, unknown>) => {
   const { receipt: _receipt, ...rest } = body;
@@ -91,7 +151,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(created.status).toBe(200);
       expect(typeof created.body.result.id).toBe("number");
       expect(created.body.receipt).toEqual({
-        version: 1,
+        version: 2,
         invocationId: expect.any(String),
         status: "completed",
       });
@@ -196,7 +256,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       const first = delivered[0]!.body;
       expect(typeof first.result.id).toBe("number");
       expect(first.receipt).toEqual({
-        version: 1,
+        version: 2,
         invocationId,
         status: "completed",
       });
@@ -273,7 +333,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(completed.status).toBe(200);
       expect(completed.body).toEqual({
         result: { title: "ERASE ME" },
-        receipt: { version: 1, invocationId, status: "completed" },
+        receipt: { version: 2, invocationId, status: "completed" },
       });
 
       // Prove replay remains exact after a later unrelated writer position and
@@ -376,7 +436,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(replayed.status).toBe(200);
       expect(typeof replayed.body.result.id).toBe("number");
       expect(replayed.body.receipt).toEqual({
-        version: 1,
+        version: 2,
         invocationId,
         status: "completed",
       });
@@ -517,7 +577,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         error: "request state is indeterminate",
         code: "invocation_indeterminate",
         receipt: {
-          version: 1,
+          version: 2,
           invocationId,
           status: "indeterminate",
         },
@@ -939,7 +999,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         step: "rule",
         reason: "intentional",
         receipt: {
-          version: 1,
+          version: 2,
           invocationId: expect.any(String),
           status: "rejected",
         },
@@ -991,6 +1051,131 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(await operationReceiptCount(base, database)).toBe(
         receiptsBeforeCatalogAdmission,
       );
+    });
+
+    test("a queued invocation minted by another deployment stays executable and replays", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-version-compatibility";
+      await install(base, database);
+      const token = await signToken(database, "member", "user_version_ok");
+      const versions = await otherDeploymentVersions();
+      const createVersion = versions.get("nativeItem/create")!;
+      expect(createVersion).toMatch(/^[0-9a-f]{64}$/);
+      // The replica proves the value is a pure function of the operation's own
+      // public contract, independent of the rest of the catalog.
+      expect(await createVersionAtRevision(1)).toBe(createVersion);
+
+      const operation = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "create",
+      };
+      const invocationId = "version-compatible-invocation-01";
+      const executed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        { title: "Queued elsewhere" },
+        undefined,
+        invocationId,
+        createVersion,
+      );
+      expect(executed.status).toBe(200);
+      expect(executed.body.receipt).toEqual({
+        version: 2,
+        invocationId,
+        status: "completed",
+      });
+
+      // A new isolate plus the other deployment's version must still replay
+      // the original receipt rather than conflict or re-execute.
+      const aborted = await testAdmin(base, database, "/abort", {
+        target: "transactor",
+      });
+      expect(aborted.status).toBe(200);
+      const replayed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        { title: "Queued elsewhere" },
+        undefined,
+        invocationId,
+        createVersion,
+      );
+      expect(replayed.status).toBe(200);
+      expect(replayed.body).toEqual(executed.body);
+      const rows = await testAdmin(base, database, "/query", {
+        query: '[:find ?e :where [?e :nativeItem/title "Queued elsewhere"]]',
+      });
+      expect(rows.body.result.length).toBe(1);
+    });
+
+    test("an invocation pinned to a changed operation is refused without any effect", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-version-changed";
+      await install(base, database);
+      const token = await signToken(database, "member", "user_version_changed");
+      const versions = await otherDeploymentVersions();
+      const bumped = await createVersionAtRevision(2);
+      expect(bumped).not.toBe(versions.get("nativeItem/create"));
+      const receiptsBefore = await operationReceiptCount(base, database);
+      const operation = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "create",
+      };
+
+      // A revision bump and another operation's version are both "not this
+      // operation any more"; neither may execute or leave a receipt.
+      for (const stale of [bumped, versions.get("nativeItem/rename")!]) {
+        const refused = await invoke(
+          base,
+          database,
+          token,
+          operation,
+          { title: "Must not execute" },
+          undefined,
+          crypto.randomUUID(),
+          stale,
+        );
+        expect(refused.status).toBe(409);
+        expect(refused.body).toEqual({
+          error: "request rejected",
+          code: "operation_changed",
+        });
+      }
+      const malformed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        { title: "Must not execute" },
+        undefined,
+        crypto.randomUUID(),
+        "not-a-version",
+      );
+      expect(malformed.status).toBe(400);
+
+      // Unauthorized callers keep the ordinary sealed denial: a stale version
+      // never reveals that the operation exists.
+      const reader = await signToken(database, "reader", "user_version_reader");
+      const denied = await invoke(
+        base,
+        database,
+        reader,
+        operation,
+        { title: "Must not execute" },
+        undefined,
+        crypto.randomUUID(),
+        bumped,
+      );
+      expect(denied.status).toBe(403);
+
+      const absent = await testAdmin(base, database, "/query", {
+        query: '[:find ?e :where [?e :nativeItem/title "Must not execute"]]',
+      });
+      expect(absent.body.result).toEqual([]);
+      expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
     });
   });
 };

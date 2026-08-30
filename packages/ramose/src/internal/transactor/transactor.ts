@@ -74,12 +74,15 @@ import {
   authorizeCatalogOperationReplay,
   catalogProvisioningAttributes,
   decideInvocationReceipt,
+  deployedOperationVersion,
   executeCatalogOperation,
   invocationReceiptOutcome,
+  isLegacyInvocationReceiptRow,
   OperationRuntimeFault,
   opaqueOperationDenial,
   parseStoredInvocationReceipt,
   prepareInvocationReceipt,
+  requireSuppliedOperationVersion,
   resolveOperationCatalog,
   transitionInvocationReceipt,
   type AuthoritativeInvocationResult,
@@ -88,6 +91,7 @@ import {
   type ClaimedInvocationReceipt,
   type InstalledCatalogDefinition,
   type InvocationReceiptEvent,
+  type LegacyInvocationReceiptRow,
   type OperationRuntime,
   type PreparedInvocationReceipt,
   type SealedInvocationRejection,
@@ -332,7 +336,7 @@ export class Transactor {
   private readInvocationReceipt(
     principalId: string,
     invocationId: string,
-  ): StoredInvocationReceipt | undefined {
+  ): StoredInvocationReceipt | LegacyInvocationReceiptRow | undefined {
     const row = this.host.sql.exec(
       `SELECT status, receipt FROM operation_receipts
        WHERE principal_id = ? AND invocation_id = ?`,
@@ -341,6 +345,9 @@ export class Transactor {
     ).toArray()[0];
     if (row === undefined) return undefined;
     const receipt = parseStoredInvocationReceipt(JSON.parse(row.receipt as string));
+    // A pre-correction row keeps its stored bytes untouched; only the current
+    // generation is checked against the status column.
+    if (isLegacyInvocationReceiptRow(receipt)) return receipt;
     if (row.status !== receipt.status) {
       throw new TypeError("durable invocation receipt status mismatch");
     }
@@ -418,14 +425,16 @@ export class Transactor {
   }
 
   private assertClaimIdentity(
-    stored: StoredInvocationReceipt | undefined,
+    stored: StoredInvocationReceipt | LegacyInvocationReceiptRow | undefined,
     claim: ClaimedInvocationReceipt,
   ): asserts stored is ClaimedInvocationReceipt {
     if (
-      stored?.status !== "claimed" || stored.version !== claim.version ||
+      stored === undefined || isLegacyInvocationReceiptRow(stored) ||
+      stored.status !== "claimed" || stored.version !== claim.version ||
       stored.principalId !== claim.principalId ||
       stored.invocationId !== claim.invocationId ||
       stored.scopeDigest !== claim.scopeDigest ||
+      stored.operationVersion !== claim.operationVersion ||
       stored.invocationDigest !== claim.invocationDigest
     ) {
       throw new Error("durable invocation claim changed before completion");
@@ -712,20 +721,50 @@ export class Transactor {
           if (p.operation !== undefined) {
             let claim: ClaimedInvocationReceipt | undefined;
             try {
+              // The compatibility digest is operation-scoped, so the deployed
+              // operation must be resolved before the receipt is prepared.
+              // Resolution failures stay the ordinary sealed denial.
+              if (this.operationRuntime === undefined) {
+                throw opaqueOperationDenial();
+              }
+              const supplied = requireSuppliedOperationVersion(
+                p.operation.operationVersion,
+              );
+              const resolved = await Effect.runPromise(
+                resolveOperationCatalog(this.operationRuntime, p.operation),
+              );
+              this.bindComposition(
+                resolved.deployed.definition.unitHash,
+                resolved.deployed.definition.composition,
+              );
+              const operationVersion = deployedOperationVersion(
+                resolved,
+                p.operation.owner,
+                p.operation.localName,
+              );
+              if (operationVersion === undefined) throw opaqueOperationDenial();
               const prepared = await Effect.runPromise(
-                prepareInvocationReceipt(p.operation),
+                prepareInvocationReceipt(p.operation, operationVersion),
               );
               const inspected = this.inspectInvocationReceipt(prepared);
-              if (inspected._tag === "Conflict") {
+              if (
+                inspected._tag === "Conflict" ||
+                inspected._tag === "OperationChanged" ||
+                inspected._tag === "UpdateRequired"
+              ) {
                 this.stats.rejected++;
-                p.resolve({ _tag: "Conflict" });
+                p.resolve({ _tag: inspected._tag });
                 continue;
               }
               if (inspected._tag === "Recover") {
                 const recovered = this.recoverInvocationReceipt(prepared);
-                if (recovered._tag === "Conflict") {
+                if (
+                  recovered._tag === "Conflict" ||
+                  recovered._tag === "OperationChanged" ||
+                  recovered._tag === "UpdateRequired"
+                ) {
                   this.stats.rejected++;
-                  p.resolve({ _tag: "Conflict" });
+                  p.resolve({ _tag: recovered._tag });
                   continue;
                 }
                 if (recovered._tag === "Replay" || recovered._tag === "Recover") {
@@ -735,16 +774,6 @@ export class Transactor {
                 // A missing row cannot normally race inside one serialized DO,
                 // but if storage changed, continue through fresh admission.
               }
-              if (this.operationRuntime === undefined) {
-                throw opaqueOperationDenial();
-              }
-              const resolved = await Effect.runPromise(
-                resolveOperationCatalog(this.operationRuntime, p.operation),
-              );
-              this.bindComposition(
-                resolved.deployed.definition.unitHash,
-                resolved.deployed.definition.composition,
-              );
               if (inspected._tag === "Replay") {
                 if (inspected.receipt.status === "completed") {
                   await authorizeCatalogOperationReplay(
@@ -766,20 +795,48 @@ export class Transactor {
                 continue;
               }
 
-              const admission: CatalogOperationAdmission =
-                await authorizeCatalogOperation(
+              // A caller-supplied version that no longer matches the deployed
+              // operation must have no effect. Admission still runs first so
+              // an unauthorized caller keeps the sealed denial (#419) instead
+              // of learning that the operation exists and moved.
+              let admission: CatalogOperationAdmission;
+              try {
+                admission = await authorizeCatalogOperation(
                   this.conn,
                   this.operationRuntime,
                   p.operation,
                   resolved,
                 );
+              } catch (cause) {
+                // Input that no longer decodes against the deployed contract
+                // is the changed operation, not a caller mistake. Denials and
+                // engine faults keep their own meaning.
+                if (
+                  supplied !== undefined && supplied !== operationVersion &&
+                  cause instanceof InvalidRequest
+                ) {
+                  this.stats.rejected++;
+                  p.resolve({ _tag: "OperationChanged" });
+                  continue;
+                }
+                throw cause;
+              }
+              if (supplied !== undefined && supplied !== operationVersion) {
+                this.stats.rejected++;
+                p.resolve({ _tag: "OperationChanged" });
+                continue;
+              }
 
               // Missing keys are admitted without writes. Only now, directly
               // before native execution, atomically recheck and insert.
               const decision = this.claimInvocationReceipt(prepared);
-              if (decision._tag === "Conflict") {
+              if (
+                decision._tag === "Conflict" ||
+                decision._tag === "OperationChanged" ||
+                decision._tag === "UpdateRequired"
+              ) {
                 this.stats.rejected++;
-                p.resolve({ _tag: "Conflict" });
+                p.resolve({ _tag: decision._tag });
                 continue;
               }
               if (decision._tag === "Replay" || decision._tag === "Recover") {

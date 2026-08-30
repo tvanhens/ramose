@@ -1,0 +1,372 @@
+/** Operation-scoped compatibility versions (#487). */
+
+import { describe, expect, test } from "bun:test";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import {
+  Entity,
+  Schema as CatalogSchema,
+  Trait,
+  string,
+} from "../../../src/db/internal.ts";
+import type { AnySchema } from "../../../src/db/Schema.ts";
+import { lowerOwnedOperations } from "../../../src/internal/authorization/authoring/index.ts";
+import {
+  CatalogId,
+  DigestHex,
+} from "../../../src/internal/authorization/identities.ts";
+import {
+  DEFAULT_OPERATION_REVISION,
+  hashOperationVersion,
+  operationVersionMaterial,
+  requireOperationRevision,
+  type OperationVersionDescriptor,
+} from "../../../src/internal/authorization/operation-version.ts";
+
+const catalog = CatalogId.make("app");
+const deployment = DigestHex.make("a".repeat(64));
+const redeployment = DigestHex.make("b".repeat(64));
+
+const Taggable = () =>
+  Trait("taggable", { tags: string() }, {
+    operations: (Operation) => ({
+      addTag: Operation({
+        input: Schema.Struct({ tag: Schema.String }),
+        output: Schema.Struct({}),
+        run() {
+          return {};
+        },
+      }),
+    }),
+  });
+
+/** Baseline catalog. Every variant below changes exactly one thing. */
+const baseCatalog = () => {
+  const taggable = Taggable();
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        input: Schema.Struct({ reason: Schema.String }),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run() {
+          return { ok: true };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string() });
+  return CatalogSchema({ issue: Issue, note: Note });
+};
+
+const documentedCatalog = () => {
+  const taggable = Taggable();
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        doc: "Close one issue",
+        input: Schema.Struct({ reason: Schema.String }),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run() {
+          return { ok: true };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string() });
+  return CatalogSchema({ issue: Issue, note: Note });
+};
+
+/** An unrelated entity, field, and operation added to the same catalog. */
+const unrelatedCatalog = () => {
+  const taggable = Taggable();
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        input: Schema.Struct({ reason: Schema.String }),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run() {
+          return { ok: true };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string(), pinned: string() });
+  const Audit = Entity("audit", { message: string() }, {
+    operations: (Operation) => ({
+      record: Operation({
+        input: Schema.Struct({ message: Schema.String }),
+        output: Schema.Struct({}),
+        run() {
+          return {};
+        },
+      }),
+    }),
+  });
+  return CatalogSchema({ issue: Issue, note: Note, audit: Audit });
+};
+
+const revisedCatalog = () => {
+  const taggable = Taggable();
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        revision: 2,
+        input: Schema.Struct({ reason: Schema.String }),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run() {
+          return { ok: true };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string() });
+  return CatalogSchema({ issue: Issue, note: Note });
+};
+
+const changedInputCatalog = () => {
+  const taggable = Taggable();
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        input: Schema.Struct({ reason: Schema.String, force: Schema.Boolean }),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run() {
+          return { ok: true };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string() });
+  return CatalogSchema({ issue: Issue, note: Note });
+};
+
+const changedOutputCatalog = () => {
+  const taggable = Taggable();
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        input: Schema.Struct({ reason: Schema.String }),
+        output: Schema.Struct({ ok: Schema.String }),
+        run() {
+          return { ok: "yes" };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string() });
+  return CatalogSchema({ issue: Issue, note: Note });
+};
+
+const targetlessCatalog = () => {
+  const taggable = Taggable();
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        self: false,
+        input: Schema.Struct({ reason: Schema.String }),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run() {
+          return { ok: true };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string() });
+  return CatalogSchema({ issue: Issue, note: Note });
+};
+
+const writingCatalog = () => {
+  const taggable = Taggable();
+  const Audit = Entity("audit", { message: string() });
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        writes: [Audit],
+        input: Schema.Struct({ reason: Schema.String }),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run() {
+          return { ok: true };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string() });
+  return CatalogSchema({ issue: Issue, note: Note, audit: Audit });
+};
+
+/** `note` now composes the trait, so the trait operation admits one more type. */
+const extraComposerCatalog = () => {
+  const taggable = Taggable();
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        input: Schema.Struct({ reason: Schema.String }),
+        output: Schema.Struct({ ok: Schema.Boolean }),
+        run() {
+          return { ok: true };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string() }, { traits: [taggable] });
+  return CatalogSchema({ issue: Issue, note: Note });
+};
+
+const versions = async (
+  build: () => AnySchema,
+  artifactHash = deployment,
+): Promise<Record<string, string>> => {
+  const lowered = await Effect.runPromise(
+    lowerOwnedOperations(catalog, build(), artifactHash),
+  );
+  return Object.fromEntries(lowered.descriptors.map((descriptor) => [
+    `${descriptor.id.owner.name}.${descriptor.id.localName}`,
+    descriptor.version as string,
+  ]));
+};
+
+const descriptorFixture = (
+  overrides: Partial<OperationVersionDescriptor> = {},
+): OperationVersionDescriptor => ({
+  catalog,
+  owner: { kind: "entity", name: "issue" },
+  localName: "close",
+  target: "required",
+  revision: DEFAULT_OPERATION_REVISION,
+  input: { representation: { type: "object" }, shape: { _tag: "opaque" } },
+  output: { representation: { type: "object" }, shape: { _tag: "opaque" } },
+  composers: [],
+  writes: [],
+  ...overrides,
+});
+
+describe("canonical operation version descriptor", () => {
+  test("freezes exactly the operation-scoped field list", () => {
+    expect(operationVersionMaterial(descriptorFixture({
+      composers: ["note", "issue", "issue"],
+      writes: ["audit", "note", "audit"],
+      revision: 3,
+    }))).toEqual({
+      version: 1,
+      operation: {
+        catalog: "app",
+        owner: { kind: "entity", name: "issue" },
+        localName: "close",
+        target: "required",
+      },
+      revision: 3,
+      contract: {
+        input: { representation: { type: "object" }, shape: { _tag: "opaque" } },
+        output: { representation: { type: "object" }, shape: { _tag: "opaque" } },
+      },
+      // Deduplicated and sorted: authoring or discovery order never rotates.
+      behavior: { composers: ["issue", "note"], writes: ["audit", "note"] },
+    });
+  });
+
+  test("rejects a revision that is not a positive integer", () => {
+    expect(requireOperationRevision(undefined, "issue.close")).toBe(1);
+    expect(requireOperationRevision(7, "issue.close")).toBe(7);
+    for (const bad of [0, -1, 1.5, "2", null, Number.NaN]) {
+      expect(() => requireOperationRevision(bad, "issue.close")).toThrow(
+        /revision must be a positive integer/,
+      );
+    }
+  });
+
+  test("hashes to a full canonical SHA-256 that changes with every covered field", async () => {
+    const base = await Effect.runPromise(hashOperationVersion(descriptorFixture()));
+    expect(base).toMatch(/^[0-9a-f]{64}$/);
+    const rotations = await Promise.all([
+      descriptorFixture({ catalog: CatalogId.make("other") }),
+      descriptorFixture({ owner: { kind: "trait", name: "issue" } }),
+      descriptorFixture({ owner: { kind: "entity", name: "task" } }),
+      descriptorFixture({ localName: "reopen" }),
+      descriptorFixture({ target: "none" }),
+      descriptorFixture({ revision: 2 }),
+      descriptorFixture({
+        input: { representation: { type: "string" }, shape: { _tag: "opaque" } },
+      }),
+      descriptorFixture({
+        output: {
+          representation: { type: "object" },
+          shape: { _tag: "scalar", valueType: "string" },
+        },
+      }),
+      descriptorFixture({ composers: ["note"] }),
+      descriptorFixture({ writes: ["audit"] }),
+    ].map((descriptor) => Effect.runPromise(hashOperationVersion(descriptor))));
+    expect(new Set(rotations).size).toBe(rotations.length);
+    for (const rotated of rotations) expect(rotated).not.toBe(base);
+  });
+});
+
+describe("deployed operation versions", () => {
+  test("survive a redeploy that rotates every deployment-bound hash", async () => {
+    const first = await Effect.runPromise(
+      lowerOwnedOperations(catalog, baseCatalog(), deployment),
+    );
+    const redeployed = await Effect.runPromise(
+      lowerOwnedOperations(catalog, baseCatalog(), redeployment),
+    );
+    expect(redeployed.descriptors.map((entry) => entry.version)).toEqual(
+      first.descriptors.map((entry) => entry.version),
+    );
+    // The deployment fences did rotate — that is what makes this meaningful.
+    expect(redeployed.descriptors.map((entry) => entry.bodyHash)).not.toEqual(
+      first.descriptors.map((entry) => entry.bodyHash),
+    );
+    expect(redeployed.descriptors.map((entry) => entry.inputSchemaHash))
+      .not.toEqual(first.descriptors.map((entry) => entry.inputSchemaHash));
+    for (const descriptor of first.descriptors) {
+      expect(descriptor.version).toMatch(/^[0-9a-f]{64}$/);
+      expect(descriptor.revision).toBe(1);
+    }
+    expect(new Set(first.descriptors.map((entry) => entry.version)).size)
+      .toBe(first.descriptors.length);
+  });
+
+  test("ignore documentation and unrelated definitions in the same catalog", async () => {
+    const base = await versions(baseCatalog);
+    const documented = await versions(documentedCatalog);
+    const unrelated = await versions(unrelatedCatalog);
+    expect(documented).toEqual(base);
+    expect(unrelated["issue.close"]).toBe(base["issue.close"]!);
+    expect(unrelated["taggable.addTag"]).toBe(base["taggable.addTag"]!);
+  });
+
+  test("rotate only the operation whose own contract, behavior, or revision moved", async () => {
+    const base = await versions(baseCatalog);
+    const variants: Record<string, () => AnySchema> = {
+      revision: revisedCatalog,
+      input: changedInputCatalog,
+      output: changedOutputCatalog,
+      target: targetlessCatalog,
+      writes: writingCatalog,
+    };
+    for (const [label, build] of Object.entries(variants)) {
+      const changed = await versions(build);
+      expect(`${label}:${changed["issue.close"]}`).not.toBe(
+        `${label}:${base["issue.close"]}`,
+      );
+      // The unrelated trait operation in the same catalog stays compatible.
+      expect(changed["taggable.addTag"]).toBe(base["taggable.addTag"]!);
+    }
+  });
+
+  test("rotate a targeted trait operation when its admissible composers change", async () => {
+    const base = await versions(baseCatalog);
+    const composed = await versions(extraComposerCatalog);
+    expect(composed["taggable.addTag"]).not.toBe(base["taggable.addTag"]);
+    expect(composed["issue.close"]).toBe(base["issue.close"]!);
+  });
+});

@@ -210,6 +210,8 @@ const catalogUnitOperation = {
     ],
   },
   output: { _tag: "struct", fields: [] },
+  version: digestHex(0x90),
+  revision: 1,
   inputSchemaHash: digestHex(0x91),
   outputSchemaHash: digestHex(0x92),
   bodyHash: digestHex(0x93),

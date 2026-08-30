@@ -42,6 +42,7 @@ export * from "./ir.ts";
 export * from "./json.ts";
 export * from "./live.ts";
 export * from "./operation-grant.ts";
+export * from "./operation-version.ts";
 export * from "./operations-runtime.ts";
 export * from "./principal.ts";
 export * from "./read-filter.ts";
