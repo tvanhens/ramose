@@ -54,18 +54,35 @@ export class QueryFunctionContext extends Data.TaggedError(
   readonly allowed: readonly ExpressionContext[];
 }> {}
 
+/**
+ * The call would have produced more text than one call may produce.
+ *
+ * Carries the limit but never the requested size: a size derived from a field
+ * value is still a fact about that value, and this contract does not leak
+ * one. Milestone 2's runtime budget accounting owns richer reporting under
+ * the sealed `query_budget_exceeded` contract.
+ */
+export class QueryFunctionOutputSize extends Data.TaggedError(
+  "QueryFunctionOutputSize",
+)<{
+  readonly name: string;
+  readonly limit: number;
+}> {}
+
 export type StdlibFailure =
   | UnknownQueryFunction
   | QueryFunctionArity
   | QueryFunctionArgumentType
-  | QueryFunctionContext;
+  | QueryFunctionContext
+  | QueryFunctionOutputSize;
 
 /** Stable machine-readable codes for the public error path. */
 export type StdlibFailureCode =
   | "query_function_unknown"
   | "query_function_arity"
   | "query_function_argument_type"
-  | "query_function_context";
+  | "query_function_context"
+  | "query_function_output_size";
 
 /** A sealed failure: only names, declared types, kinds, and counts. */
 export type SealedStdlibFailure =
@@ -92,6 +109,11 @@ export type SealedStdlibFailure =
       readonly function: string;
       readonly context: ExpressionContext;
       readonly allowed: readonly ExpressionContext[];
+    }
+  | {
+      readonly code: "query_function_output_size";
+      readonly function: string;
+      readonly limit: number;
     };
 
 /**
@@ -124,6 +146,12 @@ export const sealStdlibFailure = (failure: StdlibFailure): SealedStdlibFailure =
         function: failure.name,
         context: failure.context,
         allowed: failure.allowed,
+      };
+    case "QueryFunctionOutputSize":
+      return {
+        code: "query_function_output_size",
+        function: failure.name,
+        limit: failure.limit,
       };
   }
 };

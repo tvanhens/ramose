@@ -16,6 +16,14 @@
  * database- or catalog-aware functions, and any function that produces query
  * rows. A function may *return* a collection as one value; it can never fan
  * one row out into several.
+ *
+ * Two commitments run through the `text.*` cards and are stated once here.
+ * Case mapping is ASCII only and whitespace is a pinned set, because the
+ * host's Unicode tables move with the engine's Unicode version and a v1
+ * document must mean the same thing wherever it runs; a wider mapping can
+ * arrive later under its own name. And text is well-formed Unicode: a string
+ * carrying an unpaired surrogate is outside the value domain, which is what
+ * makes the code-point indices in `length`, `slice` and `indexOf` total.
  */
 
 import type {
@@ -24,14 +32,25 @@ import type {
   StdlibManifest,
 } from "./types.ts";
 import { QUERY_STDLIB_VERSION } from "./types.ts";
+import { MAX_PRODUCED_TEXT_UNITS } from "./values.ts";
 
-/** Admitted everywhere an expression is admitted. */
+/**
+ * Admitted everywhere an expression is admitted. Only for calls whose
+ * declared result type is totally ordered, so the value can be a sort key.
+ */
 const ANY_CONTEXT: readonly ExpressionContext[] = ["let", "where", "select", "orderBy"];
 
 /**
- * Everywhere except `orderBy`. Collections have no total order, so a
- * collection-valued call is rejected as a sort key at validation time rather
- * than producing an arbitrary ordering at execution time.
+ * Everywhere except `orderBy`. Collections have no total order, so a call
+ * that can yield one is rejected as a sort key at validation time rather than
+ * producing an arbitrary ordering at execution time.
+ *
+ * This covers two cases, not one. A call declaring `collection` obviously
+ * qualifies. So does a call declaring `any`, because `any` cannot statically
+ * exclude a collection — `logic.coalesce(null, [])` and `collection.first`
+ * over a collection of collections both return one. Keeping them out now is
+ * the two-way door: admitting a context later is additive, withdrawing a
+ * published one is a language break.
  */
 const NOT_ORDER_BY: readonly ExpressionContext[] = ["let", "where", "select"];
 
@@ -170,7 +189,7 @@ const functions: readonly FunctionCard[] = [
       ],
       result: "any",
     },
-    contexts: ANY_CONTEXT,
+    contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "one",
     cost: "constant",
@@ -196,7 +215,7 @@ const functions: readonly FunctionCard[] = [
       ],
       result: "any",
     },
-    contexts: ANY_CONTEXT,
+    contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "one",
     cost: "constant",
@@ -527,8 +546,15 @@ const functions: readonly FunctionCard[] = [
     cardinality: "one",
     cost: "linear",
     nulls: "propagate",
-    doc: "Lowercase using the locale-independent Unicode default mapping.",
-    examples: [{ args: ["Refund"], result: "refund" }],
+    doc: "Lowercase the ASCII letters A-Z; every other character is unchanged.",
+    examples: [
+      { args: ["Refund"], result: "refund" },
+      {
+        args: ["ÄÖÜ"],
+        result: "ÄÖÜ",
+        note: "Case mapping is ASCII only, so it cannot drift with a Unicode version.",
+      },
+    ],
   },
   {
     name: "text.upper",
@@ -542,8 +568,11 @@ const functions: readonly FunctionCard[] = [
     cardinality: "one",
     cost: "linear",
     nulls: "propagate",
-    doc: "Uppercase using the locale-independent Unicode default mapping.",
-    examples: [{ args: ["refund"], result: "REFUND" }],
+    doc: "Uppercase the ASCII letters a-z; every other character is unchanged.",
+    examples: [
+      { args: ["refund"], result: "REFUND" },
+      { args: ["straße"], result: "STRAßE", note: "Non-ASCII characters pass through." },
+    ],
   },
   {
     name: "text.trim",
@@ -557,9 +586,10 @@ const functions: readonly FunctionCard[] = [
     cardinality: "one",
     cost: "linear",
     nulls: "propagate",
-    doc: "Remove leading and trailing whitespace.",
+    doc: "Remove leading and trailing whitespace from a pinned character set.",
     examples: [
       { args: ["  hi \n"], result: "hi" },
+      { args: [" hi　"], result: "hi", note: "The set is fixed, not the host's." },
       { args: ["   "], result: "", note: "All-whitespace text trims to empty, not absent." },
     ],
   },
@@ -599,6 +629,7 @@ const functions: readonly FunctionCard[] = [
     nulls: "propagate",
     doc: "Join two pieces of text end to end.",
     examples: [{ args: ["re", "fund"], result: "refund" }],
+    outputLimit: MAX_PRODUCED_TEXT_UNITS,
   },
   {
     name: "text.contains",
@@ -672,8 +703,11 @@ const functions: readonly FunctionCard[] = [
     cardinality: "one",
     cost: "linear",
     nulls: "propagate",
-    doc: "Case-insensitive exact match; use logic.eq for a case-sensitive one.",
-    examples: [{ args: ["Refund", "REFUND"], result: true }],
+    doc: "Exact match ignoring ASCII letter case only; logic.eq is the exact one.",
+    examples: [
+      { args: ["Refund", "REFUND"], result: true },
+      { args: ["Ä", "ä"], result: false, note: "Only A-Z and a-z fold." },
+    ],
   },
   {
     name: "text.compare",
@@ -691,6 +725,8 @@ const functions: readonly FunctionCard[] = [
     cost: "linear",
     nulls: "propagate",
     doc: "Compare in code-unit order: -1, 0, or 1. Not a locale collation.",
+    // Code-unit order is fixed by the language, not by a Unicode table, so
+    // this ordering is the same on every engine and every version of one.
     examples: [
       { args: ["a", "b"], result: -1 },
       { args: ["b", "a"], result: 1 },
@@ -764,6 +800,7 @@ const functions: readonly FunctionCard[] = [
       { args: ["ab", "", "!"], result: "ab" },
       { args: ["ab", "a", "$&"], result: "$&b", note: "Replacement text is literal." },
     ],
+    outputLimit: MAX_PRODUCED_TEXT_UNITS,
   },
   {
     name: "text.split",
@@ -801,12 +838,13 @@ const functions: readonly FunctionCard[] = [
     cardinality: "one",
     cost: "linear",
     nulls: "propagate",
-    doc: "Join a collection of text; absent when any element is not text.",
+    doc: "Join a collection of text; absent when any element is not well-formed text.",
     examples: [
       { args: [["a", "b"], "-"], result: "a-b" },
       { args: [[], "-"], result: "" },
       { args: [["a", 1], "-"], result: null },
     ],
+    outputLimit: MAX_PRODUCED_TEXT_UNITS,
   },
 
   // ── collection ───────────────────────────────────────────────────────────
@@ -875,7 +913,7 @@ const functions: readonly FunctionCard[] = [
       parameters: [{ name: "value", type: "collection", doc: "Collection." }],
       result: "any",
     },
-    contexts: ANY_CONTEXT,
+    contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "one",
     cost: "constant",
@@ -893,7 +931,7 @@ const functions: readonly FunctionCard[] = [
       parameters: [{ name: "value", type: "collection", doc: "Collection." }],
       result: "any",
     },
-    contexts: ANY_CONTEXT,
+    contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "one",
     cost: "constant",
@@ -914,7 +952,7 @@ const functions: readonly FunctionCard[] = [
       ],
       result: "any",
     },
-    contexts: ANY_CONTEXT,
+    contexts: NOT_ORDER_BY,
     deterministic: true,
     cardinality: "one",
     cost: "constant",

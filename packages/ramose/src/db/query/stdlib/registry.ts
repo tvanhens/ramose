@@ -24,18 +24,20 @@ import {
   QueryFunctionArgumentType,
   QueryFunctionArity,
   QueryFunctionContext,
+  QueryFunctionOutputSize,
   UnknownQueryFunction,
   type StdlibFailure,
 } from "./failures.ts";
 import { standardLibraryImplementationsV1 } from "./implementations.ts";
 import { standardLibraryManifestV1 } from "./manifest.ts";
+import { OUTPUT_TOO_LARGE } from "./types.ts";
 import type {
   ExpressionContext,
   FunctionCard,
   StdlibManifest,
   StdlibValue,
 } from "./types.ts";
-import { classify, matchesValueType } from "./values.ts";
+import { MAX_PRODUCED_TEXT_UNITS, classify, matchesValueType } from "./values.ts";
 
 /** The versioned manifest, re-exported as the registry's source of truth. */
 export const standardLibraryV1: StdlibManifest = standardLibraryManifestV1;
@@ -52,6 +54,23 @@ const cardsByName: ReadonlyMap<string, FunctionCard> = new Map(
 const implementationsByName = new Map(
   Object.entries(standardLibraryImplementationsV1),
 );
+
+/**
+ * Result types that are totally ordered, and so admissible as a sort key.
+ *
+ * `collection` is excluded because collections have no total order, and `any`
+ * is excluded because a call declaring it can *return* a collection at
+ * runtime — `logic.coalesce(null, [])` is the short example. Admitting either
+ * in `orderBy` would leave the compiler holding an unsortable key, and
+ * removing a published context later is a language break while adding one is
+ * additive, so v1 keeps them out.
+ */
+const ORDERABLE_RESULTS: ReadonlySet<string> = new Set([
+  "boolean",
+  "number",
+  "timestamp",
+  "text",
+]);
 
 /** Every public name, sorted. Stable across releases; additive only. */
 export const queryFunctionNames = (): readonly string[] =>
@@ -159,10 +178,12 @@ export const checkQueryCallArguments = (
 };
 
 /**
- * Constrain a result to its declared type. In practice this only fires for
- * arithmetic that overflowed to a non-finite number or an instant that left
- * the representable range; either way the answer is absence, never a
- * poisoned `Infinity` or an out-of-range instant leaking into a result set.
+ * Constrain a result to its declared type. In practice this fires for
+ * arithmetic that overflowed to a non-finite number, an instant that left the
+ * representable range, or an element lifted out of a collection that is not a
+ * value of the domain; either way the answer is absence, never a poisoned
+ * `Infinity`, an out-of-range instant, or ill-formed text leaking into a
+ * result set.
  */
 const sealResult = (card: FunctionCard, value: StdlibValue): StdlibValue =>
   matchesValueType(value, card.signature.result) ? value : null;
@@ -194,7 +215,17 @@ export const evaluateQueryCall = (
       return yield* Result.fail(new UnknownQueryFunction({ name: card.name }));
     }
 
-    return sealResult(card, implementation(call.args));
+    const produced = implementation(call.args);
+    if (produced === OUTPUT_TOO_LARGE) {
+      return yield* Result.fail(
+        new QueryFunctionOutputSize({
+          name: card.name,
+          limit: card.outputLimit ?? MAX_PRODUCED_TEXT_UNITS,
+        }),
+      );
+    }
+
+    return sealResult(card, produced);
   });
 
 /**
@@ -228,6 +259,19 @@ export const stdlibIntegrityProblems = (): readonly string[] => {
     }
     if (card.examples.length === 0) {
       problems.push(`no example: ${card.name}`);
+    }
+    if (card.outputLimit !== undefined) {
+      if (card.signature.result !== "text") {
+        problems.push(`output limit on a non-text result: ${card.name}`);
+      }
+      if (card.outputLimit !== MAX_PRODUCED_TEXT_UNITS) {
+        problems.push(`output limit is not the declared cap: ${card.name}`);
+      }
+    }
+    if (card.contexts.includes("orderBy") && !ORDERABLE_RESULTS.has(card.signature.result)) {
+      // A result type that cannot statically exclude a collection cannot be a
+      // sort key: collections have no total order.
+      problems.push(`unorderable result admitted in orderBy: ${card.name}`);
     }
   }
 

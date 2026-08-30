@@ -9,18 +9,37 @@
  * Every implementation is a total function of its arguments alone. No clock,
  * no randomness, no environment, no filesystem, no network, no mutation of an
  * argument, no lambda parameters, no recursion into user input, and no
- * caller-supplied regex. Arity, declared argument types, and `propagate` null
- * handling are enforced by the registry before an implementation runs, so the
- * casts below are checked facts rather than assumptions.
+ * caller-supplied regex. Arity, declared argument types, well-formedness of
+ * text, and `propagate` null handling are enforced by the registry before an
+ * implementation runs, so the casts below are checked facts rather than
+ * assumptions.
+ *
+ * Nothing here reads a host Unicode table. Case mapping and whitespace are
+ * pinned in `./values.ts`, because those tables move with the engine's
+ * Unicode version and a v1 document must mean the same thing on Bun, on
+ * workerd, and on workerd after a runtime upgrade.
+ *
+ * Output size is bounded before allocation wherever a call can produce more
+ * than the sum of its inputs — `text.concat`, `text.replace` and `text.join`
+ * — by computing the exact result length first and returning
+ * {@link OUTPUT_TOO_LARGE} instead. The rest cannot amplify: `text.split`,
+ * `collection.slice` and `collection.distinct` are bounded by their input,
+ * `collection.concat` by the sum of its two, and `number.toText` by a fixed
+ * maximum. Milestone 2's runtime budget accounting subsumes this static cap.
  */
 
-import type { StdlibImplementation, StdlibValue } from "./types.ts";
+import { OUTPUT_TOO_LARGE, type StdlibImplementation, type StdlibValue } from "./types.ts";
 import {
+  MAX_PRODUCED_TEXT_UNITS,
+  asciiLower,
+  asciiUpper,
   canonicalKey,
   clampIndex,
   codePoints,
   deepEquals,
   isTimestamp,
+  isWellFormedText,
+  trimPinned,
 } from "./values.ts";
 
 const bool = (args: readonly StdlibValue[], index: number): boolean | null =>
@@ -38,12 +57,33 @@ const coll = (
 const roundHalfAwayFromZero = (value: number): number =>
   value < 0 ? -Math.round(-value) : Math.round(value);
 
-/** Code-point index of `needle` in `value`, or `-1`. Empty needle is `0`. */
+/**
+ * Code-point index of `needle` in `value`, or `-1`. Empty needle is `0`.
+ *
+ * Safe to translate a code-unit offset into a code-point index because both
+ * arguments are well-formed Unicode by the time an implementation runs. In a
+ * well-formed string every low surrogate is preceded by its high surrogate,
+ * so a well-formed needle can neither begin nor end inside a pair, and every
+ * match therefore lands on a code-point boundary. Ill-formed text is not a
+ * value of the domain and never reaches here.
+ */
 const codePointIndexOf = (value: string, needle: string): number => {
   if (needle.length === 0) return 0;
   const unitIndex = value.indexOf(needle);
   if (unitIndex < 0) return -1;
   return codePoints(value.slice(0, unitIndex)).length;
+};
+
+/** Count non-overlapping left-to-right occurrences without allocating. */
+const occurrences = (value: string, search: string): number => {
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const at = value.indexOf(search, from);
+    if (at < 0) return count;
+    count += 1;
+    from = at + search.length;
+  }
 };
 
 /**
@@ -115,18 +155,25 @@ export const standardLibraryImplementationsV1: {
   },
 
   // ── text ─────────────────────────────────────────────────────────────────
-  // Case mapping is the locale-independent Unicode default mapping, and every
-  // index and length is measured in code points.
-  "text.lower": (args) => txt(args, 0).toLowerCase(),
-  "text.upper": (args) => txt(args, 0).toUpperCase(),
-  "text.trim": (args) => txt(args, 0).trim(),
+  // Case mapping and whitespace are pinned in `./values.ts` rather than taken
+  // from the host, whose Unicode tables move with its version. Every index
+  // and length is measured in code points, which is well defined because
+  // ill-formed text is rejected before an implementation runs.
+  "text.lower": (args) => asciiLower(txt(args, 0)),
+  "text.upper": (args) => asciiUpper(txt(args, 0)),
+  "text.trim": (args) => trimPinned(txt(args, 0)),
   "text.length": (args) => codePoints(txt(args, 0)).length,
-  "text.concat": (args) => txt(args, 0) + txt(args, 1),
+  "text.concat": (args) => {
+    const left = txt(args, 0);
+    const right = txt(args, 1);
+    if (left.length + right.length > MAX_PRODUCED_TEXT_UNITS) return OUTPUT_TOO_LARGE;
+    return left + right;
+  },
   "text.contains": (args) => txt(args, 0).includes(txt(args, 1)),
   "text.startsWith": (args) => txt(args, 0).startsWith(txt(args, 1)),
   "text.endsWith": (args) => txt(args, 0).endsWith(txt(args, 1)),
   "text.equalsIgnoreCase": (args) =>
-    txt(args, 0).toLowerCase() === txt(args, 1).toLowerCase(),
+    asciiLower(txt(args, 0)) === asciiLower(txt(args, 1)),
   "text.compare": (args) => {
     const a = txt(args, 0);
     const b = txt(args, 1);
@@ -142,13 +189,21 @@ export const standardLibraryImplementationsV1: {
   },
   "text.indexOf": (args) => codePointIndexOf(txt(args, 0), txt(args, 1)),
   "text.replace": (args) => {
+    const value = txt(args, 0);
     const search = txt(args, 1);
     // An empty search would match at every position; returning the input
     // keeps the function total and its output bounded by its input.
-    if (search.length === 0) return txt(args, 0);
+    if (search.length === 0) return value;
+    const replacement = txt(args, 2);
+    // Replacement is multiplicative: n single-character matches and an
+    // n-character replacement is Θ(n²) output from two small inputs. Size
+    // the result from the match count first and decline before allocating.
+    const produced =
+      value.length + occurrences(value, search) * (replacement.length - search.length);
+    if (produced > MAX_PRODUCED_TEXT_UNITS) return OUTPUT_TOO_LARGE;
     // `split`/`join` rather than `replaceAll`: the replacement is a literal,
     // never a `$&`-style pattern the caller could use to amplify output.
-    return txt(args, 0).split(search).join(txt(args, 2));
+    return value.split(search).join(replacement);
   },
   "text.split": (args) => {
     const separator = txt(args, 1);
@@ -160,12 +215,20 @@ export const standardLibraryImplementationsV1: {
   },
   "text.join": (args) => {
     const items = coll(args, 0);
+    const separator = txt(args, 1);
     const parts: string[] = [];
+    let produced = 0;
     for (const item of items) {
-      if (typeof item !== "string") return null;
+      // Collection contents are not scanned by the argument check, so this
+      // is where an element earns its place in the text domain.
+      if (typeof item !== "string" || !isWellFormedText(item)) return null;
       parts.push(item);
+      produced += item.length;
     }
-    return parts.join(txt(args, 1));
+    // Item count times separator length is the amplification here.
+    if (parts.length > 1) produced += (parts.length - 1) * separator.length;
+    if (produced > MAX_PRODUCED_TEXT_UNITS) return OUTPUT_TOO_LARGE;
+    return parts.join(separator);
   },
 
   // ── collection ───────────────────────────────────────────────────────────

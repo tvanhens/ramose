@@ -15,7 +15,39 @@ import type { StdlibValue, ValueType, ValueTypeName } from "./types.ts";
  */
 export const MAX_TIMESTAMP_MILLIS = 8_640_000_000_000_000;
 
-/** What a runtime value is. Never inspects the value's contents. */
+/**
+ * Largest text a single call may produce, in UTF-16 code units (1 MiB of
+ * them). Enforced before allocation by the functions that can produce more
+ * than the sum of their inputs, so a small document cannot ask for a large
+ * allocation. Milestone 2's runtime budget accounting subsumes this static
+ * floor; it is budget policy, not function semantics.
+ */
+export const MAX_PRODUCED_TEXT_UNITS = 1 << 20;
+
+/**
+ * Is this string well-formed Unicode — every surrogate paired?
+ *
+ * JSON can carry an escaped unpaired surrogate, and such a string has no
+ * meaning as a sequence of code points, so it is not a value of the
+ * expression domain. Written out rather than delegated to
+ * `String.prototype.isWellFormed`, which is newer than this package's
+ * language target.
+ */
+export const isWellFormedText = (value: string): boolean => {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit < 0xd800 || unit > 0xdfff) continue;
+    // A low surrogate here was not consumed as the tail of a pair.
+    if (unit >= 0xdc00) return false;
+    if (index + 1 >= value.length) return false;
+    const next = value.charCodeAt(index + 1);
+    if (next < 0xdc00 || next > 0xdfff) return false;
+    index += 1;
+  }
+  return true;
+};
+
+/** What a runtime value is. Never inspects a collection's contents. */
 export const classify = (value: StdlibValue): ValueTypeName => {
   if (value === null) return "null";
   if (Array.isArray(value)) return "collection";
@@ -25,7 +57,7 @@ export const classify = (value: StdlibValue): ValueTypeName => {
     case "number":
       return "number";
     case "string":
-      return "text";
+      return isWellFormedText(value) ? "text" : "malformedText";
     default:
       return "object";
   }
@@ -47,9 +79,15 @@ export const isTimestamp = (value: StdlibValue): value is number =>
  * `null` satisfies every declared type — absence is representable everywhere,
  * and what a function does with it is its declared null behaviour, not a
  * type error.
+ *
+ * A string that is not well-formed Unicode satisfies *no* declared type,
+ * `any` included: it is outside the value domain, not a mistyped member of
+ * it. Only top-level strings are checked; the contents of a collection are
+ * not scanned, which is what keeps a collection check constant-cost.
  */
 export const matchesValueType = (value: StdlibValue, type: ValueType): boolean => {
   if (value === null) return true;
+  if (typeof value === "string" && !isWellFormedText(value)) return false;
   switch (type) {
     case "any":
       return true;
@@ -149,3 +187,46 @@ export const clampIndex = (index: number, length: number): number => {
   if (whole > length) return length;
   return whole;
 };
+
+/**
+ * Case mapping is ASCII only, and deliberately so.
+ *
+ * The host's `toLowerCase` / `toUpperCase` read the engine's Unicode case
+ * tables, and those tables move with the engine's Unicode version — U+1C89
+ * is unchanged under Unicode 15.1 and lowercases under Unicode 17, so the
+ * same document would filter differently on Bun, on workerd, and on the same
+ * workerd after a runtime upgrade. That is exactly the determinism this
+ * language promises not to break, so v1 commits to the one mapping every
+ * engine agrees on forever: A–Z ↔ a–z, everything else unchanged. A wider
+ * mapping can arrive later under its own name, pinned to a stated Unicode
+ * version, which keeps the growth additive.
+ */
+const ASCII_UPPERCASE = /[A-Z]/g;
+const ASCII_LOWERCASE = /[a-z]/g;
+
+const shiftCase = (character: string, delta: number): string =>
+  String.fromCharCode(character.charCodeAt(0) + delta);
+
+/** Lowercase A–Z; every other code point passes through unchanged. */
+export const asciiLower = (value: string): string =>
+  value.replace(ASCII_UPPERCASE, (character) => shiftCase(character, 32));
+
+/** Uppercase a–z; every other code point passes through unchanged. */
+export const asciiUpper = (value: string): string =>
+  value.replace(ASCII_LOWERCASE, (character) => shiftCase(character, -32));
+
+/**
+ * The whitespace `text.trim` removes, written out rather than delegated to
+ * the host.
+ *
+ * `String.prototype.trim` strips whatever the engine currently considers a
+ * space separator, which is another Unicode-version-dependent table. This is
+ * that set as of the pinned version — the ECMAScript WhiteSpace and
+ * LineTerminator productions — frozen as a literal so it cannot drift.
+ */
+const PINNED_WHITESPACE_LEADING = /^[\u0009\u000A\u000B\u000C\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]+/;
+const PINNED_WHITESPACE_TRAILING = /[\u0009\u000A\u000B\u000C\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]+$/;
+
+/** Remove leading and trailing characters of the pinned whitespace set. */
+export const trimPinned = (value: string): string =>
+  value.replace(PINNED_WHITESPACE_LEADING, "").replace(PINNED_WHITESPACE_TRAILING, "");

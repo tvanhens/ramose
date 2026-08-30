@@ -20,6 +20,15 @@
  *   context checking, reporting structured failures that carry only public
  *   names, declared types, value *kinds*, and counts — never a value.
  *
+ * Three commitments hold the determinism claim up. Text is well-formed
+ * Unicode, so the published code-point indices are total rather than
+ * approximate. Case mapping and whitespace are pinned in this module instead
+ * of read from the host, whose Unicode tables move with its version. And a
+ * call that could produce more text than the sum of its inputs sizes the
+ * result first and refuses before allocating, so one expression cannot ask a
+ * Worker for a hundred megabytes; milestone 2's runtime budget accounting
+ * subsumes that static floor.
+ *
  * What is out of the language by construction: `now`, `rand`, any clock or
  * randomness, caller-supplied regular expressions, lambdas or other
  * higher-order functions, recursion, environment/filesystem/network access,
@@ -35,6 +44,7 @@ export {
   QueryFunctionArgumentType,
   QueryFunctionArity,
   QueryFunctionContext,
+  QueryFunctionOutputSize,
   UnknownQueryFunction,
   sealStdlibFailure,
   type SealedStdlibFailure,
@@ -78,11 +88,16 @@ export {
 } from "./types.ts";
 
 export {
+  MAX_PRODUCED_TEXT_UNITS,
   MAX_TIMESTAMP_MILLIS,
+  asciiLower,
+  asciiUpper,
   canonicalKey,
   classify,
   deepEquals,
   isFiniteNumber,
   isTimestamp,
+  isWellFormedText,
   matchesValueType,
+  trimPinned,
 } from "./values.ts";

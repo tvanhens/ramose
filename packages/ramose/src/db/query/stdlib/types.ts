@@ -23,6 +23,16 @@ export type StdlibScalar = string | number | boolean | null;
  * The value domain expressions compute over: plain JSON. There is no date
  * object, no bigint, no `undefined`, and no non-finite number — a timestamp
  * is epoch milliseconds and a collection is a JSON array.
+ *
+ * Text is *well-formed* Unicode. JSON can carry an escaped unpaired
+ * surrogate (`"\ud800"`), and such a string has no meaning as a sequence of
+ * code points: `text.indexOf` could report an index that `text.slice` cannot
+ * cut at. Rather than publish a semantics with a hole in it, a string
+ * containing an unpaired surrogate is not a value of this domain — it
+ * classifies as `malformedText` and is rejected wherever text is accepted.
+ * Well-formedness is checked on every top-level string, at argument time and
+ * again on the result; the contents of a collection are not scanned, which
+ * is what keeps `collection.size` a constant-cost call.
  */
 export type StdlibValue =
   | StdlibScalar
@@ -38,6 +48,7 @@ export type ValueTypeName =
   | "boolean"
   | "number"
   | "text"
+  | "malformedText"
   | "collection"
   | "object";
 
@@ -150,6 +161,18 @@ export interface FunctionCard {
   readonly doc: string;
   /** At least one, and every one is executable. */
   readonly examples: readonly FunctionExample[];
+  /**
+   * Maximum produced text length in UTF-16 code units, where a call can
+   * produce more than the sum of its inputs. Declared only on functions that
+   * amplify, and enforced *before* the output is allocated, so a small
+   * document cannot ask for a large allocation.
+   *
+   * This is a static, per-call floor, not the query's budget: milestone 2's
+   * runtime accounting (expression depth, call count, candidate rows,
+   * produced bytes) subsumes it. It is budget policy rather than function
+   * semantics, so tightening it later is not a language break.
+   */
+  readonly outputLimit?: number;
 }
 
 /** The whole versioned library as data. */
@@ -159,11 +182,22 @@ export interface StdlibManifest {
 }
 
 /**
+ * Returned by an implementation that computed how large its output would be
+ * and declined to allocate it. The registry turns this into a sealed
+ * output-size failure; it is never a value and never escapes the module.
+ */
+export const OUTPUT_TOO_LARGE = Symbol("ramose/db/query/stdlib/output-too-large");
+
+/**
  * A pure implementation over plain JSON values.
  *
  * Total by construction: an undefined case returns `null` rather than
- * throwing. Arity, declared argument types, and `propagate` null handling are
- * enforced before the implementation runs, and the result is re-checked
- * against the declared result type after it returns.
+ * throwing, and an output that would exceed the declared limit returns
+ * {@link OUTPUT_TOO_LARGE} rather than allocating. Arity, declared argument
+ * types, and `propagate` null handling are enforced before the
+ * implementation runs, and the result is re-checked against the declared
+ * result type after it returns.
  */
-export type StdlibImplementation = (args: readonly StdlibValue[]) => StdlibValue;
+export type StdlibImplementation = (
+  args: readonly StdlibValue[],
+) => StdlibValue | typeof OUTPUT_TOO_LARGE;

@@ -11,14 +11,19 @@
 import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
 import {
+  MAX_PRODUCED_TEXT_UNITS,
   MAX_TIMESTAMP_MILLIS,
+  asciiLower,
+  asciiUpper,
   canonicalKey,
   classify,
   deepEquals,
   evaluateQueryCall,
+  isWellFormedText,
   matchesValueType,
   sealStdlibFailure,
   standardLibraryV1,
+  trimPinned,
   type ExpressionContext,
   type StdlibValue,
 } from "../../../../src/db/query/stdlib/index.ts";
@@ -46,6 +51,59 @@ describe("value helpers", () => {
     expect(classify("x")).toBe("text");
     expect(classify([])).toBe("collection");
     expect(classify({})).toBe("object");
+  });
+
+  test("a string with an unpaired surrogate is not text", () => {
+    expect(classify("😀")).toBe("text");
+    expect(classify("\uD800")).toBe("malformedText");
+    expect(classify("\uDE00")).toBe("malformedText");
+    expect(classify("a\uD800b")).toBe("malformedText");
+    expect(classify("a\uD83D")).toBe("malformedText");
+  });
+
+  test("well-formedness accepts paired surrogates and rejects lone ones", () => {
+    expect(isWellFormedText("")).toBe(true);
+    expect(isWellFormedText("abc")).toBe(true);
+    expect(isWellFormedText("😀")).toBe(true);
+    expect(isWellFormedText("a😀b")).toBe(true);
+    expect(isWellFormedText("\uD800")).toBe(false);
+    expect(isWellFormedText("\uDFFF")).toBe(false);
+    expect(isWellFormedText("\uD800\uD800")).toBe(false);
+    expect(isWellFormedText("😀\uD800")).toBe(false);
+  });
+
+  test("ill-formed text satisfies no declared type, `any` included", () => {
+    for (const type of ["any", "text", "boolean", "number", "collection"] as const) {
+      expect(matchesValueType("\uD800", type)).toBe(false);
+    }
+    expect(matchesValueType("😀", "text")).toBe(true);
+  });
+
+  test("case mapping is ASCII only, so no host Unicode table can move it", () => {
+    expect(asciiLower("Refund")).toBe("refund");
+    expect(asciiUpper("refund")).toBe("REFUND");
+    expect(asciiLower("ÄÖÜ")).toBe("ÄÖÜ");
+    expect(asciiUpper("straße")).toBe("STRAßE");
+    // U+1C89/U+1C8A are the pair whose mapping differs between Unicode
+    // versions; ASCII-only mapping leaves both untouched on every engine.
+    expect(asciiLower("\u1C89")).toBe("\u1C89");
+    expect(asciiUpper("\u1C8A")).toBe("\u1C8A");
+    expect(asciiLower("A1[]~")).toBe("a1[]~");
+    expect(asciiUpper("a1[]~")).toBe("A1[]~");
+    expect(asciiLower("😀")).toBe("😀");
+  });
+
+  test("the trimmed whitespace set is pinned, not the host's", () => {
+    const pinned =
+      "\u0009\u000A\u000B\u000C\u000D\u0020\u00A0\u1680\u2000\u200A" +
+      "\u2028\u2029\u202F\u205F\u3000\uFEFF";
+    expect(trimPinned(`${pinned}hi${pinned}`)).toBe("hi");
+    expect(trimPinned("  hi  ")).toBe("hi");
+    expect(trimPinned("hi there")).toBe("hi there");
+    expect(trimPinned("")).toBe("");
+    expect(trimPinned(pinned)).toBe("");
+    // U+200B ZERO WIDTH SPACE is not in the set and is not trimmed.
+    expect(trimPinned("\u200Bhi\u200B")).toBe("\u200Bhi\u200B");
   });
 
   test("null satisfies every declared type", () => {
@@ -210,17 +268,20 @@ describe("number", () => {
 });
 
 describe("text", () => {
-  test("case folding is locale-independent and empty text survives", () => {
-    expect(call("text.lower", ["ÄÖÜ"])).toBe("äöü");
-    expect(call("text.upper", ["straße"])).toBe("STRASSE");
+  test("case folding is ASCII only and empty text survives", () => {
+    expect(call("text.lower", ["Refund"])).toBe("refund");
+    expect(call("text.upper", ["refund"])).toBe("REFUND");
+    expect(call("text.lower", ["ÄÖÜ"])).toBe("ÄÖÜ");
+    expect(call("text.upper", ["straße"])).toBe("STRAßE");
     expect(call("text.lower", [""])).toBe("");
     expect(call("text.upper", [""])).toBe("");
   });
 
-  test("trim removes only surrounding whitespace", () => {
+  test("trim removes only pinned surrounding whitespace", () => {
     expect(call("text.trim", ["  a b \t\n"])).toBe("a b");
     expect(call("text.trim", ["   "])).toBe("");
     expect(call("text.trim", [""])).toBe("");
+    expect(call("text.trim", ["　hi "])).toBe("hi");
   });
 
   test("length counts code points", () => {
@@ -307,13 +368,15 @@ describe("text", () => {
     expect(call("text.split", ["a,,b", ","])).toEqual(["a", "", "b"]);
   });
 
-  test("join requires text elements", () => {
+  test("join requires well-formed text elements", () => {
     expect(call("text.join", [["a", "b"], "-"])).toBe("a-b");
     expect(call("text.join", [[], "-"])).toBe("");
     expect(call("text.join", [["a"], "-"])).toBe("a");
     expect(call("text.join", [["a", 1], "-"])).toBe(null);
     expect(call("text.join", [["a", null], "-"])).toBe(null);
     expect(call("text.join", [["a", "b"], ""])).toBe("ab");
+    // Collection contents escape the argument check, so join screens them.
+    expect(call("text.join", [["a", "\uD800"], "-"])).toBe(null);
   });
 
   test("absence propagates through every text function", () => {
@@ -418,6 +481,137 @@ describe("time", () => {
     expect(call("time.diffMillis", [2500, 1000])).toBe(-1500);
     expect(call("time.diffMillis", [1000, 1000])).toBe(0);
     expect(call("time.diffMillis", [null, 1000])).toBe(null);
+  });
+});
+
+describe("the text domain is well-formed Unicode", () => {
+  /** The sealed code of a call that must fail. */
+  const failureCode = (
+    name: string,
+    args: readonly StdlibValue[],
+    context: ExpressionContext = "let",
+  ): string => {
+    const outcome = evaluateQueryCall({ name, context, args });
+    if (Result.isSuccess(outcome)) {
+      throw new Error(`expected a failure, got ${JSON.stringify(outcome.success)}`);
+    }
+    return sealStdlibFailure(outcome.failure).code;
+  };
+
+  test("an unpaired surrogate is rejected wherever text is accepted", () => {
+    expect(failureCode("text.length", ["\uD800"])).toBe("query_function_argument_type");
+    expect(failureCode("text.indexOf", ["\uD800", "a"])).toBe(
+      "query_function_argument_type",
+    );
+    expect(failureCode("text.indexOf", ["a", "\uDE00"])).toBe(
+      "query_function_argument_type",
+    );
+    expect(failureCode("text.slice", ["\uD83D", 0, 1])).toBe(
+      "query_function_argument_type",
+    );
+    expect(failureCode("text.contains", ["a", "\uDC00"])).toBe(
+      "query_function_argument_type",
+    );
+  });
+
+  test("an `any` parameter rejects it too, so the whole domain is well-formed", () => {
+    expect(failureCode("logic.eq", ["\uD800", "a"])).toBe(
+      "query_function_argument_type",
+    );
+    expect(failureCode("logic.isNull", ["\uD800"])).toBe(
+      "query_function_argument_type",
+    );
+    expect(failureCode("collection.contains", [["a"], "\uD800"])).toBe(
+      "query_function_argument_type",
+    );
+  });
+
+  test("an ill-formed element lifted out of a collection is sealed to absence", () => {
+    expect(call("collection.first", [["\uD800"]])).toBe(null);
+    expect(call("collection.last", [["a", "\uD800"]])).toBe(null);
+    expect(call("collection.at", [["\uD800"], 0])).toBe(null);
+    expect(call("collection.first", [["😀"]])).toBe("😀");
+  });
+
+  test("code-point indices stay consistent for astral text", () => {
+    // The published semantics say index 1 is the code point after the emoji,
+    // and slicing at that index agrees. A lone low surrogate could otherwise
+    // have matched at code-unit offset 1, which is inside the pair.
+    expect(call("text.indexOf", ["😀x", "x"])).toBe(1);
+    expect(call("text.slice", ["😀x", 1, 2])).toBe("x");
+    expect(call("text.length", ["😀x"])).toBe(2);
+  });
+});
+
+describe("produced text is bounded before it is allocated", () => {
+  /** The sealed failure of a call that must fail. */
+  const failure = (name: string, args: readonly StdlibValue[]) => {
+    const outcome = evaluateQueryCall({ name, context: "let", args });
+    if (Result.isSuccess(outcome)) {
+      throw new Error(`expected a failure for ${name}`);
+    }
+    return sealStdlibFailure(outcome.failure);
+  };
+
+  test("replace cannot multiply two small inputs into a huge one", () => {
+    const value = "a".repeat(2_000);
+    const replacement = "b".repeat(1_000);
+    // 2,000 matches × a 1,000-unit replacement is ~2M units from ~3KB of input.
+    expect(failure("text.replace", [value, "a", replacement])).toEqual({
+      code: "query_function_output_size",
+      function: "text.replace",
+      limit: MAX_PRODUCED_TEXT_UNITS,
+    });
+  });
+
+  test("replace still runs when the result fits", () => {
+    const value = "a".repeat(1_000);
+    const produced = call("text.replace", [value, "a", "bb"]);
+    expect(typeof produced).toBe("string");
+    expect((produced as string).length).toBe(2_000);
+  });
+
+  test("replace that shrinks its input is never refused", () => {
+    const value = "ab".repeat(500_000);
+    expect(call("text.replace", [value, "ab", "a"])).toBe("a".repeat(500_000));
+  });
+
+  test("join cannot multiply item count by separator length", () => {
+    const items = Array.from({ length: 2_000 }, () => "x");
+    const separator = "y".repeat(1_000);
+    expect(failure("text.join", [items, separator])).toEqual({
+      code: "query_function_output_size",
+      function: "text.join",
+      limit: MAX_PRODUCED_TEXT_UNITS,
+    });
+  });
+
+  test("join still runs when the result fits", () => {
+    const items = Array.from({ length: 1_000 }, () => "x");
+    expect(call("text.join", [items, "-"])).toBe(
+      Array.from({ length: 1_000 }, () => "x").join("-"),
+    );
+  });
+
+  test("concat is bounded by the same cap", () => {
+    const half = "a".repeat(MAX_PRODUCED_TEXT_UNITS / 2);
+    expect(typeof call("text.concat", [half, half])).toBe("string");
+    expect(failure("text.concat", [half, `${half}!`])).toEqual({
+      code: "query_function_output_size",
+      function: "text.concat",
+      limit: MAX_PRODUCED_TEXT_UNITS,
+    });
+  });
+
+  test("the refusal names the limit and nothing about the input", () => {
+    const secret = "hidden-value-0xfeedface";
+    const sealed = failure("text.replace", [
+      secret.repeat(200),
+      secret,
+      "z".repeat(20_000),
+    ]);
+    expect(JSON.stringify(sealed)).not.toContain(secret);
+    expect(Object.keys(sealed).sort()).toEqual(["code", "function", "limit"]);
   });
 });
 

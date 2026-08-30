@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
 import {
   EXPRESSION_CONTEXTS,
+  MAX_PRODUCED_TEXT_UNITS,
   QUERY_STDLIB_VERSION,
   STDLIB_NAMESPACES,
   evaluateQueryCall,
@@ -142,10 +143,38 @@ describe("standard library manifest", () => {
     }
   });
 
-  test("collection-valued calls are not admitted as sort keys", () => {
+  test("only a totally ordered result type is admitted as a sort key", () => {
+    // `collection` has no total order, and `any` cannot statically exclude a
+    // collection — `logic.coalesce(null, [])` returns one — so neither may
+    // reach `orderBy`.
+    const orderable = new Set(["boolean", "number", "timestamp", "text"]);
     for (const card of cards) {
-      if (card.signature.result !== "collection") continue;
-      expect(card.contexts).not.toContain("orderBy");
+      if (orderable.has(card.signature.result)) continue;
+      expect({ name: card.name, contexts: card.contexts }).toEqual({
+        name: card.name,
+        contexts: ["let", "where", "select"],
+      });
+    }
+  });
+
+  test("every orderBy-admitted card has a statically orderable result", () => {
+    for (const card of cards) {
+      if (!card.contexts.includes("orderBy")) continue;
+      expect(["boolean", "number", "timestamp", "text"]).toContain(
+        card.signature.result,
+      );
+    }
+  });
+
+  test("an output limit is declared exactly where a call can amplify", () => {
+    const limited = cards
+      .filter((card) => card.outputLimit !== undefined)
+      .map((card) => card.name);
+    expect(limited).toEqual(["text.concat", "text.replace", "text.join"]);
+    for (const card of cards) {
+      if (card.outputLimit === undefined) continue;
+      expect(card.outputLimit).toBe(MAX_PRODUCED_TEXT_UNITS);
+      expect(card.signature.result).toBe("text");
     }
   });
 
@@ -220,6 +249,12 @@ describe("nothing nondeterministic or ambient is reachable", () => {
     ["dynamic evaluation", /\beval\s*\(|new\s+Function\b/],
     ["a caller-constructed regex", /new\s+RegExp\b/],
     ["module lookup", /\brequire\s*\(|\bimport\s*\(/],
+    // Host Unicode tables move with the engine's Unicode version, so the
+    // library pins its own case mapping and whitespace set instead.
+    ["a host case table", /\.to(?:Lower|Upper)Case\s*\(/],
+    ["a host locale routine", /toLocale|localeCompare|\bIntl\b/],
+    ["host normalization", /\.normalize\s*\(/],
+    ["a host whitespace table", /\.trim(?:Start|End)?\s*\(\s*\)/],
   ];
 
   for (const file of ["implementations.ts", "manifest.ts", "values.ts"] as const) {

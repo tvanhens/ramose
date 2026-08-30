@@ -257,6 +257,25 @@ describe("argument types", () => {
     });
   });
 
+  test("ill-formed text is reported as its own kind, not as text", () => {
+    expect(sealed("text.lower", ["\uD800"])).toEqual({
+      code: "query_function_argument_type",
+      function: "text.lower",
+      index: 0,
+      parameter: "value",
+      expected: "text",
+      received: "malformedText",
+    });
+    expect(sealed("logic.eq", ["a", "\uDE00"])).toEqual({
+      code: "query_function_argument_type",
+      function: "logic.eq",
+      index: 1,
+      parameter: "right",
+      expected: "any",
+      received: "malformedText",
+    });
+  });
+
   test("a timestamp must be a whole instant in range", () => {
     expect(sealed("time.before", [1.5, 2000])).toEqual({
       code: "query_function_argument_type",
@@ -333,6 +352,7 @@ describe("failures are value-sealed", () => {
       "parameter",
       "context",
       "allowed",
+      "limit",
     ]);
     const cases: readonly SealedStdlibFailure[] = [
       sealed("nope.nope", []),
@@ -368,6 +388,9 @@ describe("failures are value-sealed", () => {
     expect(sealed("text.split", ["a", ","], "orderBy").code).toBe(
       "query_function_context",
     );
+    expect(
+      sealed("text.replace", ["a".repeat(2_000), "a", "b".repeat(1_000)]).code,
+    ).toBe("query_function_output_size");
   });
 });
 
