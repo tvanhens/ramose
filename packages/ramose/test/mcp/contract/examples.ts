@@ -75,7 +75,11 @@ export const closeIssueCard: OperationCardV1 = Object.freeze({
   }),
   mutateTemplate: Object.freeze({
     tool: "mutate" as const,
-    arguments: Object.freeze({ at: supportPath, operation: closeIssue }),
+    arguments: Object.freeze({
+      at: supportPath,
+      operation: closeIssue,
+      ifCatalog: catalogToken,
+    }),
     fill: Object.freeze(["target", "input", "invocationId"] as const),
   }),
   resourceLink: Object.freeze({
@@ -151,6 +155,7 @@ export const mutateRequest: MutateInputV1 = Object.freeze({
   target: Object.freeze({ entity: "issue", id: "ISSUE-8472" }),
   input: Object.freeze({ reason: "duplicate" }),
   invocationId: "01K5Q0R7VYX3S6ZB2A9C4D8E1F",
+  ifCatalog: catalogToken,
 });
 
 export const mutateResult: MutateOutputV1 = Object.freeze({

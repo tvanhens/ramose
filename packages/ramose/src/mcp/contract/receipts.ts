@@ -30,6 +30,7 @@ import type {
   PublicInvocationReceipt,
   SealedInvocationRejection,
 } from "../../internal/authorization/invocation-receipts.ts";
+import { MAX_ERROR_MESSAGE_LENGTH } from "./bounds.ts";
 import { errorEnvelope, type ErrorEnvelopeV1 } from "./errors.ts";
 import { InvocationIdV1, type JsonValueV1 } from "./primitives.ts";
 
@@ -76,6 +77,37 @@ export const mutationReceipt = (
     status: receipt.status,
   });
 
+/** Appended when an author's message is longer than the public bound. */
+export const MESSAGE_TRUNCATION_MARKER = "… (truncated)";
+
+/**
+ * Bring an author-written rejection message inside the public bound.
+ *
+ * The engine stores an operation's rejection message as the author wrote it —
+ * it has no public length bound, because durably it does not need one. The
+ * wire does: `ErrorEnvelopeV1.message` is bounded, and if the projection
+ * forwarded a 2 KB message verbatim the resulting result would fail its own
+ * output schema. The transport would then have an authoritative `rejected`
+ * outcome it could not return as schema-valid `structuredContent` — the worst
+ * possible failure mode, since the write already happened and the caller needs
+ * the receipt.
+ *
+ * So this projection is total over everything the engine can store: any string
+ * becomes a bounded one, an over-long message is cut deterministically at a
+ * visible marker, and a missing or empty message becomes the same sealed
+ * sentence a bare refusal uses. Truncation is never silent — the marker says
+ * it happened, and `receipt.status` still carries the authoritative outcome.
+ */
+export const boundedRejectionMessage = (raw: unknown): string => {
+  if (typeof raw !== "string" || raw.length === 0) {
+    return "The operation refused this request.";
+  }
+  if (raw.length <= MAX_ERROR_MESSAGE_LENGTH) return raw;
+  return `${
+    raw.slice(0, MAX_ERROR_MESSAGE_LENGTH - MESSAGE_TRUNCATION_MARKER.length)
+  }${MESSAGE_TRUNCATION_MARKER}`;
+};
+
 /**
  * Map a sealed refusal onto the public error code.
  *
@@ -108,7 +140,7 @@ const rejectionEnvelope = (
     case "operation_rejected":
       return errorEnvelope({
         code: "operation_rejected",
-        message: rejection.message,
+        message: boundedRejectionMessage(rejection.message),
       });
   }
 };

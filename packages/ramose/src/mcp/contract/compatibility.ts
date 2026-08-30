@@ -109,15 +109,122 @@ const sameScalar = (left: unknown, right: unknown): boolean =>
 const describe = (path: readonly string[]): string =>
   path.length === 0 ? "<root>" : path.join(".");
 
+// ---------------------------------------------------------------------------
+// Keyword polarity
+// ---------------------------------------------------------------------------
+//
+// A constraint keyword either tightens what a schema accepts or loosens it,
+// and which of those is safe depends only on the direction. Tightening an
+// input rejects requests that used to work; loosening an output produces
+// values a client's older schema will reject. Both are breaks, and they are
+// mirror images — which is why one table serves both directions.
+
+/** Documentation. Never part of a compatibility decision. */
+const ANNOTATION_KEYWORDS: ReadonlySet<string> = new Set([
+  "$schema",
+  "$id",
+  "$anchor",
+  "$comment",
+  "$defs",
+  "definitions",
+  "title",
+  "description",
+  "examples",
+  "default",
+  "deprecated",
+  "readOnly",
+  "writeOnly",
+]);
+
+/** Handled structurally elsewhere in `compare`. */
+const STRUCTURAL_KEYWORDS: ReadonlySet<string> = new Set([
+  "$ref",
+  "type",
+  "enum",
+  "const",
+  "required",
+  "properties",
+  "items",
+  "anyOf",
+  "oneOf",
+  "allOf",
+  "additionalProperties",
+]);
+
+/** Raising one of these tightens the schema. Absent means unbounded below. */
+const LOWER_BOUND_KEYWORDS: ReadonlySet<string> = new Set([
+  "minLength",
+  "minItems",
+  "minProperties",
+  "minimum",
+  "exclusiveMinimum",
+  "minContains",
+]);
+
+/** Lowering one of these tightens the schema. Absent means unbounded above. */
+const UPPER_BOUND_KEYWORDS: ReadonlySet<string> = new Set([
+  "maxLength",
+  "maxItems",
+  "maxProperties",
+  "maximum",
+  "exclusiveMaximum",
+  "maxContains",
+]);
+
+/** Turning one of these on tightens the schema. Absent means off. */
+const TIGHTENING_FLAG_KEYWORDS: ReadonlySet<string> = new Set(["uniqueItems"]);
+
+/**
+ * Recognized keywords whose values cannot be ordered, so any change to one is
+ * reported rather than guessed at. Two regular expressions have no decidable
+ * subset relation; neither do `if`/`then`/`else` or the applicator keywords.
+ */
+const EXACT_MATCH_KEYWORDS: ReadonlySet<string> = new Set([
+  "pattern",
+  "format",
+  "multipleOf",
+  "contentEncoding",
+  "contentMediaType",
+  "contentSchema",
+  "propertyNames",
+  "patternProperties",
+  "dependentRequired",
+  "dependentSchemas",
+  "prefixItems",
+  "contains",
+  "not",
+  "if",
+  "then",
+  "else",
+  "unevaluatedItems",
+  "unevaluatedProperties",
+]);
+
+/**
+ * `additionalProperties` as a three-state openness, tightest last. A schema
+ * value sits between the two booleans and cannot be ordered against either.
+ */
+const openness = (value: unknown): "open" | "closed" | "constrained" => {
+  if (value === undefined || value === true) return "open";
+  if (value === false) return "closed";
+  return "constrained";
+};
+
 /**
  * Decide whether moving from `before` to `after` is additive for the given
  * direction, or breaking — and if breaking, exactly why.
  *
  * Both arguments are self-contained JSON Schema 2020-12 roots, as
  * `json-schema.ts` produces. Comparison walks `properties` and follows local
- * `$ref`s; anything it cannot line up structurally is reported rather than
- * assumed compatible, because the failure mode of guessing here is shipping a
- * silent break.
+ * `$ref`s.
+ *
+ * It fails closed. Constraint keywords are compared by polarity, keywords whose
+ * values cannot be ordered are reported on any change, and a keyword the
+ * classifier does not recognize at all is reported on any change too. The
+ * asymmetry is deliberate: a wrong "breaking" costs a reviewer an argument,
+ * while a wrong "additive" ships a silent break to every client already
+ * depending on the old shape — so an unrecognized keyword is never taken as
+ * evidence of compatibility.
  */
 export const classifyContractChange = (
   before: SchemaNode,
@@ -131,6 +238,92 @@ export const classifyContractChange = (
   // would grow without bound on a recursive schema, which never revisits a
   // path but does revisit the same two definitions forever.
   const compared = new WeakMap<object, WeakSet<object>>();
+
+  /**
+   * Report a change in what a schema accepts, if this direction cannot take
+   * it. Tightening breaks inputs; loosening breaks outputs.
+   */
+  const reportPolarity = (
+    path: readonly string[],
+    keyword: string,
+    change: "tightened" | "loosened",
+  ): void => {
+    const breaks = direction === "input"
+      ? change === "tightened"
+      : change === "loosened";
+    if (breaks) {
+      reasons.push(`${describe(path)}: ${direction} ${keyword} ${change}`);
+    }
+  };
+
+  /**
+   * Compare every keyword that is not walked structurally.
+   *
+   * The union of both nodes' keys is considered, so a constraint that appears
+   * or disappears is judged the same way as one whose value moved.
+   */
+  const compareConstraints = (
+    left: SchemaNode,
+    right: SchemaNode,
+    path: readonly string[],
+  ): void => {
+    for (const keyword of new Set([...Object.keys(left), ...Object.keys(right)])) {
+      if (
+        ANNOTATION_KEYWORDS.has(keyword) || STRUCTURAL_KEYWORDS.has(keyword)
+      ) continue;
+
+      const before = left[keyword];
+      const after = right[keyword];
+      if (sameScalar(before, after)) continue;
+
+      if (LOWER_BOUND_KEYWORDS.has(keyword) || UPPER_BOUND_KEYWORDS.has(keyword)) {
+        const lower = LOWER_BOUND_KEYWORDS.has(keyword);
+        const unconstrained = lower ? -Infinity : Infinity;
+        const from = typeof before === "number" ? before : unconstrained;
+        const to = typeof after === "number" ? after : unconstrained;
+        if (from === to) continue;
+        const raised = to > from;
+        reportPolarity(path, keyword, (lower ? raised : !raised) ? "tightened" : "loosened");
+        continue;
+      }
+
+      if (TIGHTENING_FLAG_KEYWORDS.has(keyword)) {
+        reportPolarity(path, keyword, after === true ? "tightened" : "loosened");
+        continue;
+      }
+
+      reasons.push(
+        EXACT_MATCH_KEYWORDS.has(keyword)
+          ? `${describe(path)}: ${keyword} changed, and no ordering between two values of it can be decided`
+          : `${describe(path)}: unrecognized keyword ${keyword} changed`,
+      );
+    }
+
+    const from = openness(left.additionalProperties);
+    const to = openness(right.additionalProperties);
+    if (from !== to) {
+      if (from === "constrained" || to === "constrained") {
+        reasons.push(
+          `${describe(path)}: additionalProperties changed to or from a schema`,
+        );
+      } else {
+        reportPolarity(
+          path,
+          "additionalProperties",
+          to === "closed" ? "tightened" : "loosened",
+        );
+      }
+    } else if (
+      from === "constrained" &&
+      !sameScalar(left.additionalProperties, right.additionalProperties)
+    ) {
+      compare(
+        left.additionalProperties,
+        right.additionalProperties,
+        [...path, "additionalProperties"],
+      );
+    }
+  };
 
   const compare = (
     beforeNode: unknown,
@@ -177,6 +370,8 @@ export const classifyContractChange = (
       }
     }
 
+    compareConstraints(left, right, path);
+
     // Unions: line arms up positionally, and treat a shrinking output union
     // and a shrinking input union the same way an enumeration is treated.
     for (const keyword of ["anyOf", "oneOf"] as const) {
@@ -196,6 +391,37 @@ export const classifyContractChange = (
             `${keyword}[${index}]`,
           ]);
         }
+      } else if (Array.isArray(leftArms) !== Array.isArray(rightArms)) {
+        reasons.push(`${describe(path)}: ${keyword} appeared or disappeared`);
+      }
+    }
+
+    // `allOf` arms are conjunctive, so its polarity is the opposite of a
+    // union's: gaining an arm narrows what validates, losing one widens it.
+    {
+      const leftArms = left.allOf;
+      const rightArms = right.allOf;
+      if (Array.isArray(leftArms) && Array.isArray(rightArms)) {
+        if (rightArms.length !== leftArms.length) {
+          reportPolarity(
+            path,
+            "allOf",
+            rightArms.length > leftArms.length ? "tightened" : "loosened",
+          );
+        }
+        const shared = Math.min(leftArms.length, rightArms.length);
+        for (let index = 0; index < shared; index++) {
+          compare(leftArms[index], rightArms[index], [
+            ...path,
+            `allOf[${index}]`,
+          ]);
+        }
+      } else if (Array.isArray(leftArms) !== Array.isArray(rightArms)) {
+        reportPolarity(
+          path,
+          "allOf",
+          Array.isArray(rightArms) ? "tightened" : "loosened",
+        );
       }
     }
 

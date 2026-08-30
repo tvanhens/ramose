@@ -12,6 +12,7 @@ import {
   pageInfo,
 } from "../../../src/mcp/contract/index.ts";
 import {
+  catalogToken,
   closeIssue,
   closeIssueCard,
   describeCard,
@@ -33,6 +34,27 @@ describe("mutateTemplate", () => {
       operation: closeIssue,
     });
     expect([...template.fill]).toEqual(["target", "input", "invocationId"]);
+  });
+
+  test("carries the catalog the card was projected from, when there is one", () => {
+    const template = mutateTemplate({
+      at: supportPath,
+      operation: closeIssue,
+      target: "required",
+      hasInput: true,
+      ifCatalog: catalogToken,
+    });
+    expect(template.arguments.ifCatalog).toBe(catalogToken);
+  });
+
+  test("omits the pin entirely when the projection did not supply one", () => {
+    const template = mutateTemplate({
+      at: supportPath,
+      operation: closeIssue,
+      target: "none",
+      hasInput: false,
+    });
+    expect(Object.hasOwn(template.arguments, "ifCatalog")).toBe(false);
   });
 
   test("omits target for a targetless operation and input when there is none", () => {
@@ -88,6 +110,21 @@ describe("lowering a card to a call", () => {
     expect(filled.operation.version).toBe(closeIssue.version);
   });
 
+  test("the catalog pin survives the round trip into the request", () => {
+    // The whole point of the flow Codex described: the agent inspected a
+    // capability under one catalog and the write is fenced to that catalog.
+    expect(closeIssueCard.mutateTemplate.arguments.ifCatalog)
+      .toBe(catalogToken);
+    expect(isMutateInput(filled)).toBe(true);
+    expect((filled as { readonly ifCatalog?: string }).ifCatalog)
+      .toBe(catalogToken);
+  });
+
+  test("dropping the pin is still a valid request: it is a fence, not a credential", () => {
+    const { ifCatalog: _dropped, ...unpinned } = filled;
+    expect(isMutateInput(unpinned)).toBe(true);
+  });
+
   test("a generated alias would lower to the identical canonical request", () => {
     // #542's aliases are derived views: an alias call supplies exactly the
     // fill fields and nothing else, so it cannot produce a different request.
@@ -97,6 +134,7 @@ describe("lowering a card to a call", () => {
         operation: closeIssue,
         target: "required",
         hasInput: true,
+        ifCatalog: catalogToken,
       }).arguments,
       target: { entity: "issue", id: "ISSUE-8472" },
       input: { reason: "duplicate" },

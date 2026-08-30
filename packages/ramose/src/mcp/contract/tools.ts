@@ -316,6 +316,16 @@ export type QueryOutputV1 =
  * There is no raw-write path on this wire. `mutate` never exposes storage
  * writes, never accepts operation source or an AST, and never executes
  * anything the application did not declare (#417, #501).
+ *
+ * `ifCatalog` is accepted here for the same reason it is accepted on the read
+ * tools, and it matters more: an agent that inspected a capability with
+ * `describe` and then acts on it can pin the catalog it inspected, so a
+ * catalog that moved in between is a `catalog_changed` refusal rather than a
+ * destructive call made against a world the caller never saw. `operation.version`
+ * fences the operation's own contract; `ifCatalog` fences everything the agent
+ * read to decide the call was the right one. Omitting it means the current
+ * authorized catalog, which is the right default for a client that did not
+ * inspect anything first.
  */
 export const MutateInputV1 = Schema.Struct({
   at: OptionalAt,
@@ -326,6 +336,7 @@ export const MutateInputV1 = Schema.Struct({
       "Arguments for the operation, satisfying the input schema on its card. Omit when the operation declares none.",
   }),
   invocationId: InvocationIdV1,
+  ifCatalog: OptionalIfCatalog,
 }).annotate({
   description:
     "Invoke one exact versioned catalog operation with a caller-minted invocation id. Supply target when the operation's card says its target is required and omit it when the card says none; supply input when the card declares an input schema. Reusing an invocationId with the same arguments replays the original outcome; reusing it with different arguments is invocation_conflict.",
@@ -336,6 +347,7 @@ export type MutateInputV1 = {
   readonly target?: InstanceRefType;
   readonly input?: JsonObjectType;
   readonly invocationId: string;
+  readonly ifCatalog?: string;
 };
 
 const MutateSuccessV1 = Schema.Struct({

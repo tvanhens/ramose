@@ -17,7 +17,7 @@
  *
  * {@link assertSealedPublicJson} is the mechanical form of the rule that
  * everything else in this module states in prose: a public result may not
- * carry internal identity. It refuses, anywhere in a result:
+ * carry internal identity. In a contract-owned position it refuses:
  *
  * - **raw digests** — any 64-character lowercase hex run, which is exactly the
  *   serialized form of every internal SHA-256 identity in the engine
@@ -34,6 +34,36 @@
  * It is a guard, not a sanitizer: it throws rather than quietly removing
  * something, because a result that contains internal identity is a bug in the
  * projection that produced it, and hiding it would only move the leak.
+ *
+ * ## Why the seal stops at application-owned members
+ *
+ * A public result is two different kinds of data wearing one shape. Most of it
+ * the projection *constructs*: `ok`, `at`, `catalogToken`, `page`, `receipt`,
+ * every reference and card member. A few members it merely *forwards* — an
+ * operation card's schemas come from the engine's inert deployed-schema
+ * projection of an author's own schema, a query row's `values` are the columns
+ * the caller selected, and a mutation's `output` is whatever the operation's
+ * codec produced.
+ *
+ * The names inside a forwarded subtree belong to the application author. An
+ * ordinary domain model has a `source` column, a `database` entity, a `bucket`
+ * field; an ordinary row carries a content hash that is 64 hex characters. A
+ * blacklist applied there does not catch a leak — there is no projection code
+ * in a forwarded subtree to have a bug — but it does reject the application's
+ * own schema-valid data, permanently and with no workaround. A guard whose
+ * only reachable effect is a false positive is worse than no guard.
+ *
+ * So the walk stops at {@link APPLICATION_OWNED_MEMBERS} and checks nothing
+ * inside. That is safe because the seal is not the only check: schema
+ * validation runs over the same result, every contract struct is
+ * `additionalProperties: false`, and each of these member names has exactly
+ * one home in the contract — the one being skipped. A stray `values` or
+ * `output` cannot appear in a contract-owned position and be admitted.
+ *
+ * Author-written prose (`message`, `hint`) is deliberately *not* exempt. It is
+ * a contract-owned position that happens to carry an author's words, and prose
+ * that names an internal identifier is precisely the leak this exists to
+ * catch. `receipts.ts` bounds and normalizes that prose before it gets here.
  */
 
 import { canonicalizeJson } from "../../internal/authorization/canonical-json.ts";
@@ -149,6 +179,28 @@ export const SEALED_PROPERTY_NAMES: ReadonlySet<string> = new Set([
   ...RESERVED_MRTR_ARGUMENT_NAMES,
 ]);
 
+/**
+ * Members whose subtree is authored by the application, not by this contract.
+ *
+ * Each name has exactly one home in the contract, and that home is the one
+ * listed here — so skipping the subtree cannot also skip a contract-owned
+ * position of the same name. See the module docs for why the seal stops here.
+ */
+export const APPLICATION_OWNED_MEMBERS: ReadonlySet<string> = new Set([
+  /** `OperationCardV1.inputSchema` — the author's own schema, as deployed. */
+  "inputSchema",
+  /** `OperationCardV1.outputSchema` — likewise. */
+  "outputSchema",
+  /** `FieldCardV1.schema` — the author's schema for one field's value. */
+  "schema",
+  /** `QueryRowV1.values` — the columns the caller's own query selected. */
+  "values",
+  /** `MutateSuccessV1.output` — what the operation's own codec produced. */
+  "output",
+  /** `MutateInputV1.input` — arguments the caller wrote for the operation. */
+  "input",
+]);
+
 /** Any 64-character lowercase hex run: the serialized form of every internal digest. */
 const RAW_DIGEST_PATTERN = /[0-9a-f]{64}/;
 
@@ -156,10 +208,12 @@ const describePath = (path: readonly (string | number)[]): string =>
   path.length === 0 ? "<root>" : path.join(".");
 
 /**
- * Refuse a public value that carries internal identity.
+ * Refuse a public value whose contract-owned positions carry internal
+ * identity.
  *
  * Applied to whole tool results in the golden tests, and available to the
  * projection (#488) as the last check before a value becomes public.
+ * Application-owned subtrees are treated as opaque and are not inspected.
  */
 export const assertSealedPublicJson = (
   value: JsonValue,
@@ -189,6 +243,9 @@ export const assertSealedPublicJson = (
           }`,
         );
       }
+      // The member name is contract-owned and checked above; its contents are
+      // the application's, so the walk stops rather than judging them.
+      if (APPLICATION_OWNED_MEMBERS.has(key)) continue;
       visit(child, [...path, key]);
     }
   };

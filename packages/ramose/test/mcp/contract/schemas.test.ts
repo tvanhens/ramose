@@ -172,6 +172,15 @@ describe("required argument sets", () => {
     expect(required(QUERY_TOOL.inputSchema)).toEqual(["query"]);
   });
 
+  test("every tool accepts an optional catalog pin", () => {
+    for (const tool of KERNEL_TOOLS) {
+      const properties = tool.inputSchema.properties as Node;
+      expect({ tool: tool.name, pins: Object.hasOwn(properties, "ifCatalog") })
+        .toEqual({ tool: tool.name, pins: true });
+      expect(required(tool.inputSchema)).not.toContain("ifCatalog");
+    }
+  });
+
   test("mutate requires the versioned operation and an invocation id", () => {
     expect(required(MUTATE_TOOL.inputSchema)).toEqual([
       "invocationId",

@@ -146,6 +146,118 @@ describe("output schemas may only keep their promises", () => {
   });
 });
 
+describe("constraint keywords", () => {
+  const constrained = (constraints: Node): Node =>
+    object({ value: { type: "string", ...constraints } }, ["value"]);
+
+  test("a lower bound raised tightens; lowered or dropped loosens", () => {
+    const loose = constrained({});
+    const tight = constrained({ minLength: 8 });
+    expect(verdict(loose, tight, "input")).toBe("breaking");
+    expect(verdict(tight, loose, "input")).toBe("additive");
+    expect(verdict(loose, tight, "output")).toBe("additive");
+    expect(verdict(tight, loose, "output")).toBe("breaking");
+  });
+
+  test("an upper bound lowered tightens; raised or dropped loosens", () => {
+    const wide = constrained({ maxLength: 256 });
+    const narrow = constrained({ maxLength: 128 });
+    expect(verdict(wide, narrow, "input")).toBe("breaking");
+    expect(verdict(narrow, wide, "input")).toBe("additive");
+    expect(verdict(wide, narrow, "output")).toBe("additive");
+    expect(verdict(narrow, wide, "output")).toBe("breaking");
+    // An absent upper bound is unbounded, so introducing one tightens.
+    expect(verdict(constrained({}), narrow, "input")).toBe("breaking");
+  });
+
+  test("numeric range and item-count bounds follow the same polarity", () => {
+    for (const [lower, upper] of [
+      ["minimum", "maximum"],
+      ["minItems", "maxItems"],
+      ["minProperties", "maxProperties"],
+      ["exclusiveMinimum", "exclusiveMaximum"],
+    ] as const) {
+      expect(verdict(constrained({}), constrained({ [lower]: 1 }), "input"))
+        .toBe("breaking");
+      expect(verdict(constrained({ [upper]: 10 }), constrained({ [upper]: 5 }), "input"))
+        .toBe("breaking");
+      expect(verdict(constrained({ [upper]: 5 }), constrained({ [upper]: 10 }), "input"))
+        .toBe("additive");
+    }
+  });
+
+  test("uniqueItems turned on tightens", () => {
+    expect(verdict(constrained({}), constrained({ uniqueItems: true }), "input"))
+      .toBe("breaking");
+    expect(verdict(constrained({ uniqueItems: true }), constrained({}), "input"))
+      .toBe("additive");
+  });
+
+  test("a pattern change is reported: no ordering between two regexes exists", () => {
+    const change = classifyContractChange(
+      constrained({ pattern: "^a+$" }),
+      constrained({ pattern: "^a*$" }),
+      "input",
+    );
+    expect(change.kind).toBe("breaking");
+    if (change.kind !== "breaking") throw new Error("unreachable");
+    expect(change.reasons.join(" ")).toContain("no ordering");
+  });
+
+  test("format and multipleOf are reported on any change, in both directions", () => {
+    for (const keyword of ["format", "multipleOf"] as const) {
+      const before = constrained({ [keyword]: keyword === "format" ? "date" : 2 });
+      const after = constrained({ [keyword]: keyword === "format" ? "uuid" : 3 });
+      expect(verdict(before, after, "input")).toBe("breaking");
+      expect(verdict(before, after, "output")).toBe("breaking");
+    }
+  });
+
+  test("closing additionalProperties tightens; opening it loosens", () => {
+    const open = { type: "object", properties: {}, additionalProperties: true };
+    const closed = { type: "object", properties: {}, additionalProperties: false };
+    expect(verdict(open, closed, "input")).toBe("breaking");
+    expect(verdict(closed, open, "input")).toBe("additive");
+    expect(verdict(open, closed, "output")).toBe("additive");
+    expect(verdict(closed, open, "output")).toBe("breaking");
+    // An absent additionalProperties is open, so it compares as one.
+    expect(verdict({ type: "object", properties: {} }, closed, "input"))
+      .toBe("breaking");
+  });
+
+  test("an unrecognized keyword is never taken as evidence of compatibility", () => {
+    const change = classifyContractChange(
+      constrained({ "x-ramose-budget": 10 }),
+      constrained({ "x-ramose-budget": 20 }),
+      "input",
+    );
+    expect(change.kind).toBe("breaking");
+    if (change.kind !== "breaking") throw new Error("unreachable");
+    expect(change.reasons.join(" ")).toContain("unrecognized keyword");
+  });
+
+  test("documentation is never part of the decision", () => {
+    const before = constrained({ description: "before", title: "T" });
+    const after = constrained({
+      description: "after",
+      title: "T2",
+      examples: ["x"],
+      deprecated: true,
+    });
+    expect(verdict(before, after, "input")).toBe("additive");
+    expect(verdict(before, after, "output")).toBe("additive");
+  });
+
+  test("gaining an allOf arm tightens; losing one loosens", () => {
+    const one = { allOf: [{ minLength: 1 }] };
+    const two = { allOf: [{ minLength: 1 }, { maxLength: 4 }] };
+    expect(verdict(one, two, "input")).toBe("breaking");
+    expect(verdict(two, one, "input")).toBe("additive");
+    expect(verdict(one, two, "output")).toBe("additive");
+    expect(verdict(two, one, "output")).toBe("breaking");
+  });
+});
+
 describe("nested and referenced schemas", () => {
   test("a change inside a $defs entry is classified, not skipped", () => {
     const before = {
@@ -196,11 +308,13 @@ describe("the published schemas today", () => {
     }
   });
 
-  test("adding an optional delivery mode request stays additive", () => {
-    const before = QUERY_TOOL.inputSchema;
-    const defs = before.$defs as Node;
-    const after = {
-      ...before,
+  const withDeliveryModes = (
+    schema: Node,
+    modes: readonly string[],
+  ): Node => {
+    const defs = schema.$defs as Node;
+    return {
+      ...schema,
       $defs: {
         ...defs,
         DeliveryRequestV1: {
@@ -208,14 +322,55 @@ describe("the published schemas today", () => {
           properties: {
             mode: {
               type: "string",
-              enum: ["one_shot", "live"],
+              enum: modes,
               description: "Delivery mode.",
             },
           },
         },
       },
     };
+  };
+
+  test("adding an optional delivery mode request stays additive", () => {
+    const before = withDeliveryModes(QUERY_TOOL.inputSchema, ["one_shot"]);
+    const after = withDeliveryModes(QUERY_TOOL.inputSchema, [
+      "one_shot",
+      "live",
+    ]);
     expect(verdict(before, after, "input")).toBe("additive");
+    // The same widening on the result side is not: an exhaustive client would
+    // not know what a live result means.
+    expect(verdict(before, after, "output")).toBe("breaking");
+  });
+
+  test("tightening a published bound is breaking, and the classifier says so", () => {
+    const before = MUTATE_TOOL.inputSchema;
+    const defs = before.$defs as Node;
+    const after = {
+      ...before,
+      $defs: {
+        ...defs,
+        InvocationIdV1: { ...(defs.InvocationIdV1 as Node), maxLength: 128 },
+      },
+    };
+    const change = classifyContractChange(before, after, "input");
+    expect(change.kind).toBe("breaking");
+    if (change.kind !== "breaking") throw new Error("unreachable");
+    expect(change.reasons.join(" ")).toContain("maxLength tightened");
+  });
+
+  test("relaxing that same bound is additive on input", () => {
+    const before = MUTATE_TOOL.inputSchema;
+    const defs = before.$defs as Node;
+    const after = {
+      ...before,
+      $defs: {
+        ...defs,
+        InvocationIdV1: { ...(defs.InvocationIdV1 as Node), maxLength: 512 },
+      },
+    };
+    expect(verdict(before, after, "input")).toBe("additive");
+    expect(verdict(before, after, "output")).toBe("breaking");
   });
 
   test("making the query document required-shaped is not a breaking input change", () => {

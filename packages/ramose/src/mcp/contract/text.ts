@@ -21,6 +21,22 @@
  * choices — which fields matter, how to phrase them — and every one of those
  * choices is a place where the text could come to mean something the
  * structured result does not.
+ *
+ * ## Why every string is escaped
+ *
+ * An outline gets its meaning from line structure, and a value that could
+ * introduce line structure could forge it. A query row whose column contains
+ * `"note\nok: false"` would otherwise render two lines, the second
+ * indistinguishable from a real `ok: false` member — a text block that
+ * contradicts the `ok: true` it was derived from, which is exactly the drift
+ * this module exists to make impossible. Embedded newlines would also slip
+ * past {@link MAX_TEXT_LINES}, which counts entries rather than lines.
+ *
+ * So every string — value *and* member name — is emitted as a JSON string
+ * literal. Nothing a caller, an author, or a query alias can write reaches the
+ * output as a control character, so the number of lines is fixed by the
+ * structure alone. It also removes a real ambiguity the bare form had: the
+ * string `"true"` and the boolean `true` no longer render identically.
  */
 
 import type { JsonValue } from "../../internal/authorization/json.ts";
@@ -34,13 +50,29 @@ export const MAX_TEXT_SCALAR_LENGTH = 512;
 
 const INDENT = "  ";
 
+/**
+ * Render one string as a JSON string literal.
+ *
+ * `JSON.stringify` is the canonical escaping: it is total over every string,
+ * it turns newlines, carriage returns, and every other control character into
+ * two-character escapes, and it is the one representation a reader of this
+ * text can unambiguously decode back to the structured value.
+ *
+ * Elision happens *after* escaping, so the bound applies to what is actually
+ * emitted, and the cut can never land inside an escape in a way that produces
+ * a line break. Trailing backslashes are trimmed so the elided form does not
+ * end mid-escape.
+ */
+const renderString = (value: string): string => {
+  const escaped = JSON.stringify(value);
+  if (escaped.length <= MAX_TEXT_SCALAR_LENGTH) return escaped;
+  const cut = escaped.slice(0, MAX_TEXT_SCALAR_LENGTH).replace(/\\+$/, "");
+  return `${cut}… (elided, see structuredContent)`;
+};
+
 const renderScalar = (value: JsonValue): string => {
   if (value === null) return "null";
-  if (typeof value === "string") {
-    return value.length > MAX_TEXT_SCALAR_LENGTH
-      ? `${value.slice(0, MAX_TEXT_SCALAR_LENGTH)}… (elided, see structuredContent)`
-      : value;
-  }
+  if (typeof value === "string") return renderString(value);
   return String(value);
 };
 
@@ -81,12 +113,15 @@ const renderNode = (
     return;
   }
   for (const [key, child] of Object.entries(value as { [k: string]: JsonValue })) {
+    // Member names are escaped for the same reason values are: a query names
+    // its own columns, so a column alias could otherwise forge line structure.
+    const name = renderString(key);
     if (isScalar(child)) {
-      lines.push(`${pad}${key}: ${renderScalar(child)}`);
+      lines.push(`${pad}${name}: ${renderScalar(child)}`);
     } else if (isEmptyContainer(child)) {
-      lines.push(`${pad}${key}: ${emptyMarker(child)}`);
+      lines.push(`${pad}${name}: ${emptyMarker(child)}`);
     } else {
-      lines.push(`${pad}${key}:`);
+      lines.push(`${pad}${name}:`);
       renderNode(child, depth + 1, lines);
     }
   }
@@ -97,6 +132,9 @@ const renderNode = (
  *
  * The result is a pure function of `structured`. Truncation, if it happens,
  * is stated on its own final line — the text never silently stops.
+ *
+ * Because every string is escaped, one entry in `lines` is exactly one
+ * rendered line: no value can add a line the bound below does not count.
  */
 export const renderResultText = (structured: JsonValue): string => {
   // Canonicalizing first is what makes this derivation total and ordered: a

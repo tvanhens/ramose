@@ -7,8 +7,11 @@ import {
   type PublicInvocationReceipt,
 } from "../../../src/internal/authorization/invocation-receipts.ts";
 import {
+  MAX_ERROR_MESSAGE_LENGTH,
+  MESSAGE_TRUNCATION_MARKER,
   MUTATION_RECEIPT_STATUSES,
   assertSealedPublicJson,
+  boundedRejectionMessage,
   isMutateOutput,
   mutationOutcome,
   mutationReceipt,
@@ -103,6 +106,59 @@ describe("mutationOutcome", () => {
     if (outcome.ok) throw new Error("unreachable");
     expect(outcome.error.code).toBe("operation_rejected");
     expect(outcome.error.message).toBe("This issue is already closed.");
+  });
+
+  test("is total over an author message the engine will happily store", () => {
+    // The engine has no public bound on an author's rejection message. If the
+    // projection forwarded a long one verbatim, the authoritative rejected
+    // outcome would fail its own output schema and the transport would have
+    // nothing schema-valid to return — after the operation already ran.
+    const oversized = "x".repeat(MAX_ERROR_MESSAGE_LENGTH * 3);
+    const outcome = mutationOutcome({
+      _tag: "Rejected",
+      receipt: receipt("rejected"),
+      rejection: {
+        kind: "operation_rejected",
+        message: oversized,
+        operation: "close",
+      },
+    });
+    if (outcome.ok) throw new Error("unreachable");
+    expect(outcome.error.message.length).toBe(MAX_ERROR_MESSAGE_LENGTH);
+    expect(outcome.error.message.endsWith(MESSAGE_TRUNCATION_MARKER)).toBe(true);
+    expect(isMutateOutput(wireResult(outcome))).toBe(true);
+  });
+
+  test("truncation is deterministic and keeps the start of what the author wrote", () => {
+    const message = `Refused: ${"detail ".repeat(400)}`;
+    expect(boundedRejectionMessage(message))
+      .toBe(boundedRejectionMessage(message));
+    expect(boundedRejectionMessage(message).startsWith("Refused: ")).toBe(true);
+    expect(boundedRejectionMessage(message)).toContain(
+      MESSAGE_TRUNCATION_MARKER,
+    );
+  });
+
+  test("a message exactly at the bound is passed through untouched", () => {
+    const exact = "y".repeat(MAX_ERROR_MESSAGE_LENGTH);
+    expect(boundedRejectionMessage(exact)).toBe(exact);
+  });
+
+  test("an empty or missing message becomes the sealed refusal, not an invalid result", () => {
+    for (const raw of ["", undefined, null, 42]) {
+      expect(boundedRejectionMessage(raw))
+        .toBe("The operation refused this request.");
+    }
+    const outcome = mutationOutcome({
+      _tag: "Rejected",
+      receipt: receipt("rejected"),
+      rejection: {
+        kind: "operation_rejected",
+        message: "",
+        operation: "close",
+      },
+    });
+    expect(isMutateOutput(wireResult(outcome))).toBe(true);
   });
 
   test("a malformed request refusal points at the input argument", () => {

@@ -28,8 +28,10 @@ import {
 } from "./bounds.ts";
 import { JsonSchemaV1 } from "./json-schema.ts";
 import {
+  CatalogTokenV1,
   GraphPathV1,
   ResourceLinkV1,
+  type CatalogTokenV1 as CatalogTokenType,
   type ResourceLinkV1 as ResourceLinkType,
 } from "./primitives.ts";
 import {
@@ -154,6 +156,12 @@ export type MutateTemplateFillFieldV1 =
  * an alias call lowers to precisely `{ ...arguments, ...filled }` on the
  * generic `mutate` tool, so there is no second executor, no second
  * authorization path, and no second receipt.
+ *
+ * `arguments.ifCatalog` is the catalog this card was projected from. Sending
+ * it back is what closes the loop between discovery and action: the mutation
+ * runs against the same catalog the agent read the card out of, or it is
+ * refused with `catalog_changed`. A caller that would rather act against
+ * whatever is current may drop it — it is a pin, not a credential.
  */
 export const MutateTemplateV1 = Schema.Struct({
   tool: Schema.Literal("mutate").annotate({
@@ -162,9 +170,10 @@ export const MutateTemplateV1 = Schema.Struct({
   arguments: Schema.Struct({
     at: GraphPathV1,
     operation: OperationRefV1,
+    ifCatalog: Schema.optionalKey(CatalogTokenV1),
   }).annotate({
     description:
-      "Server-supplied arguments. Send them back exactly as given, including the operation version.",
+      "Server-supplied arguments. Send them back exactly as given, including the operation version and, when present, the catalog this card was projected from.",
   }),
   fill: Schema.Array(Schema.Literals(MUTATE_TEMPLATE_FILL_FIELDS)).check(
     Schema.isMaxLength(MUTATE_TEMPLATE_FILL_FIELDS.length),
@@ -182,6 +191,7 @@ export type MutateTemplateV1 = {
   readonly arguments: {
     readonly at: GraphPathV1;
     readonly operation: OperationRefType;
+    readonly ifCatalog?: CatalogTokenType;
   };
   readonly fill: readonly MutateTemplateFillFieldV1[];
 };
@@ -192,12 +202,14 @@ export const mutateTemplate = (input: {
   readonly operation: OperationRefType;
   readonly target: OperationTargetModeV1;
   readonly hasInput: boolean;
+  readonly ifCatalog?: CatalogTokenType | undefined;
 }): MutateTemplateV1 =>
   Object.freeze({
     tool: "mutate",
     arguments: Object.freeze({
       at: Object.freeze([...input.at]),
       operation: input.operation,
+      ...(input.ifCatalog === undefined ? {} : { ifCatalog: input.ifCatalog }),
     }),
     fill: Object.freeze([
       ...(input.target === "required" ? (["target"] as const) : []),
