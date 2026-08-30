@@ -838,6 +838,63 @@ browserTest("one client ref is claimed by exactly one allocating invocation", as
   }
 });
 
+browserTest("a dependency owned by another database is refused at enqueue", async ({ browser }) => {
+  const name = `ramose-outbox-crossref-${browser.uniqueId}`;
+  const left = identity();
+  const other = identity({ database: OTHER_DATABASE });
+  const receiver = replicaDatabaseScopeOf(left);
+  const otherReceiver = replicaDatabaseScopeOf(other);
+  const scope = replicaScopeOf(left);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    await confirm(storage, other, "left-other");
+    const outbox = storage.outbox();
+    const allocation = clientRef();
+    await outbox.enqueue(
+      draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+      { scope },
+    );
+
+    // The ref is allocated in this database, so a sibling database can never
+    // resolve it: planning reads only its own partition's mappings, and a
+    // mapping cannot be written there without a local allocation. Queueing it
+    // would leave that sibling's head permanently unreleasable.
+    expect(
+      await rejectedTag(
+        outbox.enqueue(
+          draft(otherReceiver, {
+            target: { type: "client-ref", clientRef: allocation },
+          }),
+          { scope },
+        ),
+      ),
+    ).toBe("ClientRefConflict");
+
+    // A ref nobody has allocated is stuck for the same reason: FIFO means no
+    // later invocation can supply it.
+    expect(
+      await rejectedTag(
+        outbox.enqueue(
+          draft(receiver, { target: { type: "client-ref", clientRef: clientRef() } }),
+          { scope },
+        ),
+      ),
+    ).toBe("OutboxRecordInvalid");
+
+    // The legitimate dependent, in the database that owns the ref, is accepted.
+    const dependent = await outbox.enqueue(
+      draft(receiver, { target: { type: "client-ref", clientRef: allocation } }),
+      { scope },
+    );
+    expect(dependent.sequence).toBe(2);
+    expect((await dumpMutations(name))["mutation-outbox-v1"]).toHaveLength(2);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
 browserTest("a mapping whose epoch was rewritten does not release its queue", async ({ browser }) => {
   const name = `ramose-outbox-forged-${browser.uniqueId}`;
   const left = identity();

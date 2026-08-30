@@ -258,46 +258,61 @@ const reject = (reason: string): never => {
 };
 
 /**
- * JSON-only, by value. Rejects `undefined`, functions, symbols, bigints,
- * `NaN`, infinities, non-plain prototypes, and cycles — anything IndexedDB's
- * structured clone would either lose or store in a form the wire cannot carry.
+ * Validate and *materialize* one JSON value in a single pass.
+ *
+ * Rejects `undefined`, functions, symbols, bigints, `NaN`, infinities,
+ * non-plain prototypes, holes, and cycles — anything IndexedDB's structured
+ * clone would lose or store in a form the wire cannot carry.
+ *
+ * It returns a fresh plain copy rather than the caller's object, and every
+ * property is read exactly once. An input carrying an enumerable accessor
+ * would otherwise be read again by structured clone *after* validation, so the
+ * stored value could disagree with the declared reference positions it was
+ * checked against — and the row it produced would be unreadable on the next
+ * restart, holding its own partition. The snapshot is what is validated,
+ * what the declared positions are read from, and what is persisted.
  */
-const assertJsonValue = (value: unknown, at: string, seen: Set<object>): void => {
-  if (value === null) return;
+const jsonSnapshot = (value: unknown, at: string, seen: Set<object>): JsonValue => {
+  if (value === null) return null;
   switch (typeof value) {
     case "string":
     case "boolean":
-      return;
+      return value;
     case "number":
       if (!Number.isFinite(value)) reject(`input at ${at} is not a finite number`);
-      return;
+      return value;
     case "object":
       break;
     default:
-      reject(`input at ${at} is ${typeof value}, which is not JSON`);
-      return;
+      return reject(`input at ${at} is ${typeof value}, which is not JSON`);
   }
   const object = value as object;
   if (seen.has(object)) reject(`input at ${at} is cyclic`);
   seen.add(object);
+  let snapshot: JsonValue;
   if (Array.isArray(object)) {
+    const items: JsonValue[] = [];
     for (let index = 0; index < object.length; index++) {
       // An index-wise walk, not `forEach`: a hole in a sparse array is skipped
       // by `forEach` but becomes `null` the moment the value is serialized for
       // the wire, which would change the invocation digest after the fact.
       if (!(index in object)) reject(`input at ${at}[${index}] is a hole`);
-      assertJsonValue(object[index], `${at}[${index}]`, seen);
+      items.push(jsonSnapshot(object[index], `${at}[${index}]`, seen));
     }
+    snapshot = Object.freeze(items);
   } else {
     const prototype = Object.getPrototypeOf(object);
     if (prototype !== Object.prototype && prototype !== null) {
       reject(`input at ${at} is not a plain object`);
     }
+    const fields: Record<string, JsonValue> = {};
     for (const [key, item] of Object.entries(object)) {
-      assertJsonValue(item, `${at}.${key}`, seen);
+      fields[key] = jsonSnapshot(item, `${at}.${key}`, seen);
     }
+    snapshot = Object.freeze(fields);
   }
   seen.delete(object);
+  return snapshot;
 };
 
 /** The sealing epoch a sealed handle declares, read from its preamble alone. */
@@ -451,7 +466,9 @@ export const buildOutboxRecord = (
   if (draft.target.type === "client-ref" && !isClientRef(draft.target.clientRef)) {
     reject("the queued target is not a durable client ref");
   }
-  assertJsonValue(draft.input, "input", new Set());
+  // Validated and materialized once. Everything below reads this snapshot,
+  // and it is what becomes durable.
+  const input = jsonSnapshot(draft.input, "input", new Set());
 
   const slots = new Set<string>();
   const allocated = new Set<string>();
@@ -486,7 +503,7 @@ export const buildOutboxRecord = (
     // Declared, then verified: the durable dependency and the value actually
     // submitted are the same string, so no submission can silently diverge
     // from what blocking was decided on.
-    if (readPath(draft.input, use.path) !== use.ref) {
+    if (readPath(input, use.path) !== use.ref) {
       reject(`input position ${position} does not hold the declared reference`);
     }
   }
@@ -509,7 +526,7 @@ export const buildOutboxRecord = (
     }),
     operationVersion: draft.operationVersion,
     target: Object.freeze({ ...draft.target }) as QueuedTarget,
-    input: draft.input,
+    input,
     allocations: Object.freeze(
       draft.allocations.map((allocation) => Object.freeze({ ...allocation })),
     ),
@@ -910,8 +927,9 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
     if (!isClientRef(use.ref) && !isEntityId(use.ref)) return undefined;
     inputRefs.push(Object.freeze({ path, ref: use.ref as MutationRef }));
   }
+  let input: JsonValue;
   try {
-    assertJsonValue(value.input, "input", new Set());
+    input = jsonSnapshot(value.input, "input", new Set());
   } catch {
     return undefined;
   }
@@ -920,7 +938,7 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
   // partial write, a foreign build, or tampering — is unreadable, not ready.
   // The same invariant the builder enforced. A row whose declared reference
   // no longer matches its own input is not interpretable, so it quarantines.
-  if (!inputRefsAgree(value.input as JsonValue, inputRefs)) return undefined;
+  if (!inputRefsAgree(input, inputRefs)) return undefined;
   const embedded = embeddedSealingEpoch(target, inputRefs);
   if (embedded === "unreadable" || embedded === "mixed") return undefined;
   if (embedded === null) {
@@ -944,7 +962,7 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
     }),
     operationVersion: value.operationVersion as OperationVersion,
     target,
-    input: value.input as JsonValue,
+    input,
     allocations: Object.freeze(allocations),
     inputRefs: Object.freeze(inputRefs),
     sealing,

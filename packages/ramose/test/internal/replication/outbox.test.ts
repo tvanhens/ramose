@@ -119,10 +119,30 @@ describe("durable client identities", () => {
   });
 
   test("a well-formed handle is not an authorization claim", () => {
-    expect(isEntityId("a".repeat(55))).toBe(true);
+    expect(isEntityId(`${"a".repeat(54)}A`)).toBe(true);
     expect(isEntityId("a".repeat(54))).toBe(false);
     expect(isEntityId(`${"a".repeat(54)}+`)).toBe(false);
     expect(isEntityId(clientRef())).toBe(false);
+  });
+
+  test("only a canonical spelling of the envelope is a handle", async () => {
+    const handle = await sealEntityId(sealing, idScope, 3);
+    expect(isEntityId(handle)).toBe(true);
+    // 41 bytes are 328 bits and 55 base64url characters carry 330, so the
+    // final character's low two bits are padding. Flipping them respells the
+    // very same entity, and the authoritative decoder — which re-encodes
+    // before it trusts anything — would refuse the result. Persisting it would
+    // queue an invocation whose target can never resolve.
+    const alphabet =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const tail = alphabet.indexOf(handle[54]!);
+    expect(tail % 4).toBe(0);
+    for (let bits = 1; bits < 4; bits++) {
+      const respelled = `${handle.slice(0, 54)}${alphabet[tail + bits]!}`;
+      expect(respelled).not.toBe(handle);
+      expect(isEntityId(respelled)).toBe(false);
+      expect(sealingEpochOf(respelled)).toBeUndefined();
+    }
   });
 
   test("the public wire pattern is the engine's sealed envelope pattern", () => {
@@ -239,6 +259,28 @@ describe("building one durable queue record", () => {
     const serialized = JSON.stringify(record);
     expect(serialized).not.toContain("function");
     expect(serialized).not.toContain("unitHash");
+  });
+
+  test("persists the value it validated, not the object it was handed", () => {
+    // An enumerable accessor that answers differently on its second read.
+    // Structured clone would read it again after validation, so the stored
+    // input could disagree with the declared reference it was checked against.
+    const ref = clientRef();
+    let reads = 0;
+    const shifty = {
+      get author(): string {
+        reads++;
+        return reads === 1 ? ref : clientRef();
+      },
+    };
+    const record = buildOutboxRecord(
+      draft({ input: shifty as never, inputRefs: [{ path: ["author"], ref }] }),
+      scopeKey,
+      1,
+    );
+    expect(record.input).toEqual({ author: ref });
+    // The snapshot is plain data, so it survives its own decoder.
+    expect(decodeOutboxRecord(JSON.parse(JSON.stringify(record)))).toEqual(record);
   });
 
   test("rejects an input value JSON cannot carry", () => {
@@ -886,7 +928,7 @@ describe("strict decoding of a stored mapping", () => {
         { ...record, sealing: { codecVersion: 1, keyId: otherRoot.keyId } },
         { ...record, sealing: { codecVersion: 2, keyId: root.keyId } },
         { ...record, sealing: null },
-        { ...record, entityId: "a".repeat(55) },
+        { ...record, entityId: `${"a".repeat(54)}A` },
         { ...record, clientRef: "not-a-ref" },
         { ...record, invocation: "not-an-invocation" },
         { ...record, partition: "ramose-replica-v2:s:p:d:v:h" },

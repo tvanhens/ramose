@@ -73,11 +73,18 @@ export type MutationRef<Entity extends AnyEntity = AnyEntity> =
   | ClientRef<Entity>;
 
 /**
- * Canonical unpadded base64url of the 41-byte sealed envelope. Mirrors
- * `SEALED_ENTITY_ID_PATTERN` in the engine's entity-id codec; a unit test
- * asserts the two never drift apart.
+ * Canonical unpadded base64url of the 41-byte sealed envelope.
+ *
+ * 41 bytes are 328 bits, and 55 base64url characters carry 330, so the final
+ * character's low two bits are padding and must be zero — only the sixteen
+ * alphabet positions divisible by four are canonical there. Accepting the
+ * other forty-eight would let a handle be respelled without changing the
+ * entity it names: the queue would persist and promote an invocation the
+ * authoritative decoder, which re-encodes before it trusts anything, can only
+ * ever reject. Mirrors `SEALED_ENTITY_ID_PATTERN` in the engine's entity-id
+ * codec; a unit test asserts the two never drift apart.
  */
-export const ENTITY_ID_PATTERN = /^[A-Za-z0-9_-]{55}$/;
+export const ENTITY_ID_PATTERN = /^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/;
 
 /** Codec version this build can read. A newer one quarantines, never denies. */
 export const ENTITY_ID_CODEC = 1;

@@ -56,6 +56,7 @@ import {
   mappingKey,
   mutationPartitionKey,
   mutationScopePrefix,
+  outboxDependencies,
   OutboxInvocationConflict,
   OutboxRecordInvalid,
   planOutbox,
@@ -429,6 +430,32 @@ export class IndexedDbOutbox {
         clientRef: record.allocations[index]!.clientRef,
         partition: claim.partition,
       });
+    }
+    // Every ref this record *depends* on must already be owned by an
+    // allocation in this same queue. A dependency owned by a sibling database
+    // could never be released — planning reads only this partition's mappings,
+    // a mapping cannot be written here without a local allocation, and the
+    // global ref index forbids allocating it here later — so the head would be
+    // permanently stuck. A ref nobody has allocated is stuck for the same
+    // reason: FIFO means no later invocation can supply it.
+    const dependencies = outboxDependencies(record).filter((ref) =>
+      !record.allocations.some((allocation) => allocation.clientRef === ref)
+    );
+    const owners = await Promise.all(
+      dependencies.map((ref) =>
+        requestResult<ClientRefRecord | undefined>(refs.index(BY_CLIENT_REF).get(ref))
+      ),
+    );
+    for (const [index, owner] of owners.entries()) {
+      const ref = dependencies[index]!;
+      if (owner === undefined) {
+        throw new OutboxRecordInvalid({
+          reason: "a queued reference names a client ref this device never allocated",
+        });
+      }
+      if (owner.partition !== partition) {
+        throw new ClientRefConflict({ clientRef: ref, partition: owner.partition });
+      }
     }
     for (const allocation of record.allocations) {
       refs.add({
