@@ -273,12 +273,24 @@ const lowerValue = (field: ProjectionField, value: unknown): ProjectionValue => 
   }
 };
 
+/**
+ * Engine-owned namespaces. A projection describes application data; letting one
+ * assert `:db/valueType` or `:ramose/type` over a committed row would let it
+ * restate the local view's own schema and type membership, which nothing about
+ * an optimistic update should be able to reach. `tx.create` is the one
+ * sanctioned way to claim a type, and only for a ref this device minted.
+ */
+const RESERVED_NAMESPACES = [":db/", ":db.", ":ramose/"];
+
 const requireField = (field: ProjectionField): string => {
   if (
     typeof field !== "object" || field === null ||
     typeof field.ident !== "string" || !field.ident.startsWith(":")
   ) {
     fail("a projection field must be a stamped field ref (Issue.status)");
+  }
+  if (RESERVED_NAMESPACES.some((prefix) => field.ident.startsWith(prefix))) {
+    fail(`${field.ident} is engine metadata and is not a projectable field`);
   }
   return field.ident;
 };

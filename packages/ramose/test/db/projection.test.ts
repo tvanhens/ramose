@@ -199,6 +199,17 @@ describe("value lowering", () => {
       .toContain("stamped field ref");
   });
 
+  test("engine metadata is not a projectable field", () => {
+    for (const ident of [":db/ident", ":db.type/string", ":ramose/type"]) {
+      expect(
+        reason((tx) => tx.set(ISSUE, { ident, valueType: "string" }, "x")),
+      ).toContain("engine metadata");
+      expect(
+        reason((tx) => tx.remove(ISSUE, { ident, valueType: "string" })),
+      ).toContain("engine metadata");
+    }
+  });
+
   test("a target must be a handle or a client ref", () => {
     expect(reason((tx) => tx.set(42 as never, title, "alpha"))).toContain(
       "EntityId or a ClientRef",
