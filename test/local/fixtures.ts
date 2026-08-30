@@ -188,12 +188,17 @@ export const json = async (
       ? AbortSignal.timeout(REQUEST_DEADLINE_MS)
       : undefined;
     let res: Response;
+    let text: string;
     try {
       res = await fetch(url, {
         ...rest,
         headers,
         ...(deadline === undefined ? {} : { signal: deadline }),
       });
+      // Inside the same guard: the signal keeps running after the headers
+      // arrive, so a body that stalls aborts here rather than hanging, and
+      // reports the same way as a request that never answered at all.
+      text = await res.text();
     } catch (error) {
       if (deadline?.aborted === true) {
         throw new Error(
@@ -202,7 +207,6 @@ export const json = async (
       }
       throw error;
     }
-    const text = await res.text();
     let body: any;
     try {
       body = text ? JSON.parse(text) : null;
