@@ -41,10 +41,16 @@
  *   per scope from the durable identity/sealing root; the nonce is the first
  *   96 bits of HMAC-SHA-256(nonceKey, eidBytes), which makes the whole token a
  *   deterministic function of (root, scope, eid) — cacheable, replay-friendly,
- *   and equality-comparable — while never repeating a nonce for two different
- *   eids under one derived key. Deterministic AES-GCM is safe here precisely
- *   because the plaintext is the only nonce input: identical plaintext is the
- *   only thing that reuses a nonce, and it produces the identical token.
+ *   and equality-comparable.
+ *
+ * Deterministic AES-GCM is safe here because the plaintext is the *only* nonce
+ * input, as in SIV-style constructions: the same eid reuses its nonce and
+ * produces the identical token, which discloses nothing beyond the equality
+ * the handle is meant to expose. Two *different* eids in one scope collide
+ * only on a 96-bit PRF collision — below 2^-32 for a scope holding 2^32
+ * entities — and one eid is 2^53-bounded, so a scope cannot approach that
+ * bound. Keys are per-scope, so the birthday count never spans databases or
+ * principals.
  */
 
 import { canonicalizeJson } from "../authorization/canonical-json.ts";
