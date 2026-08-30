@@ -9,70 +9,29 @@ commands, tests and CI. Documentation lives at [ramose.ai](https://ramose.ai)
 
 ## Code Review Rules
 
-Before reviewing, examine any issues linked from the pull request for context
-on its intended scope, requirements, and expected behavior.
+Before reviewing, examine linked issues for the intended scope and expected
+behavior. Apply the rule below and any more specific rules in the closest
+nested `AGENTS.md`. Other authoring and testing guidance is not an additional
+review checklist.
 
-Bias toward approving pull requests. Only raise blocking findings: concrete
-issues introduced by the change that must be fixed before merge because they
-cause incorrect behavior, security or data-loss risk, break a public contract,
-or create a migration or compatibility problem that will be materially harder
-to fix later.
+### One-way doors
 
-Do not report style preferences, speculative concerns, minor maintainability
-improvements, optional hardening, or other feedback that can be addressed later
-without significant cost or breakage. Do not block on pre-existing problems or
-unrelated code. A finding must identify a specific failure scenario and explain
-why fixing it after merge would be unsafe or substantially more difficult. If
-that case cannot be made, omit the finding and approve the change.
+Prioritize issues that would become unsafe or materially more expensive to
+correct after merge. If a small follow-up can safely revisit the decision,
+favor shipping and iterating.
 
-## Testing policy
+## Comments
 
-Do not introduce mocks, fakes, scripted peers, or in-memory infrastructure
-substitutes. Ramose has four test lanes:
+Use comments for public-facing API documentation, not private implementation
+narration. Prefer code that makes its intent clear without explanation.
 
-1. **Pure unit tests** (`bun run test:unit`) — parsers, query lowering, policy
-   compilation, state transitions, error classification, retry decisions,
-   serialization, and other deterministic logic. No Worker, Durable Object,
-   R2, Cache API, WebSocket, or auth service. If a failure reaction is a
-   pure transition, test it with ordinary input values.
-2. **Alchemy local integration** (`bun run test:local`) — anything that
-   crosses an infrastructure boundary. Share one Alchemy stack per suite
-   (`test/local`) and isolate tests with unique database names. During the
-   authorization redesign, `/db/*` is fail-closed (401); local tests still
-   run against the real Worker/DO/R2 topology and prove health, deny, and
-   `/__test__/*` instrumentation. Successful data-plane claims resume when
-   #344 / #339 / #343 reopen `/db/*`.
-3. **Cloudflare e2e** (`bun run test:e2e` / `test:e2e:cf`) — edge
-   propagation, deployment convergence, and platform failures workerd
-   cannot reproduce honestly.
-4. **Real browser** (`bun run test:browser`) — IndexedDB, Web Locks,
-   BroadcastChannel, DOM lifecycle, and other browser boundaries. Use the
-   actual browser APIs; fake IndexedDB, DOM shims, and in-memory storage
-   substitutes are forbidden.
+## Testing
 
-Allowed instrumentation wraps a real implementation and forwards to it:
-`test/support/recorder.ts` (HTTP/WebSocket), recorded frame fixtures under
-`test/browser/frames/` (verbatim wire lines captured from the real local
-Worker by `bun run record:frames`, never hand-edited, each with a
-`PROVENANCE.md` and re-decoded through the product frame codec at suite
-start; the dev-server route that serves them must stay behaviorless — one
-committed file selected by URL, no state, no per-call logic), checkpoints in
-`packages/ramose/src/internal/test-hooks.ts`, and `/__test__/db/:name/*`
-(R2/storage, the real Worker basis cache/fetch/invalidation path, checkpoint
-arm/release, DO abort, real session/watch/transactor WebSockets, and forwarded
-transact/query/index/info/log controls). These are inert
-unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`.
-
-Not allowed: `scriptedPeer`, `FakeSocket` / `fakeDispatch`, `MemoryBucket`
-/ `MemCache`, Better Auth `memoryAdapter`, `mock.module("cloudflare:workers")`,
-in-process peers, scripted `fetch`/WebSocket implementations, fake DO
-namespaces, or virtual services whose only purpose is to fail on the Nth
-call. `Alchemy.inMemoryState()` is Alchemy deploy state for the real local
-stack, not a Ramose double. Domain fixtures and pure-function inputs are
-fine.
-
-`scripts/check-test-doubles.ts` rejects new violations. The completed #390
-migration leaves `scripts/test-double-allowlist.json` empty; keep it empty.
+When adding or changing tests, follow
+[`CONTRIBUTING.md#choosing-a-test-layer`](CONTRIBUTING.md#choosing-a-test-layer).
+Use the shallowest lane that proves the claim and do not introduce test doubles.
+`bun run test:doubles` enforces the mechanical restrictions; test-lane choices
+are authoring guidance, not additional custom code-review rules.
 
 ## Cursor Cloud specific instructions
 

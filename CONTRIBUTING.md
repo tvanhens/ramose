@@ -32,6 +32,20 @@ independent Results with `Result.all`. Translate error vocabularies with
 cross that boundary with `Effect.fromResult` — do not turn the pure
 binding, validation, or install kernels into `Effect.gen`.
 
+## Reviewable changes
+
+Keep each review unit narrow enough for one complete review. Around 1,200
+hand-written additions, including tests, is a planning signal rather than a
+quota: split before coding when a change is likely to exceed it or spans
+unrelated risk boundaries.
+
+Request review after the implementation and relevant checks are stable. Batch
+the first review's root-cause fixes, then request one verification review rather
+than reviewing every corrective commit. If a second re-review uncovers another
+independent blocker class, pause and split or redesign the change. Describe the
+primary outcome, intentional public API additions, and relevant test lane in
+the pull request.
+
 ## Public vocabulary
 
 The app surface uses the words the docs teach. Recorded here so a rename
@@ -88,6 +102,10 @@ harness-specific port and credential caveats.
 Four lanes. Pick the shallowest one that can prove the claim. **Do not
 introduce mocks, fakes, scripted peers, or in-memory infrastructure
 substitutes** (issue #390). `AGENTS.md` carries the same policy.
+
+Regression tests protect stable invariants, not individual review comments.
+Group pure cases in table-driven unit tests; use browser or local tests only for
+boundary behavior that those lanes uniquely prove.
 
 | Layer | Command | When |
 |---|---|---|
