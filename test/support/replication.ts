@@ -81,37 +81,71 @@ export async function* decodeReplicationNdjson(
   }
 }
 
-export async function* readReplicationNdjson(
+/**
+ * A live replication response, plus the one escape hatch a stalled read
+ * needs.
+ *
+ * Abandoning `iterator.next()` is not enough to unstick a stalled stream:
+ * the read stays pending inside the generator, and a later
+ * `iterator.return()` queues *behind* it, so cleanup hangs and the test
+ * still burns its whole timeout. Cancelling the body reader settles the
+ * pending read, which lets the generator's own `finally` run and the queued
+ * `return()` resolve.
+ */
+export type ObservedReplicationStream =
+  & AsyncGenerator<ObservedReplicationFrame, void, undefined>
+  & { readonly cancelTransport: () => Promise<void> };
+
+export const readReplicationNdjson = (
   response: Response,
-): AsyncGenerator<ObservedReplicationFrame, void, undefined> {
-  const body = response.body;
-  if (body === null) return;
-  const reader = body.getReader();
-  const chunks = (async function* (): AsyncGenerator<Uint8Array> {
-    try {
-      for (;;) {
-        const next = await reader.read();
-        if (next.done) return;
-        yield next.value;
-      }
-    } finally {
+): ObservedReplicationStream => {
+  // Assigned once the generator body starts; until the first read there is
+  // nothing pending that could need settling.
+  let cancelReader: () => Promise<void> = async () => {};
+  const frames = (async function* (): AsyncGenerator<
+    ObservedReplicationFrame,
+    void,
+    undefined
+  > {
+    const body = response.body;
+    if (body === null) return;
+    const reader = body.getReader();
+    cancelReader = async () => {
       try {
         await reader.cancel();
+      } catch {
+        // A stalled or already-errored reader needs no further cancellation.
+      }
+    };
+    const chunks = (async function* (): AsyncGenerator<Uint8Array> {
+      try {
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) return;
+          yield next.value;
+        }
       } finally {
-        reader.releaseLock();
+        try {
+          await reader.cancel();
+        } finally {
+          reader.releaseLock();
+        }
+      }
+    })();
+    try {
+      yield* decodeReplicationNdjson(chunks);
+    } finally {
+      try {
+        await chunks.return?.(undefined);
+      } catch {
+        // The adapter's finally already released the reader lock.
       }
     }
   })();
-  try {
-    yield* decodeReplicationNdjson(chunks);
-  } finally {
-    try {
-      await chunks.return?.(undefined);
-    } catch {
-      // The adapter's finally already released the reader lock.
-    }
-  }
-}
+  return Object.assign(frames, {
+    cancelTransport: (): Promise<void> => cancelReader(),
+  });
+};
 
 export const applyObservedFrame = (
   state: ClientReplicationState,
@@ -155,25 +189,36 @@ export type CollectedSnapshot = {
 const SNAPSHOT_DEADLINE_MS = 20_000;
 
 export const collectCommittedSnapshot = async (
-  iterator: AsyncIterator<ObservedReplicationFrame>,
+  iterator:
+    | AsyncIterator<ObservedReplicationFrame>
+    | ObservedReplicationStream,
   initial: ClientReplicationState = emptyClientReplicationState(),
   deadlineMs: number = SNAPSHOT_DEADLINE_MS,
 ): Promise<CollectedSnapshot> => {
   let state = initial;
   const frames: ObservedReplicationFrame[] = [];
   const expiry = Date.now() + deadlineMs;
+  const expired = `replication snapshot did not commit within ${deadlineMs}ms`;
+  const cancelTransport =
+    (iterator as Partial<ObservedReplicationStream>).cancelTransport;
   for (;;) {
     const remaining = expiry - Date.now();
-    if (remaining <= 0) {
-      throw new Error(
-        `replication snapshot did not commit within ${deadlineMs}ms`,
-      );
+    if (remaining <= 0) throw new Error(expired);
+    const pending = iterator.next();
+    let next: IteratorResult<ObservedReplicationFrame>;
+    try {
+      next = await withDeadline(pending, remaining, expired);
+    } catch (error) {
+      // Stopping the await is not enough: the read is still pending inside
+      // the generator, so the caller's `closeIterator` would queue its
+      // `return()` behind it and hang to the 90s default anyway — the exact
+      // cascade this bound exists to prevent. Cancel the reader so the
+      // pending read settles, and swallow its late outcome, which nobody is
+      // waiting for any more.
+      void pending.catch(() => undefined);
+      await cancelTransport?.();
+      throw error;
     }
-    const next = await withDeadline(
-      iterator.next(),
-      remaining,
-      `replication snapshot did not commit within ${deadlineMs}ms`,
-    );
     if (next.done) throw new Error("replication closed before snapshot commit");
     frames.push(next.value);
     state = applyObservedFrame(state, next.value);
