@@ -102,10 +102,29 @@ Allowed instrumentation wraps a real implementation and forwards to it:
 - `POST /__test__/db/:name/r2|storage|basis|checkpoint|abort|transact|query|index|info|log|sessions` — write/corrupt real local R2, exercise storage tiers over real local R2/Cache bindings, invoke the real Worker basis cache/fetch/invalidation path, arm/release/throw at a checkpoint, abort a DO isolate, forward `{ tx }` / `{ query | pull | entity }` to the real Transactor / Replica DO, run or inspect the real transactor/indexer, read its real SQLite log, or inspect real hibernation attachments (status and body pass through; nothing invents success)
 - `GET /__test__/db/:name/catalog-proof` — read the exact deployment-bound proof from the real test Worker registry so data-plane conformance requests cannot fabricate or copy a host-side deployment identity
 - `GET /__test__/db/:name/session|watch|subscribe` with a WebSocket upgrade — forward to the real Replica DO session/basis-watch endpoint or the real Transactor subscriber; a session `token` is verified by the deployed peer's real JWT verifier
+- `IndexedDbReplicaStorage.writeCounts()` — counters incremented immediately after the real IndexedDB transactions that stored a node, manifest, head, or staged chunk actually committed; nothing reads them to make a decision
 
 These routes are 404 unless `RAMOSE_TEST_HOOKS=1` and `RAMOSE_STAGE` is not `prod`. They must not invent a successful transact, query, or frame.
 
 Not allowed: `scriptedPeer`, `FakeSocket` / `fakeDispatch`, `MemoryBucket` / `MemCache`, in-memory browser storage, fake IndexedDB, DOM shims, Better Auth `memoryAdapter`, `mock.module("cloudflare:workers")`, in-process peers, scripted fetch/WebSocket implementations, fake DO namespaces, or a virtual service whose only purpose is to fail on the Nth call. `Alchemy.inMemoryState()` is Alchemy's deploy-state store for the real local stack, not a Ramose double.
+
+### Replica scale probe
+
+`test/browser/replica-scale.browser.test.ts` measures the persisted replica at
+10k and 100k logical datoms — cold snapshot and atomic install, the validated
+cold restore, and one single-datom change — against the budgets #480 publishes,
+and reports node/manifest write amplification from the adapter's own counters.
+It runs as part of `bun run test:browser`; to see the measured numbers rather
+than just the pass, run it on its own:
+
+```sh
+bunx vitest run --config vitest.browser.config.ts --reporter=verbose \
+  test/browser/replica-scale.browser.test.ts
+```
+
+The dataset is seeded, so a rerun measures the same work. Assert against the
+published budget, never against a local best time — CI Chromium is several
+times slower than a developer machine.
 
 `bun run test:doubles` (`scripts/check-test-doubles.ts`) fails CI on new violations. The completed #390 migration leaves `scripts/test-double-allowlist.json` empty; keep it empty. Faults that cannot be induced locally belong in pure decision tests or cloud e2e — do not fabricate a substitute implementation that claims to prove them.
 

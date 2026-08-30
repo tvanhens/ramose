@@ -230,6 +230,56 @@ export type ReplicaRouteObservation = {
   readonly pathKey: string;
 };
 
+/**
+ * How many records of each family this handle has actually written.
+ *
+ * These are plain counters on the real write paths — every increment sits
+ * immediately after the IndexedDB transaction that performed the write
+ * committed, so a number here is a write that really happened. Nothing reads
+ * them to make a decision; they exist so the scale probe (#474 slice 10) can
+ * state node and manifest write amplification from the production adapter
+ * rather than from an estimate, and so slice 11 can state what a GC pass
+ * rewrote.
+ */
+export type ReplicaWriteCounts = {
+  /** Content nodes stored under their own address. */
+  readonly nodes: number;
+  /** Committed manifests installed. */
+  readonly manifests: number;
+  /** Committed head sidecars installed. */
+  readonly heads: number;
+  /** Staging records opened for a snapshot. */
+  readonly staging: number;
+  /** Snapshot chunks durably staged. */
+  readonly stagingChunks: number;
+};
+
+class WriteMeter {
+  nodes = 0;
+  manifests = 0;
+  heads = 0;
+  staging = 0;
+  stagingChunks = 0;
+
+  counts(): ReplicaWriteCounts {
+    return Object.freeze({
+      nodes: this.nodes,
+      manifests: this.manifests,
+      heads: this.heads,
+      staging: this.staging,
+      stagingChunks: this.stagingChunks,
+    });
+  }
+
+  reset(): void {
+    this.nodes = 0;
+    this.manifests = 0;
+    this.heads = 0;
+    this.staging = 0;
+    this.stagingChunks = 0;
+  }
+}
+
 const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
   partition: record.partition,
   storageVersion: record.storageVersion,
@@ -528,6 +578,7 @@ class IndexedDbNodeStore implements NodeStore {
     private readonly partition: string,
     private readonly signal?: AbortSignal,
     private readonly fence?: ReplicaFence | undefined,
+    private readonly meter?: WriteMeter | undefined,
   ) {}
 
   peek(_hash: string): TreeNode | undefined {
@@ -560,6 +611,7 @@ class IndexedDbNodeStore implements NodeStore {
       body,
     } satisfies NodeRecord);
     await commitTransaction(transaction);
+    if (this.meter !== undefined) this.meter.nodes++;
     return ref;
   }
 }
@@ -567,6 +619,23 @@ class IndexedDbNodeStore implements NodeStore {
 type Materialized = {
   readonly record: CommittedRecord;
   readonly db: Db;
+};
+
+/**
+ * An identifier for one act of installing, not for the value installed.
+ *
+ * Sixteen random bytes rather than `crypto.randomUUID`, which exists only in a
+ * secure context; `getRandomValues` is available wherever this adapter can
+ * run. Nothing authorizes anything with it and it never leaves the device: its
+ * only job is to make two installs of one revision distinguishable to the
+ * quarantine CAS (see {@link replicaManifestFingerprint}).
+ */
+const newInstallId = (): string => {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  let hex = "";
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+  return hex;
 };
 
 const materialize = async (
@@ -577,6 +646,7 @@ const materialize = async (
   prior: CommittedRecord | undefined,
   signal?: AbortSignal,
   fence?: ReplicaFence | undefined,
+  meter?: WriteMeter | undefined,
 ): Promise<Materialized> => {
   signal?.throwIfAborted();
   const partition = replicaPartitionKey(identity);
@@ -624,7 +694,7 @@ const materialize = async (
     facts.push(fact);
   }
 
-  const store = new IndexedDbNodeStore(database, partition, signal, fence);
+  const store = new IndexedDbNodeStore(database, partition, signal, fence, meter);
   const roots = await buildRoots(
     store,
     schema,
@@ -643,6 +713,7 @@ const materialize = async (
     attributeIds: Object.freeze([...attributeIds]),
     roots,
     nextLocalId,
+    installId: newInstallId(),
   };
   return {
     record,
@@ -846,6 +917,8 @@ export class IndexedDbReplicaStorage {
   private readonly registry: LifecycleRegistry;
   /** Registrations this handle owns, released when it closes. */
   private readonly registrations = new Set<() => void>();
+  /** Counters over this handle's real writes; see {@link ReplicaWriteCounts}. */
+  private readonly meter = new WriteMeter();
 
   private constructor(
     readonly name: string,
@@ -921,6 +994,16 @@ export class IndexedDbReplicaStorage {
   close(): void {
     for (const release of [...this.registrations]) release();
     this.database.close();
+  }
+
+  /** Records this handle has written since it opened or last reset the meter. */
+  writeCounts(): ReplicaWriteCounts {
+    return this.meter.counts();
+  }
+
+  /** Start a fresh write measurement window. */
+  resetWriteCounts(): void {
+    this.meter.reset();
   }
 
   private register(release: () => void): () => void {
@@ -1848,6 +1931,7 @@ export class IndexedDbReplicaStorage {
       } satisfies StagingRecord);
       transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
       await commitTransaction(transaction);
+      this.meter.staging++;
     } finally {
       removeAbort();
     }
@@ -1895,6 +1979,9 @@ export class IndexedDbReplicaStorage {
           index: frame.index,
           datoms: frame.datoms,
         } satisfies StagingChunkRecord);
+        await commitTransaction(transaction);
+        this.meter.stagingChunks++;
+        return;
       }
       await commitTransaction(transaction);
     } finally {
@@ -1960,6 +2047,7 @@ export class IndexedDbReplicaStorage {
       prior,
       options.signal,
       fence,
+      this.meter,
     );
     options.signal?.throwIfAborted();
     const transaction = this.database.transaction(
@@ -1991,6 +2079,8 @@ export class IndexedDbReplicaStorage {
       transaction.objectStore(STAGING).delete(built.record.partition);
       transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(built.record.partition));
       await commitTransaction(transaction);
+      this.meter.manifests++;
+      this.meter.heads++;
     } finally {
       removeAbort();
     }
@@ -2016,6 +2106,25 @@ export class IndexedDbReplicaStorage {
       closed: false,
     }, frame);
     if (state.committed === undefined || state.committed.revision === prior.revision) {
+      // A duplicate or out-of-order `Change`: the frame names a revision this
+      // partition already holds, or one that does not follow from it, so there
+      // is nothing to install and the caller gets the value that is already
+      // committed.
+      //
+      // This is the one `dbFromRecord` call site not preceded by `validated()`,
+      // and #474 slice 10 decided to leave it that way rather than add a
+      // consistency check here. A full walk is the only check that would mean
+      // anything — a partial one would let exactly the damage it skipped
+      // through — and it costs a complete read of the replica: at 100k datoms
+      // the measured walk is the same work as the whole cold restore, and a
+      // reconnect that replays a handful of frames would pay it once per
+      // duplicate. Nor does the walk have a cold record to catch here: a
+      // session only reaches `applyChange` after it restored this partition
+      // through `validated()` or installed a snapshot into it, so the manifest
+      // read above is that one or a strictly later install some live client
+      // materialized — never a record taken off disk unverified. Damage that
+      // appears afterwards is found by the next restore's walk, which is where
+      // every other stored-node failure is found too.
       return {
         db: dbFromRecord(this.database, prior, frame.identity.readCompatibilityHash),
         revision: prior.revision,
@@ -2029,6 +2138,7 @@ export class IndexedDbReplicaStorage {
       prior,
       options.signal,
       fence,
+      this.meter,
     );
     options.signal?.throwIfAborted();
     const write = this.database.transaction(
@@ -2050,6 +2160,8 @@ export class IndexedDbReplicaStorage {
       write.objectStore(COMMITTED).put(built.record);
       write.objectStore(COMMITTED_HEADS).put(committedHead(built.record));
       await commitTransaction(write);
+      this.meter.manifests++;
+      this.meter.heads++;
     } finally {
       removeAbort();
     }

@@ -460,14 +460,34 @@ Validating a partition takes as long as reading it, so another session may
 install a complete replacement while a walk is still running. Withdrawal is
 therefore conditional on the refused manifest still being the stored one,
 compared by revision, the four root addresses, the basis, the allocator, and the
-size of every stored map — a re-install of the same revision rebuilds identical
-roots, so the rest of the record's shape is what separates the manifest that was
-refused from a repaired one written in its place. A refusal that loses that
+size of every stored map, and the install identifier. A refusal that loses that
 comparison withdraws nothing and reports that nothing is selected, rather than
 acting on a value it never examined. For the same reason a restore that ran
 after a snapshot had begun streaming would quarantine underneath the replacement
 being received, so the session validates the committed value before it stages
 that snapshot's first frame.
+
+The install identifier is what makes that comparison complete. A re-install of
+the *same* revision rebuilds identical roots and identical maps, so nothing the
+record says about its own value can separate the manifest that was refused from
+a repaired one written in its place — and a repair is exactly what a
+re-install of the same revision is: it rewrites the damaged node under its own
+address. Every install therefore stamps the manifest with an identifier unique
+to the act of installing rather than to the value, which nothing authorizes
+anything with and which never leaves the device. Manifests written before that
+field existed carry none and compare as absent on both sides, so their behavior
+is unchanged.
+
+One `Db` construction is deliberately not preceded by a walk: the duplicate or
+out-of-order `Change`, which installs nothing and hands back the value already
+committed. A session reaches that path only after it restored the partition
+through the walk or installed a snapshot into it, so the manifest it reads is
+that one or a strictly later install some live client materialized — never a
+cold unverified record. The only check worth making there is a full walk, a
+partial one would pass over exactly the damage it skipped, and at 100k datoms
+that walk costs a whole cold restore per duplicate frame. Damage appearing
+afterwards is caught by the next restore's walk, with every other stored-node
+failure.
 
 ## Authorization and noninterference
 
