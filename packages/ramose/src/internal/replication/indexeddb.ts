@@ -2,11 +2,10 @@
 
 import * as Result from "effect/Result";
 import type { ReadCompatibilityHash } from "../authorization/identities.ts";
-import { ALL_INDEXES, type Datom, type DatomValue, ValueTag } from "../core/datom.ts";
+import { ALL_INDEXES, type Datom } from "../core/datom.ts";
 import { buildRoots } from "../core/conn.ts";
 import { sha256Hex } from "../core/bytes.ts";
 import { Db, rootFor } from "../core/db.ts";
-import { base64ToBytes } from "../core/log.ts";
 import { Novelty } from "../core/novelty.ts";
 import { FIRST_USER_EID, type AttributeSpec, Schema } from "../core/schema.ts";
 import { deserializeNode, gzipCodec, serializeNode } from "../core/store.ts";
@@ -25,7 +24,6 @@ import {
 import {
   REPLICA_STORAGE_VERSION,
   type Change,
-  type LogicalValue,
   type ReplicationIdentity,
   type SnapshotChunk,
   type SnapshotCommit,
@@ -36,6 +34,7 @@ import {
   replicaAttributeDatoms,
   replicaAttributes,
   replicaBootstrapDatoms,
+  replicaFactDatom,
   sameReplicaAttributes,
 } from "./replica-schema.ts";
 import type { ReplicaRouteSlot } from "./route-slot.ts";
@@ -61,6 +60,7 @@ import {
 import {
   digestReplicaDatoms,
   emptyReplicaIndexDigest,
+  expectedReplicaContents,
   replicaAbsent,
   replicaManifestFingerprint,
   replicaManifestIdentity,
@@ -70,7 +70,7 @@ import {
   validateReplicaContents,
   validateReplicaManifest,
   validateReplicaNode,
-  type ReplicaIndexDigest,
+  type ReplicaIndexDigests,
   type ReplicaIntegrityFailure,
   type ReplicaManifest,
   type ReplicaRestoreOutcome,
@@ -458,9 +458,6 @@ const abortWithSignal = (
 const chunkRange = (partition: string): IDBKeyRange =>
   IDBKeyRange.bound([partition, 0], [partition, Number.MAX_SAFE_INTEGER]);
 
-const nodeRange = (partition: string): IDBKeyRange =>
-  IDBKeyRange.bound([partition, ""], [partition, "\uffff"]);
-
 /**
  * Partition keys are built from opaque identifiers that never contain the
  * separator, so a string prefix selects exactly one scope or one database.
@@ -567,40 +564,6 @@ class IndexedDbNodeStore implements NodeStore {
   }
 }
 
-const valueTag = (value: LogicalValue): ValueTag => {
-  switch (value.type) {
-    case "long": return ValueTag.Long;
-    case "double": return ValueTag.Double;
-    case "string": return ValueTag.Str;
-    case "boolean": return ValueTag.Bool;
-    case "ref": return ValueTag.Ref;
-    case "uuid": return ValueTag.Uuid;
-    case "instant": return ValueTag.Inst;
-    case "bytes": return ValueTag.Bytes;
-  }
-};
-
-const datomValue = (
-  value: LogicalValue,
-  entities: ReadonlyMap<string, number>,
-): DatomValue => {
-  switch (value.type) {
-    case "double":
-      return value.value === "positive-infinity"
-        ? Number.POSITIVE_INFINITY
-        : value.value === "negative-infinity"
-          ? Number.NEGATIVE_INFINITY
-          : value.value;
-    case "ref": {
-      const eid = entities.get(value.value);
-      if (eid === undefined) throw new Error("logical reference has no local entity");
-      return eid;
-    }
-    case "bytes": return base64ToBytes(value.value);
-    default: return value.value;
-  }
-};
-
 type Materialized = {
   readonly record: CommittedRecord;
   readonly db: Db;
@@ -647,16 +610,18 @@ const materialize = async (
 
   const facts: Datom[] = [];
   const schema = bootstrap.clone().apply(schemaDatoms);
+  // The very projection a restore replays to prove the stored journal, id maps,
+  // and physical indexes still describe one value.
   for (const logical of committed.datoms) {
-    const e = entities.get(logical.entity);
-    const a = bootstrap.attr(logical.field)?.id ?? attributeIds.get(logical.field);
-    if (e === undefined || a === undefined) {
-      throw new Error(`logical fact references unknown field ${logical.field}`);
+    const fact = replicaFactDatom(logical, schema, entities);
+    if (typeof fact === "string") {
+      throw new Error(
+        fact === "value-type"
+          ? `logical value type disagrees with ${logical.field}`
+          : `logical fact references unknown field ${logical.field}`,
+      );
     }
-    const expected = schema.attr(a)?.valueType;
-    const vt = valueTag(logical.value);
-    if (expected !== vt) throw new Error(`logical value type disagrees with ${logical.field}`);
-    facts.push({ e, a, vt, v: datomValue(logical.value, entities), t: USER_T, op: true });
+    facts.push(fact);
   }
 
   const store = new IndexedDbNodeStore(database, partition, signal, fence);
@@ -819,12 +784,14 @@ const validateReachableNodes = async (
   // address. A repeat is therefore not sharing to deduplicate — it is a link
   // into a subtree that already has a parent, which also bounds the walk.
   const seen = new Set<string>();
-  const digests = {
+  const expected = expectedReplicaContents(manifest);
+  if (Result.isFailure(expected)) return expected.failure;
+  const digests: ReplicaIndexDigests = {
     0: emptyReplicaIndexDigest(),
     1: emptyReplicaIndexDigest(),
     2: emptyReplicaIndexDigest(),
     3: emptyReplicaIndexDigest(),
-  } satisfies Record<IndexId, ReplicaIndexDigest>;
+  };
   for (const index of ALL_INDEXES) {
     const digest = digests[index];
     // Each pending reference carries the separator its parent filed it under,
@@ -863,7 +830,7 @@ const validateReachableNodes = async (
       }
     }
   }
-  return validateReplicaContents(manifest.roots, digests);
+  return validateReplicaContents(manifest.roots, digests, expected.success);
 };
 
 export class IndexedDbReplicaStorage {
@@ -1286,9 +1253,23 @@ export class IndexedDbReplicaStorage {
   /**
    * Quarantine exactly one replica partition.
    *
-   * The unit is a single server/principal/database/readView/compat partition:
-   * its committed manifest, its head, its staged snapshot, its content nodes,
-   * and the exact bindings and cache candidates that would select it again.
+   * Quarantine withdraws a partition from selection rather than erasing it: it
+   * removes the committed manifest, its head, and the exact credential binding
+   * and cache candidate that would nominate it again. Nothing can restore or
+   * resume that partition afterwards, which is the whole point — but a `Db`
+   * another session has already published keeps reading, because a constructed
+   * value holds its roots and its node store directly and stops depending on
+   * the manifest the moment it exists. Deleting the nodes underneath it would
+   * turn a stale value into one that throws mid-query.
+   *
+   * The content nodes are therefore left to #474 slice 11's reachability GC,
+   * which is what sweeps partition-local nodes no manifest references. They are
+   * inert in the meantime: unreachable from any manifest, and re-installing the
+   * same value rewrites each node under its own address, repairing a damaged
+   * body in passing. Staging is left for the same reason — a stale staging
+   * record is refused by its base revision and overwritten by the next
+   * `SnapshotStart`.
+   *
    * Sibling read views, sibling databases, other principals, other servers, the
    * scope's durable confirmations, and its route observations all survive, so
    * quarantining a corrupt partition never costs the user anything a fresh
@@ -1301,11 +1282,11 @@ export class IndexedDbReplicaStorage {
    * identity is not, and corruption of the committed read value is no reason to
    * discard work the user has not yet had acknowledged.
    *
-   * Removal is destructive, so it is generation-fenced like every other
-   * destructive path: the caller's lease is re-observed inside the deleting
-   * transaction, and a lease that lost its generation to a concurrent clear or
-   * eviction surfaces the ordinary typed fence error instead of deleting under
-   * a realm it no longer belongs to.
+   * Withdrawal is still destructive, so it is generation-fenced like every
+   * other destructive path: the caller's lease is re-observed inside the
+   * writing transaction, and a lease that lost its generation to a concurrent
+   * clear or eviction surfaces the ordinary typed fence error instead of
+   * writing under a realm it no longer belongs to.
    */
   private async quarantinePartition(
     identity: ReplicationIdentity,
@@ -1319,25 +1300,14 @@ export class IndexedDbReplicaStorage {
     const partition = replicaPartitionKey(identity);
     const fence = replicaFence(options.lease ?? await this.leaseFor(identity), identity);
     const transaction = this.database.transaction(
-      [
-        COMMITTED,
-        COMMITTED_HEADS,
-        STAGING,
-        STAGING_CHUNKS,
-        NODES,
-        CREDENTIAL_BINDINGS,
-        CACHE_CANDIDATES,
-        GENERATIONS,
-      ],
+      [COMMITTED, COMMITTED_HEADS, CREDENTIAL_BINDINGS, CACHE_CANDIDATES, GENERATIONS],
       "readwrite",
     );
     try {
       await enforceFence(transaction, fence);
-      // Validating a partition takes as long as reading it, and another
-      // session may install a complete replacement in that window — and may
-      // already have published a `Db` over the nodes this deletion would take.
-      // Removing anything is conditional on the refused manifest still being
-      // the one that is stored.
+      // Validating a partition takes as long as reading it, and another session
+      // may install a complete replacement in that window. Withdrawing anything
+      // is conditional on the refused manifest still being the stored one.
       const current = await requestResult<unknown>(
         transaction.objectStore(COMMITTED).get(partition),
       );
@@ -1347,9 +1317,6 @@ export class IndexedDbReplicaStorage {
       }
       transaction.objectStore(COMMITTED).delete(partition);
       transaction.objectStore(COMMITTED_HEADS).delete(partition);
-      transaction.objectStore(STAGING).delete(partition);
-      transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
-      transaction.objectStore(NODES).delete(nodeRange(partition));
       const bindings = transaction.objectStore(CREDENTIAL_BINDINGS);
       if (options.fingerprint !== undefined) {
         bindings.delete(options.fingerprint);

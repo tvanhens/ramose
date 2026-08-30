@@ -10,7 +10,8 @@
  * and is unaffected — Ramose documentation lives in a symbol slot.
  */
 
-import type { Datom, ValueTag as VT } from "../core/datom.ts";
+import { type Datom, type DatomValue, ValueTag, type ValueTag as VT } from "../core/datom.ts";
+import { base64ToBytes } from "../core/log.ts";
 import {
   DB_DOC,
   type AttributeSpec,
@@ -22,6 +23,15 @@ import {
   attributeDatoms,
   bootstrapDatoms,
 } from "../core/schema.ts";
+import type { LogicalDatom, LogicalValue } from "./protocol.ts";
+
+/**
+ * The transaction every materialized replica fact and local schema datom
+ * carries. A replica holds current authorized values only — there is no local
+ * transaction history — so one transaction above the bootstrap is enough, and
+ * it keeps the basis a restore can check exactly.
+ */
+export const REPLICA_USER_T = 2;
 
 /** One attribute exactly as a replica persists and materializes it. */
 export type ReplicaAttributeSpec = {
@@ -124,3 +134,97 @@ export const sameReplicaAttributes = (
     const other = right[index];
     return other !== undefined && canonicalAttribute(spec) === canonicalAttribute(other);
   });
+
+/**
+ * Project one stored logical fact onto the physical datom a replica indexes.
+ *
+ * Materialization and integrity validation must agree exactly: the validator's
+ * job is to prove that the stored journal, the stored local id maps, and the
+ * stored physical indexes all describe one value, and it can only do that by
+ * deriving the physical datoms the same way the installer did. Sharing this
+ * projection is what makes the two unable to drift apart.
+ *
+ * `undefined` means the fact cannot be materialized at all: the installer
+ * treats that as a broken frame, the validator as a corrupt manifest.
+ */
+export const replicaValueTag = (value: LogicalValue): VT => {
+  switch (value.type) {
+    case "long": return ValueTag.Long;
+    case "double": return ValueTag.Double;
+    case "string": return ValueTag.Str;
+    case "boolean": return ValueTag.Bool;
+    case "ref": return ValueTag.Ref;
+    case "uuid": return ValueTag.Uuid;
+    case "instant": return ValueTag.Inst;
+    case "bytes": return ValueTag.Bytes;
+  }
+};
+
+export const replicaDatomValue = (
+  value: LogicalValue,
+  entities: ReadonlyMap<string, number>,
+): DatomValue | undefined => {
+  switch (value.type) {
+    case "double":
+      return value.value === "positive-infinity"
+        ? Number.POSITIVE_INFINITY
+        : value.value === "negative-infinity"
+          ? Number.NEGATIVE_INFINITY
+          : value.value;
+    case "ref":
+      return entities.get(value.value);
+    case "bytes":
+      return base64ToBytes(value.value);
+    default:
+      return value.value;
+  }
+};
+
+/** Why one logical fact cannot become a physical datom. */
+export type ReplicaFactRefusal = "unknown-entity" | "unknown-field" | "value-type";
+
+export const replicaFactDatom = (
+  logical: LogicalDatom,
+  schema: Schema,
+  entities: ReadonlyMap<string, number>,
+): Datom | ReplicaFactRefusal => {
+  const e = entities.get(logical.entity);
+  if (e === undefined) return "unknown-entity";
+  const attribute = schema.attr(logical.field);
+  if (attribute === undefined) return "unknown-field";
+  const vt = replicaValueTag(logical.value);
+  if (attribute.valueType !== vt) return "value-type";
+  const v = replicaDatomValue(logical.value, entities);
+  if (v === undefined) return "unknown-entity";
+  return { e, a: attribute.id, vt, v, t: REPLICA_USER_T, op: true };
+};
+
+/**
+ * The local schema datoms one stored replica materializes, or `undefined` when
+ * a non-built-in attribute has no partition-local id to materialize it at.
+ */
+export const replicaSchemaDatoms = (
+  attributes: readonly ReplicaAttributeSpec[],
+  attributeIds: ReadonlyMap<string, number>,
+): Datom[] | undefined => {
+  const bootstrap = Schema.bootstrap();
+  const datoms: Datom[] = [];
+  for (const spec of attributes) {
+    const builtIn = bootstrap.attr(spec.ident);
+    if (builtIn !== undefined) continue;
+    const id = attributeIds.get(spec.ident);
+    if (id === undefined) return undefined;
+    datoms.push(...replicaAttributeDatoms(id, spec, REPLICA_USER_T));
+  }
+  return datoms;
+};
+
+/** The schema a stored replica restores, over its own local attribute ids. */
+export const replicaSchema = (
+  attributes: readonly ReplicaAttributeSpec[],
+  attributeIds: ReadonlyMap<string, number>,
+): { readonly schema: Schema; readonly datoms: readonly Datom[] } | undefined => {
+  const datoms = replicaSchemaDatoms(attributes, attributeIds);
+  if (datoms === undefined) return undefined;
+  return { schema: Schema.bootstrap().clone().apply(datoms), datoms };
+};

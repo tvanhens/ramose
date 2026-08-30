@@ -273,11 +273,14 @@ browserTest(
       expect(await storage.restore(corrupt, attributes, READ_COMPATIBILITY)).toBeUndefined();
 
       const after = await dump(name);
-      // Exactly one partition lost its content, its head, and the selectors
-      // that would nominate it again.
+      // Exactly one partition lost its manifest, its head, and the selectors
+      // that would nominate it again — nothing can restore or resume it.
       expect(partitioned(after[COMMITTED], partition)).toEqual([]);
       expect(partitioned(after[COMMITTED_HEADS], partition)).toEqual([]);
-      expect(partitioned(after[NODES], partition)).toEqual([]);
+      // Its content nodes are deliberately left to slice 11's reachability GC:
+      // no manifest references them, and deleting them would break a `Db`
+      // another session had already published over the same nodes.
+      expect(partitioned(after[NODES], partition).length).toBeGreaterThan(0);
       expect(after[CREDENTIAL_BINDINGS]).toHaveLength(2);
       expect(after[CACHE_CANDIDATES]).toHaveLength(2);
       // Its scope is still confirmed and was never fenced: quarantine is not a
@@ -445,6 +448,45 @@ browserTest(
 );
 
 browserTest(
+  "quarantine withdraws a partition from selection without breaking a live Db",
+  async ({ browser }) => {
+    const name = `ramose-integrity-live-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const reader = await IndexedDbReplicaStorage.open(name);
+    const other = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installOne(reader, selected, opaque("1"), "published");
+      await confirm(reader, selected, "published");
+      // One session already holds a published value over this partition.
+      const live = (await reader.restore(selected, attributes, READ_COMPATIBILITY))!;
+      expect(await names(live.db)).toEqual(["published"]);
+
+      // Damage appears, and a second restore refuses and quarantines.
+      const roots = (await committedOf(name, partition)).roots as Record<string, { hash: string }>;
+      await flipNodeByte(name, partition, roots.vaet.hash);
+      expect(await other.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
+        .toMatchObject({ _tag: "replacement-required", reason: "node-hash" });
+
+      // The already-published value still reads: quarantine withdraws the
+      // manifest and the selectors, and a constructed `Db` holds its own roots
+      // and node store. Deleting the nodes would have made this query throw.
+      expect(await names(live.db)).toEqual(["published"]);
+      // And nothing can select the partition again.
+      expect(await other.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
+        .toEqual({ _tag: "absent" });
+      expect(
+        await other.restoreBoundOutcome("fingerprint-published", attributes, READ_COMPATIBILITY),
+      ).toEqual({ _tag: "absent" });
+    } finally {
+      reader.close();
+      other.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a replacement installed while the walk runs is never quarantined",
   async ({ browser }) => {
     const name = `ramose-integrity-race-${browser.uniqueId}`;
@@ -496,7 +538,7 @@ browserTest("a manifest that cannot describe its own facts is quarantined", asyn
       .toMatchObject({ _tag: "replacement-required", reason: "manifest-invariant" });
     const after = await dump(name);
     expect(partitioned(after[COMMITTED], partition)).toEqual([]);
-    expect(partitioned(after[NODES], partition)).toEqual([]);
+    expect(partitioned(after[COMMITTED_HEADS], partition)).toEqual([]);
   } finally {
     storage.close();
     await deleteDatabase(name);
@@ -611,7 +653,7 @@ browserTest(
       // Retrying completes the quarantine, and still publishes nothing.
       expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
         .toMatchObject({ _tag: "replacement-required", reason: "node-hash" });
-      expect(partitioned((await dump(name))[NODES], partition)).toEqual([]);
+      expect(partitioned((await dump(name))[COMMITTED], partition)).toEqual([]);
     } finally {
       resetTestHooks();
       storage.close();

@@ -10,6 +10,7 @@ import {
   ReplicaCorruptError,
   digestReplicaDatoms,
   emptyReplicaIndexDigest,
+  expectedReplicaContents,
   replicaAbsent,
   replicaManifestFingerprint,
   replicaManifestIdentity,
@@ -377,6 +378,22 @@ describe("manifest validation", () => {
       ...stored,
       roots: roots({ eavt: ref({ hash: hash("9"), count: 4 }) }),
     })).not.toBe(replicaManifestFingerprint(stored));
+    // A re-install of the same revision rebuilds identical roots, so the rest
+    // of the record's shape is what separates a refused manifest from one
+    // repaired in its place.
+    for (
+      const repaired of [
+        { ...stored, datoms: [] },
+        { ...stored, entityIds: [[opaque("e"), 1000]] },
+        { ...stored, attributeIds: [] },
+        { ...stored, attributes: [{ ident: ":item/name" }] },
+        { ...stored, nextLocalId: 1005 },
+        { ...stored, roots: roots({ t: 3 }) },
+      ]
+    ) {
+      expect(replicaManifestFingerprint(repaired))
+        .not.toBe(replicaManifestFingerprint(stored));
+    }
     // A damaged record still compares equal to itself, so a refusal of it is
     // not mistaken for a concurrent replacement.
     expect(replicaManifestFingerprint({ revision: 7 }))
@@ -559,20 +576,108 @@ describe("whole-tree contents", () => {
     )).toBe(false);
   });
 
-  test("a manifest that mixes two values fails even when the counts agree", () => {
+  test("each walked tree must hold the datoms the manifest describes", () => {
     const built = roots() as unknown as Roots;
-    const digests = {
+    const expected = {
       0: digestOf([first, second]),
-      1: digestOf([second, first]),
+      1: digestOf([first, second]),
       2: digestOf([first]),
       3: digestOf([]),
     };
-    expect(validateReplicaContents({ ...built, t: 2 }, digests)).toBeUndefined();
-    // One index's root swapped for another value's root of the same size.
+    // The walk visits leaves in its own order, so equality must not depend on
+    // the order EAVT and AEVT happen to present one datom list in.
+    const walked = { ...expected, 1: digestOf([second, first]) };
+    expect(validateReplicaContents({ ...built, t: 2 }, walked, expected)).toBeUndefined();
+    // One index's root swapped for another value's root of the same size —
+    // every node still hashes, and only the contents disagree.
+    for (const index of [0, 1] as const) {
+      expect(validateReplicaContents({ ...built, t: 2 }, {
+        ...walked,
+        [index]: digestOf([first, datom(1001, 20, "elsewhere")]),
+      }, expected)?.reason).toBe("manifest-invariant");
+    }
+    // A stale partial index has the same basis as a current one, because every
+    // replica fact materializes at one transaction — only the contents differ.
     expect(validateReplicaContents({ ...built, t: 2 }, {
-      ...digests,
-      1: digestOf([first, datom(1001, 20, "elsewhere")]),
-    })?.reason).toBe("manifest-invariant");
+      ...walked,
+      2: digestOf([second]),
+    }, expected)?.reason).toBe("manifest-invariant");
+    expect(validateReplicaContents({ ...built, t: 2 }, {
+      ...walked,
+      3: digestOf([first]),
+    }, expected)?.reason).toBe("manifest-invariant");
+  });
+
+  test("the journal, the id maps, and the stored schema derive the expected trees", () => {
+    const stored = (overrides: Record<string, unknown> = {}) => {
+      const result = validateReplicaManifest(manifest({
+        attributes: [{
+          ident: ":item/name",
+          valueType: ValueTag.Str,
+          cardinality: "one",
+          index: true,
+          isComponent: false,
+          optional: false,
+        }, {
+          ident: ":item/friend",
+          valueType: ValueTag.Ref,
+          cardinality: "one",
+          index: false,
+          isComponent: false,
+          optional: false,
+        }],
+        ...overrides,
+      }), {
+        partition: replicaPartitionKey(identity()),
+        readCompatibilityHash: READ_COMPATIBILITY,
+      });
+      if (Result.isFailure(result)) throw new Error(`manifest rejected: ${result.failure.detail}`);
+      return expectedReplicaContents(result.success);
+    };
+
+    const base = stored();
+    expect(Result.isSuccess(base)).toBe(true);
+    if (!Result.isSuccess(base)) return;
+    // The indexed attribute puts its fact in AVET; the ref puts its fact in
+    // VAET; every datom, bootstrap included, is in EAVT and AEVT.
+    expect(base.success[0].datoms).toBe(base.success[1].datoms);
+    expect(base.success[0].datoms).toBeGreaterThan(base.success[2].datoms);
+    expect(base.success[2].datoms).toBeGreaterThan(0);
+    expect(base.success[3].datoms).toBe(1);
+    expect(base.success[0].basis).toBe(2);
+
+    // A journal that has drifted from the trees derives different digests, so
+    // the walk cannot match it — this is what stops the next `Change` from
+    // silently rebuilding a different value.
+    const drifted = stored({
+      datoms: [
+        { entity: opaque("e"), field: ":item/name", value: { type: "string", value: "other" }, op: "add" },
+        { entity: opaque("e"), field: ":item/friend", value: { type: "ref", value: opaque("f") }, op: "add" },
+      ],
+    });
+    if (!Result.isSuccess(drifted)) throw new Error("expected a derivable manifest");
+    expect(sameReplicaIndexContents(base.success[0], drifted.success[0])).toBe(false);
+
+    // So does a shifted local id map, even though every fact is unchanged.
+    const renumbered = stored({
+      entityIds: [[opaque("e"), 1004], [opaque("f"), 1005]],
+      nextLocalId: 1006,
+    });
+    if (!Result.isSuccess(renumbered)) throw new Error("expected a derivable manifest");
+    expect(sameReplicaIndexContents(base.success[0], renumbered.success[0])).toBe(false);
+
+    // A fact whose value type disagrees with the stored schema cannot be
+    // materialized at all, so no expectation can be derived from it.
+    const mistyped = stored({
+      datoms: [{
+        entity: opaque("e"),
+        field: ":item/name",
+        value: { type: "long", value: 7 },
+        op: "add",
+      }],
+    });
+    expect(Result.isFailure(mistyped)).toBe(true);
+    if (Result.isFailure(mistyped)) expect(mistyped.failure.reason).toBe("manifest-invariant");
   });
 
   test("the manifest basis must be the basis the trees actually hold", () => {
@@ -585,12 +690,10 @@ describe("whole-tree contents", () => {
     };
     // `roots.t` becomes the restored value's basis, so lowering it silently
     // filters intact facts out of every read.
-    expect(validateReplicaContents({ ...built, t: 1 }, digests)?.reason).toBe("manifest-invariant");
-    expect(validateReplicaContents({ ...built, t: 3 }, digests)?.reason).toBe("manifest-invariant");
-    expect(validateReplicaContents({ ...built, t: 2 }, digests)).toBeUndefined();
-    expect(validateReplicaContents({ ...built, t: 2 }, {
-      ...digests,
-      2: digestOf([{ ...first, t: 9 }]),
-    })?.reason).toBe("manifest-invariant");
+    expect(validateReplicaContents({ ...built, t: 1 }, digests, digests)?.reason)
+      .toBe("manifest-invariant");
+    expect(validateReplicaContents({ ...built, t: 3 }, digests, digests)?.reason)
+      .toBe("manifest-invariant");
+    expect(validateReplicaContents({ ...built, t: 2 }, digests, digests)).toBeUndefined();
   });
 });

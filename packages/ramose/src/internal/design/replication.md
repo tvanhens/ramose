@@ -367,13 +367,19 @@ its own subtree. A bulk build gives every reachable node of one value a distinct
 address, so a repeated address is itself a structural failure and also bounds
 the walk.
 
-Finally the conclusions only a completed walk can reach. The roots live in the
-manifest and no digest covers them, so a damaged manifest can pair one index's
-current root with a superseded root of the same size — every node validates, and
-yet entity-ordered and attribute-ordered reads answer from different values.
-Comparing whole datom sets would need both trees resident; a commutative fold
-over the leaves the walk already decodes settles it in constant memory. The same
-fold carries the largest transaction number, which must equal the manifest's
+Finally the conclusions only a completed walk can reach. A manifest keeps two
+descriptions of one value — a logical journal of authorized facts, and four
+physical index roots built from it — and the local id maps and stored schema sit
+between them. The roots are the one part no content address covers, so a damaged
+manifest can pair one index's current root with a superseded root of the same
+size, and a drifted journal is invisible to the first restore but rebuilds a
+different value at the next `Change`. Restore therefore replays the shared
+logical-to-physical projection the install used, folding a commutative digest
+over the bootstrap datoms, the stored schema datoms, and every journal fact,
+partitioned by each index's own membership rule. Each walked tree must equal the
+tree the manifest describes. Comparing whole datom sets would need both sides
+resident; the fold costs one hash per fact and holds four fixed-size digests.
+It also carries the largest transaction number, which must equal the manifest's
 claimed basis: that value becomes the restored `basisT`, and lowering it filters
 intact facts out of every read.
 
@@ -390,26 +396,39 @@ is the other outcome: the client must update first. Both are returned as typed
 outcomes rather than thrown, and wrong-generation interactions keep surfacing
 the ordinary typed fence errors.
 
-Quarantine removes exactly one server/principal/database/read-view/compatibility
-partition: its manifest, committed head, staging and chunks, partitioned content
-nodes, and the exact credential binding and cache candidate that select it.
+Quarantine withdraws exactly one
+server/principal/database/read-view/compatibility partition from selection: its
+committed manifest, its head, and the exact credential binding and cache
+candidate that would nominate it again. Nothing can restore or resume it
+afterwards. Its content nodes are deliberately left to reachability GC, and its
+staging with them: a `Db` another session has already published holds its own
+roots and node store and no longer depends on the manifest, so deleting the
+nodes underneath it would turn a stale value into one that throws mid-query,
+while leaving them costs only space until the sweep. They are inert in the
+meantime — unreachable from any manifest — and re-installing the same value
+rewrites each node under its own address, repairing a damaged body in passing.
+
 Sibling read views, sibling databases, other principals, other servers, the
 scope's durable confirmation and generation, its route observations, and the
 future outbox, receipt, ClientRef, and optimistic families are all preserved — a
 corrupt committed read value is never a reason to discard a durable operation
-identity. Because removal is destructive it is generation-fenced like clearing
-and eviction, and the whole quarantine is one IndexedDB transaction, so a crash
-cut leaves the corrupt partition exactly as it was and a retry completes it.
+identity. Because withdrawal is still destructive it is generation-fenced like
+clearing and eviction, and the whole quarantine is one IndexedDB transaction, so
+a crash cut leaves the corrupt partition exactly as it was and a retry completes
+it.
 
 Validating a partition takes as long as reading it, so another session may
-install a complete replacement — and publish a `Db` over its nodes — while a
-walk is still running. Removal is therefore conditional on the refused manifest
-still being the stored one, compared by revision and the four root addresses.
-A refusal that loses that comparison removes nothing and reports that nothing is
-selected, rather than deleting a value it never examined. For the same reason a
-restore that runs after a snapshot has begun streaming would delete the staging
-its replacement is being written into, so the session validates the committed
-value before it stages the first frame of a replacement.
+install a complete replacement while a walk is still running. Withdrawal is
+therefore conditional on the refused manifest still being the stored one,
+compared by revision, the four root addresses, the basis, the allocator, and the
+size of every stored map — a re-install of the same revision rebuilds identical
+roots, so the rest of the record's shape is what separates the manifest that was
+refused from a repaired one written in its place. A refusal that loses that
+comparison withdraws nothing and reports that nothing is selected, rather than
+acting on a value it never examined. For the same reason a restore that ran
+after a snapshot had begun streaming would quarantine underneath the replacement
+being received, so the session validates the committed value before it stages
+that snapshot's first frame.
 
 ## Authorization and noninterference
 

@@ -41,7 +41,12 @@ import {
   type LogicalValue,
   type ReplicationIdentity,
 } from "./protocol.ts";
-import type { ReplicaAttributeSpec } from "./replica-schema.ts";
+import {
+  replicaBootstrapDatoms,
+  replicaFactDatom,
+  replicaSchema,
+  type ReplicaAttributeSpec,
+} from "./replica-schema.ts";
 
 /** One committed replica exactly as a partition stores it. */
 export type ReplicaManifest = {
@@ -313,12 +318,22 @@ export const replicaManifestIdentity = (
 export const replicaManifestFingerprint = (record: unknown): string => {
   const manifest = isRecord(record) ? record : {};
   const roots = isRecord(manifest.roots) ? manifest.roots : {};
+  const size = (value: unknown): number => Array.isArray(value) ? value.length : -1;
   return JSON.stringify([
     typeof manifest.revision === "string" ? manifest.revision : null,
     ...(["eavt", "aevt", "avet", "vaet"] as const).map((name) => {
       const ref = roots[name];
       return isRecord(ref) && typeof ref.hash === "string" ? ref.hash : null;
     }),
+    // A re-install of the same revision rebuilds identical roots, so the shape
+    // of everything else in the record is what separates the manifest that was
+    // refused from a repaired one written in its place.
+    typeof roots.t === "number" ? roots.t : null,
+    typeof manifest.nextLocalId === "number" ? manifest.nextLocalId : null,
+    size(manifest.datoms),
+    size(manifest.attributes),
+    size(manifest.entityIds),
+    size(manifest.attributeIds),
   ]);
 };
 
@@ -617,28 +632,93 @@ export const sameReplicaIndexContents = (
   left.datoms === right.datoms && left.sum === right.sum && left.xor === right.xor &&
   left.basis === right.basis;
 
+export type ReplicaIndexDigests = Record<IndexId, ReplicaIndexDigest>;
+
+const emptyDigests = (): ReplicaIndexDigests => ({
+  0: emptyReplicaIndexDigest(),
+  1: emptyReplicaIndexDigest(),
+  2: emptyReplicaIndexDigest(),
+  3: emptyReplicaIndexDigest(),
+});
+
+/**
+ * The datoms a stored manifest says its four trees hold, derived the way the
+ * install derived them.
+ *
+ * A manifest keeps two descriptions of one value: a logical journal of
+ * authorized facts, and four physical index roots built from it. The first
+ * restore reads only the roots, but the next `Change` rebuilds everything from
+ * the journal, so a journal that has drifted from the roots silently adds or
+ * drops facts at the next change and the result is internally consistent
+ * forever after. The local id maps and stored schema sit between the two and
+ * can drift the same way.
+ *
+ * Replaying the shared projection settles all of it in one pass — the journal,
+ * the id maps, the stored attributes, and each index's membership rule — and it
+ * costs one hash per fact with no datom arrays held: the whole comparison is
+ * four fixed-size digests.
+ */
+export const expectedReplicaContents = (
+  manifest: ReplicaManifest,
+): Result.Result<ReplicaIndexDigests, ReplicaIntegrityFailure> => {
+  const entities = new Map(manifest.entityIds);
+  const built = replicaSchema(manifest.attributes, new Map(manifest.attributeIds));
+  if (built === undefined) {
+    return Result.fail(failure("manifest-invariant", "a stored attribute has no local id"));
+  }
+  const digests = emptyDigests();
+  // EAVT and AEVT index every datom; AVET and VAET index the subsets the
+  // restored schema selects, which is exactly how the build partitions them.
+  const fold = (datom: Datom): void => {
+    digestReplicaDatoms(digests[0], [datom]);
+    digestReplicaDatoms(digests[1], [datom]);
+    if (built.schema.isAvet(datom.a)) digestReplicaDatoms(digests[2], [datom]);
+    if (built.schema.isVaet(datom.a)) digestReplicaDatoms(digests[3], [datom]);
+  };
+  for (const datom of replicaBootstrapDatoms()) fold(datom);
+  for (const datom of built.datoms) fold(datom);
+  for (const logical of manifest.datoms) {
+    const fact = replicaFactDatom(logical, built.schema, entities);
+    if (typeof fact === "string") {
+      return Result.fail(
+        failure("manifest-invariant", `stored fact on ${logical.field} cannot be materialized`),
+      );
+    }
+    fold(fact);
+  }
+  return Result.succeed(digests);
+};
+
 /**
  * The whole-tree conclusions only a completed walk can reach.
  *
- * `roots.t` is the manifest's own claim about the basis, and it becomes the
- * restored value's `basisT`: lowering it silently filters intact facts out of
- * every read. The build derives it as the largest `t` over the datoms it
- * indexed, so the walk can check it exactly.
+ * Node addresses prove each node's own bytes, but the roots live in the
+ * manifest and no digest covers them, so a damaged manifest can pair one
+ * index's current root with a superseded root of the same size — every node
+ * validates, and yet the four trees describe different values. Comparing each
+ * walked tree against what the manifest says it should hold settles that, the
+ * basis, and the journal/index agreement at once.
+ *
+ * `roots.t` is checked separately because it is the manifest's own claim rather
+ * than anything the trees carry, and it becomes the restored value's `basisT`:
+ * lowering it silently filters intact facts out of every read.
  */
 export const validateReplicaContents = (
   roots: Roots,
-  digests: Record<IndexId, ReplicaIndexDigest>,
+  walked: ReplicaIndexDigests,
+  expected: ReplicaIndexDigests,
 ): ReplicaIntegrityFailure | undefined => {
-  if (!sameReplicaIndexContents(digests[0], digests[1])) {
-    return failure("manifest-invariant", "eavt and aevt hold different datoms");
-  }
-  if (roots.t !== digests[0].basis) {
-    return failure("manifest-invariant", "the manifest basis is not the indexed basis");
-  }
-  for (const index of [2, 3] as const) {
-    if (digests[index].basis > digests[0].basis) {
-      return failure("manifest-invariant", "a partial index holds a later basis than eavt");
+  for (const index of [0, 1, 2, 3] as const) {
+    if (!sameReplicaIndexContents(walked[index], expected[index])) {
+      return failure(
+        "manifest-invariant",
+        `${IndexName[index]} does not hold the datoms this manifest describes`,
+        { index },
+      );
     }
+  }
+  if (roots.t !== expected[0].basis) {
+    return failure("manifest-invariant", "the manifest basis is not the indexed basis");
   }
   return undefined;
 };
