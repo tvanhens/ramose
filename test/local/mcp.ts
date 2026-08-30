@@ -157,6 +157,9 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       const asMember = await ok(base, database, member, "describe", { at: [] });
       expect(asMember.entities).toEqual(["nativeItem"]);
       expect(asMember.graphs).toEqual([]);
+      // Hidden entities and operations exist in this catalog, and none of them
+      // may set `truncated`: the cap is consulted only after the visibility
+      // predicate, so the flag can never be the tell that something is there.
       expect(asMember.truncated).toBe(false);
       expect(JSON.stringify(asMember)).not.toContain(database);
 
@@ -256,6 +259,29 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         from: { entity: "nativeItem" },
         select: ["invalidRef"],
       })).toEqual(hidden);
+
+      // …and they take that answer *without running a query at all*, which is
+      // what keeps them off the budgeted path a visible field takes: a
+      // budgeted pull can fail, and the sealed empty answer cannot, so the
+      // two must never share a code path. `truncated` is the observable
+      // proof. It is now a fact about the query, so a hidden selection that
+      // had reached the engine would come back `truncated: true` here —
+      // `nativeItem` holds more rows than this limit and every one of them
+      // would be fetched and then dropped by the projection.
+      const overLimit = await read({
+        version: 1,
+        from: { entity: "nativeItem" },
+        limit: 1,
+      });
+      expect(overLimit.truncated).toBe(true);
+      for (const select of [["secret"], ["invalidRef"], ["noSuchField"]]) {
+        expect(await read({
+          version: 1,
+          from: { entity: "nativeItem" },
+          select,
+          limit: 1,
+        })).toEqual({ rows: [], truncated: false });
+      }
       // …while the same rows are plainly there through a visible field.
       expect((await read({
         version: 1,
@@ -292,10 +318,11 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
 
       const committed = await ok(base, database, member, "mutate", call("once"));
       expect(committed).toMatchObject({ invocationId, status: "completed" });
-      // The operation returns an EntityId. S1 has no public entity reference,
-      // so the slot is withheld rather than carrying the storage id — and no
-      // bare integer may appear anywhere in the result.
-      expect(committed.outcome).toEqual({ id: { withheld: "reference" } });
+      // The declared output can reach an EntityId, and S1 has no public entity
+      // reference to publish one as. The contract alone decides, so the whole
+      // outcome is withheld and no codec can place a storage id somewhere a
+      // slot-by-slot projection would have failed to look.
+      expect(committed.outcome).toEqual({ withheld: "outcome" });
       expect(JSON.stringify(committed.outcome)).not.toMatch(/\d/);
       expect(await ok(base, database, member, "mutate", call("once"))).toEqual(committed);
 
@@ -328,21 +355,25 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         value: { code: "operation_changed", retryable: true },
       });
 
-      // The same reference-shaped output under a codec-renamed key. The
-      // declared contract says `id`, the wire says `wire_id`, so the slot
-      // cannot be located by name and the whole outcome is withheld rather
-      // than published with the storage id under a name the mask never saw.
+      // The same reference-carrying contract behind a codec that renames the
+      // key (`encodeKeys({ id: "wire_id" })`) must be byte-identical: the rule
+      // reads the contract, never the encoded value, so no rename, injected
+      // key, or relocation into a scalar slot can change the answer.
       const renamed = await ok(base, database, member, "mutate", {
         operation: ref(discovered, "nativeEncoded", "createRenamed"),
         input: { label: "renamed" },
         invocationId: crypto.randomUUID(),
       });
-      expect(renamed).toMatchObject({
-        status: "completed",
-        outcome: { withheld: "outcome" },
-      });
-      expect(JSON.stringify(renamed.outcome)).not.toMatch(/\d/);
+      expect(renamed.outcome).toEqual(committed.outcome);
       expect(JSON.stringify(renamed)).not.toContain("wire_id");
+
+      // A contract that cannot reach a reference still publishes its result.
+      const plain = await ok(base, database, member, "mutate", {
+        operation: ref(discovered, "nativeItem", "returnTransportTag"),
+        input: {},
+        invocationId: crypto.randomUUID(),
+      });
+      expect(plain.outcome).toEqual({ $inst: "application-value" });
       // The write itself still committed.
       expect((await ok(base, database, member, "query", {
         query: {

@@ -17,7 +17,15 @@
  *   It mints no version, digest, or receipt of its own.
  */
 
-import type { OperationInputShape } from "../internal/authorization/catalog.ts";
+import type {
+  FieldDescriptor,
+  OperationInputShape,
+} from "../internal/authorization/catalog.ts";
+import type {
+  CanonicalAuthorizationExpr,
+  CanonicalValueTerm,
+} from "../internal/authorization/expr.ts";
+import { fieldKey } from "../internal/authorization/validation/common.ts";
 import type { AuthenticatedCaller, AuthorizedRequestContext } from "../internal/authorization/request.ts";
 import { operationGrantAllows } from "../internal/authorization/operation-grant.ts";
 import type { AuthoritativeInvocationResult } from "../internal/authorization/invocation-receipts.ts";
@@ -69,14 +77,17 @@ const visibleGraphNames = async (
   ) {
     for (const datom of chunk) {
       if (typeof datom.v !== "string") continue;
-      if (found.size >= limit) {
-        truncated = true;
-        break outer;
-      }
+      // Establish that this row is a visible child graph before consulting
+      // the cap: a row that is not one must never set `truncated`.
       const row = await context.filteredDb.entity(datom.e);
       const type = row?.[RAMOSE_TYPE_IDENT];
       if (typeof type !== "string" || !composition.isEntityIdent(type)) continue;
       if (!composition.transitiveTraits(type).includes(GRAPH_TRAIT_IDENT)) continue;
+      if (found.has(datom.v)) continue;
+      if (found.size >= limit) {
+        truncated = true;
+        break outer;
+      }
       found.add(datom.v);
     }
   }
@@ -93,25 +104,25 @@ export const describeGraph = async (
   const typeAttribute = context.currentDb.attr(RAMOSE_TYPE_IDENT);
   const entities: string[] = [];
   let truncated = false;
+  // Visibility is decided *before* the cap in every listing below. Checking
+  // the cap first would let a hidden item set `truncated`, and that flag
+  // would then be the disclosure that the hidden item exists.
   for (const entity of catalog.entities) {
     if (typeAttribute === undefined) break;
-    if (entities.length >= MAX_DESCRIBE_ITEMS) {
-      truncated = true;
-      break;
-    }
     const row = await context.filteredDb.first(Index.AVET, {
       a: typeAttribute.id,
       vt: ValueTag.Str,
       v: `:${entity.id.name}`,
     });
-    if (row !== undefined) entities.push(entity.id.name);
-  }
-  const operations: DescribeResultV1["operations"][number][] = [];
-  for (const descriptor of catalog.operations) {
-    if (operations.length >= MAX_DESCRIBE_ITEMS) {
+    if (row === undefined) continue;
+    if (entities.length >= MAX_DESCRIBE_ITEMS) {
       truncated = true;
       break;
     }
+    entities.push(entity.id.name);
+  }
+  const operations: DescribeResultV1["operations"][number][] = [];
+  for (const descriptor of catalog.operations) {
     if (
       !operationGrantAllows(
         context.unit,
@@ -120,6 +131,10 @@ export const describeGraph = async (
         context.principal.subject,
       )
     ) continue;
+    if (operations.length >= MAX_DESCRIBE_ITEMS) {
+      truncated = true;
+      break;
+    }
     operations.push(Object.freeze({
       owner: Object.freeze({
         kind: descriptor.id.owner.kind,
@@ -164,6 +179,100 @@ const composedTraits = (
 
 type ResolvedField = { readonly name: string; readonly ident: string };
 
+/** Three-valued: `undefined` means the outcome depends on the row. */
+type StaticTruth = boolean | undefined;
+
+const projectableTerm = (term: CanonicalValueTerm): boolean =>
+  term._tag === "lit" || term._tag === "subject" || term._tag === "claim";
+
+/**
+ * Evaluate one read rule against the principal alone.
+ *
+ * Returns `undefined` — "cannot say" — the moment the rule depends on the row
+ * being tested (`me`, a ref traversal, a comparison over either). Only a
+ * definite `false` is ever acted on, so an imprecise answer can withhold a
+ * field but never expose one.
+ */
+const staticRuleTruth = (
+  expr: CanonicalAuthorizationExpr,
+  caller: AuthenticatedCaller,
+): StaticTruth => {
+  switch (expr._tag) {
+    case "const":
+      return expr.value;
+    case "hasClass":
+      return caller.classes.includes(expr.class);
+    case "and": {
+      let unknown = false;
+      for (const part of expr.exprs) {
+        const truth = staticRuleTruth(part, caller);
+        if (truth === false) return false;
+        if (truth === undefined) unknown = true;
+      }
+      return unknown ? undefined : true;
+    }
+    case "or": {
+      let unknown = false;
+      for (const part of expr.exprs) {
+        const truth = staticRuleTruth(part, caller);
+        if (truth === true) return true;
+        if (truth === undefined) unknown = true;
+      }
+      return unknown ? undefined : false;
+    }
+    case "not": {
+      const truth = staticRuleTruth(expr.expr, caller);
+      return truth === undefined ? undefined : !truth;
+    }
+    case "eq":
+      return projectableTerm(expr.left) && projectableTerm(expr.right)
+        ? undefined
+        : undefined;
+    case "has":
+      return projectableTerm(expr.term) ? undefined : undefined;
+    case "in":
+      return undefined;
+  }
+};
+
+/**
+ * Whether policy denies this field to this principal *whatever row it is on*.
+ *
+ * This is a conservative pre-filter, never an authorization decision: the
+ * deployed read filter still decides every datom. Its only job is to keep a
+ * field the caller can never read off the path a visible field takes, so a
+ * hidden name cannot be told apart from an unknown one by which failure mode
+ * it produces — a budgeted pull can fail, and the sealed empty answer cannot.
+ *
+ * It mirrors what the deployed filter does with a field decision: an explicit
+ * deny wins, and at least one allow must pass. A field with *no* decision of
+ * its own is governed entirely by its row — the filter returns readable there
+ * — so it is never statically hidden. Anything row-dependent is likewise left
+ * for the filtered `Db` to settle.
+ */
+const staticallyHidden = (
+  context: AuthorizedRequestContext,
+  caller: AuthenticatedCaller,
+  field: FieldDescriptor,
+): boolean => {
+  const decision = context.unit.policy.decisions.fields.find(
+    (entry) => fieldKey(entry.target) === fieldKey(field.id),
+  )?.decision;
+  if (decision === undefined) return false;
+  const rules = new Map(context.unit.policy.rules.map((rule) => [rule.id, rule]));
+  for (const id of decision.deny) {
+    const rule = rules.get(id);
+    if (rule === undefined) return true;
+    if (staticRuleTruth(rule.expr, caller) === true) return true;
+  }
+  for (const id of decision.allow) {
+    const rule = rules.get(id);
+    if (rule === undefined) continue;
+    if (staticRuleTruth(rule.expr, caller) !== false) return false;
+  }
+  return true;
+};
+
 /**
  * Public field names an entity exposes, mapped to their storage idents.
  *
@@ -171,9 +280,14 @@ type ResolvedField = { readonly name: string; readonly ident: string };
  * entity id, and S1 has no public entity reference to project one into, so
  * offering one would put a storage id on the wire; excluding the field keeps
  * it indistinguishable from any other name this catalog does not expose.
+ *
+ * Everything excluded here — ref-shaped, not installed, statically hidden —
+ * leaves by the same door an unknown name does, so no selection can tell them
+ * apart by the answer it gets.
  */
 const scalarFieldsOf = (
   context: AuthorizedRequestContext,
+  caller: AuthenticatedCaller,
   entity: string,
 ): ReadonlyMap<string, ResolvedField> => {
   const catalog = context.unit.catalog;
@@ -190,6 +304,7 @@ const scalarFieldsOf = (
     // A catalog field whose attribute is not installed is not readable; it
     // collapses into the same "no such visible field" answer as a hidden one.
     if (context.currentDb.attr(ident) === undefined) continue;
+    if (staticallyHidden(context, caller, field)) continue;
     fields.set(field.id.localName, Object.freeze({
       name: field.id.localName,
       ident,
@@ -208,17 +323,19 @@ const scalarFieldsOf = (
  */
 export const lowerQueryDocument = (
   context: AuthorizedRequestContext,
+  caller: AuthenticatedCaller,
   document: QueryDocumentV1,
 ): {
   readonly query: Record<string, unknown>;
   readonly inputs: readonly unknown[];
   readonly fields: readonly ResolvedField[];
+  readonly limit: number;
 } | undefined => {
   const entity = context.unit.catalog.entities.find(
     (candidate) => candidate.id.name === document.from.entity,
   );
   if (entity === undefined) return undefined;
-  const available = scalarFieldsOf(context, entity.id.name);
+  const available = scalarFieldsOf(context, caller, entity.id.name);
   const selected = document.select === undefined
     ? [...available.values()]
     : document.select.flatMap((name) => {
@@ -242,25 +359,28 @@ export const lowerQueryDocument = (
     inputs.push(value);
     where.push(["?e", field.ident, variable]);
   }
+  const limit = document.limit ?? DEFAULT_QUERY_LIMIT;
   return {
     query: {
       // `[:find [(pull ?e [...]) ...]]` — one collection of pulled rows.
       find: [[["pull", "?e", selected.map((field) => field.ident)], "..."]],
       in: inSpec,
       where,
-      limit: document.limit ?? DEFAULT_QUERY_LIMIT,
+      limit,
     },
     inputs,
     fields: selected,
+    limit,
   };
 };
 
 export const runQueryDocument = async (
   context: AuthorizedRequestContext,
+  caller: AuthenticatedCaller,
   document: QueryDocumentV1,
   options: { readonly maxCells?: number } = {},
 ): Promise<QueryResultV1> => {
-  const lowered = lowerQueryDocument(context, document);
+  const lowered = lowerQueryDocument(context, caller, document);
   if (lowered === undefined) return Object.freeze({ rows: [], truncated: false });
   const result = await runOneShotRead(
     context.filteredDb,
@@ -292,7 +412,13 @@ export const runQueryDocument = async (
   }
   return Object.freeze({
     rows: Object.freeze(rows),
-    truncated: rows.length >= (document.limit ?? DEFAULT_QUERY_LIMIT),
+    // Truncation is a fact about the *query*, not about what survived
+    // projection: a query that came back full may have more behind it however
+    // many rows the projection then dropped. Deriving it from `rows` instead
+    // would report an exhausted result while the engine had stopped at its
+    // cap. `truncated: true` alongside an empty `rows` is therefore a real
+    // state, and reporting it honestly beats a tidier lie.
+    truncated: pulled.length >= lowered.limit,
   });
 };
 
@@ -307,22 +433,10 @@ export type MutateResultV1 = {
 };
 
 /**
- * What stands in for a reference-shaped value an operation returned.
+ * What stands in for an outcome this slice will not publish.
  *
- * An operation that yields an entity reference yields a storage id, and S1 has
- * no public entity reference to project one into. Rather than put the id on
- * the wire or invent an encoding this slice cannot commit to, the slot is
- * replaced by this self-describing marker. A later slice replaces the marker
- * with a real reference; until then a client can see that a value existed and
- * that it is deliberately withheld.
- */
-export const REFERENCE_WITHHELD = Object.freeze({ withheld: "reference" });
-
-/**
- * What stands in for a whole outcome whose reference slots cannot be located.
- *
- * The invocation committed — this is not a failure — but its result cannot be
- * shown without risking a storage id on the wire, so none of it is.
+ * The invocation committed — this is not a failure — but its declared result
+ * cannot be shown without risking a storage id on the wire, so none of it is.
  */
 export const OUTCOME_WITHHELD = Object.freeze({ withheld: "outcome" });
 
@@ -337,7 +451,7 @@ export const OUTCOME_WITHHELD = Object.freeze({ withheld: "outcome" });
  * receipt path — can identify one. That limit is the declared contract's, not
  * this projection's.)
  */
-const declaresReference = (shape: OperationInputShape): boolean => {
+export const declaresReference = (shape: OperationInputShape): boolean => {
   switch (shape._tag) {
     case "ref":
       return true;
@@ -352,73 +466,34 @@ const declaresReference = (shape: OperationInputShape): boolean => {
 };
 
 /**
- * Replace every reference-shaped slot of one operation output with
- * {@link REFERENCE_WITHHELD}, guided by the operation's declared output shape.
- * Returns `undefined` when the value cannot be proven to line up with that
- * shape, so the caller withholds the whole outcome instead of guessing.
+ * Project one completed operation output, or withhold it whole.
  *
- * ## Why alignment has to be proven
+ * ## Why the rule is this blunt
  *
- * The value reaching here is the operation's **encoded** output — the exact
- * JSON its codec produced — while the declared shape is the **decoded**
- * projection (`lowerOperationSchema` follows a transformation's `to` side by
- * design, because operation bodies and the authoritative ref filter work on
- * the decoded value). A codec that renames a key on the way out — Effect's
- * `encodeKeys`, say — therefore publishes a reference under a name the shape
- * never mentions, and masking by declared name alone would sail past it.
+ * What reaches here is the operation's **encoded** output, while the declared
+ * contract is the **decoded** projection: `lowerOperationSchema` follows a
+ * transformation's `to` side by design, because operation bodies and the
+ * authoritative ref filter work on the decoded value. Nothing about the
+ * correspondence between the two survives an arbitrary codec. A codec may
+ * rename the key a reference sits under, inject a key, or move the reference
+ * into a slot the contract declares as an ordinary scalar — so neither the
+ * key names nor the value positions can be trusted to locate a reference, and
+ * masking slot by slot would only ever be right until the next codec trick.
  *
- * So wherever the contract declares a struct that can reach a reference, every
- * key actually present must be one the contract declared. A renamed or
- * injected key fails that check and the outcome is withheld. Contracts that
- * declare no reference at all are returned untouched: there is nothing there
- * to leak, and refusing them would withhold results for no reason.
+ * So the rule is the contract alone: if the declared output contract can reach
+ * a reference anywhere, the whole outcome is withheld. The invocation still
+ * committed and `status` still says so; only the result is not shown.
+ * Contracts that declare no reference are returned untouched — there is
+ * nothing in them to leak, and withholding would cost results for no reason.
  *
- * The shape — not the value — decides what is a reference: a plain number
- * stays a number unless the contract says that position holds one.
+ * This is deliberately capability-losing. Publishing outcomes that carry
+ * references is the job of the slice that introduces a public entity
+ * reference; until then there is no honest way to show one.
  */
-export const maskReferenceOutput = (
+export const projectOperationOutcome = (
   shape: OperationInputShape,
-  value: unknown,
-): { readonly value: unknown } | undefined => {
-  if (!declaresReference(shape)) return { value };
-  switch (shape._tag) {
-    case "ref":
-      return {
-        value: value === null || value === undefined ? value : REFERENCE_WITHHELD,
-      };
-    case "array": {
-      if (!Array.isArray(value)) return undefined;
-      const items: unknown[] = [];
-      for (const item of value) {
-        const masked = maskReferenceOutput(shape.items, item);
-        if (masked === undefined) return undefined;
-        items.push(masked.value);
-      }
-      return { value: items };
-    }
-    case "struct": {
-      if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        return undefined;
-      }
-      const record = value as Record<string, unknown>;
-      const declared = new Map(shape.fields.map((field) => [field.key, field.shape]));
-      const out: Record<string, unknown> = {};
-      for (const [key, entry] of Object.entries(record)) {
-        const field = declared.get(key);
-        // An undeclared key is a key the codec renamed or added: its meaning,
-        // and whether it holds a reference, cannot be established here.
-        if (field === undefined) return undefined;
-        const masked = maskReferenceOutput(field, entry);
-        if (masked === undefined) return undefined;
-        out[key] = masked.value;
-      }
-      return { value: out };
-    }
-    case "scalar":
-    case "opaque":
-      return { value };
-  }
-};
+  output: unknown,
+): unknown => (declaresReference(shape) ? OUTCOME_WITHHELD : output);
 
 /**
  * Restate one authoritative invocation outcome as the public MCP projection.
@@ -430,15 +505,13 @@ export const publicMutateResult = (
   outputShape: OperationInputShape,
 ): MutateResultV1 | ErrorEnvelopeV1 => {
   switch (result._tag) {
-    case "Completed": {
+    case "Completed":
       // The invocation committed either way; only the outcome can be withheld.
-      const masked = maskReferenceOutput(outputShape, result.output);
       return Object.freeze({
         invocationId: result.receipt.invocationId,
         status: "completed" as const,
-        outcome: masked === undefined ? OUTCOME_WITHHELD : masked.value,
+        outcome: projectOperationOutcome(outputShape, result.output),
       });
-    }
     case "Conflict":
       return toolFailure(
         "invocation_conflict",

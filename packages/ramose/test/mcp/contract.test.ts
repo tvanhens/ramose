@@ -15,8 +15,8 @@ import {
 } from "../../src/mcp/contract.ts";
 import {
   OUTCOME_WITHHELD,
-  REFERENCE_WITHHELD,
-  maskReferenceOutput,
+  declaresReference,
+  projectOperationOutcome,
   publicMutateResult,
 } from "../../src/mcp/kernel.ts";
 import type { OperationInputShape } from "../../src/internal/authorization/catalog.ts";
@@ -181,73 +181,61 @@ describe("mutate arguments", () => {
   });
 });
 
-describe("reference masking", () => {
+describe("reference-capable contracts", () => {
   const ref: OperationInputShape = { _tag: "ref", refTarget: { _tag: "self" } };
   const scalar: OperationInputShape = { _tag: "scalar", valueType: "string" };
   const field = (key: string, shape: OperationInputShape) =>
     ({ key, optional: false, shape });
 
-  test("withholds a reference-shaped slot wherever the contract declares one", () => {
+  test("finds a declared reference wherever the contract puts one", () => {
+    expect(declaresReference(ref)).toBe(true);
+    expect(declaresReference({ _tag: "array", items: ref })).toBe(true);
+    expect(declaresReference({ _tag: "struct", fields: [field("id", ref)] }))
+      .toBe(true);
+    expect(declaresReference({
+      _tag: "struct",
+      fields: [field("nested", { _tag: "array", items: { _tag: "struct", fields: [field("id", ref)] } })],
+    })).toBe(true);
+  });
+
+  test("a contract that cannot reach a reference is not one", () => {
+    expect(declaresReference(scalar)).toBe(false);
+    expect(declaresReference({ _tag: "opaque" })).toBe(false);
+    expect(declaresReference({ _tag: "struct", fields: [field("title", scalar)] }))
+      .toBe(false);
+  });
+
+  test("withholds the whole outcome for any reference-capable contract", () => {
+    // No codec trick can move a reference somewhere this rule does not look,
+    // because it does not look at the value at all.
     const shape: OperationInputShape = {
       _tag: "struct",
-      fields: [
-        field("id", ref),
-        field("title", scalar),
-        field("related", { _tag: "array", items: ref }),
-      ],
+      fields: [field("id", ref), field("count", scalar)],
     };
-    const masked = maskReferenceOutput(shape, {
-      id: 4_099,
-      title: "kept",
-      related: [17, 18],
-    });
-    expect(masked?.value).toEqual({
-      id: REFERENCE_WITHHELD,
-      title: "kept",
-      related: [REFERENCE_WITHHELD, REFERENCE_WITHHELD],
-    });
-    expect(JSON.stringify(masked)).not.toContain("4099");
-    expect(JSON.stringify(masked)).not.toContain("17");
+    for (
+      const output of [
+        { id: 4_099, count: 2 },
+        // A codec that renamed the key…
+        { wire_id: 4_099, count: 2 },
+        // …or relocated the id into a slot declared as an ordinary scalar.
+        { count: 4_099 },
+      ]
+    ) {
+      const projected = projectOperationOutcome(shape, output);
+      expect(projected).toBe(OUTCOME_WITHHELD);
+      expect(JSON.stringify(projected)).not.toContain("4099");
+    }
   });
 
-  test("the contract decides, not the value's shape", () => {
-    // A declared long stays a long even though it looks like an entity id.
-    expect(maskReferenceOutput({ _tag: "scalar", valueType: "long" }, 4_099))
-      .toEqual({ value: 4_099 });
-    // An opaque contract declares nothing about its interior to identify.
-    expect(maskReferenceOutput({ _tag: "opaque" }, { id: 4_099 }))
-      .toEqual({ value: { id: 4_099 } });
-    // Absent stays absent rather than becoming a withheld value.
-    expect(maskReferenceOutput(ref, null)).toEqual({ value: null });
-  });
-
-  test("refuses a value whose keys the declared contract does not name", () => {
-    // What arrives is the codec's *encoded* output while the shape is the
-    // decoded projection, so a renamed key would hide a reference from a
-    // name-directed walk. `encodeKeys({ id: "wire_id" })` is exactly that.
-    const shape: OperationInputShape = { _tag: "struct", fields: [field("id", ref)] };
-    expect(maskReferenceOutput(shape, { wire_id: 4_099 })).toBeUndefined();
-    expect(maskReferenceOutput(shape, { id: 1, extra: 2 })).toBeUndefined();
-    // Nested renames are caught at the level they occur.
-    expect(maskReferenceOutput(
-      { _tag: "struct", fields: [field("inner", shape)] },
-      { inner: { wire_id: 4_099 } },
-    )).toBeUndefined();
-    // A struct where the value is not an object at all cannot be aligned.
-    expect(maskReferenceOutput(shape, 4_099)).toBeUndefined();
-    expect(maskReferenceOutput({ _tag: "array", items: ref }, { "0": 1 }))
-      .toBeUndefined();
-  });
-
-  test("a contract that declares no reference is never refused", () => {
-    // Renaming a key that cannot hold a reference has nothing to leak, so
-    // withholding the outcome there would cost results for no reason.
+  test("a reference-free contract is published exactly as the codec produced it", () => {
     const shape: OperationInputShape = {
       _tag: "struct",
       fields: [field("title", scalar)],
     };
-    expect(maskReferenceOutput(shape, { wire_title: "kept" }))
-      .toEqual({ value: { wire_title: "kept" } });
+    expect(projectOperationOutcome(shape, { wire_title: "kept" }))
+      .toEqual({ wire_title: "kept" });
+    expect(projectOperationOutcome({ _tag: "opaque" }, { anything: 1 }))
+      .toEqual({ anything: 1 });
   });
 });
 
@@ -272,45 +260,30 @@ describe("invocation outcome projection", () => {
     expect(JSON.stringify(result)).not.toContain("42");
   });
 
-  test("a completed outcome never carries a storage id", () => {
-    const result = project({
-      _tag: "Completed",
-      receipt: { ...receipt, status: "completed" },
-      committedT: 9,
-      output: { id: 4_099 },
-    }, {
+  test("a reference-carrying outcome is withheld whole, status still truthful", () => {
+    const referenceOutput: OperationInputShape = {
       _tag: "struct",
       fields: [{
         key: "id",
         optional: false,
         shape: { _tag: "ref", refTarget: { _tag: "self" } },
       }],
-    });
-    expect(result).toMatchObject({ outcome: { id: REFERENCE_WITHHELD } });
-    expect(JSON.stringify(result)).not.toContain("4099");
-  });
-
-  test("a completed outcome it cannot align is withheld whole, not guessed at", () => {
-    const result = project({
-      _tag: "Completed",
-      receipt: { ...receipt, status: "completed" },
-      committedT: 9,
-      output: { wire_id: 4_099 },
-    }, {
-      _tag: "struct",
-      fields: [{
-        key: "id",
-        optional: false,
-        shape: { _tag: "ref", refTarget: { _tag: "self" } },
-      }],
-    });
-    // The invocation committed, so the status stays truthful.
-    expect(result).toEqual({
-      invocationId: "01K",
-      status: "completed",
-      outcome: OUTCOME_WITHHELD,
-    });
-    expect(JSON.stringify(result)).not.toContain("4099");
+    };
+    for (const output of [{ id: 4_099 }, { wire_id: 4_099 }]) {
+      const result = project({
+        _tag: "Completed",
+        receipt: { ...receipt, status: "completed" },
+        committedT: 9,
+        output,
+      }, referenceOutput);
+      // The invocation committed, so the status stays truthful.
+      expect(result).toEqual({
+        invocationId: "01K",
+        status: "completed",
+        outcome: OUTCOME_WITHHELD,
+      });
+      expect(JSON.stringify(result)).not.toContain("4099");
+    }
   });
 
   test("maps every transport-neutral refusal to its public code", () => {

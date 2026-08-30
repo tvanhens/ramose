@@ -139,7 +139,7 @@ const mcpTools = (input: McpRouteInput) => ({
     const at = parseAt(args.at);
     const document = parseQueryDocument(args.query);
     return withAuthorizedTarget(input, at, (target) =>
-      runQueryDocument(target.context, document, {
+      runQueryDocument(target.context, input.caller, document, {
         maxCells: queryMaxCells(input.env),
       }));
   },
