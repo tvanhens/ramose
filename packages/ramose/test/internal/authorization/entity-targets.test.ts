@@ -505,6 +505,14 @@ describe("sealed handles at declared input entity-ref positions", () => {
     expect(inputEntityRefHandles(scalarShape, "not-a-ref-position")).toEqual([]);
   });
 
+  test("an input that is itself a ref addresses the root position", async () => {
+    const handle = await handleFor(4242);
+    expect(inputEntityRefHandles(refShape, handle)).toEqual([[]]);
+    const resolved = await resolveSealedInputRefs(sealing, scope, handle, [[]]);
+    expect(resolved).toEqual({ _tag: "Resolved", input: 4242 });
+    expect(inputEntityRefHandles(refShape, 4242)).toEqual([]);
+  });
+
   test("mixed numeric and sealed positions resolve to one numeric input", async () => {
     const input = {
       count: 7,
