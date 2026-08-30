@@ -201,10 +201,15 @@ browserTest("keeps stable partition-local ids across snapshot, change, and reope
     const final = await storage.restore(selected, attributes, READ_COMPATIBILITY);
     expect(final?.revision).toBe(revision3);
     expect((await namedEntities(final!.db)).get("updated")).toBe(originalEid);
-    await expect(storage.restore(selected, [
+    // Schema metadata that disagrees with the committed read view is a typed
+    // outcome the caller branches on, not a thrown internal error.
+    expect(await storage.restoreOutcome(selected, [
       { ...attributes[0]!, cardinality: "many" },
       ...attributes.slice(1),
-    ], READ_COMPATIBILITY)).rejects.toThrow(/metadata is incompatible/);
+    ], READ_COMPATIBILITY)).toMatchObject({
+      _tag: "update-required",
+      reason: "schema-metadata",
+    });
   } finally {
     storage.close();
     await deleteDatabase(name);

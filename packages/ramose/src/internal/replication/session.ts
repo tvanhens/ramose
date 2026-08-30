@@ -10,6 +10,12 @@ import {
   type ReplicaCacheCandidateKey,
   type RestoredReplica,
 } from "./indexeddb.ts";
+import {
+  ReplicaCorruptError,
+  replicaRefused,
+  restoredReplica,
+  type ReplicaRestoreOutcome,
+} from "./replica-integrity.ts";
 import { sameReplicationIdentity } from "./state.ts";
 import {
   replicaDatabaseKey,
@@ -269,10 +275,16 @@ export class ReplicationSession {
     const candidateKey: ReplicaCacheCandidateKey | undefined = selector === undefined
       ? undefined
       : { selector, routeSlot };
-    const restored = await options.storage.restoreBound(
-      fingerprint,
-      options.attributes,
-      options.readCompatibilityHash,
+    // A corrupt or incompatible partition has already been quarantined by the
+    // time this returns, and it publishes nothing. The session then simply
+    // opens with no resume revision, so the server replaces the whole replica
+    // with a fresh snapshot into the very same scope.
+    const restored = restoredReplica(
+      await options.storage.restoreBoundOutcome(
+        fingerprint,
+        options.attributes,
+        options.readCompatibilityHash,
+      ),
     );
     // Register before the next await. Destructive maintenance that begins in
     // the gap between reading this replica and constructing its session must
@@ -492,6 +504,28 @@ export class ReplicationSession {
   }
 
   /**
+   * A candidate the current response already confirmed, or a typed failure.
+   *
+   * There is no in-band recovery here: the server has acknowledged a revision
+   * this client can no longer produce, and the partition that held it has just
+   * been quarantined. Failing the session with the classification is what lets
+   * a reconnect start with no resume revision and take a fresh snapshot,
+   * instead of publishing a value assembled from storage that was refused.
+   */
+  private confirmed<A>(outcome: ReplicaRestoreOutcome<A>): A {
+    const replica = restoredReplica(outcome);
+    if (replica !== undefined) return replica;
+    if (replicaRefused(outcome)) {
+      throw new ReplicaCorruptError({
+        partition: outcome.partition,
+        reason: outcome.reason,
+        detail: outcome.detail,
+      });
+    }
+    throw new Error("authenticated cache candidate changed before restore");
+  }
+
+  /**
    * Consume the first authenticated frame without ever publishing the
    * metadata-only candidate that nominated its resume revision.
    */
@@ -511,14 +545,13 @@ export class ReplicationSession {
         ) {
           throw new Error("authenticated resume has no cached replica candidate");
         }
-        const restored = await this.storage.restoreConfirmedCandidate(
-          prior,
-          this.attributes,
-          this.readCompatibilityHash,
+        const restored = this.confirmed(
+          await this.storage.restoreCandidateOutcome(
+            prior,
+            this.attributes,
+            this.readCompatibilityHash,
+          ),
         );
-        if (restored === undefined) {
-          throw new Error("authenticated cache candidate changed before restore");
-        }
         this.publishReplica(restored.identity, restored, false, generation);
         return false;
       }
@@ -547,10 +580,14 @@ export class ReplicationSession {
         }
         const terminal = await this.accept(frame, generation);
         if (terminal || !this.current(generation)) return terminal;
-        const restored = await this.storage.restore(
-          frame.identity,
-          this.attributes,
-          this.readCompatibilityHash,
+        // A quarantined partition simply publishes nothing here; the snapshot
+        // this response is already sending replaces it.
+        const restored = restoredReplica(
+          await this.storage.restoreOutcome(
+            frame.identity,
+            this.attributes,
+            this.readCompatibilityHash,
+          ),
         );
         if (restored !== undefined) {
           this.publishStale(frame.identity, restored, generation);
@@ -561,14 +598,13 @@ export class ReplicationSession {
         if (prior === undefined || frame.type !== "KeepAlive") {
           throw new Error("authenticated candidate action disagrees with its frame");
         }
-        const restored = await this.storage.restoreConfirmedCandidate(
-          prior,
-          this.attributes,
-          this.readCompatibilityHash,
+        const restored = this.confirmed(
+          await this.storage.restoreCandidateOutcome(
+            prior,
+            this.attributes,
+            this.readCompatibilityHash,
+          ),
         );
-        if (restored === undefined) {
-          throw new Error("authenticated cache candidate changed before restore");
-        }
         this.publishStale(frame.identity, restored, generation);
         return false;
       }

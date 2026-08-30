@@ -2,6 +2,7 @@ export * from "./entity-id.ts";
 export * from "./identity.ts";
 export * from "./logical.ts";
 export * from "./protocol.ts";
+export * from "./replica-integrity.ts";
 export * from "./replica-lifecycle.ts";
 export * from "./replica-schema.ts";
 export * from "./route-slot.ts";

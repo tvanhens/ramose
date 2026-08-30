@@ -338,6 +338,44 @@ staging, and content nodes. Candidate selection reads only those two bounded
 stores. Future outbox, receipt, ClientRef, and optimistic-layer stores remain
 independently clearable and are never part of candidate lookup or rebinding.
 
+## Integrity validation and corruption recovery
+
+Every restore path — cold restore, confirmed-candidate restore, and exact
+credential-bound restore — validates the whole partition before any `Db` can
+exist. First the committed manifest: it must be this storage version, be filed
+under the partition its own identity derives, agree with itself and the
+installed client about the confirmed compatibility hash, carry four well-formed
+index roots whose counts are consistent (EAVT and AEVT index the same datoms,
+AVET and VAET a subset), and give every fact it keeps a partition-local entity
+and field id below its own allocator. Then every node reachable from those four
+roots: it must exist in this partition's node store, hash to the content address
+it is filed under, decode, and sit in a position its own body agrees with — the
+index it was encoded for, the referenced node kind, the referenced subtree
+count, the directory's key/child arity, and index order within a leaf and across
+a directory's keys. The walk is depth-first and deduplicated by content address,
+so it costs one read, one digest, and one decode per distinct reachable node and
+holds a bounded number of node bodies at a time. A walk that stops part-way
+yields no value at all; a partial `Db` is never constructed.
+
+Missing node, hash mismatch, structural invariant violation, and undecodable
+record are classified separately for diagnosis and collapse to one caller
+outcome: this partition must be replaced by a fresh snapshot. An intact replica
+whose compatibility hash or replica schema disagrees with the installed client
+is the other outcome: the client must update first. Both are returned as typed
+outcomes rather than thrown, and wrong-generation interactions keep surfacing
+the ordinary typed fence errors.
+
+Quarantine removes exactly one server/principal/database/read-view/compatibility
+partition: its manifest, committed head, staging and chunks, partitioned content
+nodes, and the exact credential binding and cache candidate that select it.
+Sibling read views, sibling databases, other principals, other servers, the
+scope's durable confirmation and generation, its route observations, and the
+future outbox, receipt, ClientRef, and optimistic families are all preserved — a
+corrupt committed read value is never a reason to discard a durable operation
+identity. Because removal is destructive it is generation-fenced like clearing
+and eviction, and the whole quarantine is one IndexedDB transaction, so a crash
+cut leaves the corrupt partition exactly as it was and a retry completes it.
+
 ## Authorization and noninterference
 
 Initial admission and every fixed lease renewal rerun the complete ordered Graph

@@ -2,15 +2,16 @@
 
 import * as Result from "effect/Result";
 import type { ReadCompatibilityHash } from "../authorization/identities.ts";
-import { type Datom, type DatomValue, ValueTag } from "../core/datom.ts";
+import { ALL_INDEXES, type Datom, type DatomValue, ValueTag } from "../core/datom.ts";
 import { buildRoots } from "../core/conn.ts";
-import { Db, type Roots } from "../core/db.ts";
+import { sha256Hex } from "../core/bytes.ts";
+import { Db, rootFor } from "../core/db.ts";
 import { base64ToBytes } from "../core/log.ts";
 import { Novelty } from "../core/novelty.ts";
 import { FIRST_USER_EID, type AttributeSpec, Schema } from "../core/schema.ts";
 import { deserializeNode, gzipCodec, serializeNode } from "../core/store.ts";
 import type { IndexId } from "../core/datom.ts";
-import type { NodeRef, NodeStore, TreeNode } from "../core/tree.ts";
+import { decodeNode, type NodeRef, type NodeStore, type TreeNode } from "../core/tree.ts";
 import {
   inertRuntimeBoundaries,
   type RuntimeBoundaries,
@@ -18,7 +19,6 @@ import {
 import {
   REPLICA_STORAGE_VERSION,
   type Change,
-  type LogicalDatom,
   type LogicalValue,
   type ReplicationIdentity,
   type SnapshotChunk,
@@ -31,7 +31,6 @@ import {
   replicaAttributes,
   replicaBootstrapDatoms,
   sameReplicaAttributes,
-  type ReplicaAttributeSpec,
 } from "./replica-schema.ts";
 import type { ReplicaRouteSlot } from "./route-slot.ts";
 import {
@@ -53,6 +52,19 @@ import {
   type ReplicaDatabaseScope,
   type ReplicaScope,
 } from "./replica-lifecycle.ts";
+import {
+  replicaAbsent,
+  replicaManifestIdentity,
+  replicaNodeChildren,
+  replicaRestored,
+  replicaUnusable,
+  restoredReplica,
+  validateReplicaManifest,
+  validateReplicaNode,
+  type ReplicaIntegrityFailure,
+  type ReplicaManifest,
+  type ReplicaRestoreOutcome,
+} from "./replica-integrity.ts";
 import {
   applyReplicationFrame,
   emptyClientReplicationState,
@@ -117,21 +129,11 @@ export const DEFAULT_REPLICA_DATABASE_NAME = "ramose-replicas";
 /** Authenticator and catalog rotation do not create another stored partition. */
 export { replicaPartitionKey } from "./replica-lifecycle.ts";
 
-type CommittedRecord = {
-  readonly partition: string;
-  readonly storageVersion: typeof REPLICA_STORAGE_VERSION;
-  readonly identity: ReplicationIdentity;
-  readonly readCompatibilityHash: ReadCompatibilityHash;
-  readonly revision: string;
-  readonly datoms: readonly LogicalDatom[];
-  /** Documentation-free by construction; docs live in the client catalog. */
-  readonly attributes: readonly ReplicaAttributeSpec[];
-  /** Server identities only; future client refs use a different store and map. */
-  readonly entityIds: readonly (readonly [string, number])[];
-  readonly attributeIds: readonly (readonly [string, number])[];
-  readonly roots: Roots;
-  readonly nextLocalId: number;
-};
+/**
+ * The manifest shape lives in `replica-integrity.ts` because validating it is
+ * the only thing that turns a structured-clone result into one.
+ */
+type CommittedRecord = ReplicaManifest;
 
 type CommittedHeadRecord = {
   readonly partition: string;
@@ -713,6 +715,139 @@ const dbFromRecord = (
   });
 };
 
+/**
+ * How many node bodies one validation round reads before it starts hashing.
+ *
+ * An IndexedDB transaction ends as soon as its last request settles and control
+ * returns to the event loop, so the walk cannot hash inside one: it issues a
+ * bounded batch of reads together, lets that transaction finish, and then
+ * verifies the bodies. The batch is what bounds resident memory — the walk
+ * never holds more than this many node bodies at a time, whatever the replica's
+ * size.
+ */
+const VALIDATION_BATCH = 32;
+
+/** What one verified body settles for every reference that names it. */
+type VerifiedNode = {
+  readonly index: IndexId;
+  readonly kind: NodeRef["kind"];
+  readonly count: number;
+};
+
+const readNodeRecords = async (
+  database: IDBDatabase,
+  partition: string,
+  hashes: readonly string[],
+): Promise<readonly (NodeRecord | undefined)[]> => {
+  const transaction = database.transaction(NODES, "readonly");
+  const store = transaction.objectStore(NODES);
+  // Every request is issued synchronously here, so the transaction stays live
+  // until the last of them settles.
+  const pending = hashes.map((hash) =>
+    requestResult<NodeRecord | undefined>(store.get([partition, hash]))
+  );
+  const records = await Promise.all(pending);
+  await transactionDone(transaction);
+  return records;
+};
+
+type DecodedNode = { readonly index: IndexId; readonly node: TreeNode };
+
+/**
+ * Verify one stored record against the reference that led to it: it exists, its
+ * body hashes to the address it is filed under, it decodes, and it sits in a
+ * position its own contents agree with.
+ */
+const verifyNodeRecord = async (
+  index: IndexId,
+  ref: NodeRef,
+  record: NodeRecord | undefined,
+): Promise<ReplicaIntegrityFailure | DecodedNode> => {
+  const located = { index, hash: ref.hash };
+  if (record === undefined) {
+    return { reason: "node-missing", detail: "referenced node is not stored", ...located };
+  }
+  if (!(record.body instanceof Uint8Array)) {
+    return { reason: "node-undecodable", detail: "node record carries no body", ...located };
+  }
+  if (await sha256Hex(record.body) !== ref.hash) {
+    return { reason: "node-hash", detail: "node body does not hash to its address", ...located };
+  }
+  let decoded: DecodedNode;
+  try {
+    decoded = decodeNode(await gzipCodec.decompress(record.body));
+  } catch {
+    return { reason: "node-undecodable", detail: "node body cannot be decoded", ...located };
+  }
+  return validateReplicaNode(index, ref, decoded) ?? decoded;
+};
+
+/**
+ * Walk every content node reachable from one manifest's four index roots.
+ *
+ * The walk is depth-first over references, deduplicated by content address, so
+ * it costs one read, one digest, and one decode per distinct reachable node —
+ * O(reachable nodes), and O(reachable datoms) for the order checks inside
+ * leaves. Resident memory is one batch of bodies plus the frontier, which a
+ * depth-first order keeps at O(fanout × depth).
+ *
+ * Full verification runs on every restore by default. The sound place to make
+ * it incremental later is a durable per-partition record naming the exact root
+ * hashes this client last verified together with the generation they were
+ * verified under: a manifest whose roots and generation both match it could
+ * then skip the walk, and any other manifest — including one written by a
+ * process this client never observed — could not. #474 slice 10 measures
+ * whether the 100k budget needs that; nothing here assumes it.
+ */
+const validateReachableNodes = async (
+  database: IDBDatabase,
+  manifest: ReplicaManifest,
+): Promise<ReplicaIntegrityFailure | undefined> => {
+  const verified = new Map<string, VerifiedNode>();
+  for (const index of ALL_INDEXES) {
+    const frontier: NodeRef[] = [rootFor(manifest.roots, index)];
+    while (frontier.length > 0) {
+      const batch: NodeRef[] = [];
+      while (batch.length < VALIDATION_BATCH && frontier.length > 0) {
+        const ref = frontier.pop()!;
+        const already = verified.get(ref.hash);
+        if (already === undefined) {
+          batch.push(ref);
+          continue;
+        }
+        // The body is already proven; only the claim this reference makes
+        // about it is new, and a disagreement means one of the two positions
+        // is lying about the subtree it links to.
+        if (
+          already.index !== index || already.kind !== ref.kind ||
+          already.count !== ref.count
+        ) {
+          return {
+            reason: "node-invariant",
+            detail: "two references disagree about one node",
+            index,
+            hash: ref.hash,
+          };
+        }
+      }
+      if (batch.length === 0) continue;
+      const records = await readNodeRecords(
+        database,
+        manifest.partition,
+        batch.map((ref) => ref.hash),
+      );
+      for (let i = 0; i < batch.length; i++) {
+        const ref = batch[i];
+        const verifiedNode = await verifyNodeRecord(index, ref, records[i]);
+        if ("reason" in verifiedNode) return verifiedNode;
+        verified.set(ref.hash, { index, kind: ref.kind, count: ref.count });
+        for (const child of replicaNodeChildren(verifiedNode.node)) frontier.push(child);
+      }
+    }
+  }
+  return undefined;
+};
+
 export class IndexedDbReplicaStorage {
   /**
    * Scopes this handle has cleared. A cleared scope is terminal for this
@@ -1104,21 +1239,62 @@ export class IndexedDbReplicaStorage {
     });
   }
 
-  private async committed(identity: ReplicationIdentity): Promise<CommittedRecord | undefined> {
+  /**
+   * The stored manifest, exactly as structured clone returned it. It is
+   * deliberately `unknown`: nothing but {@link validateReplicaManifest} makes it
+   * a manifest, and a restore must never read a field off it first.
+   */
+  private async committed(identity: ReplicationIdentity): Promise<unknown> {
     const transaction = this.database.transaction(COMMITTED, "readonly");
-    const record = await requestResult<CommittedRecord | undefined>(
+    const record = await requestResult<unknown>(
       transaction.objectStore(COMMITTED).get(replicaPartitionKey(identity)),
     );
     await transactionDone(transaction);
     return record;
   }
 
-  /** Remove only one incompatible replica representation, never unrelated store families. */
-  private async quarantineReplica(
+  /**
+   * The manifest an install continues from. Snapshot commit and change apply
+   * carry the previous partition-local id assignments forward and then rebuild
+   * every node, so a damaged manifest here can only produce another manifest
+   * the next restore's walk refuses — it can never be published unvalidated.
+   */
+  private async priorManifest(
     identity: ReplicationIdentity,
-    fingerprint?: string,
+  ): Promise<CommittedRecord | undefined> {
+    return await this.committed(identity) as CommittedRecord | undefined;
+  }
+
+  /**
+   * Quarantine exactly one replica partition.
+   *
+   * The unit is a single server/principal/database/readView/compat partition:
+   * its committed manifest, its head, its staged snapshot, its content nodes,
+   * and the exact bindings and cache candidates that would select it again.
+   * Sibling read views, sibling databases, other principals, other servers, the
+   * scope's durable confirmations, and its route observations all survive, so
+   * quarantining a corrupt partition never costs the user anything a fresh
+   * snapshot cannot restore, and never re-poses the question of whether this
+   * client ever confirmed the scope.
+   *
+   * The #475/#476 mutation families — outbox, receipts, ClientRef mappings,
+   * optimistic layers — are deliberately not listed even once they key by the
+   * same partition prefix. Content is re-fetchable; a durable operation
+   * identity is not, and corruption of the committed read value is no reason to
+   * discard work the user has not yet had acknowledged.
+   *
+   * Removal is destructive, so it is generation-fenced like every other
+   * destructive path: the caller's lease is re-observed inside the deleting
+   * transaction, and a lease that lost its generation to a concurrent clear or
+   * eviction surfaces the ordinary typed fence error instead of deleting under
+   * a realm it no longer belongs to.
+   */
+  private async quarantinePartition(
+    identity: ReplicationIdentity,
+    options: { readonly fingerprint?: string; readonly lease?: ReplicaLease } = {},
   ): Promise<void> {
     const partition = replicaPartitionKey(identity);
+    const fence = replicaFence(options.lease ?? await this.leaseFor(identity), identity);
     const transaction = this.database.transaction(
       [
         COMMITTED,
@@ -1128,33 +1304,95 @@ export class IndexedDbReplicaStorage {
         NODES,
         CREDENTIAL_BINDINGS,
         CACHE_CANDIDATES,
+        GENERATIONS,
       ],
       "readwrite",
     );
-    transaction.objectStore(COMMITTED).delete(partition);
-    transaction.objectStore(COMMITTED_HEADS).delete(partition);
-    transaction.objectStore(STAGING).delete(partition);
-    transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
-    transaction.objectStore(NODES).delete(nodeRange(partition));
-    const bindings = transaction.objectStore(CREDENTIAL_BINDINGS);
-    if (fingerprint !== undefined) {
-      bindings.delete(fingerprint);
-    } else {
-      const records = await requestResult<CredentialBindingRecord[]>(bindings.getAll());
-      for (const binding of records) {
-        if (sameReplicationIdentity(binding.identity, identity)) {
-          bindings.delete(binding.fingerprint);
+    try {
+      await enforceFence(transaction, fence);
+      transaction.objectStore(COMMITTED).delete(partition);
+      transaction.objectStore(COMMITTED_HEADS).delete(partition);
+      transaction.objectStore(STAGING).delete(partition);
+      transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
+      transaction.objectStore(NODES).delete(nodeRange(partition));
+      const bindings = transaction.objectStore(CREDENTIAL_BINDINGS);
+      if (options.fingerprint !== undefined) {
+        bindings.delete(options.fingerprint);
+      } else {
+        const records = await requestResult<CredentialBindingRecord[]>(bindings.getAll());
+        for (const binding of records) {
+          if (sameReplicationIdentity(binding.identity, identity)) {
+            bindings.delete(binding.fingerprint);
+          }
         }
       }
-    }
-    const candidates = transaction.objectStore(CACHE_CANDIDATES);
-    const candidateRecords = await requestResult<CacheCandidateRecord[]>(candidates.getAll());
-    for (const candidate of candidateRecords) {
-      if (sameReplicationIdentity(candidate.identity, identity)) {
-        candidates.delete([candidate.selector, candidate.routeSlot]);
+      const candidates = transaction.objectStore(CACHE_CANDIDATES);
+      const candidateRecords = await requestResult<CacheCandidateRecord[]>(candidates.getAll());
+      for (const candidate of candidateRecords) {
+        if (sameReplicationIdentity(candidate.identity, identity)) {
+          candidates.delete([candidate.selector, candidate.routeSlot]);
+        }
       }
+      // The last boundary before the quarantine becomes durable. Inert in
+      // production; the source-only testing assembly arms it to cut here, and
+      // the corrupt partition then stays exactly as it was.
+      await this.boundaries.checkpoint("replica.quarantine");
+    } catch (error) {
+      // IndexedDB auto-commits a transaction with no pending request, so a
+      // failure after the deletions must roll them back explicitly.
+      await abortTransaction(transaction);
+      throw error;
     }
     await commitTransaction(transaction);
+  }
+
+  /**
+   * Validate one stored partition completely, and quarantine it if it cannot
+   * produce the value it claims to.
+   *
+   * Both halves run before the caller can hold anything observable: the
+   * manifest first, because a manifest that contradicts itself cannot even name
+   * a walk, and then every node reachable from its four roots. Only a partition
+   * that survives both is handed to `dbFromRecord`, so a walk that stops
+   * half-way yields no `Db` at all rather than one over the datoms it did
+   * manage to read.
+   */
+  private async validated(
+    record: unknown,
+    identity: ReplicationIdentity,
+    attributes: readonly AttributeSpec[],
+    readCompatibilityHash: ReadCompatibilityHash,
+    fingerprint?: string,
+  ): Promise<ReplicaRestoreOutcome<CommittedRecord>> {
+    const partition = replicaPartitionKey(identity);
+    const quarantine = async (
+      reason: Parameters<typeof replicaUnusable>[1],
+      detail: string,
+    ): Promise<ReplicaRestoreOutcome<CommittedRecord>> => {
+      await this.quarantinePartition(identity, {
+        ...(fingerprint === undefined ? {} : { fingerprint }),
+      });
+      return replicaUnusable<CommittedRecord>(partition, reason, detail);
+    };
+    if (identity.readCompatibilityHash !== readCompatibilityHash) {
+      return quarantine(
+        "read-compatibility",
+        "the selected identity does not confirm this client's read compatibility",
+      );
+    }
+    const manifest = validateReplicaManifest(record, { partition, readCompatibilityHash });
+    if (Result.isFailure(manifest)) {
+      return quarantine(manifest.failure.reason, manifest.failure.detail);
+    }
+    if (!sameReplicaAttributes(manifest.success.attributes, replicaAttributes(attributes))) {
+      return quarantine(
+        "schema-metadata",
+        "replica attribute metadata is incompatible with the committed read view",
+      );
+    }
+    const invalid = await validateReachableNodes(this.database, manifest.success);
+    if (invalid !== undefined) return quarantine(invalid.reason, invalid.detail);
+    return replicaRestored(manifest.success);
   }
 
   /** Remove one stale exact binding without touching its shared partition. */
@@ -1164,31 +1402,50 @@ export class IndexedDbReplicaStorage {
     await commitTransaction(transaction);
   }
 
+  /**
+   * Cold restore of one partition, with the full integrity walk.
+   *
+   * The outcome is ordinary data: `absent` when nothing is stored for this
+   * selection, `replacement-required` when the stored partition was corrupt and
+   * has been quarantined, `update-required` when it was intact but disagrees
+   * with the installed client catalog. Only `restored` carries a `Db`.
+   */
+  async restoreOutcome(
+    identity: ReplicationIdentity,
+    attributes: readonly AttributeSpec[],
+    readCompatibilityHash: ReadCompatibilityHash,
+  ): Promise<ReplicaRestoreOutcome<RestoredReplica>> {
+    this.assertScopeLive(replicaScopeOf(identity));
+    const record = await this.committed(identity);
+    if (record === undefined) return replicaAbsent();
+    // A record filed under this partition whose identity differs outside the
+    // partition key selects nothing: it is another value, not a damaged one.
+    const stored = replicaManifestIdentity(record);
+    if (stored !== undefined && !sameReplicationIdentity(stored, identity)) {
+      return replicaAbsent();
+    }
+    const validated = await this.validated(
+      record,
+      identity,
+      attributes,
+      readCompatibilityHash,
+    );
+    if (validated._tag !== "restored") return validated;
+    return replicaRestored({
+      db: dbFromRecord(this.database, validated.replica, readCompatibilityHash),
+      revision: validated.replica.revision,
+    });
+  }
+
+  /** {@link IndexedDbReplicaStorage.restoreOutcome}, for callers that only want the value. */
   async restore(
     identity: ReplicationIdentity,
     attributes: readonly AttributeSpec[],
     readCompatibilityHash: ReadCompatibilityHash,
   ): Promise<RestoredReplica | undefined> {
-    this.assertScopeLive(replicaScopeOf(identity));
-    const record = await this.committed(identity);
-    if (record === undefined) return undefined;
-    if (record.storageVersion !== REPLICA_STORAGE_VERSION) return undefined;
-    if (!sameReplicationIdentity(record.identity, identity)) return undefined;
-    if (
-      identity.readCompatibilityHash !== readCompatibilityHash ||
-      record.readCompatibilityHash !== readCompatibilityHash ||
-      record.identity.readCompatibilityHash !== readCompatibilityHash
-    ) {
-      await this.quarantineReplica(identity);
-      return undefined;
-    }
-    if (!sameReplicaAttributes(record.attributes, replicaAttributes(attributes))) {
-      throw new Error("replica attribute metadata is incompatible with the committed read view");
-    }
-    return {
-      db: dbFromRecord(this.database, record, readCompatibilityHash),
-      revision: record.revision,
-    };
+    return restoredReplica(
+      await this.restoreOutcome(identity, attributes, readCompatibilityHash),
+    );
   }
 
   /**
@@ -1238,32 +1495,45 @@ export class IndexedDbReplicaStorage {
    * Construct a candidate only after the current response authenticated its
    * exact identity and revision. A concurrent manifest change fails closed.
    */
+  async restoreCandidateOutcome(
+    candidate: ReplicaCacheCandidate,
+    attributes: readonly AttributeSpec[],
+    readCompatibilityHash: ReadCompatibilityHash,
+  ): Promise<ReplicaRestoreOutcome<BoundRestoredReplica>> {
+    this.assertScopeLive(replicaScopeOf(candidate.identity));
+    const record = await this.committed(candidate.identity);
+    if (record === undefined) return replicaAbsent();
+    const stored = replicaManifestIdentity(record);
+    if (stored !== undefined && !sameReplicationIdentity(stored, candidate.identity)) {
+      return replicaAbsent();
+    }
+    const validated = await this.validated(
+      record,
+      candidate.identity,
+      attributes,
+      readCompatibilityHash,
+    );
+    if (validated._tag !== "restored") return validated;
+    // The candidate nominated one exact revision and the response confirmed
+    // that revision; a manifest that moved underneath is a concurrent install,
+    // not damage, and this path simply fails closed.
+    if (validated.replica.revision !== candidate.revision) return replicaAbsent();
+    return replicaRestored({
+      identity: candidate.identity,
+      db: dbFromRecord(this.database, validated.replica, readCompatibilityHash),
+      revision: validated.replica.revision,
+    });
+  }
+
+  /** {@link IndexedDbReplicaStorage.restoreCandidateOutcome}, value only. */
   async restoreConfirmedCandidate(
     candidate: ReplicaCacheCandidate,
     attributes: readonly AttributeSpec[],
     readCompatibilityHash: ReadCompatibilityHash,
   ): Promise<BoundRestoredReplica | undefined> {
-    this.assertScopeLive(replicaScopeOf(candidate.identity));
-    const record = await this.committed(candidate.identity);
-    if (
-      record === undefined ||
-      record.storageVersion !== REPLICA_STORAGE_VERSION ||
-      record.revision !== candidate.revision ||
-      candidate.identity.readCompatibilityHash !== readCompatibilityHash ||
-      record.readCompatibilityHash !== readCompatibilityHash ||
-      record.identity.readCompatibilityHash !== readCompatibilityHash ||
-      !sameReplicationIdentity(record.identity, candidate.identity)
-    ) {
-      return undefined;
-    }
-    if (!sameReplicaAttributes(record.attributes, replicaAttributes(attributes))) {
-      throw new Error("replica attribute metadata is incompatible with the committed read view");
-    }
-    return {
-      identity: candidate.identity,
-      db: dbFromRecord(this.database, record, readCompatibilityHash),
-      revision: record.revision,
-    };
+    return restoredReplica(
+      await this.restoreCandidateOutcome(candidate, attributes, readCompatibilityHash),
+    );
   }
 
   /**
@@ -1368,11 +1638,11 @@ export class IndexedDbReplicaStorage {
   }
 
   /** Restore only the exact partition selected by a prior authenticated binding. */
-  async restoreBound(
+  async restoreBoundOutcome(
     fingerprint: string,
     attributes: readonly AttributeSpec[],
     readCompatibilityHash: ReadCompatibilityHash,
-  ): Promise<BoundRestoredReplica | undefined> {
+  ): Promise<ReplicaRestoreOutcome<BoundRestoredReplica>> {
     const transaction = this.database.transaction(
       [CREDENTIAL_BINDINGS, COMMITTED],
       "readonly",
@@ -1382,35 +1652,44 @@ export class IndexedDbReplicaStorage {
     );
     if (binding === undefined) {
       await transactionDone(transaction);
-      return undefined;
+      return replicaAbsent();
     }
-    const record = await requestResult<CommittedRecord | undefined>(
+    const record = await requestResult<unknown>(
       transaction.objectStore(COMMITTED).get(replicaPartitionKey(binding.identity)),
     );
     await transactionDone(transaction);
-    if (record === undefined || record.storageVersion !== REPLICA_STORAGE_VERSION) {
-      return undefined;
-    }
-    if (!sameReplicationIdentity(record.identity, binding.identity)) {
+    if (record === undefined) return replicaAbsent();
+    const stored = replicaManifestIdentity(record);
+    if (stored !== undefined && !sameReplicationIdentity(stored, binding.identity)) {
+      // The binding selects a partition that now holds another value; drop the
+      // stale selector without touching the partition it pointed at.
       await this.unbindCredential(fingerprint);
-      return undefined;
+      return replicaAbsent();
     }
-    if (
-      binding.identity.readCompatibilityHash !== readCompatibilityHash ||
-      record.readCompatibilityHash !== readCompatibilityHash ||
-      record.identity.readCompatibilityHash !== readCompatibilityHash
-    ) {
-      await this.quarantineReplica(binding.identity, fingerprint);
-      return undefined;
-    }
-    if (!sameReplicaAttributes(record.attributes, replicaAttributes(attributes))) {
-      throw new Error("replica attribute metadata is incompatible with the committed read view");
-    }
-    return {
+    const validated = await this.validated(
+      record,
+      binding.identity,
+      attributes,
+      readCompatibilityHash,
+      fingerprint,
+    );
+    if (validated._tag !== "restored") return validated;
+    return replicaRestored({
       identity: binding.identity,
-      db: dbFromRecord(this.database, record, readCompatibilityHash),
-      revision: record.revision,
-    };
+      db: dbFromRecord(this.database, validated.replica, readCompatibilityHash),
+      revision: validated.replica.revision,
+    });
+  }
+
+  /** {@link IndexedDbReplicaStorage.restoreBoundOutcome}, value only. */
+  async restoreBound(
+    fingerprint: string,
+    attributes: readonly AttributeSpec[],
+    readCompatibilityHash: ReadCompatibilityHash,
+  ): Promise<BoundRestoredReplica | undefined> {
+    return restoredReplica(
+      await this.restoreBoundOutcome(fingerprint, attributes, readCompatibilityHash),
+    );
   }
 
   /** Reset abandons only incomplete staging; a same-identity committed value survives. */
@@ -1577,7 +1856,7 @@ export class IndexedDbReplicaStorage {
     const fence = replicaFence(options.lease, frame.identity);
     const [staged, prior] = await Promise.all([
       this.stagedState(frame),
-      this.committed(frame.identity),
+      this.priorManifest(frame.identity),
     ]);
     const state = staged.state;
     if (state.committed?.revision !== frame.revision) return undefined;
