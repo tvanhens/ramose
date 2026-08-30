@@ -1390,6 +1390,45 @@ browserTest(
 );
 
 browserTest(
+  "an authoritative output the canonicalizer would refuse still commits",
+  async ({ browser }) => {
+    const name = `ramose-outbox-output-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      const outbox = storage.outbox();
+      const record = await outbox.enqueue(draft(receiver), { scope });
+      // A lone surrogate survives JSON transport and the operation was
+      // entitled to return it. Refusing to store it would leave this
+      // invocation queued and resubmitting forever against a receipt that
+      // replays the same output every time — a queue wedged on a string.
+      // A queued *input* is still refused: it has to canonicalize.
+      const output = { "\ud800": `lone \udfff surrogate` };
+      const receipt = await outbox.acknowledge(
+        record,
+        { _tag: "Committed", output, mappings: [] },
+        1_700_000_000_004,
+      );
+      expect(receipt.state).toBe("committed");
+      expect(receipt.output).toEqual(output);
+      expect((await outbox.receipt(receiver, record.invocation))?.output)
+        .toEqual(output);
+      expect(
+        await rejectedTag(
+          outbox.enqueue(draft(receiver, { input: { title: "\ud800" } }), { scope }),
+        ),
+      ).toBe("OutboxRecordInvalid");
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a rejection is terminal, typed, and leaves no queued work",
   async ({ browser }) => {
     const name = `ramose-outbox-rejected-${browser.uniqueId}`;

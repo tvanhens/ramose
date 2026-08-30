@@ -788,6 +788,14 @@ export class IndexedDbOutbox {
     acknowledgedAt = Date.now(),
   ): Promise<ReceiptRecord> {
     const scopeKey = replicaScopeKey(record.receiver);
+    // The row's own scope key and its receiver must name the same realm: the
+    // enqueue guaranteed it, and fencing on a key the row does not belong to
+    // would let an acknowledgement land behind another scope's clear.
+    if (scopeKey !== record.scope) {
+      throw new OutboxRecordInvalid({
+        reason: "the acknowledged record's receiver is outside its own scope",
+      });
+    }
     const observed = await this.preflightScope(record.receiver);
     const transaction = this.database.transaction(
       [

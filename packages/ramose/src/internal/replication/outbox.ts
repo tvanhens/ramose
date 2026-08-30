@@ -280,14 +280,31 @@ const reject = (reason: string): never => {
  * restart, holding its own partition. The snapshot is what is validated,
  * what the declared positions are read from, and what is persisted.
  */
-const jsonSnapshot = (value: unknown, at: string, seen: Set<object>): JsonValue => {
+const jsonSnapshot = (
+  value: unknown,
+  at: string,
+  seen: Set<object>,
+  /**
+   * Whether this value must also survive RFC 8785 canonicalization.
+   *
+   * A queued *input* must: it enters the canonical invocation digest, so a
+   * value the canonicalizer refuses could never be submitted and would make
+   * even an identical retry throw instead of matching.
+   *
+   * An authoritative *output* must not be held to that rule. It is application
+   * data the server already committed, it is never digested here, and refusing
+   * to store it would leave the invocation queued and resubmitting forever
+   * against a receipt that replays the same output every time — a wedged queue
+   * for a string the operation was entitled to return.
+   */
+  canonical: boolean,
+): JsonValue => {
   if (value === null) return null;
   switch (typeof value) {
     case "string":
-      // RFC 8785 rejects a lone surrogate, so a string carrying one could
-      // never enter the canonical invocation digest — and would make even an
-      // identical retry throw instead of matching. It never becomes durable.
-      if (hasLoneSurrogate(value)) reject(`input at ${at} has a lone surrogate`);
+      if (canonical && hasLoneSurrogate(value)) {
+        reject(`input at ${at} has a lone surrogate`);
+      }
       return value;
     case "boolean":
       return value;
@@ -310,7 +327,7 @@ const jsonSnapshot = (value: unknown, at: string, seen: Set<object>): JsonValue 
       // by `forEach` but becomes `null` the moment the value is serialized for
       // the wire, which would change the invocation digest after the fact.
       if (!(index in object)) reject(`input at ${at}[${index}] is a hole`);
-      items.push(jsonSnapshot(object[index], `${at}[${index}]`, seen));
+      items.push(jsonSnapshot(object[index], `${at}[${index}]`, seen, canonical));
     }
     snapshot = Object.freeze(items);
   } else {
@@ -324,8 +341,10 @@ const jsonSnapshot = (value: unknown, at: string, seen: Set<object>): JsonValue 
     // against.
     const fields: (readonly [string, JsonValue])[] = [];
     for (const [key, item] of Object.entries(object)) {
-      if (hasLoneSurrogate(key)) reject(`input at ${at} has a lone surrogate in a key`);
-      fields.push([key, jsonSnapshot(item, `${at}.${key}`, seen)]);
+      if (canonical && hasLoneSurrogate(key)) {
+        reject(`input at ${at} has a lone surrogate in a key`);
+      }
+      fields.push([key, jsonSnapshot(item, `${at}.${key}`, seen, canonical)]);
     }
     snapshot = Object.freeze(Object.fromEntries(fields));
   }
@@ -514,7 +533,7 @@ export const buildOutboxRecord = (
   }
   // Validated and materialized once. Everything below reads this snapshot,
   // and it is what becomes durable.
-  const input = jsonSnapshot(draft.input, "input", new Set());
+  const input = jsonSnapshot(draft.input, "input", new Set(), true);
 
   const slots = new Set<string>();
   const allocated = new Set<string>();
@@ -971,7 +990,7 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
   }
   let input: JsonValue;
   try {
-    input = jsonSnapshot(value.input, "input", new Set());
+    input = jsonSnapshot(value.input, "input", new Set(), true);
   } catch {
     return undefined;
   }
@@ -1234,7 +1253,7 @@ export const decodeReceipt = (value: unknown): ReceiptRecord | undefined => {
   let output: JsonValue | null = null;
   if (value.output !== null) {
     try {
-      output = jsonSnapshot(value.output, "output", new Set());
+      output = jsonSnapshot(value.output, "output", new Set(), false);
     } catch {
       return undefined;
     }
