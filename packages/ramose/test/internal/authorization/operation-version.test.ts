@@ -18,6 +18,7 @@ import {
 import {
   DEFAULT_OPERATION_REVISION,
   hashOperationVersion,
+  normalizeContractRepresentation,
   operationVersionMaterial,
   requireOperationRevision,
   type OperationVersionDescriptor,
@@ -68,6 +69,32 @@ const documentedCatalog = () => {
         doc: "Close one issue",
         input: Schema.Struct({ reason: Schema.String }),
         output: Schema.Struct({ ok: Schema.Boolean }),
+        run() {
+          return { ok: true };
+        },
+      }),
+    }),
+  });
+  const Note = Entity("note", { body: string() });
+  return CatalogSchema({ issue: Issue, note: Note });
+};
+
+/** Only JSON Schema documentation annotations differ from the baseline. */
+const annotatedSchemaCatalog = () => {
+  const taggable = Taggable();
+  const Issue = Entity("issue", { title: string() }, {
+    traits: [taggable],
+    operations: (Operation) => ({
+      close: Operation({
+        input: Schema.Struct({
+          reason: Schema.String.annotate({
+            title: "Reason",
+            description: "why the issue closed",
+          }),
+        }).annotate({ description: "close input" }),
+        output: Schema.Struct({ ok: Schema.Boolean }).annotate({
+          description: "close output",
+        }),
         run() {
           return { ok: true };
         },
@@ -273,6 +300,46 @@ describe("canonical operation version descriptor", () => {
     });
   });
 
+  test("strips documentation keywords from a contract without touching data", () => {
+    const document = {
+      dialect: "draft-2020-12",
+      schema: {
+        type: "object",
+        title: "Close input",
+        description: "documentation",
+        properties: {
+          // A property literally named `description` is data, not an
+          // annotation, and must survive with its own contract intact.
+          description: { type: "string", description: "documented" },
+          items: { type: "array", items: { type: "number", title: "n" } },
+          choice: {
+            anyOf: [{ type: "string", description: "a" }, { type: "null" }],
+          },
+          vendor: { "x-ramose": { description: "unknown keyword kept" } },
+        },
+        required: ["description"],
+      },
+      definitions: { Note: { type: "string", description: "note" } },
+    };
+    expect(normalizeContractRepresentation(document)).toEqual({
+      dialect: "draft-2020-12",
+      schema: {
+        type: "object",
+        properties: {
+          description: { type: "string" },
+          items: { type: "array", items: { type: "number" } },
+          choice: { anyOf: [{ type: "string" }, { type: "null" }] },
+          vendor: { "x-ramose": { description: "unknown keyword kept" } },
+        },
+        required: ["description"],
+      },
+      definitions: { Note: { type: "string" } },
+    });
+    // An unrecognized document shape is hashed verbatim rather than guessed at.
+    expect(normalizeContractRepresentation({ description: "not a document" }))
+      .toEqual({ description: "not a document" });
+  });
+
   test("rejects a revision that is not a positive integer", () => {
     expect(requireOperationRevision(undefined, "issue.close")).toBe(1);
     expect(requireOperationRevision(7, "issue.close")).toBe(7);
@@ -338,8 +405,11 @@ describe("deployed operation versions", () => {
   test("ignore documentation and unrelated definitions in the same catalog", async () => {
     const base = await versions(baseCatalog);
     const documented = await versions(documentedCatalog);
+    const annotated = await versions(annotatedSchemaCatalog);
     const unrelated = await versions(unrelatedCatalog);
     expect(documented).toEqual(base);
+    // Schema `title`/`description` annotations are documentation too.
+    expect(annotated).toEqual(base);
     expect(unrelated["issue.close"]).toBe(base["issue.close"]!);
     expect(unrelated["taggable.addTag"]).toBe(base["taggable.addTag"]!);
   });

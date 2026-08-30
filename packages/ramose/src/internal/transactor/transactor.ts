@@ -71,6 +71,7 @@ import {
 } from "../runtime-boundaries.ts";
 import {
   authorizeCatalogOperation,
+  authorizeCatalogOperationGrant,
   authorizeCatalogOperationReplay,
   catalogProvisioningAttributes,
   decideInvocationReceipt,
@@ -743,28 +744,59 @@ export class Transactor {
                 p.operation.localName,
               );
               if (operationVersion === undefined) throw opaqueOperationDenial();
+              // Every effect-free compatibility answer is disclosed only to a
+              // caller who may still invoke the operation as it stands now.
+              // Grant-only admission deliberately stops before the target and
+              // input checks — those are exactly what a changed operation
+              // moves — and its sealed denial wins over the answer (#419).
+              const operationRuntime = this.operationRuntime;
+              const operation = p.operation;
+              const resolveCompatibility = async (
+                tag: "OperationChanged" | "UpdateRequired",
+              ) => {
+                await authorizeCatalogOperationGrant(
+                  this.conn,
+                  operationRuntime,
+                  operation,
+                  resolved,
+                );
+                this.stats.rejected++;
+                p.resolve({ _tag: tag });
+              };
+              const staleSuppliedVersion = supplied !== undefined &&
+                supplied !== operationVersion;
+              if (staleSuppliedVersion) {
+                await resolveCompatibility("OperationChanged");
+                continue;
+              }
               const prepared = await Effect.runPromise(
                 prepareInvocationReceipt(p.operation, operationVersion),
               );
               const inspected = this.inspectInvocationReceipt(prepared);
               if (
-                inspected._tag === "Conflict" ||
                 inspected._tag === "OperationChanged" ||
                 inspected._tag === "UpdateRequired"
               ) {
+                await resolveCompatibility(inspected._tag);
+                continue;
+              }
+              if (inspected._tag === "Conflict") {
                 this.stats.rejected++;
-                p.resolve({ _tag: inspected._tag });
+                p.resolve({ _tag: "Conflict" });
                 continue;
               }
               if (inspected._tag === "Recover") {
                 const recovered = this.recoverInvocationReceipt(prepared);
                 if (
-                  recovered._tag === "Conflict" ||
                   recovered._tag === "OperationChanged" ||
                   recovered._tag === "UpdateRequired"
                 ) {
+                  await resolveCompatibility(recovered._tag);
+                  continue;
+                }
+                if (recovered._tag === "Conflict") {
                   this.stats.rejected++;
-                  p.resolve({ _tag: recovered._tag });
+                  p.resolve({ _tag: "Conflict" });
                   continue;
                 }
                 if (recovered._tag === "Replay" || recovered._tag === "Recover") {
@@ -774,6 +806,8 @@ export class Transactor {
                 // A missing row cannot normally race inside one serialized DO,
                 // but if storage changed, continue through fresh admission.
               }
+              // An exact replay keeps PR #527's behavior byte for byte. The
+              // fenced admission below is unchanged and still runs first.
               if (inspected._tag === "Replay") {
                 if (inspected.receipt.status === "completed") {
                   await authorizeCatalogOperationReplay(
@@ -795,37 +829,13 @@ export class Transactor {
                 continue;
               }
 
-              // A caller-supplied version that no longer matches the deployed
-              // operation must have no effect. Admission still runs first so
-              // an unauthorized caller keeps the sealed denial (#419) instead
-              // of learning that the operation exists and moved.
-              let admission: CatalogOperationAdmission;
-              try {
-                admission = await authorizeCatalogOperation(
+              const admission: CatalogOperationAdmission =
+                await authorizeCatalogOperation(
                   this.conn,
                   this.operationRuntime,
                   p.operation,
                   resolved,
                 );
-              } catch (cause) {
-                // Input that no longer decodes against the deployed contract
-                // is the changed operation, not a caller mistake. Denials and
-                // engine faults keep their own meaning.
-                if (
-                  supplied !== undefined && supplied !== operationVersion &&
-                  cause instanceof InvalidRequest
-                ) {
-                  this.stats.rejected++;
-                  p.resolve({ _tag: "OperationChanged" });
-                  continue;
-                }
-                throw cause;
-              }
-              if (supplied !== undefined && supplied !== operationVersion) {
-                this.stats.rejected++;
-                p.resolve({ _tag: "OperationChanged" });
-                continue;
-              }
 
               // Missing keys are admitted without writes. Only now, directly
               // before native execution, atomically recheck and insert.

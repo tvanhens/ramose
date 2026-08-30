@@ -91,6 +91,31 @@ const createVersionAtRevision = async (revision: number): Promise<string> => {
   return lowered.descriptors[0]!.version as string;
 };
 
+/**
+ * The same `nativeItem/create` contract as a *targeted* operation — the shape
+ * change that used to make a pinned queued invocation look like an
+ * authorization denial rather than a changed operation.
+ */
+const targetedCreateVersion = async (): Promise<string> => {
+  const Replica = Entity("nativeItem", { title: string() }, {
+    operations: (Operation) => ({
+      create: Operation({
+        input: EffectSchema.Struct({ title: EffectSchema.String }),
+        output: EffectSchema.Struct({ id: OperationEntityId }),
+        run() {
+          return { id: 1 };
+        },
+      }),
+    }),
+  });
+  const lowered = await Effect.runPromise(lowerOwnedOperations(
+    CatalogId.make("local-native-operations"),
+    Schema({ nativeItem: Replica }),
+    DigestHex.make("7d".repeat(32)),
+  ));
+  return lowered.descriptors[0]!.version as string;
+};
+
 const withoutReceipt = (body: Record<string, unknown>) => {
   const { receipt: _receipt, ...rest } = body;
   return rest;
@@ -1176,6 +1201,102 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       });
       expect(absent.body.result).toEqual([]);
       expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+    });
+
+    test("a pinned target-mode change is a changed operation, not a denial", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-version-shape";
+      await install(base, database);
+      const token = await signToken(database, "member", "user_version_shape");
+      const targeted = await targetedCreateVersion();
+      const receiptsBefore = await operationReceiptCount(base, database);
+      const operation = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "create",
+      };
+
+      // The queued request carries the old targeted shape: a target the
+      // deployed targetless operation would refuse outright. Compatibility is
+      // decided before that current-shape check, so an authorized caller
+      // learns the operation moved instead of seeing a 403.
+      const refused = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        { title: "Must not execute" },
+        1000,
+        crypto.randomUUID(),
+        targeted,
+      );
+      expect(refused.status).toBe(409);
+      expect(refused.body).toEqual({
+        error: "request rejected",
+        code: "operation_changed",
+      });
+      const absent = await testAdmin(base, database, "/query", {
+        query: '[:find ?e :where [?e :nativeItem/title "Must not execute"]]',
+      });
+      expect(absent.body.result).toEqual([]);
+      expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+    });
+
+    test("a stale pin refuses a completed invocation without disturbing its replay", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-version-pinned-replay";
+      await install(base, database);
+      const token = await signToken(database, "member", "user_version_pinned");
+      const operation = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "create",
+      };
+      const invocationId = "pinned-replay-invocation-01";
+      const input = { title: "Pinned replay" };
+      const completed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        input,
+        undefined,
+        invocationId,
+      );
+      expect(completed.status).toBe(200);
+
+      // Retrying the same invocation while pinning a version the caller never
+      // consented to must not hand back a result minted under another one.
+      const pinned = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        input,
+        undefined,
+        invocationId,
+        await createVersionAtRevision(2),
+      );
+      expect(pinned.status).toBe(409);
+      expect(pinned.body).toEqual({
+        error: "request rejected",
+        code: "operation_changed",
+      });
+
+      // The receipt is untouched: the ordinary retry still replays exactly.
+      const replayed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        input,
+        undefined,
+        invocationId,
+      );
+      expect(replayed.status).toBe(200);
+      expect(replayed.body).toEqual(completed.body);
+      const rows = await testAdmin(base, database, "/query", {
+        query: '[:find ?e :where [?e :nativeItem/title "Pinned replay"]]',
+      });
+      expect(rows.body.result.length).toBe(1);
     });
   });
 };

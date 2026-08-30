@@ -89,6 +89,111 @@ export const requireOperationRevision = (
 const sortedNames = (names: readonly string[]): readonly string[] =>
   [...new Set(names)].sort();
 
+/** JSON Schema keywords that carry documentation and no wire meaning. */
+const DOCUMENTATION_KEYWORDS = new Set([
+  "title",
+  "description",
+  "$comment",
+  "examples",
+]);
+/** Keywords whose value is one subschema. */
+const SUBSCHEMA_KEYWORDS = new Set([
+  "additionalItems",
+  "additionalProperties",
+  "contains",
+  "contentSchema",
+  "else",
+  "if",
+  "items",
+  "not",
+  "propertyNames",
+  "then",
+  "unevaluatedItems",
+  "unevaluatedProperties",
+]);
+/** Keywords whose value is an array of subschemas. */
+const SUBSCHEMA_LIST_KEYWORDS = new Set([
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "prefixItems",
+]);
+/** Keywords whose value maps author-chosen names to subschemas. */
+const SUBSCHEMA_MAP_KEYWORDS = new Set([
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+  "patternProperties",
+  "properties",
+]);
+
+const isJsonObject = (value: unknown): value is Record<string, JsonValue> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Drop documentation keywords from one JSON Schema node. Only positions that
+ * are known to hold subschemas are descended into, so an author's property
+ * *named* `description` is never mistaken for an annotation and an unknown
+ * keyword is hashed verbatim. Removing documentation can never merge two
+ * different contracts — it can only stop rotating on a doc-only edit.
+ */
+const stripSchemaDocumentation = (node: JsonValue): JsonValue => {
+  if (Array.isArray(node)) return node.map(stripSchemaDocumentation);
+  if (!isJsonObject(node)) return node;
+  const out: Record<string, JsonValue> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (DOCUMENTATION_KEYWORDS.has(key)) continue;
+    if (SUBSCHEMA_KEYWORDS.has(key)) {
+      out[key] = stripSchemaDocumentation(value);
+    } else if (SUBSCHEMA_LIST_KEYWORDS.has(key) && Array.isArray(value)) {
+      out[key] = value.map(stripSchemaDocumentation);
+    } else if (SUBSCHEMA_MAP_KEYWORDS.has(key) && isJsonObject(value)) {
+      out[key] = Object.fromEntries(
+        Object.entries(value).map(([name, child]) => [
+          name,
+          stripSchemaDocumentation(child),
+        ]),
+      );
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+};
+
+/**
+ * Normalize one declared contract representation for the version digest.
+ * The deployed projection is a JSON Schema document (`{ dialect, schema,
+ * definitions }`); documentation is excluded from the compatibility contract,
+ * so an author's `description` or `title` edit must not rotate the version.
+ * An unrecognized document shape is hashed verbatim rather than guessed at.
+ */
+export const normalizeContractRepresentation = (
+  representation: JsonValue,
+): JsonValue => {
+  if (!isJsonObject(representation) || representation.schema === undefined) {
+    return representation;
+  }
+  const out: Record<string, JsonValue> = {};
+  for (const [key, value] of Object.entries(representation)) {
+    if (key === "schema") {
+      out[key] = stripSchemaDocumentation(value);
+    } else if (
+      (key === "definitions" || key === "$defs") && isJsonObject(value)
+    ) {
+      out[key] = Object.fromEntries(
+        Object.entries(value).map(([name, child]) => [
+          name,
+          stripSchemaDocumentation(child),
+        ]),
+      );
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+};
+
 /**
  * Canonical, deployment-free operation material. Construction is the
  * enforcement: nothing outside {@link OperationVersionDescriptor} can reach
@@ -107,11 +212,15 @@ export const operationVersionMaterial = (
   revision: descriptor.revision,
   contract: {
     input: {
-      representation: descriptor.input.representation,
+      representation: normalizeContractRepresentation(
+        descriptor.input.representation,
+      ),
       shape: descriptor.input.shape as unknown as JsonValue,
     },
     output: {
-      representation: descriptor.output.representation,
+      representation: normalizeContractRepresentation(
+        descriptor.output.representation,
+      ),
       shape: descriptor.output.shape as unknown as JsonValue,
     },
   },

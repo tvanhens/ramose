@@ -1496,18 +1496,18 @@ const validateSubjectChecks = async (
 };
 
 /**
- * Re-run every current-basis admission check without invoking the native
- * operation body. Completed receipts use this before replay, so a receipt is
- * never an authorization cache after a target or data-derived view is revoked.
+ * Everything admission checks before it looks at this invocation's target or
+ * input: the deployment fence, the deployed binding, the authorization lease,
+ * the request context, and the operation grant. It is the exact prefix that
+ * stays valid when the operation itself has moved, which is why a
+ * compatibility answer may be disclosed once it passes.
  */
-const authorizeCatalogOperationOnDb = async (
-  connection: Connection,
+const admitOperationGrantOnDb = async (
   runtime: OperationRuntime,
   invocation: OperationInvocation,
   currentDb: Db,
   resolvedCatalog?: ResolvedOperationCatalog,
-  replayFence?: InvocationReplayFenceV1,
-): Promise<CatalogOperationAdmission> => {
+) => {
   const authorizationCaller = invocation.caller;
   // Admission finishes before native code runs. Keep the later lease fences
   // on this primitive snapshot; body-visible claims are intentionally ordinary
@@ -1559,6 +1559,44 @@ const authorizeCatalogOperationOnDb = async (
     authorizationCaller,
     context.principal.subject,
   )) throw deny();
+  return Object.freeze({
+    resolved,
+    deployed,
+    binding,
+    descriptor,
+    context,
+    expiresAtSeconds,
+    authoritativeNowMs,
+  });
+};
+
+/**
+ * Re-run every current-basis admission check without invoking the native
+ * operation body. Completed receipts use this before replay, so a receipt is
+ * never an authorization cache after a target or data-derived view is revoked.
+ */
+const authorizeCatalogOperationOnDb = async (
+  connection: Connection,
+  runtime: OperationRuntime,
+  invocation: OperationInvocation,
+  currentDb: Db,
+  resolvedCatalog?: ResolvedOperationCatalog,
+  replayFence?: InvocationReplayFenceV1,
+): Promise<CatalogOperationAdmission> => {
+  const {
+    authoritativeNowMs,
+    binding,
+    context,
+    deployed,
+    descriptor,
+    expiresAtSeconds,
+    resolved,
+  } = await admitOperationGrantOnDb(
+    runtime,
+    invocation,
+    currentDb,
+    resolvedCatalog,
+  );
 
   let target: { readonly eid: number; readonly type: string } | undefined;
   if (descriptor.id.target === "required") {
@@ -1683,6 +1721,29 @@ const authorizeCatalogOperationOnDb = async (
     authoritativeNowMs,
     ...(target === undefined ? {} : { target }),
   });
+};
+
+/**
+ * Admission up to and including the operation grant, and no further.
+ *
+ * A compatibility answer (`OperationChanged` / `UpdateRequired`) is only
+ * disclosable to a caller who would be allowed to invoke the operation as it
+ * stands now, so every effect-free compatibility outcome runs this first and
+ * lets its sealed denial win (#419). It deliberately skips the target and
+ * input checks, because those are exactly what a changed operation moves.
+ */
+export const authorizeCatalogOperationGrant = async (
+  connection: Connection,
+  runtime: OperationRuntime,
+  invocation: OperationInvocation,
+  resolvedCatalog?: ResolvedOperationCatalog,
+): Promise<void> => {
+  await admitOperationGrantOnDb(
+    runtime,
+    invocation,
+    connection.db(),
+    resolvedCatalog,
+  );
 };
 
 export const authorizeCatalogOperation = async (

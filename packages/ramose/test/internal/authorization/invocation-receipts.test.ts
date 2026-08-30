@@ -336,6 +336,11 @@ describe("authoritative invocation receipt serialization", () => {
       ...completed,
       executableSource: "return destroyEverything()",
     })).toThrow("invalid durable invocation receipt");
+    // A current-generation row without its operation version is corruption,
+    // not a legacy row: it must never be reinterpreted as replayable.
+    const { operationVersion: _dropped, ...withoutVersion } = completed;
+    expect(() => parseStoredInvocationReceipt(withoutVersion))
+      .toThrow("invalid durable invocation receipt");
     expect(() => parseStoredInvocationReceipt({
       ...completed,
       replayFence: {
