@@ -56,7 +56,14 @@ export type ResolvedExprV1 =
       readonly optional: boolean;
     }
   | { readonly kind: "constant"; readonly value: unknown; readonly type: ValueTypeV1 }
-  | { readonly kind: "var"; readonly name: string; readonly type: ValueTypeV1 }
+  | {
+      readonly kind: "var";
+      readonly name: string;
+      readonly type: ValueTypeV1;
+      /** A binding that aliases a cardinality-many field is set-valued, and
+       * the alias must be refused everywhere the field itself would be. */
+      readonly many: boolean;
+    }
   | {
       readonly kind: "call";
       readonly def: FunctionDefinitionV1;
@@ -69,6 +76,20 @@ export interface ResolvedBindingV1 {
   readonly name: string;
   readonly expr: ResolvedExprV1;
 }
+
+/** What a name in scope denotes: its value type, and whether it is a set. */
+export interface BoundVarV1 {
+  readonly type: ValueTypeV1;
+  readonly many: boolean;
+}
+
+/**
+ * Is this expression set-valued? A field path crossing a
+ * cardinality-many hop is; so is a binding that aliases one. A function
+ * result is not — a v1 function answers one value.
+ */
+export const isSetValued = (expr: ResolvedExprV1): boolean =>
+  (expr.kind === "field" || expr.kind === "var") && expr.many;
 
 export type ResolvedSelectionV1 =
   | { readonly kind: "expr"; readonly key: string; readonly expr: ResolvedExprV1 }
@@ -145,11 +166,18 @@ const isPlainObject = (x: unknown): x is Record<string, unknown> =>
   typeof x === "object" && x !== null && !Array.isArray(x);
 
 /**
- * Read one optional member. `null` reads as absent so a normalized
- * document — which writes every default explicitly, `null` included —
- * validates back to itself.
+ * Read one member that may be written `null`.
+ *
+ * Only the members the published schema declares nullable are read this
+ * way — `where`, `select`, and the three `page` counters — because those
+ * are the ones a normalized document writes as an explicit `null`, and it
+ * has to validate back to itself. Every other member follows the schema
+ * exactly: `null` is not `absent`, it is malformed, and the validator says
+ * so rather than quietly substituting a default. Failing closed here is
+ * the additive direction — loosening later accepts documents that are
+ * refused today, while tightening later would invalidate accepted ones.
  */
-const member = (raw: Record<string, unknown>, key: string): unknown => {
+const nullableMember = (raw: Record<string, unknown>, key: string): unknown => {
   const value = raw[key];
   return value === null ? undefined : value;
 };
@@ -187,6 +215,32 @@ const VALUE_TAGS: Readonly<Record<string, ValueTypeV1>> = {
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
+/**
+ * The ISO-8601 spellings `$inst` accepts: a calendar date, optionally with
+ * a time and a *required* zone designator. An explicit zone is the point —
+ * a bare local time would mean different instants on different peers.
+ *
+ * This is deliberately not `Date.parse`, which also accepts
+ * implementation-dependent spellings like `01/02/03`; the contract says
+ * ISO-8601, so the grammar is written down rather than inherited.
+ */
+const ISO_8601 =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,3})?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$/;
+
+/** The ECMAScript time-value range; outside it a `Date` is `Invalid Date`,
+ * which would serialize as `null` and silently lose the value. */
+const MAX_TIME_VALUE = 8_640_000_000_000_000;
+
+const instantMs = (payload: unknown): number | undefined => {
+  if (typeof payload === "number") {
+    return Number.isInteger(payload) && Math.abs(payload) <= MAX_TIME_VALUE ? payload : undefined;
+  }
+  if (typeof payload !== "string" || !ISO_8601.test(payload)) return undefined;
+  const ms = Date.parse(payload);
+  // the grammar admits 2026-13-45; the parse is what rejects it
+  return Number.isNaN(ms) || Math.abs(ms) > MAX_TIME_VALUE ? undefined : ms;
+};
+
 /** Validate and canonicalize one tagged value. One tag, one canonical form. */
 const assertTagged = (
   tag: string,
@@ -194,14 +248,16 @@ const assertTagged = (
   path: QueryDocumentPath,
 ): QueryJsonValue => {
   if (tag === "$inst") {
-    // Epoch milliseconds is the canonical form; an ISO string is accepted
-    // and normalized to it, so one instant has one serialization.
-    if (typeof payload === "number" && Number.isInteger(payload)) return { $inst: payload };
-    if (typeof payload === "string") {
-      const ms = Date.parse(payload);
-      if (!Number.isNaN(ms)) return { $inst: ms };
+    // Epoch milliseconds is the canonical form; an ISO-8601 string is
+    // accepted and normalized to it, so one instant has one serialization.
+    const ms = instantMs(payload);
+    if (ms === undefined) {
+      return malformed(
+        path,
+        "$inst is epoch milliseconds, or an ISO-8601 date or zoned date-time, within ±8640000000000000 ms",
+      ) as never;
     }
-    return malformed(path, "$inst is epoch milliseconds or an ISO-8601 string") as never;
+    return { $inst: ms };
   }
   if (tag === "$uuid") {
     if (typeof payload !== "string" || !UUID.test(payload)) {
@@ -291,7 +347,7 @@ interface Scope {
   readonly registry: FunctionRegistryV1;
   readonly root: AnyComposer;
   readonly params: ReadonlyMap<string, QueryJsonValue>;
-  readonly vars: ReadonlyMap<string, ValueTypeV1>;
+  readonly vars: ReadonlyMap<string, BoundVarV1>;
 }
 
 /** Which tag an expression node carries — exactly one, or it is malformed. */
@@ -397,11 +453,11 @@ const resolveExpr = (
     }
     case "var": {
       const name = assertName(obj["var"], [...path, "var"], "a binding name");
-      const type = scope.vars.get(name);
-      if (type === undefined) {
+      const bound = scope.vars.get(name);
+      if (bound === undefined) {
         malformed([...path, "var"], `no binding "${name}" is in scope here`);
       }
-      return { kind: "var", name, type: type! };
+      return { kind: "var", name, type: bound!.type, many: bound!.many };
     }
     case "call": {
       const name = obj["call"];
@@ -457,6 +513,18 @@ const resolveExpr = (
             `"${name}" takes ${param.type} for "${param.name}", got ${resolved.type}`,
           );
         }
+        // A scalar function computes one value from one value. Handing it a
+        // collection would fan the row out per member — so a set-valued
+        // argument is refused here, whether it is written as a card-many
+        // field or as a binding that aliases one. A *predicate* may take a
+        // collection: constraining it is the engine's ordinary existential
+        // "some member satisfies this".
+        if (!isPredicate && !argIsPredicate && isSetValued(resolved)) {
+          malformed(
+            [...path, "args", i],
+            `"${name}" computes one value, and "${param.name}" is a collection here — a set-valued argument would fan the row out`,
+          );
+        }
         return resolved;
       });
       return {
@@ -508,8 +576,8 @@ const validateParams = (raw: unknown): ReadonlyMap<string, QueryJsonValue> => {
 const validateBindings = (
   raw: unknown,
   scope: Scope,
-): { readonly bindings: readonly ResolvedBindingV1[]; readonly vars: Map<string, ValueTypeV1> } => {
-  const vars = new Map<string, ValueTypeV1>();
+): { readonly bindings: readonly ResolvedBindingV1[]; readonly vars: Map<string, BoundVarV1> } => {
+  const vars = new Map<string, BoundVarV1>();
   if (raw === undefined) return { bindings: [], vars };
   if (!Array.isArray(raw)) {
     return malformed(["let"], "let is an ordered array of { as, expr } bindings") as never;
@@ -527,7 +595,10 @@ const validateBindings = (
     // before it: forward references and self-reference are out of scope,
     // so an ordered list cannot express a cycle.
     const expr = resolveExpr({ ...scope, vars }, obj["expr"], [...path, "expr"], "let", false, 0);
-    vars.set(name, expr.type);
+    // Cardinality travels with the name: aliasing a card-many field does
+    // not make it a scalar, so every position that refuses the field
+    // refuses the alias too.
+    vars.set(name, { type: expr.type, many: isSetValued(expr) });
     bindings.push({ name, expr });
   });
   return { bindings, vars };
@@ -579,6 +650,14 @@ const validateProjection = (
     if (fieldOnly && expr.kind !== "field") {
       malformed(at, "a nested projection selects fields of the traversed entity");
     }
+    // A card-many *field* projects as a list; a set-valued *binding* has no
+    // such cell — it would fan the row out per member.
+    if (expr.kind === "var" && expr.many) {
+      malformed(
+        at,
+        `"${expr.name}" is a collection here — project the field itself, which reads as a list`,
+      );
+    }
     if (expr.kind === "field" && expr.steps.length !== 1) {
       malformed(
         at,
@@ -623,13 +702,17 @@ const validateOrderBy = (raw: unknown, scope: Scope): readonly ResolvedOrderV1[]
       malformed([...path, "empty"], 'empty is "first" or "last"');
     }
     const expr = resolveExpr(scope, obj["expr"], [...path, "expr"], "orderBy", false, 0);
+    // One rule for both spellings of a set: naming a card-many field in a
+    // binding does not turn it into a sort key. Ordering by one would fan
+    // the row out per member, and a keyset cursor over fanned rows skips
+    // and repeats.
+    if (isSetValued(expr)) {
+      malformed(
+        [...path, "expr"],
+        "a sort key crosses no cardinality-many field — the key would be a set, not a value",
+      );
+    }
     if (expr.kind === "field") {
-      if (expr.many) {
-        malformed(
-          [...path, "expr"],
-          "a sort key crosses no cardinality-many field — the key would be a set, not a value",
-        );
-      }
       return {
         key: { kind: "field" as const, steps: expr.steps },
         direction: direction as "asc" | "desc",
@@ -666,7 +749,7 @@ const validatePage = (
   if (extra.length > 0) malformed(path, `page has no member "${extra[0]}"`);
   // A normalized `page` of all-null members is the same statement as no
   // page member at all — that is what makes normalization idempotent.
-  const stated = ["first", "after", "offset"].filter((k) => member(raw, k) !== undefined);
+  const stated = ["first", "after", "offset"].filter((k) => nullableMember(raw, k) !== undefined);
   if (stated.length === 0) return empty;
   if (cardinality === "one") {
     return malformed(path, 'a cardinality "one" query answers one row — it does not page') as never;
@@ -678,10 +761,10 @@ const validatePage = (
     }
     return value;
   };
-  const first = count(member(raw, "first"), "first", 1) ?? limits.defaultPageSize;
-  const offset = count(member(raw, "offset"), "offset", 0);
+  const first = count(nullableMember(raw, "first"), "first", 1) ?? limits.defaultPageSize;
+  const offset = count(nullableMember(raw, "offset"), "offset", 0);
   let after: string | null = null;
-  if (member(raw, "after") !== undefined) {
+  if (nullableMember(raw, "after") !== undefined) {
     if (typeof raw["after"] !== "string" || raw["after"].length === 0) {
       malformed([...path, "after"], "after is the opaque cursor a previous page returned");
     }
@@ -722,6 +805,26 @@ const tallyExpr = (expr: ResolvedExprV1, tally: Tally, depth: number): void => {
   }
 };
 
+/**
+ * A projected reference leaf costs what lowering makes of it. `{ field:
+ * ["owner"] }` is not a scalar read: `leafCell` expands it to
+ * `owner.select({ id })`, a hop and a nested cell, exactly like the
+ * default row's references. Pricing it as a plain field would let a
+ * projection of reference leaves walk past `maxTraversals` while a
+ * projection of the identical nested selects is charged in full.
+ */
+const tallyReferenceLeaf = (tally: Tally, depth: number): void => {
+  tally.traversals += 1;
+  tally.projectionNodes += 1; // the nested `{ id }` cell
+  if (tally.projectionDepth < depth + 1) tally.projectionDepth = depth + 1;
+};
+
+const isReferenceLeaf = (expr: ResolvedExprV1): boolean => {
+  if (expr.kind !== "field") return false;
+  const leaf = expr.steps[expr.steps.length - 1]!.field;
+  return leaf.type === "ref" && leaf.key !== "id";
+};
+
 const tallyProjection = (
   select: readonly ResolvedSelectionV1[],
   tally: Tally,
@@ -735,18 +838,31 @@ const tallyProjection = (
       tallyProjection(sel.select, tally, depth + 1);
     } else {
       tallyExpr(sel.expr, tally, 1);
+      if (isReferenceLeaf(sel.expr)) tallyReferenceLeaf(tally, depth);
     }
   }
 };
 
-/** The default full-entity row, accounted exactly as if it were written out. */
-const tallyDefaultRow = (root: AnyComposer, tally: Tally): void => {
-  const fields = root.fields as unknown as Record<string, { readonly valueType?: unknown }>;
-  tally.projectionNodes += 1; // id
+/**
+ * The default full-entity row, accounted exactly as if it were written
+ * out — and, like `defaultShapeOf` in lowering, enumerated through the
+ * *catalog's* visible fields.
+ *
+ * Pricing the composer's raw field map instead would charge the caller for
+ * fields they cannot see: a select-less document could be refused over
+ * hidden columns, and the returned budget numbers would describe schema
+ * shape the caller is not allowed to know. What is priced and what is
+ * pulled have to be the same row.
+ */
+const tallyDefaultRow = (root: AnyComposer, catalog: QueryCatalogV1, tally: Tally): void => {
+  const id = catalog.field(root, "id");
+  if (id !== undefined) tally.projectionNodes += 1;
   let refs = 0;
-  for (const key of Object.keys(fields)) {
+  for (const key of Object.keys(root.fields as Record<string, unknown>)) {
+    const field = catalog.field(root, key);
+    if (field === undefined) continue;
     tally.projectionNodes += 1;
-    if (fields[key]?.valueType === "ref") {
+    if (field.type === "ref") {
       refs += 1;
       tally.traversals += 1;
       tally.projectionNodes += 1; // the nested `{ id }` cell
@@ -757,6 +873,7 @@ const tallyDefaultRow = (root: AnyComposer, tally: Tally): void => {
 
 const complexityOf = (
   resolved: ResolvedQueryDocumentV1,
+  catalog: QueryCatalogV1,
   limits: QueryLimitsV1,
 ): QueryComplexityV1 => {
   const tally: Tally = {
@@ -768,7 +885,7 @@ const complexityOf = (
     callCount: 0,
     callCost: 0,
   };
-  if (resolved.select === null) tallyDefaultRow(resolved.root, tally);
+  if (resolved.select === null) tallyDefaultRow(resolved.root, catalog, tally);
   else tallyProjection(resolved.select, tally, 1);
   for (const binding of resolved.bindings) tallyExpr(binding.expr, tally, 1);
   if (resolved.where !== null) tallyExpr(resolved.where, tally, 1);
@@ -889,9 +1006,12 @@ export const validateQueryDocumentUnsafe = (
     );
   }
   const { root, composer } = validateRoot(raw["from"], options.catalog);
-  const params = validateParams(member(raw, "params"));
+  // `params` / `let` / `orderBy` / `page` / `cardinality` are not nullable
+  // in the schema, so a written `null` reaches each member's own type check
+  // and is refused there — it never reads as "absent".
+  const params = validateParams(raw["params"]);
 
-  const cardinalityRaw = member(raw, "cardinality") ?? "many";
+  const cardinalityRaw = raw["cardinality"] === undefined ? "many" : raw["cardinality"];
   if (cardinalityRaw !== "one" && cardinalityRaw !== "many") {
     malformed(["cardinality"], 'cardinality is "one" or "many"');
   }
@@ -904,10 +1024,10 @@ export const validateQueryDocumentUnsafe = (
     params,
     vars: new Map(),
   };
-  const { bindings, vars } = validateBindings(member(raw, "let"), base);
+  const { bindings, vars } = validateBindings(raw["let"], base);
   const scope: Scope = { ...base, vars };
 
-  const whereRaw = member(raw, "where");
+  const whereRaw = nullableMember(raw, "where");
   const where =
     whereRaw === undefined ? null : resolveExpr(scope, whereRaw, ["where"], "where", true, 0);
   if (where !== null && !assignable(where.type, "boolean")) {
@@ -917,7 +1037,7 @@ export const validateQueryDocumentUnsafe = (
     malformed(["where"], "a filter constrains the row — it is a field, a binding, or a call");
   }
 
-  const selectRaw = member(raw, "select");
+  const selectRaw = nullableMember(raw, "select");
   const select =
     selectRaw === undefined ? null : validateProjection(selectRaw, scope, composer, ["select"], 1);
   // A row of only derived values has no entity behind it: the engine has no
@@ -930,9 +1050,9 @@ export const validateQueryDocumentUnsafe = (
       "a projection names at least one field of the entity — a row of only derived values has no entity to page or distinguish rows by",
     );
   }
-  const orderByRaw = member(raw, "orderBy");
+  const orderByRaw = raw["orderBy"];
   const orderBy = validateOrderBy(orderByRaw, scope);
-  const page = validatePage(member(raw, "page"), limits, cardinality, orderBy.length);
+  const page = validatePage(raw["page"], limits, cardinality, orderBy.length);
 
   const resolved: ResolvedQueryDocumentV1 = {
     root: composer,
@@ -943,14 +1063,14 @@ export const validateQueryDocumentUnsafe = (
     page,
     cardinality,
   };
-  const complexity = complexityOf(resolved, limits);
+  const complexity = complexityOf(resolved, options.catalog, limits);
   assertWithinLimits(complexity, limits);
 
   const document: NormalizedQueryDocumentV1 = {
     version: QUERY_DOCUMENT_VERSION,
     from: root,
     params: Object.fromEntries([...params.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
-    let: ((member(raw, "let") as readonly BindingV1[] | undefined) ?? []).map((b) => ({
+    let: ((raw["let"] as readonly BindingV1[] | undefined) ?? []).map((b) => ({
       as: b.as,
       expr: normalizeExpr(b.expr),
     })),

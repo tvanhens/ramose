@@ -68,6 +68,7 @@ const Issue = Entity(
     owner: Field(Ref(User), { optional: true }),
     parent: Field(Ref.self, { optional: true }),
     watchers: Field.many(Ref(User)),
+    labels: Field.many(string()),
   },
   { traits: [Taggable] },
 );
@@ -1183,6 +1184,260 @@ describe("derived-only projections", () => {
     // the keyset tie-breaker exists, which is only possible with a focus
     expect(ast.order.length).toBe(2);
     expect(document.resultShape.paged).toBe(true);
+  });
+});
+
+// ── budgets see exactly what the plan sees ──────────────────────────────────
+
+describe("budget accounting and visibility", () => {
+  const hiding = (owner: unknown, hidden: string): QueryCatalogV1 => ({
+    ...catalog,
+    field: (o, key) => (o === owner && key === hidden ? undefined : catalog.field(o, key)),
+  });
+
+  const complexityUnder = (cat: QueryCatalogV1, doc: unknown) => {
+    const result = validateQueryDocument(doc, { catalog: cat, registry });
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+    return result.success.complexity;
+  };
+
+  const selectLess = { version: 1, from: { entity: "issue" } };
+
+  test("a hidden scalar field is not priced", () => {
+    const visible = complexityUnder(catalog, selectLess);
+    const filtered = complexityUnder(hiding(Issue, "rank"), selectLess);
+    expect(visible.projectionNodes - filtered.projectionNodes).toBe(1);
+    expect(filtered.traversals).toBe(visible.traversals);
+  });
+
+  test("a hidden reference field costs neither a node nor a traversal", () => {
+    const visible = complexityUnder(catalog, selectLess);
+    const filtered = complexityUnder(hiding(Issue, "owner"), selectLess);
+    expect(visible.traversals - filtered.traversals).toBe(1);
+    // the field cell and its nested `{ id }` cell both go
+    expect(visible.projectionNodes - filtered.projectionNodes).toBe(2);
+  });
+
+  test("a hidden field cannot push a document over its budget", () => {
+    const cat = hiding(Issue, "rank");
+    const filtered = complexityUnder(cat, selectLess);
+    // a bound that exactly fits what the caller can see
+    const limits: QueryLimitsV1 = {
+      ...DEFAULT_QUERY_LIMITS,
+      maxProjectionNodes: filtered.projectionNodes,
+    };
+    const result = compileQueryDocument(selectLess, { catalog: cat, registry, limits });
+    expect(Result.isSuccess(result)).toBe(true);
+    // and the same bound does reject the unfiltered row, so the budget is
+    // real — it is the hidden column that is not being charged for
+    expect(
+      Result.isFailure(compileQueryDocument(selectLess, { catalog, registry, limits })),
+    ).toBe(true);
+  });
+
+  test("a projected reference leaf is charged the traversal it lowers to", () => {
+    const one = compile({
+      version: 1,
+      from: { entity: "issue" },
+      select: { id: { field: ["id"] }, owner: { field: ["owner"] } },
+      page: { first: 5 },
+    });
+    const two = compile({
+      version: 1,
+      from: { entity: "issue" },
+      select: {
+        id: { field: ["id"] },
+        owner: { field: ["owner"] },
+        parent: { field: ["parent"] },
+      },
+      page: { first: 5 },
+    });
+    expect(one.complexity.traversals).toBe(1);
+    expect(two.complexity.traversals).toBe(2);
+    // it is priced exactly like the nested select it expands to
+    const nested = compile({
+      version: 1,
+      from: { entity: "issue" },
+      select: {
+        id: { field: ["id"] },
+        owner: { path: ["owner"], select: { id: { field: ["id"] } } },
+      },
+      page: { first: 5 },
+    });
+    expect(one.complexity.traversals).toBe(nested.complexity.traversals);
+    expect(one.complexity.projectionNodes).toBe(nested.complexity.projectionNodes);
+  });
+
+  test("reference leaves cannot walk past the traversal bound", () => {
+    const limits: QueryLimitsV1 = { ...DEFAULT_QUERY_LIMITS, maxTraversals: 1 };
+    expect(
+      failure(
+        {
+          version: 1,
+          from: { entity: "issue" },
+          select: {
+            id: { field: ["id"] },
+            owner: { field: ["owner"] },
+            parent: { field: ["parent"] },
+          },
+          page: { first: 5 },
+        },
+        limits,
+      ),
+    ).toMatchObject({ code: "budget_exceeded" });
+  });
+});
+
+// ── cardinality travels with a binding ──────────────────────────────────────
+
+describe("set-valued bindings", () => {
+  const withLabels = (rest: Record<string, unknown>) => ({
+    version: 1,
+    from: { entity: "issue" },
+    let: [{ as: "ls", expr: { field: ["labels"] } }],
+    ...rest,
+  });
+
+  test("cannot be a sort key, the same as the field they alias", () => {
+    const direct = failure({
+      version: 1,
+      from: { entity: "issue" },
+      orderBy: [{ expr: { field: ["labels"] } }],
+    });
+    const aliased = failure(withLabels({ orderBy: [{ expr: { var: "ls" } }] }));
+    expect(direct.code).toBe("malformed");
+    expect(aliased.code).toBe("malformed");
+    expect(aliased.message).toBe(direct.message);
+  });
+
+  test("cannot reach a scalar function's argument", () => {
+    expect(
+      failure(
+        withLabels({
+          select: { id: { field: ["id"] }, x: { call: "text.lower", args: [{ var: "ls" }] } },
+          page: { first: 5 },
+        }),
+      ),
+    ).toMatchObject({ code: "malformed" });
+    // and the direct spelling is refused identically
+    expect(
+      failure({
+        version: 1,
+        from: { entity: "issue" },
+        select: {
+          id: { field: ["id"] },
+          x: { call: "text.lower", args: [{ field: ["labels"] }] },
+        },
+        page: { first: 5 },
+      }),
+    ).toMatchObject({ code: "malformed" });
+  });
+
+  test("cannot be a projected column", () => {
+    expect(
+      failure(
+        withLabels({ select: { id: { field: ["id"] }, ls: { var: "ls" } }, page: { first: 5 } }),
+      ),
+    ).toMatchObject({ code: "malformed", path: ["select", "ls"] });
+    // the field itself still projects, as a list
+    const { resultShape } = compile({
+      version: 1,
+      from: { entity: "issue" },
+      select: { id: { field: ["id"] }, labels: { field: ["labels"] } },
+      page: { first: 5 },
+    });
+    expect((resultShape.row as { fields: Record<string, unknown> }).fields["labels"]).toEqual({
+      kind: "list",
+      element: { kind: "scalar", type: "string", optional: false },
+    });
+  });
+
+  test("a predicate may still constrain a collection", () => {
+    expect(() =>
+      compile(
+        withLabels({
+          select: { id: { field: ["id"] } },
+          where: { call: "logic.eq", args: [{ var: "ls" }, { value: "urgent" }] },
+          page: { first: 5 },
+        }),
+      ),
+    ).not.toThrow();
+  });
+});
+
+// ── null follows the published schema ───────────────────────────────────────
+
+describe("null members", () => {
+  test("are refused wherever the schema declares them non-nullable", () => {
+    for (const key of ["params", "let", "orderBy", "page", "cardinality"]) {
+      expect(
+        failure({ version: 1, from: { entity: "issue" }, [key]: null }),
+      ).toMatchObject({ code: "malformed" });
+    }
+  });
+
+  test("are accepted exactly where a normalized document writes them", () => {
+    const { document } = compile({
+      version: 1,
+      from: { entity: "issue" },
+      where: null,
+      select: null,
+      page: { first: 5, after: null, offset: null },
+    });
+    expect(document.where).toBeNull();
+    expect(document.select).toBeNull();
+    // which is what keeps normalization a fixed point
+    expect(compile(document).document).toEqual(document);
+  });
+
+  test("a null cardinality does not silently become the default", () => {
+    expect(
+      failure({ version: 1, from: { entity: "issue" }, cardinality: null }),
+    ).toMatchObject({ code: "malformed", path: ["cardinality"] });
+  });
+});
+
+// ── instants are canonical and in range ─────────────────────────────────────
+
+describe("instant literals", () => {
+  const withInstant = (value: unknown) => ({
+    version: 1,
+    from: { entity: "issue" },
+    select: { id: { field: ["id"] } },
+    where: { call: "time.after", args: [{ field: ["createdAt"] }, { value: { $inst: value } }] },
+    page: { first: 5 },
+  });
+
+  test("an out-of-range epoch is refused, not turned into an invalid Date", () => {
+    expect(failure(withInstant(8_640_000_000_000_001))).toMatchObject({ code: "malformed" });
+    expect(failure(withInstant(-8_640_000_000_000_001))).toMatchObject({ code: "malformed" });
+    expect(failure(withInstant(1.5))).toMatchObject({ code: "malformed" });
+  });
+
+  test("the range extremes are accepted", () => {
+    for (const ms of [8_640_000_000_000_000, -8_640_000_000_000_000, 0]) {
+      expect(compile(withInstant(ms)).serialized).toContain(`{"$inst":${ms}}`);
+    }
+  });
+
+  test("only ISO-8601 spellings parse — not everything Date.parse tolerates", () => {
+    expect(failure(withInstant("01/02/03"))).toMatchObject({ code: "malformed" });
+    expect(failure(withInstant("March 3, 2026"))).toMatchObject({ code: "malformed" });
+    // a bare local date-time has no zone, so it would mean different
+    // instants on different peers
+    expect(failure(withInstant("2026-01-01T00:00:00"))).toMatchObject({ code: "malformed" });
+    // and a well-formed but impossible date is still refused
+    expect(failure(withInstant("2026-13-45"))).toMatchObject({ code: "malformed" });
+  });
+
+  test("canonical ISO spellings round-trip to epoch milliseconds", () => {
+    expect(compile(withInstant("2026-01-01T00:00:00.000Z")).serialized).toContain(
+      '{"$inst":1767225600000}',
+    );
+    expect(compile(withInstant("2026-01-01")).serialized).toContain('{"$inst":1767225600000}');
+    expect(compile(withInstant("2026-01-01T00:00:00+00:00")).serialized).toContain(
+      '{"$inst":1767225600000}',
+    );
   });
 });
 
