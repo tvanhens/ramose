@@ -88,7 +88,21 @@ export class GraphPathError extends Data.TaggedError("GraphPathError")<{
 }> {}
 
 /** Why an invocation could not be addressed to one stable database. */
-export type GraphReceiverFailure = "unresolved" | "ambiguous" | "closed";
+export type GraphReceiverFailure =
+  /** The path has not resolved, and terminated rather than resolving. */
+  | "unresolved"
+  /** The path matches more than one entity, so there is no one receiver. */
+  | "ambiguous"
+  /**
+   * The credential no longer opens this database, or its principal was
+   * replaced. A session keeps its prior identity while it fences the rows, so
+   * this is checked before that identity may address durable work.
+   */
+  | "unauthorized"
+  /** This build cannot read this database's authorized view, or replay against it. */
+  | "update-required"
+  /** The database was closed before its receiver was known. */
+  | "closed";
 
 /**
  * An invocation's receiver did not resolve to one stable database identity, so

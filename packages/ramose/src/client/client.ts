@@ -189,19 +189,24 @@ class RamoseClient implements Client {
    * carries nothing for one.
    */
   private graphRegistry(): GraphRegistry {
-    this.graph ??= new GraphRegistry(({ graphPath, graphLineage, onConfirmed }) =>
-      new ClientDatabaseHandle({
-        ...this.databaseContext(),
-        graphPath,
-        graphLineage,
-        onConfirmed: (identity) => {
-          onConfirmed(identity);
-          // Every database of one client shares one server/principal scope, so
-          // a child's confirmation names the scope a clear would act on just as
-          // the root's does.
-          this.confirmed ??= identity;
-        },
-      })
+    this.graph ??= new GraphRegistry(
+      ({ graphPath, graphLineage, onConfirmed }) =>
+        new ClientDatabaseHandle({
+          ...this.databaseContext(),
+          graphPath,
+          graphLineage,
+          onConfirmed: (identity) => {
+            onConfirmed(identity);
+            // Every database of one client shares one server/principal scope,
+            // so a child's confirmation names the scope a clear would act on
+            // just as the root's does.
+            this.confirmed ??= identity;
+          },
+        }),
+      // A database this client no longer has cannot go on deciding its
+      // aggregate: a closing handle publishes only to its own store, so the
+      // recomputation has to be driven from the membership change itself.
+      () => this.refreshSync(),
     );
     return this.graph;
   }

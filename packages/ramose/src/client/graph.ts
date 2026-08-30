@@ -38,8 +38,10 @@ import { Graph } from "../db/Graph.ts";
 import type { EntityRow, FluentQuery, WhereEq } from "../db/query/fluent.ts";
 import type { FocusAttr } from "../db/query/focus.ts";
 import type { IdRow } from "../db/query/lib.ts";
+import { select as selectStage } from "../db/query/lib.ts";
 import {
   from as queryFrom,
+  q,
   type AnyQueryObject,
   type Pipeline,
   type QueryObject,
@@ -164,6 +166,12 @@ export interface GraphAncestor {
 type AnyFluent = FluentQuery<AnyComposer, unknown, unknown>;
 
 /**
+ * The stages that shape *how* matches come back rather than *which* entities
+ * match. None of them may reach a resolution.
+ */
+const CURSOR_STAGES: ReadonlySet<string> = new Set(["orderBy", "limit", "offset"]);
+
+/**
  * The canonical portable query value one path is interned and resolved by.
  *
  * Built from the *logic* of the authored query — its membership and `where`
@@ -174,6 +182,13 @@ type AnyFluent = FluentQuery<AnyComposer, unknown, unknown>;
  * them and asks for exactly one row, which is also what makes two spellings of
  * the same path one interned handle.
  *
+ * Dropped from the *pipeline*, not merely left off the chain: `where` accepts
+ * arbitrary same-focus stages, so `.where(Query.offset(1))` is a legal way to
+ * smuggle a cursor into the logic. `oneOrFail` overrides a stray `limit`, but
+ * an `offset` would survive and hand back the *second* of two matches as though
+ * it were the only one — silently addressing the wrong child database, and
+ * durably so once a mutation is queued against it.
+ *
  * It selects the local id and the canonical `:graph/name`: the id is the stable
  * identity the resolved database is interned and cached by, and the name is the
  * current mutable path segment activation sends for the server to authorize.
@@ -181,10 +196,19 @@ type AnyFluent = FluentQuery<AnyComposer, unknown, unknown>;
 export const graphResolutionQuery = (
   logic: AnyFluent,
   ns: AnyComposer,
-): AnyQueryObject =>
-  (logic as unknown as {
-    select: (shape: unknown) => { oneOrFail: () => AnyQueryObject };
-  }).select({ id: ns.id, name: Graph.name }).oneOrFail();
+): AnyQueryObject => {
+  const shape = { id: ns.id, name: Graph.name };
+  // Re-run per build, exactly as every other query body is, so the variables
+  // each lowering mints stay hygienic.
+  const body = (): Pipeline => {
+    const pipe = (logic as unknown as { body: () => Pipeline }).body();
+    return selectStage(shape as never)({
+      ...pipe,
+      stages: pipe.stages.filter((stage) => !CURSOR_STAGES.has(stage.kind)),
+    } as never) as unknown as Pipeline;
+  };
+  return (q(body as never) as AnyQueryObject).oneOrFail();
+};
 
 /** One resolved segment: which entity, and what it is currently called. */
 type ResolvedSegment = { readonly id: number; readonly name: string };
@@ -302,7 +326,17 @@ export class GraphRegistry {
   /** Stable graph identity → the lineage its activation last confirmed. */
   private readonly lineages = new Map<string, readonly string[]>();
 
-  constructor(private readonly factory: GraphDatabaseFactory) {}
+  /**
+   * @param membershipChanged Called whenever this registry gains or loses a
+   * database. The client's aggregate is over the databases it *has*, and a
+   * closing handle publishes only to its own store — so a path that stops
+   * resolving would otherwise leave `client.sync` reporting the state of a
+   * database that is gone, until some unrelated activation happened to change.
+   */
+  constructor(
+    private readonly factory: GraphDatabaseFactory,
+    private readonly membershipChanged: () => void,
+  ) {}
 
   acquire(
     stable: string,
@@ -337,6 +371,7 @@ export class GraphRegistry {
       handle,
       holders: new Set([holder]),
     });
+    this.membershipChanged();
     return handle;
   }
 
@@ -353,6 +388,7 @@ export class GraphRegistry {
     if (existing.holders.size > 0) return;
     this.databases.delete(stable);
     void existing.handle.close();
+    this.membershipChanged();
   }
 
   statuses(): readonly SyncStatus[] {
@@ -819,33 +855,64 @@ const preQueueFailure = (error: Error): GraphReceiverError =>
   });
 
 /**
+ * A terminal database state, as the pre-queue failure it causes.
+ *
+ * Pure, and exported for that reason: each branch decides whether durable work
+ * may be addressed to a database, and the cost of getting one wrong is a queued
+ * invocation that survives restarts and cannot be safely reattributed.
+ */
+export const fencedReceiver = (
+  status: SyncStatus,
+): GraphReceiverError | undefined => {
+  switch (status) {
+    case "authentication-required":
+      return new GraphReceiverError({
+        reason: "unauthorized",
+        message: "this database's credential no longer opens it",
+      });
+    case "update-required":
+      return new GraphReceiverError({
+        reason: "update-required",
+        message: "this build cannot read or replay against this database",
+      });
+    case "closed":
+      return new GraphReceiverError({
+        reason: "closed",
+        message: "this database was closed before its receiver was known",
+      });
+    default:
+      return undefined;
+  }
+};
+
+/**
  * Wait for the one stable database identity an outbox entry is addressed by.
  *
  * Offline that is the identity a restored replica already carries; online it is
  * the one the current response confirms. Either way it is an identity an
  * authenticated response produced, never a guess.
+ *
+ * The fence is checked *before* the identity is accepted, and that order is the
+ * whole point. A session that restored a confirmed replica and was then refused
+ * keeps its prior identity while it fences the rows — deliberately, so a
+ * reconnect can recognize the same partition. Reading that identity here would
+ * durably queue work against a database the server has just said this
+ * credential does not open, and a queued invocation with its receipts survives
+ * restarts and cannot be safely reattributed afterwards.
  */
 const confirmedReceiver = (
   handle: ClientDatabaseHandle,
 ): Promise<ReplicaDatabaseScope> => {
-  const scope = (): ReplicaDatabaseScope | undefined => {
-    const identity = handle.confirmedIdentity();
-    return identity === undefined ? undefined : replicaDatabaseScopeOf(identity);
-  };
   void handle.activate();
   return settleOn(handle.sync, (resolve, reject) => {
-    const found = scope();
-    if (found !== undefined) {
-      resolve(found);
+    const fenced = fencedReceiver(handle.syncStatus());
+    if (fenced !== undefined) {
+      reject(fenced);
       return true;
     }
-    if (handle.syncStatus() !== "closed") return false;
-    reject(
-      new GraphReceiverError({
-        reason: "closed",
-        message: "this database was closed before its receiver was known",
-      }),
-    );
+    const identity = handle.confirmedIdentity();
+    if (identity === undefined) return false;
+    resolve(replicaDatabaseScopeOf(identity));
     return true;
   });
 };

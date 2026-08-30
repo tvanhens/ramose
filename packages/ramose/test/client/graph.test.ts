@@ -20,8 +20,10 @@ import {
   string,
   type CodeDefinition,
 } from "../../src/db/internal.ts";
+import { offset as offsetStage } from "../../src/db/query/lib.ts";
 import { createClient } from "../../src/client/index.ts";
 import {
+  fencedReceiver,
   graphResolutionQuery,
   GraphRegistry,
   resolveGraphReceiver,
@@ -151,6 +153,34 @@ describe("graph handle construction", () => {
       db.query.from(Organization).where({ slug: "acme" }).ids().one().db(),
     ).toBe(canonical);
   });
+
+  test("drops a cursor stage smuggled through where(...)", () => {
+    const db = root();
+    // `where` takes arbitrary same-focus stages, so the pipeline is a second
+    // way in for a cursor. `oneOrFail` overrides a stray `limit`, but an
+    // `offset` would survive and hand back the *second* of two matches as
+    // though it were the only one — the arbitrary selection the frozen
+    // semantics forbid, and durable once a mutation is queued against it.
+    const smuggled = db.query
+      .from(Organization)
+      .where({ slug: "acme" })
+      .where(offsetStage(1) as never);
+    expect(smuggled.one().db()).toBe(
+      db.query.from(Organization).where({ slug: "acme" }).one().db(),
+    );
+    const lowered = lowerQueryObject(
+      graphResolutionQuery(smuggled as never, Organization),
+    );
+    const query = lowered.query as {
+      readonly limit?: number;
+      readonly offset?: number;
+      readonly order?: unknown;
+    };
+    expect(query.offset).toBeUndefined();
+    expect(query.order).toBeUndefined();
+    // And the `oneOrFail` limit still stands, so a second match is witnessed.
+    expect(query.limit).toBe(2);
+  });
 });
 
 describe("the canonical resolution query", () => {
@@ -226,6 +256,7 @@ describe("the resolved-database registry", () => {
       lineages.push(graphLineage());
       return handle;
     },
+    () => undefined,
   );
   const confirmations = new Map<
     ClientDatabaseHandle,
@@ -288,8 +319,11 @@ describe("the resolved-database registry", () => {
   });
 
   test("closes a database only when the last path naming it lets go", async () => {
-    const local = new GraphRegistry(({ graphPath, graphLineage }) =>
-      new ClientDatabaseHandle(context(graphPath, graphLineage))
+    const changes: number[] = [];
+    const local = new GraphRegistry(
+      ({ graphPath, graphLineage }) =>
+        new ClientDatabaseHandle(context(graphPath, graphLineage)),
+      () => changes.push(changes.length),
     );
     // Two queries that select the same Graph entity are two paths and one
     // activation. One of them turning ambiguous, or losing its ancestor, must
@@ -297,15 +331,24 @@ describe("the resolved-database registry", () => {
     const [one, two] = [path(), path()];
     const database = local.acquire("stable", ["acme"], one);
     expect(local.acquire("stable", ["acme"], two)).toBe(database);
+    // Joining an existing database is not a membership change.
+    expect(changes).toHaveLength(1);
     local.retire("stable", one);
     expect(local.statuses()).toHaveLength(1);
+    expect(changes).toHaveLength(1);
     expect(local.acquire("stable", ["acme"], one)).toBe(database);
 
     local.retire("stable", one);
     local.retire("stable", two);
     expect(local.statuses()).toHaveLength(0);
-    // Retiring what is no longer there is not an error.
+    // The client's aggregate is over the databases it *has*, and a closing
+    // handle publishes only to its own store — so losing one has to drive the
+    // recomputation itself, or `client.sync` would go on reporting a database
+    // that is gone.
+    expect(changes).toHaveLength(2);
+    // Retiring what is no longer there is not an error, and is not a change.
     local.retire("stable", two);
+    expect(changes).toHaveLength(2);
     await local.close();
   });
 });
@@ -331,5 +374,21 @@ describe("the mutation pre-queue gate", () => {
       _tag: "GraphReceiverError",
       reason: "unresolved",
     });
+  });
+
+  test("refuses a fenced database before its retained identity can address work", () => {
+    // A session that restored a confirmed replica and was then refused keeps
+    // its prior identity while it fences the rows — deliberately, so a
+    // reconnect recognizes the same partition. Reading it here would durably
+    // queue work against a database the credential no longer opens, and a
+    // queued invocation and its receipts survive restarts.
+    expect(fencedReceiver("authentication-required")?.reason).toBe("unauthorized");
+    expect(fencedReceiver("update-required")?.reason).toBe("update-required");
+    expect(fencedReceiver("closed")?.reason).toBe("closed");
+    // Everything else is a wait: an unreachable server is not a refusal, and a
+    // restored replica offline has exactly the identity to queue against.
+    for (const status of ["idle", "connecting", "live", "stale", "offline"] as const) {
+      expect(fencedReceiver(status)).toBeUndefined();
+    }
   });
 });
