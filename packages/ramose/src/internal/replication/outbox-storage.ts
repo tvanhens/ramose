@@ -1,7 +1,7 @@
 /**
  * The durable mutation queue at the real browser boundary (#475 slice 1).
  *
- * Five store families, all keyed by the mutation partition key so a scoped
+ * Six store families, all keyed by the mutation partition key so a scoped
  * clear removes them with one prefix range and no new selection logic:
  *
  *   - `mutation-outbox-v1`     — queued invocations, `[partition, sequence]`
@@ -9,6 +9,8 @@
  *   - `mutation-receipts-v1`   — the durable receipt, `[partition, invocation]`
  *   - `mutation-client-refs-v1` — client refs this device minted
  *   - `mutation-client-ref-mappings-v1` — authoritative `{ ref → entityId }`
+ *   - `mutation-layers-v1`     — #476's optimistic layers, at the same
+ *     `[partition, sequence]` position their invocation's outbox row holds
  *
  * They are *scope*-prefixed, not replica-partition-prefixed. A queued
  * invocation must survive a compatible read-view or schema change, and it must
@@ -22,8 +24,9 @@
  * Enqueue is one IndexedDB transaction. Either the invocation id, the
  * operation identity and version, the receiver, the target, the validated
  * input, the declared allocation slots, the minted client refs, the queued
- * receipt, and the FIFO position all become durable together, or none of them
- * do — a crash cut in the middle can never leave a half-queued invocation.
+ * receipt, its optimistic layer, and the FIFO position all become durable
+ * together, or none of them do — a crash cut in the middle can never leave a
+ * half-queued invocation, or a layer with no invocation behind it.
  */
 
 import * as Data from "effect/Data";

@@ -267,6 +267,69 @@ const names = async (
   }
 };
 
+/** The committed local id of the one entity the installed snapshot holds. */
+const committedEid = async (
+  storage: IndexedDbReplicaStorage,
+  selected: ReplicationIdentity,
+): Promise<number> => {
+  const restored = await storage.restore(selected, ATTRIBUTES, READ_COMPATIBILITY);
+  try {
+    const attribute = restored!.db.schema.attr(":item/name")!.id;
+    const rows = await restored!.db.datomsArray(Index.AEVT, { a: attribute });
+    return rows[0]!.e;
+  } finally {
+    dropped(restored);
+  }
+};
+
+browserTest(
+  "the authoritative outcome replaces the requested optimistic target",
+  async ({ browser }) => {
+    const database = `ramose-layer-conditional-${browser.uniqueId}`;
+    const selected = identity();
+    const receiver = replicaDatabaseScopeOf(selected);
+    const scope = replicaScopeOf(selected);
+    const storage = await IndexedDbReplicaStorage.open(database);
+    try {
+      await install(storage, selected, "left", "server-decided");
+      const outbox = storage.outbox();
+      // Addressed by a sealed handle this replica already holds, with the
+      // handle-to-local-id binding #477 will supply — so the projection writes
+      // over the committed row rather than beside it.
+      const target = await handleFor(receiver, 1);
+      const eid = await committedEid(storage, selected);
+      const record = await enqueueProjected(storage, receiver, scope, {
+        input: { name: "requested" },
+        target: { type: "entity", entityId: target },
+      });
+      const reconciler = new OptimisticReconciler(outbox, receiver, catalog(), {
+        entity: (id) => (id === target ? eid : undefined),
+      });
+      await reconciler.refresh();
+      // The requested target replaces the committed value, once.
+      expect(await names(reconciler, storage, selected)).toEqual(["requested"]);
+
+      // The server decided otherwise. Its answer is already in the replica; the
+      // layer keeps the requested value visible until the fence, and then the
+      // authoritative one is what stands — no flash in either direction.
+      await outbox.acknowledge(record, {
+        _tag: "Committed",
+        output: { name: "server-decided" },
+        mappings: [],
+      });
+      await reconciler.refresh();
+      expect(await names(reconciler, storage, selected)).toEqual(["requested"]);
+
+      const activation = await reconciler.restart();
+      await reconciler.outcome(activation)();
+      expect(await names(reconciler, storage, selected)).toEqual(["server-decided"]);
+    } finally {
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
 browserTest(
   "a projection and its invocation become durable in one write",
   async ({ browser }) => {
