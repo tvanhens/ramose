@@ -234,7 +234,12 @@ export type QueuedMapping = {
   readonly entityId: EntityId;
 };
 
-/** A draft rejected before anything became durable. */
+/**
+ * A record refused before anything became durable — from any of the mutation
+ * families, not only the outbox. Every builder in the durable-persistence
+ * boundary below raises this and nothing else, so "this cannot be stored" is
+ * one condition with one type and a reason that names the record kind.
+ */
 export class OutboxRecordInvalid extends Data.TaggedError(
   "OutboxRecordInvalid",
 )<{ readonly reason: string }> {}
@@ -542,7 +547,7 @@ export const buildOutboxRecord = (
   if (embedded === "mixed") reject("one invocation mixes two server sealing epochs");
   const sealing = embedded as SealingEpoch | null;
 
-  return Object.freeze({
+  const record: OutboxRecord = Object.freeze({
     partition: mutationPartitionKey(draft.receiver),
     sequence,
     invocation: draft.invocation,
@@ -567,6 +572,7 @@ export const buildOutboxRecord = (
     sealing,
     enqueuedAt: draft.enqueuedAt,
   });
+  return durable(record, decodeOutboxRecord, "outbox");
 };
 
 /**
@@ -894,7 +900,7 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
     return undefined;
   }
   if (!isInvocationId(value.invocation)) return undefined;
-  if (typeof value.scope !== "string" || value.scope.length === 0) return undefined;
+  if (!isScopeKey(value.scope)) return undefined;
   if (
     !isPlainObject(value.receiver) || typeof value.receiver.server !== "string" ||
     typeof value.receiver.principal !== "string" || typeof value.receiver.database !== "string"
@@ -922,9 +928,7 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
   if (target === undefined) return undefined;
   const sealing = decodeSealing(value.sealing);
   if (sealing === undefined) return undefined;
-  if (typeof value.enqueuedAt !== "number" || !Number.isSafeInteger(value.enqueuedAt)) {
-    return undefined;
-  }
+  if (!isTimestamp(value.enqueuedAt)) return undefined;
   if (!Array.isArray(value.allocations) || !Array.isArray(value.inputRefs)) return undefined;
   const allocations: QueuedAllocation[] = [];
   const slots = new Set<string>();
@@ -1019,9 +1023,7 @@ export const decodeClientRefMapping = (
   ) return undefined;
   if (!isClientRef(value.clientRef) || !isEntityId(value.entityId)) return undefined;
   if (!isInvocationId(value.invocation)) return undefined;
-  if (typeof value.mappedAt !== "number" || !Number.isSafeInteger(value.mappedAt)) {
-    return undefined;
-  }
+  if (!isTimestamp(value.mappedAt)) return undefined;
   const sealing = decodeSealing(value.sealing);
   if (sealing === undefined || sealing === null) return undefined;
   const embedded = sealingEpochOf(value.entityId);
@@ -1035,3 +1037,231 @@ export const decodeClientRefMapping = (
     mappedAt: value.mappedAt,
   });
 };
+
+/* ── the durable-persistence boundary ─────────────────────────────────────
+ *
+ * Every record this slice stores passes through exactly one builder here, and
+ * every builder ends by proving its record survives the round trip its own
+ * strict decoder performs — over a `structuredClone`, which is literally what
+ * IndexedDB will store. A field that one side accepts and the other refuses is
+ * therefore a failure at *write* time, not a durable row that becomes
+ * unreadable on the next restart and holds its FIFO partition forever.
+ *
+ * The storage adapter calls only these builders. It performs no validation of
+ * its own, so there is no second place for the two sides to drift apart.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Refuse to persist anything the reader cannot read back.
+ *
+ * `structuredClone` is the exact transformation IndexedDB applies, so this
+ * catches accessors, prototypes, holes, and unclonable values as well as every
+ * field-level disagreement between a builder and its decoder.
+ */
+const durable = <T>(
+  record: T,
+  decode: (value: unknown) => T | undefined,
+  kind: string,
+): T => {
+  let stored: unknown;
+  try {
+    stored = structuredClone(record);
+  } catch {
+    return reject(`a ${kind} record cannot be stored by structured clone`);
+  }
+  if (decode(stored) === undefined) {
+    reject(`a ${kind} record does not survive its own durable decoder`);
+  }
+  return record;
+};
+
+const decodeReceiverScope = (
+  value: unknown,
+): ReplicaDatabaseScope | undefined => {
+  if (
+    !isPlainObject(value) || typeof value.server !== "string" ||
+    typeof value.principal !== "string" || typeof value.database !== "string"
+  ) return undefined;
+  return Object.freeze({
+    server: value.server,
+    principal: value.principal,
+    database: value.database,
+  });
+};
+
+const isScopeKey = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0;
+
+const isTimestamp = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/** The durable FIFO cursor of one receiver database. */
+export const buildQueueCursor = (
+  record: QueueCursorRecord,
+): QueueCursorRecord =>
+  durable(
+    Object.freeze({
+      partition: record.partition,
+      scope: record.scope,
+      receiver: Object.freeze({ ...record.receiver }),
+      nextSequence: record.nextSequence,
+      sealing: record.sealing === null ? null : Object.freeze({ ...record.sealing }),
+      updatedAt: record.updatedAt,
+    }),
+    decodeQueueCursor,
+    "queue cursor",
+  );
+
+export const decodeQueueCursor = (
+  value: unknown,
+): QueueCursorRecord | undefined => {
+  if (!isPlainObject(value)) return undefined;
+  const receiver = decodeReceiverScope(value.receiver);
+  if (
+    receiver === undefined || typeof value.partition !== "string" ||
+    mutationPartitionKey(receiver) !== value.partition
+  ) return undefined;
+  if (!isScopeKey(value.scope)) return undefined;
+  if (
+    typeof value.nextSequence !== "number" ||
+    !Number.isSafeInteger(value.nextSequence) || value.nextSequence < 1
+  ) return undefined;
+  const sealing = decodeSealing(value.sealing);
+  if (sealing === undefined) return undefined;
+  if (!isTimestamp(value.updatedAt)) return undefined;
+  return Object.freeze({
+    partition: value.partition,
+    scope: value.scope,
+    receiver,
+    nextSequence: value.nextSequence,
+    sealing,
+    updatedAt: value.updatedAt,
+  });
+};
+
+/** One durable receipt. Slice 1 only ever writes the `queued` shell. */
+export const buildReceipt = (record: ReceiptRecord): ReceiptRecord =>
+  durable(
+    Object.freeze({
+      partition: record.partition,
+      invocation: record.invocation,
+      scope: record.scope,
+      state: record.state,
+      observation: record.observation,
+      output: record.output,
+      mappings: Object.freeze(
+        record.mappings.map((mapping) => Object.freeze({ ...mapping })),
+      ),
+      failure: record.failure === null ? null : Object.freeze({ ...record.failure }),
+      updatedAt: record.updatedAt,
+    }),
+    decodeReceipt,
+    "receipt",
+  );
+
+export const decodeReceipt = (value: unknown): ReceiptRecord | undefined => {
+  if (!isPlainObject(value)) return undefined;
+  if (
+    typeof value.partition !== "string" ||
+    parseMutationPartitionKey(value.partition) === undefined
+  ) return undefined;
+  if (!isInvocationId(value.invocation) || !isScopeKey(value.scope)) return undefined;
+  if (
+    value.state !== "queued" && value.state !== "committed" && value.state !== "rejected"
+  ) return undefined;
+  if (
+    value.observation !== null && value.observation !== "unobserved" &&
+    value.observation !== "observed"
+  ) return undefined;
+  if (!Array.isArray(value.mappings)) return undefined;
+  const mappings: QueuedMapping[] = [];
+  const mapped = new Set<string>();
+  for (const mapping of value.mappings) {
+    if (
+      !isPlainObject(mapping) || !isClientRef(mapping.clientRef) ||
+      !isEntityId(mapping.entityId) || mapped.has(mapping.clientRef)
+    ) return undefined;
+    mapped.add(mapping.clientRef);
+    mappings.push(
+      Object.freeze({ clientRef: mapping.clientRef, entityId: mapping.entityId }),
+    );
+  }
+  if (
+    value.failure !== null &&
+    (!isPlainObject(value.failure) || typeof value.failure.code !== "string")
+  ) return undefined;
+  if (!isTimestamp(value.updatedAt)) return undefined;
+  let output: JsonValue | null = null;
+  if (value.output !== null) {
+    try {
+      output = jsonSnapshot(value.output, "output", new Set());
+    } catch {
+      return undefined;
+    }
+  }
+  return Object.freeze({
+    partition: value.partition,
+    invocation: value.invocation,
+    scope: value.scope,
+    state: value.state,
+    observation: value.observation,
+    output,
+    mappings: Object.freeze(mappings),
+    failure: value.failure === null
+      ? null
+      : Object.freeze({ code: (value.failure as { code: string }).code }),
+    updatedAt: value.updatedAt,
+  });
+};
+
+/** One client ref this device minted, and the slot that allocates it. */
+export const buildClientRef = (record: ClientRefRecord): ClientRefRecord =>
+  durable(
+    Object.freeze({
+      partition: record.partition,
+      clientRef: record.clientRef,
+      invocation: record.invocation,
+      slot: record.slot,
+      createdAt: record.createdAt,
+    }),
+    decodeClientRef,
+    "client ref",
+  );
+
+export const decodeClientRef = (value: unknown): ClientRefRecord | undefined => {
+  if (!isPlainObject(value)) return undefined;
+  if (
+    typeof value.partition !== "string" ||
+    parseMutationPartitionKey(value.partition) === undefined
+  ) return undefined;
+  if (!isClientRef(value.clientRef) || !isInvocationId(value.invocation)) {
+    return undefined;
+  }
+  if (!isAllocationSlotName(value.slot) || !isTimestamp(value.createdAt)) {
+    return undefined;
+  }
+  return Object.freeze({
+    partition: value.partition,
+    clientRef: value.clientRef,
+    invocation: value.invocation,
+    slot: value.slot,
+    createdAt: value.createdAt,
+  });
+};
+
+/** One exact authoritative `{ clientRef, entityId }` mapping. */
+export const buildClientRefMapping = (
+  record: ClientRefMappingRecord,
+): ClientRefMappingRecord =>
+  durable(
+    Object.freeze({
+      partition: record.partition,
+      clientRef: record.clientRef,
+      entityId: record.entityId,
+      sealing: Object.freeze({ ...record.sealing }),
+      invocation: record.invocation,
+      mappedAt: record.mappedAt,
+    }),
+    decodeClientRefMapping,
+    "client ref mapping",
+  );

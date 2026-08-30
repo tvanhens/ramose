@@ -49,10 +49,17 @@ import {
   type ReplicaScope,
 } from "./replica-lifecycle.ts";
 import {
+  buildClientRef,
+  buildClientRefMapping,
   buildOutboxRecord,
+  buildQueueCursor,
+  buildReceipt,
   ClientRefConflict,
+  decodeClientRef,
   decodeClientRefMapping,
   decodeOutboxRecord,
+  decodeReceipt,
+  decodeQueueCursor,
   mappingKey,
   mutationPartitionKey,
   mutationScopePrefix,
@@ -68,7 +75,6 @@ import {
   type OutboxDraft,
   type OutboxPartitionPlan,
   type OutboxRecord,
-  type QueueCursorRecord,
   type QueuedMapping,
   type ReceiptRecord,
   type SealingEpoch,
@@ -143,15 +149,26 @@ const ENQUEUE_STORES = [
 export const createMutationStores = (
   database: IDBDatabase,
   upgrade: IDBTransaction,
+  /**
+   * True while upgrading a database an earlier build of this unreleased format
+   * created. Those stores predate the global identity indexes, so they may
+   * hold rows that violate them; creating a unique index over such a store
+   * aborts the upgrade transaction on the first duplicate and the database can
+   * then never be opened again. Version 7 only ever existed inside this
+   * change, so the rows are discarded rather than reconciled.
+   */
+  resetLegacy: boolean,
 ): void => {
   const ensure = (
     name: string,
     keyPath: string | string[],
     indexes: readonly (readonly [string, string])[] = [],
   ): void => {
-    const store = database.objectStoreNames.contains(name)
+    const existed = database.objectStoreNames.contains(name);
+    const store = existed
       ? upgrade.objectStore(name)
       : database.createObjectStore(name, { keyPath });
+    if (existed && resetLegacy) store.clear();
     for (const [index, path] of indexes) {
       if (store.indexNames.contains(index)) {
         const current = store.index(index);
@@ -236,8 +253,7 @@ export class ClientRefMappingRefused extends Data.TaggedError(
     | "not-a-ref-pair"
     | "unreadable-handle"
     | "not-allocated-here"
-    | "already-mapped"
-    | "unreadable-timestamp";
+    | "already-mapped";
 }> {}
 
 /**
@@ -277,7 +293,6 @@ export class IndexedDbOutbox {
     draft: OutboxDraft,
     options: EnqueueOptions,
   ): Promise<OutboxRecord> {
-    this.assertScopeLive(options.scope);
     // A queue is selected by its receiver's partition key but fenced, cleared,
     // and reported by the supplied scope. If those disagreed, the record would
     // be invisible to this scope's restore and survive its clear while
@@ -292,18 +307,7 @@ export class IndexedDbOutbox {
     }
     const scopeKey = replicaScopeKey(options.scope);
     const partition = mutationPartitionKey(draft.receiver);
-    // The generation this enqueue believes it is writing under, read before the
-    // write transaction exists. A clear that commits in between — from this
-    // handle or another one in the same realm — bumps it, and the comparison
-    // inside the write refuses rather than repopulating what was just deleted.
-    const observed = await this.scopeGeneration(scopeKey);
-    // No generation at all means no authenticated response has confirmed this
-    // scope *yet*. Adopting whatever the write transaction later finds would
-    // let a confirmation and a clear both land in between and still persist
-    // work after the deletion, so the enqueue simply refuses.
-    if (observed === undefined) {
-      throw new ReplicaScopeUnconfirmedError({ scope: scopeKey });
-    }
+    const observed = await this.preflightScope(options.scope);
     const transaction = this.database.transaction([...ENQUEUE_STORES], "readwrite");
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
@@ -326,8 +330,18 @@ export class IndexedDbOutbox {
     }
   }
 
-  /** The durable generation guarding one scope, or `undefined` when unconfirmed. */
-  private async scopeGeneration(scopeKey: string): Promise<number | undefined> {
+  /**
+   * The one precondition every durable mutation write shares.
+   *
+   * It reads the scope's durable generation *before* the write transaction
+   * exists and refuses an unconfirmed scope outright: `clearScope` refuses an
+   * unconfirmed scope too, so work queued under one could never be deleted by
+   * the scoped API. The returned generation is what
+   * {@link IndexedDbOutbox.fenceScope} then requires the write to still see.
+   */
+  private async preflightScope(scope: ReplicaScope): Promise<number> {
+    this.assertScopeLive(scope);
+    const scopeKey = replicaScopeKey(scope);
     const transaction = this.database.transaction(
       REPLICA_GENERATIONS_STORE,
       "readonly",
@@ -336,7 +350,37 @@ export class IndexedDbOutbox {
       transaction.objectStore(REPLICA_GENERATIONS_STORE).get(scopeKey),
     );
     await transactionDone(transaction);
-    return record?.generation;
+    if (record === undefined) {
+      throw new ReplicaScopeUnconfirmedError({ scope: scopeKey });
+    }
+    return record.generation;
+  }
+
+  /**
+   * The same precondition, re-read inside the write transaction. A clear that
+   * committed in between bumps the generation, and a scope whose record
+   * vanished is no longer confirmed — either way the write is refused rather
+   * than landing behind a deletion.
+   */
+  private async fenceScope(
+    transaction: IDBTransaction,
+    scopeKey: string,
+    observed: number,
+    lease: ReplicaLease | undefined,
+  ): Promise<void> {
+    const current = await requestResult<{ readonly generation: number } | undefined>(
+      transaction.objectStore(REPLICA_GENERATIONS_STORE).get(scopeKey),
+    );
+    if (current === undefined || current.generation !== observed) {
+      throw new ReplicaFencedError({
+        key: scopeKey,
+        expected: observed,
+        observed: current?.generation ?? 0,
+      });
+    }
+    // Only the scope generation guards a queue. Evicting one cached database
+    // must not fence the user's unsent work for it.
+    lease?.observe(scopeKey, current.generation);
   }
 
   private async stageEnqueue(
@@ -347,31 +391,14 @@ export class IndexedDbOutbox {
     partition: string,
     observed: number,
   ): Promise<OutboxRecord> {
-    const generations = transaction.objectStore(REPLICA_GENERATIONS_STORE);
     const outbox = transaction.objectStore(MUTATION_OUTBOX);
-    const [fence, cursor, existing] = await Promise.all([
-      requestResult<{ readonly generation: number } | undefined>(
-        generations.get(scopeKey),
-      ),
-      requestResult<QueueCursorRecord | undefined>(
+    const [, cursor, existing] = await Promise.all([
+      this.fenceScope(transaction, scopeKey, observed, options.lease),
+      requestResult<unknown>(
         transaction.objectStore(MUTATION_QUEUES).get(partition),
       ),
       requestResult<unknown>(outbox.index(BY_INVOCATION).get(draft.invocation)),
     ]);
-    // The generation must still be exactly the one the preflight read. A clear
-    // that committed in between bumps it, and a scope whose record vanished is
-    // no longer confirmed — either way this enqueue must not write durable
-    // work behind a deletion.
-    if (fence === undefined || fence.generation !== observed) {
-      throw new ReplicaFencedError({
-        key: scopeKey,
-        expected: observed,
-        observed: fence?.generation ?? 0,
-      });
-    }
-    // Only the scope generation guards a queue. Evicting one cached database
-    // must not fence the user's unsent work for it.
-    options.lease?.observe(scopeKey, fence.generation);
     if (existing !== undefined) {
       const queued = decodeOutboxRecord(existing);
       // The same id in another receiver's queue is reuse, never a retry.
@@ -392,10 +419,17 @@ export class IndexedDbOutbox {
       await transactionDone(transaction);
       return queued;
     }
-    const sequence = cursor?.nextSequence ?? 1;
+    // A cursor this build cannot read is not a number to count from.
+    const current = cursor === undefined ? undefined : decodeQueueCursor(cursor);
+    if (cursor !== undefined && current === undefined) {
+      throw new OutboxRecordInvalid({
+        reason: "the durable queue cursor of this receiver is unreadable",
+      });
+    }
+    const sequence = current?.nextSequence ?? 1;
     const record = buildOutboxRecord(draft, scopeKey, sequence);
     outbox.add(record);
-    transaction.objectStore(MUTATION_QUEUES).put({
+    transaction.objectStore(MUTATION_QUEUES).put(buildQueueCursor({
       partition,
       scope: scopeKey,
       receiver: record.receiver,
@@ -403,10 +437,10 @@ export class IndexedDbOutbox {
       // The epoch the newest queued handle was minted under. Older records keep
       // their own epoch and quarantine on their own terms; this only records
       // what the queue has most recently seen.
-      sealing: record.sealing ?? cursor?.sealing ?? null,
+      sealing: record.sealing ?? current?.sealing ?? null,
       updatedAt: record.enqueuedAt,
-    } satisfies QueueCursorRecord);
-    transaction.objectStore(MUTATION_RECEIPTS).add({
+    }));
+    transaction.objectStore(MUTATION_RECEIPTS).add(buildReceipt({
       partition,
       invocation: record.invocation,
       scope: scopeKey,
@@ -416,7 +450,7 @@ export class IndexedDbOutbox {
       mappings: [],
       failure: null,
       updatedAt: record.enqueuedAt,
-    } satisfies ReceiptRecord);
+    }));
     const refs = transaction.objectStore(MUTATION_CLIENT_REFS);
     // A client ref is global, so a claim anywhere else in this database is a
     // conflict, not a retry. Checked explicitly so the caller sees the reason
@@ -462,13 +496,13 @@ export class IndexedDbOutbox {
       }
     }
     for (const allocation of record.allocations) {
-      refs.add({
+      refs.add(buildClientRef({
         partition,
         clientRef: allocation.clientRef,
         invocation: record.invocation,
         slot: allocation.slot,
         createdAt: record.enqueuedAt,
-      } satisfies ClientRefRecord);
+      }));
     }
     // The last boundary before this invocation becomes durable. Inert in
     // production; the source-only testing assembly arms it to cut here, which
@@ -577,14 +611,16 @@ export class IndexedDbOutbox {
   ): Promise<ReceiptRecord | undefined> {
     this.assertScopeLive(receiver);
     const transaction = this.database.transaction(MUTATION_RECEIPTS, "readonly");
-    const record = await requestResult<ReceiptRecord | undefined>(
+    const stored = await requestResult<unknown>(
       transaction.objectStore(MUTATION_RECEIPTS).get([
         mutationPartitionKey(receiver),
         invocation,
       ]),
     );
     await transactionDone(transaction);
-    return record;
+    // Read through the same decoder that gates the write. A row this build
+    // cannot interpret is reported as absent, never half-read.
+    return stored === undefined ? undefined : decodeReceipt(stored);
   }
 
   /** Every client ref this device minted for one receiver database. */
@@ -593,13 +629,17 @@ export class IndexedDbOutbox {
   ): Promise<readonly ClientRefRecord[]> {
     this.assertScopeLive(receiver);
     const transaction = this.database.transaction(MUTATION_CLIENT_REFS, "readonly");
-    const records = await requestResult<ClientRefRecord[]>(
+    const stored = await requestResult<unknown[]>(
       transaction.objectStore(MUTATION_CLIENT_REFS).getAll(
         compoundPrefixRange(mutationPartitionKey(receiver)),
       ),
     );
     await transactionDone(transaction);
-    return records;
+    return Object.freeze(
+      stored.map(decodeClientRef).filter((record): record is ClientRefRecord =>
+        record !== undefined
+      ),
+    );
   }
 
   /**
@@ -623,13 +663,17 @@ export class IndexedDbOutbox {
     mappings: readonly QueuedMapping[],
     mappedAt = Date.now(),
   ): Promise<void> {
-    this.assertScopeLive(receiver);
+    const scopeKey = replicaScopeKey(receiver);
     const partition = mutationPartitionKey(receiver);
+    // The same precondition an enqueue answers: a mapping is durable work in
+    // the same scope, so it must not land behind a clear either.
+    const observed = await this.preflightScope(receiver);
     const transaction = this.database.transaction(
-      [MUTATION_MAPPINGS, MUTATION_CLIENT_REFS],
+      [MUTATION_MAPPINGS, MUTATION_CLIENT_REFS, REPLICA_GENERATIONS_STORE],
       "readwrite",
     );
     try {
+      await this.fenceScope(transaction, scopeKey, observed, undefined);
       await this.stageMappings(transaction, partition, invocation, mappings, mappedAt);
     } catch (error) {
       await abortTransaction(transaction);
@@ -647,16 +691,6 @@ export class IndexedDbOutbox {
   ): Promise<void> {
     const store = transaction.objectStore(MUTATION_MAPPINGS);
     const refs = transaction.objectStore(MUTATION_CLIENT_REFS);
-    // Checked before anything is written, exactly as the decoder checks it. A
-    // mapping is immutable once stored, so one the decoder would later refuse
-    // could never release its dependents *and* could never be repaired.
-    if (!Number.isSafeInteger(mappedAt) || mappedAt < 0) {
-      throw new ClientRefMappingRefused({
-        partition,
-        clientRef: "",
-        reason: "unreadable-timestamp",
-      });
-    }
     for (const mapping of mappings) {
       if (!isClientRef(mapping.clientRef) || !isEntityId(mapping.entityId)) {
         throw new ClientRefMappingRefused({
@@ -673,6 +707,8 @@ export class IndexedDbOutbox {
           reason: "unreadable-handle",
         });
       }
+      // Everything else about the row — including its timestamp — is the
+      // canonical builder's business, below.
       const key = [partition, mapping.clientRef];
       const [allocation, current] = await Promise.all([
         requestResult<ClientRefRecord | undefined>(refs.get(key)),
@@ -697,14 +733,14 @@ export class IndexedDbOutbox {
         }
         continue;
       }
-      store.add({
+      store.add(buildClientRefMapping({
         partition,
         clientRef: mapping.clientRef as ClientRef,
         entityId: mapping.entityId as EntityId,
         sealing: sealing as SealingEpoch,
         invocation,
         mappedAt,
-      } satisfies ClientRefMappingRecord);
+      }));
     }
   }
 }

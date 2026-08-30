@@ -17,8 +17,14 @@ import {
   type EntityIdScope,
 } from "../../packages/ramose/src/internal/replication/entity-id.ts";
 import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
-import type { OutboxDraft } from "../../packages/ramose/src/internal/replication/outbox.ts";
-import { mutationPartitionKey } from "../../packages/ramose/src/internal/replication/outbox.ts";
+import type {
+  OutboxDraft,
+  QueuedMapping,
+} from "../../packages/ramose/src/internal/replication/outbox.ts";
+import {
+  mappingKey,
+  mutationPartitionKey,
+} from "../../packages/ramose/src/internal/replication/outbox.ts";
 import {
   replicaDatabaseScopeOf,
   replicaScopeOf,
@@ -625,7 +631,8 @@ browserTest("an authoritative mapping is immutable and belongs to its allocation
 
     // A timestamp the decoder would refuse must not be written: the mapping is
     // immutable, so it could never release its dependents and never be
-    // repaired either.
+    // repaired either. The canonical builder refuses it, so the failure is the
+    // same `OutboxRecordInvalid` every unstorable record raises.
     for (const mappedAt of [Number.NaN, Number.POSITIVE_INFINITY, 1.5, -1]) {
       expect(
         await rejectedTag(
@@ -636,7 +643,7 @@ browserTest("an authoritative mapping is immutable and belongs to its allocation
             mappedAt,
           ),
         ),
-      ).toBe("ClientRefMappingRefused");
+      ).toBe("OutboxRecordInvalid");
     }
     expect((await dumpMutations(name))["mutation-client-ref-mappings-v1"]).toEqual([]);
 
@@ -1008,6 +1015,196 @@ browserTest("an undecodable stored row holds its queue instead of promoting the 
     expect(
       plans.find((plan) => plan.receiver.database === OTHER_DATABASE)!.head.type,
     ).toBe("ready");
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+/**
+ * One adversarial value per durable field, driven through the *public* write
+ * paths against real IndexedDB.
+ *
+ * The property under test is not "this particular value is refused" — it is
+ * the boundary invariant: **nothing reaches a store unless the bytes IndexedDB
+ * would hold decode back into the same record**. So each case asserts both
+ * halves: the write is refused, and the stores are byte-identical afterwards.
+ */
+browserTest("no adversarial value can reach a mutation store", async ({ browser }) => {
+  const name = `ramose-outbox-adversarial-${browser.uniqueId}`;
+  const left = identity();
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    const outbox = storage.outbox();
+    // One healthy record first, so "unchanged" means something.
+    const allocation = clientRef();
+    const healthy = await outbox.enqueue(
+      draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+      { scope },
+    );
+    const before = JSON.stringify(await dumpMutations(name));
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const dependency = clientRef();
+    const attacks: readonly (readonly [string, OutboxDraft])[] = [
+      // ── identity fields ────────────────────────────────────────────────
+      ["invocation id", draft(receiver, { invocation: "iv1_nope" as never })],
+      ["operation version", draft(receiver, { operationVersion: "ABC" as never })],
+      ["operation name", draft(receiver, {
+        operation: { catalog: "movies" as never, owner: { kind: "entity", name: "i" }, localName: "" },
+      })],
+      ["enqueue timestamp", draft(receiver, { enqueuedAt: Number.NaN })],
+      ["fractional timestamp", draft(receiver, { enqueuedAt: 1.5 })],
+      // ── target ─────────────────────────────────────────────────────────
+      ["truncated handle", draft(receiver, {
+        target: { type: "entity", entityId: "short" as EntityId },
+      })],
+      ["respelled handle", draft(receiver, {
+        target: { type: "entity", entityId: `${"a".repeat(54)}B` as EntityId },
+      })],
+      ["forged client ref", draft(receiver, {
+        target: { type: "client-ref", clientRef: "cr1_nope" as never },
+      })],
+      // ── input, as JSON ─────────────────────────────────────────────────
+      ["function in input", draft(receiver, { input: { fn: () => undefined } as never })],
+      ["NaN in input", draft(receiver, { input: { n: Number.NaN } as never })],
+      ["bigint in input", draft(receiver, { input: { big: 1n } as never })],
+      ["Map in input", draft(receiver, { input: { made: new Map() } as never })],
+      ["Date in input", draft(receiver, { input: { at: new Date() } as never })],
+      ["cyclic input", draft(receiver, { input: cyclic as never })],
+      ["sparse array input", draft(receiver, { input: { list: [, 1] } as never })],
+      ["lone surrogate value", draft(receiver, { input: { title: "\ud800" } })],
+      ["lone surrogate key", draft(receiver, { input: { "\udc00": "x" } })],
+      // ── declared reference positions ───────────────────────────────────
+      ["empty path segment", draft(receiver, {
+        input: { "": dependency },
+        inputRefs: [{ path: [""], ref: dependency }],
+      })],
+      ["fractional index", draft(receiver, {
+        input: { a: [dependency] },
+        inputRefs: [{ path: ["a", 1.5], ref: dependency }],
+      })],
+      ["path that does not hold its ref", draft(receiver, {
+        input: { author: dependency },
+        inputRefs: [{ path: ["owner"], ref: dependency }],
+      })],
+      ["inherited path", draft(receiver, {
+        input: {},
+        inputRefs: [{ path: ["constructor"], ref: dependency }],
+      })],
+      // ── allocation slots ───────────────────────────────────────────────
+      ["empty slot name", draft(receiver, {
+        allocations: [{ slot: "", clientRef: clientRef() }],
+      })],
+      ["duplicate slot", draft(receiver, {
+        allocations: [
+          { slot: "issue", clientRef: clientRef() },
+          { slot: "issue", clientRef: clientRef() },
+        ],
+      })],
+      ["self-dependent allocation", (() => {
+        const own = clientRef();
+        return draft(receiver, {
+          target: { type: "client-ref", clientRef: own },
+          allocations: [{ slot: "issue", clientRef: own }],
+        });
+      })()],
+      // ── cross-realm ────────────────────────────────────────────────────
+      ["foreign receiver", draft(
+        { ...receiver, principal: RIGHT },
+      )],
+      ["unallocated dependency", draft(receiver, {
+        target: { type: "client-ref", clientRef: clientRef() },
+      })],
+      ["reused client ref", draft(receiver, {
+        allocations: [{ slot: "issue", clientRef: allocation }],
+      })],
+    ];
+
+    // `rejectedTag` throws when a write is *not* refused, so reaching the end
+    // of this loop is the property: every one of them was refused, and the
+    // collected reasons show which rule caught it.
+    const refusals: string[] = [];
+    for (const [label, attack] of attacks) {
+      refusals.push(`${label}: ${await rejectedTag(outbox.enqueue(attack, { scope }))}`);
+    }
+    expect(refusals).toHaveLength(attacks.length);
+
+    // Nothing moved: no partial row, no bumped cursor, no orphan client ref.
+    expect(JSON.stringify(await dumpMutations(name))).toBe(before);
+    // And the healthy record still restores exactly, with its queue ready.
+    const restored = await outbox.restore(scope);
+    expect(restored.unreadable).toEqual([]);
+    expect(restored.records).toEqual([healthy]);
+    expect((await outbox.plan(scope))[0]!.head).toEqual({
+      type: "ready",
+      record: healthy,
+    });
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+/**
+ * The same property for the mapping store, which is the only other durable
+ * family a public call can write.
+ */
+browserTest("no adversarial mapping can reach the mapping store", async ({ browser }) => {
+  const name = `ramose-outbox-adversarial-mappings-${browser.uniqueId}`;
+  const left = identity();
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    const outbox = storage.outbox();
+    const allocation = clientRef();
+    const create = await outbox.enqueue(
+      draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+      { scope },
+    );
+    const handle = (await sealEntityId(sealingKeyOf(root), idScope(receiver), 4)) as EntityId;
+    const before = JSON.stringify(await dumpMutations(name));
+
+    const attacks: readonly (readonly [string, QueuedMapping, number])[] = [
+      ["forged ref", { clientRef: "cr1_nope" as never, entityId: handle }, 1],
+      ["truncated handle", { clientRef: allocation, entityId: "short" as EntityId }, 1],
+      [
+        "respelled handle",
+        { clientRef: allocation, entityId: `${"a".repeat(54)}B` as EntityId },
+        1,
+      ],
+      ["NaN timestamp", { clientRef: allocation, entityId: handle }, Number.NaN],
+      ["negative timestamp", { clientRef: allocation, entityId: handle }, -1],
+      ["fractional timestamp", { clientRef: allocation, entityId: handle }, 1.5],
+      ["unallocated ref", { clientRef: clientRef(), entityId: handle }, 1],
+    ];
+    const refusals: string[] = [];
+    for (const [label, mapping, mappedAt] of attacks) {
+      refusals.push(`${label}: ${
+        await rejectedTag(
+          outbox.recordMappings(receiver, create.invocation, [mapping], mappedAt),
+        )
+      }`);
+    }
+    expect(refusals).toHaveLength(attacks.length);
+    expect(JSON.stringify(await dumpMutations(name))).toBe(before);
+
+    // The legitimate mapping still lands and still releases nothing it should not.
+    await outbox.recordMappings(receiver, create.invocation, [
+      { clientRef: allocation, entityId: handle },
+    ], 1_700_000_000_000);
+    expect(await outbox.mappedRefs(scope)).toEqual(
+      new Map([[
+        mappingKey(mutationPartitionKey(receiver), allocation),
+        { codecVersion: 1, keyId: root.keyId },
+      ]]),
+    );
   } finally {
     storage.close();
     await deleteDatabase(name);

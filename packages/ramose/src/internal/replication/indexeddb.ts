@@ -858,12 +858,20 @@ export class IndexedDbReplicaStorage {
       if (!database.objectStoreNames.contains(GENERATIONS)) {
         database.createObjectStore(GENERATIONS, { keyPath: "key" });
       }
-      // #475's mutation families. They are created empty and need no data
-      // migration: version 6 and earlier could not queue an invocation, and
-      // version 7 only ever existed inside this unreleased change. Indexes are
-      // reconciled here rather than assumed.
-      if (request.transaction !== null) createMutationStores(database, request.transaction);
       const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
+      // #475's mutation families. Version 6 and earlier could not queue an
+      // invocation, and version 7 only ever existed inside this unreleased
+      // change — so anything already there predates the global identity
+      // indexes and is discarded before they are created, rather than aborting
+      // the upgrade on a row that was legal under the older shape. Indexes are
+      // reconciled here rather than assumed.
+      if (request.transaction !== null) {
+        createMutationStores(
+          database,
+          request.transaction,
+          oldVersion > 0 && oldVersion < MUTATION_INDEX_DATABASE_VERSION,
+        );
+      }
       if (oldVersion > 0 && oldVersion < STORAGE_V2_DATABASE_VERSION && request.transaction !== null) {
         // One atomic pre-public reset. Every stored record older than storage
         // version 2 carries documentation in its attribute metadata and roots,
