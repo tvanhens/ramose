@@ -563,7 +563,23 @@ browserTest("does not read a predecessor Graph's replica through a rotated read 
     },
   ]);
 
-  const ids = async (token: string): Promise<{
+  /**
+   * Read one session's organization id and whatever its board query renders.
+   *
+   * `child` names the settled condition this session is driven to, and the two
+   * are genuinely different waits. `settled` can only report the *aggregate*
+   * `client.sync`, where `offline` outranks `connecting` — so the root's
+   * refused connection alone satisfies it, while the child activation behind
+   * `orgHandle` is still restoring its replica out of IndexedDB. That is fine
+   * for a session with no child to reach, and it is not a wait at all for the
+   * one that has: the predecessor is driven to the child's own `ready` instead,
+   * on `waitFor`'s bounded deadline, exactly as every other positive read in
+   * this file is.
+   */
+  const ids = async (
+    token: string,
+    child: "restores" | "reaches nothing",
+  ): Promise<{
     readonly id: number;
     readonly boards: readonly unknown[] | undefined;
   }> => {
@@ -580,7 +596,11 @@ browserTest("does not read a predecessor Graph's replica through a rotated read 
         handle.query.from(Board).select({ slug: Board.slug }),
       );
       const holdBoards = boards.subscribe(() => undefined);
-      await settled(client);
+      if (child === "restores") {
+        await waitFor(boards, (snapshot) => snapshot.status === "ready");
+      } else {
+        await settled(client);
+      }
       holdOrg();
       holdBoards();
       return {
@@ -592,8 +612,8 @@ browserTest("does not read a predecessor Graph's replica through a rotated read 
     }
   };
 
-  const before = await ids("bearer-before");
-  const after = await ids("bearer-after");
+  const before = await ids("bearer-before", "restores");
+  const after = await ids("bearer-after", "reaches nothing");
   try {
     // The predecessor reads its own child database — the positive control, so
     // the successor's silence below is a decision and not an empty fixture.
