@@ -12,6 +12,7 @@ import {
   OwnedOperations,
   Ref,
   Schema,
+  Trait,
   bytes,
   stored,
   string,
@@ -40,6 +41,7 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-mcp-query",
   "operations-mcp-mutate",
   "operations-mcp-expiry",
+  "operations-mcp-budget",
 ]);
 
 const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
@@ -220,7 +222,11 @@ export const Item = Entity("nativeItem", {
   }),
 });
 
+/** Composed by `nativeEncoded` and granted to nobody: its field is unreadable. */
+export const SealedTrait = Trait("nativeSealed", { sealedNote: string() });
+
 const encodedRow = (label: string) => ({
+  sealedNote: "trait-hidden",
   label,
   at: new Date(1_700_000_000_000),
   blob: new Uint8Array([1, 2, 3, 250]),
@@ -251,7 +257,28 @@ export const Encoded = Entity("nativeEncoded", {
    */
   rowScoped: string(),
 }, {
+  traits: [SealedTrait],
   operations: (Operation) => ({
+    /**
+     * An `Unknown` output contract proves nothing about its interior, so
+     * whatever it carries has to be withheld.
+     *
+     * The returned number stands in for a storage id: the Transactor refuses
+     * to transport a live entity handle through an undeclared output at all
+     * ("operation output changes during JSON transport"), so an id can only
+     * reach an opaque contract as a plain number like this one. The exact
+     * value is immaterial — the projection is contract-only and never reads
+     * it; the unit tests pin the `{ principalEid: <eid> }` shape directly.
+     */
+    opaqueOutcome: Operation({
+      self: false,
+      input: EffectSchema.Struct({ label: EffectSchema.String }),
+      output: EffectSchema.Unknown,
+      run(op, input) {
+        op.create(encodedRow(input.label));
+        return { principalEid: 4099 };
+      },
+    }),
     create: Operation({
       self: false,
       input: EffectSchema.Struct({ label: EffectSchema.String }),
@@ -321,6 +348,7 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     ),
     Policy.invoke(Encoded[OwnedOperations].create).when(Policy.hasClass("member")),
     Policy.invoke(Encoded[OwnedOperations].createRenamed).when(Policy.hasClass("member")),
+    Policy.invoke(Encoded[OwnedOperations].opaqueOutcome).when(Policy.hasClass("member")),
   ],
 }));
 

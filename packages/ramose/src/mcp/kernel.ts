@@ -34,6 +34,7 @@ import {
 } from "../internal/authorization/operation-grant.ts";
 import type { AuthoritativeInvocationResult } from "../internal/authorization/invocation-receipts.ts";
 import { runOneShotRead } from "../internal/authorization/reads.ts";
+import { QueryBudgetError } from "../internal/core/query/engine.ts";
 import { Index, ValueTag } from "../internal/core/datom.ts";
 import { toJson } from "../internal/core/json.ts";
 import { RAMOSE_TYPE_IDENT } from "../internal/core/schema.ts";
@@ -41,6 +42,7 @@ import {
   DEFAULT_QUERY_LIMIT,
   MAX_DESCRIBE_ITEMS,
   encodeOperationVersionToken,
+  McpToolFailure,
   toolFailure,
   type ErrorEnvelopeV1,
   type QueryDocumentV1,
@@ -135,6 +137,12 @@ export const describeGraph = async (
         context.principal.subject,
       )
     ) continue;
+    // `mutate` has no `target` in this slice, and admission refuses a
+    // target-required operation without one, so advertising it would only
+    // publish a call no client here can make. Filtered *after* the visibility
+    // predicate and *before* the cap, so neither a hidden nor an uninvocable
+    // operation can set `truncated`.
+    if (descriptor.id.target === "required") continue;
     if (operations.length >= MAX_DESCRIBE_ITEMS) {
       truncated = true;
       break;
@@ -261,31 +269,20 @@ const staticRuleTruth = (
 };
 
 /**
- * Whether policy denies this field to this principal *whatever row it is on*.
+ * Whether one decision can be proven to deny this principal on every row.
  *
- * This is a conservative pre-filter, never an authorization decision: the
- * deployed read filter still decides every datom. Its only job is to keep a
- * field the caller can never read off the path a visible field takes, so a
- * hidden name cannot be told apart from an unknown one by which failure mode
- * it produces — a budgeted pull can fail, and the sealed empty answer cannot.
- *
- * It mirrors what the deployed filter does with a field decision: an explicit
- * deny wins, and at least one allow must pass. A field with *no* decision of
- * its own is governed entirely by its row — the filter returns readable there
- * — so it is never statically hidden. Anything row-dependent is likewise left
- * for the filtered `Db` to settle.
+ * Mirrors `evaluateDecision` in `read-filter.ts`: a deny whose rule is missing
+ * is fail-closed, an explicit deny that holds wins, and at least one allow
+ * must be able to pass. The one addition is three-valued conservatism — an
+ * allow that might pass on some row returns "not provably denied", so the
+ * filtered `Db` settles it.
  */
-const staticallyHidden = (
-  context: AuthorizedRequestContext,
+const decisionStaticallyDenies = (
+  decision: { readonly allow: readonly string[]; readonly deny: readonly string[] },
+  rules: ReadonlyMap<string, { readonly expr: CanonicalAuthorizationExpr }>,
   caller: AuthenticatedCaller,
-  field: FieldDescriptor,
+  subject: string,
 ): boolean => {
-  const decision = context.unit.policy.decisions.fields.find(
-    (entry) => fieldKey(entry.target) === fieldKey(field.id),
-  )?.decision;
-  if (decision === undefined) return false;
-  const subject = context.principal.subject;
-  const rules = new Map(context.unit.policy.rules.map((rule) => [rule.id, rule]));
   for (const id of decision.deny) {
     const rule = rules.get(id);
     if (rule === undefined) return true;
@@ -297,6 +294,48 @@ const staticallyHidden = (
     if (staticRuleTruth(rule.expr, caller, subject) !== false) return false;
   }
   return true;
+};
+
+/**
+ * Whether policy denies this field to this principal *whatever row it is on*.
+ *
+ * This is a conservative pre-filter, never an authorization decision: the
+ * deployed read filter still decides every datom. Its only job is to keep a
+ * field the caller can never read off the path a visible field takes, so a
+ * hidden name cannot be told apart from an unknown one by which failure mode
+ * it produces — a budgeted pull can fail, and the sealed empty answer cannot.
+ *
+ * It mirrors `isFieldReadable` in `read-filter.ts`, including the two
+ * defaults that differ from each other there:
+ *
+ * - a **trait**-owned field first needs its owning trait readable, and a
+ *   trait with no decision at all is denied (`isTraitReadable` returns false);
+ * - a field with no decision *of its own* is governed entirely by its row, so
+ *   it is never statically hidden.
+ *
+ * Anything row-dependent is likewise left for the filtered `Db` to settle.
+ */
+const staticallyHidden = (
+  context: AuthorizedRequestContext,
+  caller: AuthenticatedCaller,
+  field: FieldDescriptor,
+): boolean => {
+  const policy = context.unit.policy;
+  const subject = context.principal.subject;
+  const rules = new Map(policy.rules.map((rule) => [rule.id, rule]));
+  if (field.id.owner.kind === "trait") {
+    const traitDecision = policy.decisions.traits.find(
+      (entry) => entry.target.name === field.id.owner.name,
+    )?.decision;
+    // Unlike a field, a trait with no decision is denied outright.
+    if (traitDecision === undefined) return true;
+    if (decisionStaticallyDenies(traitDecision, rules, caller, subject)) return true;
+  }
+  const decision = policy.decisions.fields.find(
+    (entry) => fieldKey(entry.target) === fieldKey(field.id),
+  )?.decision;
+  if (decision === undefined) return false;
+  return decisionStaticallyDenies(decision, rules, caller, subject);
 };
 
 /**
@@ -400,6 +439,23 @@ export const lowerQueryDocument = (
   };
 };
 
+/**
+ * Classify a read failure that has a declared public code, or `undefined` to
+ * leave it to the generic handler.
+ *
+ * A budget abort is the caller's to fix — a narrower filter or a smaller
+ * limit succeeds — so it must arrive as its own retryable code rather than
+ * the opaque internal failure everything else collapses into.
+ */
+export const queryReadFailure = (cause: unknown): McpToolFailure | undefined =>
+  cause instanceof QueryBudgetError
+    ? toolFailure(
+      "query_budget_exceeded",
+      "the query exceeded its read budget; narrow it with more specific " +
+        "filters or a smaller limit",
+    )
+    : undefined;
+
 export const runQueryDocument = async (
   context: AuthorizedRequestContext,
   caller: AuthenticatedCaller,
@@ -408,11 +464,16 @@ export const runQueryDocument = async (
 ): Promise<QueryResultV1> => {
   const lowered = lowerQueryDocument(context, caller, document);
   if (lowered === undefined) return Object.freeze({ rows: [], truncated: false });
-  const result = await runOneShotRead(
-    context.filteredDb,
-    { kind: "query", query: lowered.query, inputs: lowered.inputs },
-    options.maxCells === undefined ? {} : { maxCells: options.maxCells },
-  );
+  let result: unknown;
+  try {
+    result = await runOneShotRead(
+      context.filteredDb,
+      { kind: "query", query: lowered.query, inputs: lowered.inputs },
+      options.maxCells === undefined ? {} : { maxCells: options.maxCells },
+    );
+  } catch (cause) {
+    throw queryReadFailure(cause) ?? cause;
+  }
   const pulled = Array.isArray(result) ? result : [];
   const rows: Record<string, unknown>[] = [];
   for (const row of pulled) {
@@ -475,25 +536,29 @@ export type MutateResultV1 = {
 export const OUTCOME_WITHHELD = Object.freeze({ withheld: "outcome" });
 
 /**
- * Whether a declared contract can reach an entity reference at all.
+ * Whether a declared contract is *provably* free of entity references.
  *
- * `opaque` is exact here rather than a guess: `lowerOperationSchema` refuses
- * to lower a schema that hides a Ramose ref inside a form it cannot describe,
- * so a shape that lowered to `opaque` provably contains none. (A contract
- * declared as plain `Unknown` still carries whatever the operation returns;
- * nothing there is *declared* to be a reference, so nothing here — or in the
- * receipt path — can identify one. That limit is the declared contract's, not
- * this projection's.)
+ * The polarity matters. It is not "does this contract mention a reference" —
+ * it is "can this contract prove it carries none", and a contract that
+ * declares nothing about its interior proves nothing. `opaque` is exactly
+ * that case: an output declared as bare `Unknown` lowers to it and then
+ * carries whatever the operation returned, storage ids included. So `opaque`
+ * is not publishable, and only `scalar`, and structures built entirely from
+ * publishable parts, are.
  */
-export const declaresReference = (shape: OperationInputShape): boolean => {
+export const publishableWithoutReferences = (
+  shape: OperationInputShape,
+): boolean => {
   switch (shape._tag) {
-    case "ref":
+    case "scalar":
       return true;
     case "array":
-      return declaresReference(shape.items);
+      return publishableWithoutReferences(shape.items);
     case "struct":
-      return shape.fields.some((field) => declaresReference(field.shape));
-    case "scalar":
+      return shape.fields.every((field) =>
+        publishableWithoutReferences(field.shape)
+      );
+    case "ref":
     case "opaque":
       return false;
   }
@@ -514,20 +579,20 @@ export const declaresReference = (shape: OperationInputShape): boolean => {
  * key names nor the value positions can be trusted to locate a reference, and
  * masking slot by slot would only ever be right until the next codec trick.
  *
- * So the rule is the contract alone: if the declared output contract can reach
- * a reference anywhere, the whole outcome is withheld. The invocation still
- * committed and `status` still says so; only the result is not shown.
- * Contracts that declare no reference are returned untouched — there is
- * nothing in them to leak, and withholding would cost results for no reason.
+ * So the rule is the contract alone, and it publishes only what the contract
+ * *proves* safe: an outcome is shown when its declared shape is provably
+ * reference-free, and withheld otherwise. The invocation still committed and
+ * `status` still says so; only the result is not shown.
  *
- * This is deliberately capability-losing. Publishing outcomes that carry
- * references is the job of the slice that introduces a public entity
- * reference; until then there is no honest way to show one.
+ * This is deliberately capability-losing. Publishing outcomes that carry — or
+ * merely might carry — references is the job of the slice that introduces a
+ * public entity reference; until then there is no honest way to show one.
  */
 export const projectOperationOutcome = (
   shape: OperationInputShape,
   output: unknown,
-): unknown => (declaresReference(shape) ? OUTCOME_WITHHELD : output);
+): unknown =>
+  publishableWithoutReferences(shape) ? output : OUTCOME_WITHHELD;
 
 /**
  * Restate one authoritative invocation outcome as the public MCP projection.

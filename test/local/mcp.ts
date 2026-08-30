@@ -335,6 +335,15 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         limit: 1,
       })).toMatchObject({ rows: [{ label: expect.any(String) }], truncated: true });
 
+      // A field owned by a trait nobody was granted is denied by the trait's
+      // own decision, before its (absent) field decision is ever consulted.
+      expect(await read({
+        version: 1,
+        from: { entity: "nativeEncoded" },
+        select: ["sealedNote"],
+        limit: 1,
+      })).toEqual({ rows: [], truncated: false });
+
       // The reader proves the hidden row was really there all along.
       const visible = await ok(base, database, reader, "query", {
         query: { version: 1, from: { entity: "nativeOther" }, select: ["name"] },
@@ -389,7 +398,7 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         });
 
       // A well-formed version that is not this operation's: no effect occurs.
-      const stale = { ...create, version: ref(discovered, "nativeItem", "rename").version };
+      const stale = { ...create, version: ref(discovered, "nativeOther", "create").version };
       expect(await callTool(
         base,
         database,
@@ -413,13 +422,30 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       expect(renamed.outcome).toEqual(committed.outcome);
       expect(JSON.stringify(renamed)).not.toContain("wire_id");
 
-      // A contract that cannot reach a reference still publishes its result.
+      // An `Unknown` output contract proves nothing about its interior, so a
+      // storage id returned through one is withheld just the same.
+      const opaque = await ok(base, database, member, "mutate", {
+        operation: ref(discovered, "nativeEncoded", "opaqueOutcome"),
+        input: { label: "opaque" },
+        invocationId: crypto.randomUUID(),
+      });
+      expect(opaque.outcome).toEqual(committed.outcome);
+      expect(JSON.stringify(opaque)).not.toContain("principalEid");
+      expect(JSON.stringify(opaque.outcome)).not.toMatch(/\d/);
+
+      // Only a contract that *proves* it carries no reference publishes.
       const plain = await ok(base, database, member, "mutate", {
         operation: ref(discovered, "nativeItem", "returnTransportTag"),
         input: {},
         invocationId: crypto.randomUUID(),
       });
       expect(plain.outcome).toEqual({ $inst: "application-value" });
+
+      // A target-required operation is granted to `member` but uninvocable
+      // here, so discovery must not advertise it.
+      const names = discovered.operations.map((operation: any) => operation.name);
+      expect(names).toContain("create");
+      expect(names).not.toContain("rename");
       // The write itself still committed.
       expect((await ok(base, database, member, "query", {
         query: {
@@ -525,6 +551,47 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       expect(replayed).toMatchObject({ invocationId, status: "completed" });
       // Still exactly one row: the replay did not execute a second time.
       expect(await committedRows()).toEqual([[expect.any(Number)]]);
+    });
+
+    test("an unreadable field never reaches the budgeted query path", async () => {
+      // Under a one-cell budget every query that actually runs aborts. That
+      // is what makes the static visibility layer observable: a field this
+      // caller can never read has to answer like an unknown name — which
+      // cannot fail — rather than share the failure mode of a visible one.
+      const base = ctx.urls().mcpBudgetUrl;
+      const database = "operations-mcp-budget";
+      await install(base, database, schemaTx(OperationSchema));
+      const discovered = await ok(base, database, member, "describe", { at: [] });
+      await ok(base, database, member, "mutate", {
+        operation: ref(discovered, "nativeEncoded", "create"),
+        input: { label: "budgeted" },
+        invocationId: crypto.randomUUID(),
+      });
+      const select = (fields: readonly string[]) =>
+        callTool(base, database, member, "query", {
+          query: { version: 1, from: { entity: "nativeEncoded" }, select: fields },
+        });
+
+      // A visible field runs, and its budget abort is classified rather than
+      // collapsing into the opaque internal failure.
+      const visible = await select(["label"]);
+      expect(visible).toMatchObject({
+        isError: true,
+        value: { code: "query_budget_exceeded", retryable: true },
+      });
+      // The engine's own message names clauses and cell counts; none rides.
+      expect(visible.value.message).not.toMatch(/\d/);
+
+      // A field denied by its own decision, one denied by its owning trait's,
+      // and a name that does not exist all answer identically — and none of
+      // them can fail, because none of them runs a query.
+      const unknown = await select(["noSuchField"]);
+      expect(unknown).toEqual({
+        isError: false,
+        value: { rows: [], truncated: false },
+      });
+      expect(await select(["secret"])).toEqual(unknown);
+      expect(await select(["sealedNote"])).toEqual(unknown);
     });
 
     test("at traverses the authorized graph of graphs", async () => {

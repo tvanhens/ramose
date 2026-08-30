@@ -99,6 +99,24 @@ export const NativeOperations = Ramose.Server("NativeOperations", {
   env: TEST_HOOKS_ENV,
 });
 
+/**
+ * Same operation catalog under a query budget of one cell.
+ *
+ * The MCP kernel keeps a field the caller can never read off the budgeted
+ * query path entirely, and after empty projections collapse to the sealed
+ * answer the *only* remaining way to observe that is the failure mode: a
+ * visible field aborts on budget while a hidden or unknown one still answers
+ * with the sealed empty. That needs its own peer, since the budget is per
+ * Worker and every other suite here expects the default.
+ */
+export const McpBudget = Ramose.Server("McpBudget", {
+  peer: "McpBudgetPeer",
+  storage: "McpBudgetStore",
+  main: operationWorker,
+  auth: jwtAuth(),
+  env: { ...TEST_HOOKS_ENV, RAMOSE_QUERY_MAX_CELLS: "1" },
+});
+
 /** Authenticated two-level Graph routing and dynamic provisioning (#325). */
 export const GraphPaths = Ramose.Server("GraphPaths", {
   peer: "GraphPathsPeer",

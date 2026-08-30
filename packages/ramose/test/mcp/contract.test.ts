@@ -15,10 +15,12 @@ import {
 } from "../../src/mcp/contract.ts";
 import {
   OUTCOME_WITHHELD,
-  declaresReference,
   projectOperationOutcome,
   publicMutateResult,
+  publishableWithoutReferences,
+  queryReadFailure,
 } from "../../src/mcp/kernel.ts";
+import { QueryBudgetError } from "../../src/internal/core/query/engine.ts";
 import type { OperationInputShape } from "../../src/internal/authorization/catalog.ts";
 import type { AuthoritativeInvocationResult } from "../../src/internal/authorization/invocation-receipts.ts";
 
@@ -181,31 +183,39 @@ describe("mutate arguments", () => {
   });
 });
 
-describe("reference-capable contracts", () => {
+describe("publishable output contracts", () => {
   const ref: OperationInputShape = { _tag: "ref", refTarget: { _tag: "self" } };
   const scalar: OperationInputShape = { _tag: "scalar", valueType: "string" };
   const field = (key: string, shape: OperationInputShape) =>
     ({ key, optional: false, shape });
 
-  test("finds a declared reference wherever the contract puts one", () => {
-    expect(declaresReference(ref)).toBe(true);
-    expect(declaresReference({ _tag: "array", items: ref })).toBe(true);
-    expect(declaresReference({ _tag: "struct", fields: [field("id", ref)] }))
-      .toBe(true);
-    expect(declaresReference({
+  test("publishes only what the contract proves reference-free", () => {
+    expect(publishableWithoutReferences(scalar)).toBe(true);
+    expect(publishableWithoutReferences({ _tag: "array", items: scalar })).toBe(true);
+    expect(publishableWithoutReferences({
       _tag: "struct",
-      fields: [field("nested", { _tag: "array", items: { _tag: "struct", fields: [field("id", ref)] } })],
+      fields: [field("title", scalar)],
     })).toBe(true);
   });
 
-  test("a contract that cannot reach a reference is not one", () => {
-    expect(declaresReference(scalar)).toBe(false);
-    expect(declaresReference({ _tag: "opaque" })).toBe(false);
-    expect(declaresReference({ _tag: "struct", fields: [field("title", scalar)] }))
-      .toBe(false);
+  test("a contract that proves nothing is not publishable", () => {
+    // An `Unknown` output lowers to `opaque` and then carries whatever the
+    // operation returned, storage ids included, so it cannot be published.
+    expect(publishableWithoutReferences({ _tag: "opaque" })).toBe(false);
+    expect(publishableWithoutReferences(ref)).toBe(false);
+    expect(publishableWithoutReferences({ _tag: "array", items: ref })).toBe(false);
+    expect(publishableWithoutReferences({
+      _tag: "struct",
+      fields: [field("title", scalar), field("id", ref)],
+    })).toBe(false);
+    // Opacity anywhere inside is enough to lose the proof.
+    expect(publishableWithoutReferences({
+      _tag: "struct",
+      fields: [field("anything", { _tag: "opaque" })],
+    })).toBe(false);
   });
 
-  test("withholds the whole outcome for any reference-capable contract", () => {
+  test("withholds the whole outcome for any unprovable contract", () => {
     // No codec trick can move a reference somewhere this rule does not look,
     // because it does not look at the value at all.
     const shape: OperationInputShape = {
@@ -215,9 +225,9 @@ describe("reference-capable contracts", () => {
     for (
       const output of [
         { id: 4_099, count: 2 },
-        // A codec that renamed the key…
+        // A codec that renamed the key...
         { wire_id: 4_099, count: 2 },
-        // …or relocated the id into a slot declared as an ordinary scalar.
+        // ...or relocated the id into a slot declared as an ordinary scalar.
         { count: 4_099 },
       ]
     ) {
@@ -225,24 +235,51 @@ describe("reference-capable contracts", () => {
       expect(projected).toBe(OUTCOME_WITHHELD);
       expect(JSON.stringify(projected)).not.toContain("4099");
     }
+    // And an opaque contract hiding an id behind a plain-looking key.
+    expect(projectOperationOutcome({ _tag: "opaque" }, { principalEid: 4_099 }))
+      .toBe(OUTCOME_WITHHELD);
   });
 
-  test("a reference-free contract is published exactly as the codec produced it", () => {
+  test("a provably reference-free contract publishes what the codec produced", () => {
     const shape: OperationInputShape = {
       _tag: "struct",
       fields: [field("title", scalar)],
     };
     expect(projectOperationOutcome(shape, { wire_title: "kept" }))
       .toEqual({ wire_title: "kept" });
-    expect(projectOperationOutcome({ _tag: "opaque" }, { anything: 1 }))
-      .toEqual({ anything: 1 });
+  });
+});
+
+describe("query read failures", () => {
+  test("a budget abort gets its own retryable public code", () => {
+    const failure = queryReadFailure(
+      new QueryBudgetError("where", 5_000_000, 1_000),
+    );
+    expect(failure?.envelope).toMatchObject({
+      code: "query_budget_exceeded",
+      retryable: true,
+    });
+    // The engine's own message names clauses and cell counts; none of it rides.
+    expect(failure?.envelope.message).not.toContain("5,000,000");
+  });
+
+  test("anything else is left to the generic handler", () => {
+    expect(queryReadFailure(new Error("boom"))).toBeUndefined();
+    expect(queryReadFailure("boom")).toBeUndefined();
   });
 });
 
 describe("invocation outcome projection", () => {
   const receipt = { version: 2 as const, invocationId: "01K" };
-  const opaque: OperationInputShape = { _tag: "opaque" };
-  const project = (result: unknown, shape: OperationInputShape = opaque) =>
+  const publishable: OperationInputShape = {
+    _tag: "struct",
+    fields: [{
+      key: "title",
+      optional: false,
+      shape: { _tag: "scalar", valueType: "string" },
+    }],
+  };
+  const project = (result: unknown, shape: OperationInputShape = publishable) =>
     publicMutateResult(result as AuthoritativeInvocationResult, shape);
 
   test("projects a completed invocation without receipt internals", () => {
