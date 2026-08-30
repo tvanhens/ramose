@@ -1,11 +1,548 @@
 ---
 import AnimationDemo from "./AnimationDemo.astro";
+
+const cards = [
+  ["Fix empty state", "ISS-12"],
+  ["Remove old flag", "ISS-18"],
+  ["Archive launch notes", "ISS-23"],
+];
+
+const steps = [
+  ["01", "An agent clears the backlog", "12:41:04 · committed"],
+  ["02", "Scrub the history", "no restore drill"],
+  ["03", "Read the state before it", "12:40:52 · queryable"],
+  ["04", "Continue from there", "3 issues back, live"],
+];
 ---
 
 <AnimationDemo
   variant="history"
-  src="/demos/data-is-never-lost.html?v=shared-narrative-10"
   title="An issue board rewinding to recover deleted work"
+  cycleMs={10000}
   initialTitle="An agent clears the backlog"
   initialMeta="12:41:04 · committed"
-/>
+>
+  <div class="history-demo">
+    <div class="rg-demo-titlebar history-titlebar">
+      <span class="rg-demo-dots"><i></i><i></i><i></i></span>
+      <span>app.acme.dev<span class="muted">/issues</span></span>
+      <span class="rg-demo-live"><i></i><b data-history-live>Live</b></span>
+    </div>
+
+    <div class="history-board">
+      <header class="history-board__header">
+        <span><small>Product / Launch</small><strong>Issue board</strong></span>
+        <span class="history-view"><i></i><b data-history-view>Viewing now</b></span>
+      </header>
+
+      <div class="history-columns">
+        <section class="history-column history-backlog">
+          <header><span>Backlog</span><b data-history-count>0</b></header>
+          <div class="history-card-list">
+            {cards.map(([title, id], index) => (
+              <div class="history-card" data-history-card={index}>
+                <i></i>
+                <span><strong>{title}</strong><small>{id}</small></span>
+                <small class="history-restored">restored</small>
+              </div>
+            ))}
+          </div>
+          <div class="history-empty" data-history-empty>
+            <span>✓</span><small>Backlog cleared</small>
+          </div>
+        </section>
+
+        <section class="history-column">
+          <header><span>In progress</span><b>1</b></header>
+          <div class="history-card is-static">
+            <i></i><span><strong>Polish onboarding</strong><small>ISS-31</small></span>
+          </div>
+        </section>
+
+        <section class="history-column">
+          <header><span>Done</span><b>2</b></header>
+          <div class="history-card-list">
+            <div class="history-card is-static is-done"><i></i><span><strong>Connect auth</strong><small>ISS-04</small></span></div>
+            <div class="history-card is-static is-done"><i></i><span><strong>Ship schema</strong><small>ISS-08</small></span></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div class="history-timeline">
+      <header><span data-history-status>Now · after deletion</span><span>every committed version is queryable</span></header>
+      <div class="history-chip">Deleted 3 issues</div>
+      <div class="history-track">
+        <span class="history-fill"></span>
+        {[68, 73, 78].map((position, index) => (
+          <span class="history-event" data-history-event={index} style={`--event-position: ${position}%`}><i></i></span>
+        ))}
+        <span class="history-handle"></span>
+      </div>
+      <footer><span data-history-window-start>12:40:48</span><strong data-history-clock>12:41:08</strong><span>Now</span></footer>
+    </div>
+
+    <div class="rg-demo-steps history-steps">
+      {steps.map(([number, title, meta]) => (
+        <div class="rg-demo-step" data-demo-step data-title={title} data-meta={meta}>
+          <span class="rg-demo-step__number">{number}</span>
+          <strong>{title}</strong>
+          <small>{meta}</small>
+        </div>
+      ))}
+    </div>
+  </div>
+</AnimationDemo>
+
+<style>
+  .history-demo {
+    min-width: 0;
+  }
+
+  .muted {
+    color: #5c534d;
+  }
+
+  .history-titlebar {
+    border-bottom: 1px solid #241f1c;
+  }
+
+  .history-titlebar b {
+    font-weight: 400;
+  }
+
+  .history-board {
+    padding: clamp(0.9rem, 3vw, 1.35rem) clamp(0.9rem, 3vw, 1.35rem) clamp(1rem, 3vw, 1.35rem);
+  }
+
+  .history-board__header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 0.7rem 1rem;
+    margin-bottom: 1.1rem;
+  }
+
+  .history-board__header > span:first-child {
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .history-board__header > span:first-child small {
+    color: #6f635c;
+    font-family: var(--sl-font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .history-board__header > span:first-child strong {
+    color: #f2ece7;
+    font-size: 1.15rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .history-view {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    box-sizing: border-box;
+    padding: 0.32rem 0.6rem;
+    color: #6d615a;
+    border: 1px solid #2d2723;
+    border-radius: 999px;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5625rem;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    transition: color 320ms ease, border-color 320ms ease, background-color 320ms ease;
+  }
+
+  .history-view i {
+    width: 0.3rem;
+    height: 0.3rem;
+    border-radius: 50%;
+    background: #4a413b;
+    transition: background-color 320ms ease;
+  }
+
+  .history-view b {
+    font-weight: 400;
+  }
+
+  .history-columns {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.55rem;
+  }
+
+  .history-column {
+    position: relative;
+    min-width: 0;
+    padding: 0.6rem;
+    border: 1px solid #241f1c;
+    border-radius: 0.6rem;
+    background: #100e0d;
+    transition: border-color 360ms ease;
+  }
+
+  .history-column > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 1.4rem;
+    color: #877a72;
+    font-family: var(--sl-font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .history-column > header b {
+    display: grid;
+    place-items: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    color: #6b5f58;
+    border-radius: 0.35rem;
+    background: #1a1613;
+    font-size: 0.6rem;
+    font-weight: 500;
+    transition: color 300ms ease;
+  }
+
+  .history-card-list {
+    display: grid;
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+  }
+
+  .history-card {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    box-sizing: border-box;
+    min-height: 3.4rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid #2b2521;
+    border-radius: 0.5rem;
+    background: #161311;
+    opacity: 0;
+    transform: translateY(0.55rem);
+    transition: opacity 140ms ease, transform 300ms cubic-bezier(.2, .8, .25, 1),
+      border-color 380ms ease, background-color 380ms ease, box-shadow 420ms ease;
+  }
+
+  .history-card.is-visible,
+  .history-card.is-static {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .history-card.is-fresh {
+    border-color: #a8542c;
+    box-shadow: 0 0 1.4rem -0.7rem rgba(255, 77, 8, 0.75);
+  }
+
+  .history-card.show-badge {
+    border-color: #4a3529;
+    background: #191310;
+  }
+
+  .history-card > i {
+    flex: 0 0 auto;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: #ff5b0a;
+  }
+
+  .history-card.is-static > i {
+    background: #85502f;
+  }
+
+  .history-card.is-done > i {
+    background: #4f7d70;
+  }
+
+  .history-card > span {
+    display: grid;
+    flex: 1 1 6rem;
+    min-width: 0;
+    gap: 0.2rem;
+  }
+
+  .history-card strong {
+    overflow: hidden;
+    color: #d6cdc6;
+    font-size: 0.75rem;
+    font-weight: 500;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .history-card.is-done strong {
+    color: #a89f99;
+    text-decoration: line-through;
+    text-decoration-color: #4a423d;
+  }
+
+  .history-card small {
+    color: #6b5f58;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5625rem;
+    letter-spacing: 0.04em;
+  }
+
+  .history-restored {
+    flex: 0 0 auto;
+    color: #ffb284 !important;
+    font-size: 0.5rem !important;
+    opacity: 0;
+    transition: opacity 360ms ease;
+  }
+
+  .history-card.show-badge .history-restored {
+    opacity: 1;
+  }
+
+  .history-empty {
+    position: absolute;
+    inset: 2.6rem 0.6rem 0.6rem;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: 0.6rem;
+    border-radius: 0.5rem;
+    background: #100e0d;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 200ms ease;
+  }
+
+  .history-empty.is-visible {
+    opacity: 1;
+    transition-delay: 240ms;
+  }
+
+  .history-empty span {
+    display: grid;
+    place-items: center;
+    width: 1.7rem;
+    height: 1.7rem;
+    color: #ff6a24;
+    border: 1px solid #6f391f;
+    border-radius: 50%;
+    background: #18110d;
+    font-size: 0.7rem;
+  }
+
+  .history-empty small {
+    color: #806d62;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5625rem;
+    letter-spacing: 0.04em;
+  }
+
+  .history-timeline {
+    padding: clamp(0.9rem, 3vw, 1.1rem) clamp(0.9rem, 3vw, 1.25rem) clamp(1rem, 3vw, 1.15rem);
+    border-top: 1px solid #241f1c;
+    background: #100e0c;
+    font-family: var(--sl-font-mono);
+  }
+
+  .history-timeline > header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.35rem 1rem;
+    margin-bottom: 0.5rem;
+    color: #8a7c74;
+    font-size: 0.625rem;
+    letter-spacing: 0.04em;
+  }
+
+  .history-timeline > header span:first-child {
+    transition: color 320ms ease;
+  }
+
+  .history-timeline > header span:last-child {
+    color: #5c534d;
+  }
+
+  .history-chip {
+    width: max-content;
+    margin: 0 20% 0.45rem auto;
+    padding: 0.16rem 0.38rem;
+    color: #735f53;
+    border: 1px solid #2a221e;
+    border-radius: 0.3rem;
+    background: #150f0c;
+    font-size: 0.5rem;
+    letter-spacing: 0.04em;
+    transition: color 260ms ease, border-color 260ms ease;
+  }
+
+  .history-track {
+    position: relative;
+    height: 3px;
+    margin: 0 0.5rem;
+    border-radius: 999px;
+    background: #322923;
+  }
+
+  .history-fill {
+    position: absolute;
+    inset-block: 0;
+    left: var(--history-position, 100%);
+    right: 0;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #744126, #ff5b0a);
+    opacity: 0;
+  }
+
+  .history-event {
+    position: absolute;
+    top: 50%;
+    left: var(--event-position);
+    width: 1px;
+    height: 0.85rem;
+    background: #6f3820;
+    transform: translateY(-50%);
+    transition: background-color 260ms ease;
+  }
+
+  .history-event i {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 50%;
+    background: #8a4526;
+    box-shadow: 0 0 0.5rem rgba(255, 70, 0, 0.35);
+    transform: translate(-50%, -50%);
+    transition: background-color 260ms ease, box-shadow 260ms ease;
+  }
+
+  .history-event.is-passed {
+    background: #a8542c;
+  }
+
+  .history-event.is-passed i {
+    background: #ff6500;
+    box-shadow: 0 0 0.8rem rgba(255, 70, 0, 0.85);
+  }
+
+  .history-handle {
+    position: absolute;
+    z-index: 2;
+    top: 50%;
+    left: var(--history-position, 100%);
+    width: 0.85rem;
+    height: 0.85rem;
+    border: 2px solid #ff7a38;
+    border-radius: 50%;
+    background: #160d09;
+    box-shadow: 0 0 1rem rgba(255, 71, 0, 0.55);
+    transform: translate(-50%, -50%);
+  }
+
+  .history-timeline > footer {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 0.8rem;
+    color: #5e534c;
+    font-size: 0.5625rem;
+    letter-spacing: 0.04em;
+  }
+
+  .history-timeline > footer strong {
+    color: #9c725c;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    transition: color 320ms ease;
+  }
+
+  :global([data-animation-phase="history"]) {
+    .history-titlebar .rg-demo-live {
+      color: #c79a7c;
+    }
+
+    .history-view {
+      color: #ff9a61;
+      border-color: #6e351d;
+      background: #1a100b;
+    }
+
+    .history-view i {
+      background: #ff6500;
+    }
+
+    .history-backlog {
+      border-color: #5c3220;
+    }
+
+    .history-column > header b,
+    .history-timeline > footer strong {
+      color: #c79a7c;
+    }
+
+    .history-timeline > header span:first-child {
+      color: #d49570;
+    }
+
+    .history-fill {
+      opacity: 1;
+    }
+
+    .history-chip {
+      color: #ffb284;
+      border-color: #5c3220;
+    }
+  }
+
+  :global([data-animation-phase="continue"]) {
+    .history-timeline > header span:first-child {
+      color: #d49570;
+    }
+  }
+
+  @container (max-width: 34rem) {
+    .history-board {
+      padding: 0.65rem;
+    }
+
+    .history-columns {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .history-column:not(.history-backlog) {
+      display: none;
+    }
+
+    .history-timeline > header span:last-child {
+      display: none;
+    }
+
+    .history-chip {
+      margin-right: 10%;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .history-view,
+    .history-column,
+    .history-card,
+    .history-empty,
+    .history-event,
+    .history-event i {
+      transition: none;
+    }
+  }
+</style>

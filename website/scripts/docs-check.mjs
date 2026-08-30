@@ -403,34 +403,6 @@ if (run("images") && !onlyPage) {
   }
 }
 
-if (run("demos") && !onlyPage) {
-  const demos = join(PUBLIC, "demos");
-  for (const path of walk(demos).filter((p) => p.endsWith(".html"))) {
-    const src = readFileSync(path, "utf8");
-    const page = `/demos/${relative(demos, path)}`;
-    for (const type of [
-      "__bundler/manifest",
-      "__bundler/page_order",
-      "__bundler/template",
-    ]) {
-      const marker = `<script type="${type}">`;
-      const start = src.indexOf(marker);
-      const end = start < 0 ? -1 : src.indexOf("</script>", start + marker.length);
-      if (start < 0 || end < 0) {
-        add("ERROR", "demos", page, `missing ${type} payload`);
-        continue;
-      }
-      const payload = src.slice(start + marker.length, end).trim();
-      try {
-        JSON.parse(payload);
-      } catch (error) {
-        add("ERROR", "demos", page, `${type} payload is not valid JSON`,
-          error instanceof Error ? error.message : String(error));
-      }
-    }
-  }
-}
-
 const errors = findings.filter((f) => f.sev === "ERROR");
 const warns = findings.filter((f) => f.sev === "WARN");
 
