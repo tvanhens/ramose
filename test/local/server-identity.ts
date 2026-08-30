@@ -19,7 +19,7 @@ import { CONFORMANCE_DATABASES } from "./conformance-catalog.ts";
 import { loadConformanceProof } from "./conformance-proof.ts";
 import { seedWorld } from "./conformance.ts";
 import { testAdmin, uniqueDb, type LocalUrls } from "./fixtures.ts";
-import { closeIterator, openReplication } from "./replication.ts";
+import { closeIterator, observed, openReplication } from "./replication.ts";
 import {
   collectCommittedSnapshot,
   readReplicationNdjson,
@@ -171,9 +171,11 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         resumed,
       )[Symbol.asyncIterator]();
       try {
-        const ready = await resumedIterator.next();
-        expect(ready.done).toBe(false);
-        const frame = ready.value!.frame;
+        // Bounded like every other frame read: the only unguarded `next()`
+        // left in `test/local`, and an unguarded one costs the whole 90s
+        // default budget, which takes the shared dev stack down with it.
+        const frame = (await observed(resumedIterator, "resumed identity ready"))
+          .frame;
         // A rotated identity would have produced a Reset plus a fresh snapshot
         // under a different authenticator instead.
         expect(frame.type).toBe("ResumeReady");

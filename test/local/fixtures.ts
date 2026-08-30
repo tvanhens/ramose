@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Ramose from "ramose";
 import Stack from "./alchemy.run.ts";
 import { TEST_CAPABILITY } from "./test-hooks-env.ts";
+import { withRequestDeadline } from "../support/stream.ts";
 
 export const { deploy, destroy, beforeAll, afterAll } = Test.make({
   providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
@@ -133,6 +134,10 @@ const isPreResponseFailure = (error: unknown): boolean => {
  * Any status the Worker actually produced is returned untouched on the first
  * attempt, so no product answer can be masked. Only safe, read-only requests
  * may use this: re-issuing one that commits would double-apply it.
+ *
+ * The open itself is bounded by `REQUEST_DEADLINE_MS`. Only the headers are
+ * covered: the deadline is cleared the moment the `Response` arrives, so the
+ * caller keeps a stream it can hold open for as long as it likes.
  */
 export const fetchPastProxyBlip = async (
   url: string,
@@ -145,7 +150,13 @@ export const fetchPastProxyBlip = async (
     if (attempt > 0) await Bun.sleep(proxyBlipBackoffMs(attempt - 1));
     init.signal?.throwIfAborted();
     try {
-      const response = await fetcher(url, init);
+      // A caller that brought its own signal keeps it and owns the bound.
+      const response = init.signal === undefined
+        ? await withRequestDeadline(
+          (signal) => fetcher(url, { ...init, signal }),
+          label,
+        )
+        : await fetcher(url, init);
       if (response.status !== 502) return response;
       await response.body?.cancel().catch(() => undefined);
       last = new Error(`${label}: dev proxy answered 502`);
@@ -156,19 +167,6 @@ export const fetchPastProxyBlip = async (
   }
   throw last;
 };
-
-/**
- * Ceiling on one `json` request/response exchange.
- *
- * Nothing `json` carries is a long poll — the whole suite finishes in under a
- * minute — so anything still outstanding at this point is wedged. Without a
- * ceiling a wedged request silently consumed the caller's entire 90s default
- * test budget and reported only "timed out after 90000ms": that is how a
- * hung `/op` on a parked replication stream (see the PR body) presented, with
- * the request's own identity lost. This is a deadline, never a retry: the
- * request is abandoned and the failure names the path that hung.
- */
-const REQUEST_DEADLINE_MS = 45_000;
 
 export const json = async (
   base: string,
@@ -182,31 +180,25 @@ export const json = async (
     headers.set("x-ramose-test-capability", TEST_CAPABILITY);
   }
   const url = `${base.replace(/\/+$/, "")}${path}`;
+  const label = `${rest.method ?? "GET"} ${path}`;
+  const exchange = async (
+    signal: AbortSignal | undefined,
+  ): Promise<{ res: Response; text: string }> => {
+    const res = await fetch(url, {
+      ...rest,
+      headers,
+      ...(signal === undefined ? {} : { signal }),
+    });
+    // Inside the same bound: the deadline keeps running after the headers
+    // arrive, so a body that stalls fails here rather than hanging, and
+    // reports the same way as a request that never answered at all.
+    return { res, text: await res.text() };
+  };
   for (let attempt = 0; ; attempt++) {
     // Callers never pass their own signal today; honour one if they start to.
-    const deadline = rest.signal === undefined
-      ? AbortSignal.timeout(REQUEST_DEADLINE_MS)
-      : undefined;
-    let res: Response;
-    let text: string;
-    try {
-      res = await fetch(url, {
-        ...rest,
-        headers,
-        ...(deadline === undefined ? {} : { signal: deadline }),
-      });
-      // Inside the same guard: the signal keeps running after the headers
-      // arrive, so a body that stalls aborts here rather than hanging, and
-      // reports the same way as a request that never answered at all.
-      text = await res.text();
-    } catch (error) {
-      if (deadline?.aborted === true) {
-        throw new Error(
-          `${rest.method ?? "GET"} ${path} did not answer within ${REQUEST_DEADLINE_MS}ms`,
-        );
-      }
-      throw error;
-    }
+    const { res, text } = rest.signal === undefined
+      ? await withRequestDeadline(exchange, label)
+      : await exchange(undefined);
     let body: any;
     try {
       body = text ? JSON.parse(text) : null;

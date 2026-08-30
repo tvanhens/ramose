@@ -19,6 +19,7 @@ import {
   readLiveNdjson,
   type LiveQueryDiff,
 } from "../support/live-query.ts";
+import { closeObservedStream } from "../support/stream.ts";
 import {
   CONFORMANCE_DATABASES,
   ConformanceIssue,
@@ -1232,7 +1233,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
         expect(JSON.stringify([first.value, renameDiff.value, revokeDiff.value]))
           .not.toMatch(/Hidden-live-secret|basis|catalog|txEid|grant|rule/);
       } finally {
-        await iterator.return?.(undefined);
+        await closeObservedStream(iterator);
       }
     });
 
@@ -1259,7 +1260,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
         expect(closed.done).toBe(true);
         expect(JSON.stringify(frames)).not.toMatch(/exp|lease|jwt|basis|catalog|rule/);
       } finally {
-        await iterator.return?.(undefined);
+        await closeObservedStream(iterator);
       }
     });
   });

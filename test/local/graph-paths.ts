@@ -20,6 +20,7 @@ import {
   collectCommittedSnapshot,
   readReplicationNdjson,
 } from "../support/replication.ts";
+import { closeObservedStream } from "../support/stream.ts";
 import { json, fetchPastProxyBlip, testAdmin, type LocalUrls } from "./fixtures.ts";
 import {
   GateHidden,
@@ -588,7 +589,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
           /basis|txEid|lease|database|catalog|graphEntity|sequence|count/i,
         );
       } finally {
-        await iterator.return?.(undefined);
+        await closeObservedStream(iterator);
       }
     });
 
@@ -639,7 +640,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
           ),
         ).toBe(true);
       } finally {
-        await iterator.return?.(undefined);
+        await closeObservedStream(iterator);
       }
 
       const refreshed = await signToken(GRAPH_PATH_ROOT_DATABASE, "member");
@@ -709,7 +710,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
           /lease|databaseName|catalogKey|graphEntity|basis|sequence|reason/i,
         );
       } finally {
-        await resumed.return?.(undefined);
+        await closeObservedStream(resumed);
       }
     });
 
