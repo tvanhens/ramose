@@ -538,9 +538,11 @@ and zero heads for any GC pass.
   node — leaves the partition's live set unknown, and GC then sweeps nothing in
   that partition. Damage is never converted into deletion; the restore walk is
   what classifies and quarantines it.
-- **Materialization exclusion.** `materialize` marks its partition in flight
-  synchronously before it creates its first node transaction, and clears the
-  mark only after the install transaction settles. GC reads that mark and
+- **Materialization exclusion.** An install marks its partition in flight
+  synchronously before materialization creates its first node transaction, and
+  clears the mark only after the install transaction settles — closing the
+  storage handle does not clear it, because a closed IndexedDB connection still
+  runs the transactions it already created to completion. GC reads that mark and
   creates its sweep transaction in one synchronous block, with no `await`
   between them. Either GC saw the mark and skipped the partition, or the
   materialization had not yet created a node transaction — and every transaction
@@ -554,6 +556,14 @@ and zero heads for any GC pass.
   A sweep is therefore always consistent with the committed value as of the
   instant it commits, and a partition whose manifest moved is skipped rather
   than swept against a value nobody examined.
+- **Retention re-check.** The manifest CAS does not cover retention, because a
+  restore that validated an *older* manifest publishes without moving the
+  manifest at all: the session retains those roots synchronously as it
+  publishes, and the pass may have computed its live set before that happened.
+  The same synchronous block that reads the materialization mark therefore
+  re-reads the retained roots, and skips the partition when one has appeared
+  that the live set does not already cover. A root that has gone since is
+  harmless — the live set was simply more generous than it needed to be.
 - **Only impossible staging.** Staging is swept only when its recorded base
   revision is no longer the committed one, which is exactly the condition under
   which its `SnapshotCommit` can never install again. A snapshot still streaming
@@ -586,10 +596,17 @@ one node) and exactly one reader (the restore publish fence). `validated` reads
 it in the same transaction that takes the walk's lifecycle lease, before the
 walk, and re-reads it in the same transaction that re-confirms the scope and
 database generations, after it. A changed value means nodes were deleted in this
-partition while the walk was running, so the manifest it validated is no longer
-safe to publish, and the restore reports that nothing is selected — nothing was
-lost, and the caller selects again from what is actually stored. A clear or an
-eviction keeps surfacing the ordinary typed fence error, unchanged.
+partition while the walk was running, so the manifest it read is no longer safe
+to publish.
+
+That outcome says nothing about the partition — only about this attempt — and
+commonly the partition is untouched, because a sweep reclaims superseded roots
+while the current manifest stands. Reporting an absence there would strand an
+offline restore that has no other way to obtain the value, so the restore reads
+the stored record again and walks it again, up to a small bounded number of
+attempts, and reports nothing selected only if sweeps keep landing in the same
+window. A clear or an eviction keeps surfacing the ordinary typed fence error,
+unchanged.
 
 The install paths deliberately do not observe the sweep generation. They are
 protected by materialization exclusion instead: GC cannot delete the nodes an

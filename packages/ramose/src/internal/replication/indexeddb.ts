@@ -994,6 +994,21 @@ type SurveyedPartition = {
 /** Distinguishes one retention from another without leaking the roots it holds. */
 let retentionToken = 0;
 
+/**
+ * A walk that finished but may not publish, because a sweep moved this
+ * partition's nodes underneath it. It is not a restore outcome: it describes
+ * this attempt, not the partition, so it never reaches a caller.
+ */
+const SWEPT_DURING_WALK = Symbol("replica.swept-during-walk");
+
+/**
+ * How many times a restore re-reads and re-walks a partition a sweep moved
+ * under it. A sweep is a bounded event and each attempt is a whole walk, so a
+ * small constant both keeps an ordinary concurrent reclaim invisible and stops
+ * a pathologically busy pass from making a restore unbounded.
+ */
+const REPLICA_SWEEP_RESTORE_ATTEMPTS = 3;
+
 export class IndexedDbReplicaStorage {
   /**
    * Scopes this handle has cleared. A cleared scope is terminal for this
@@ -1215,15 +1230,25 @@ export class IndexedDbReplicaStorage {
    * install transaction settles; a sweep reads it and creates its own
    * transaction in one synchronous block, so it either skips this partition or
    * is ordered before every node transaction this install goes on to create.
+   *
+   * Unlike a pin or a retention this is deliberately not released by
+   * {@link IndexedDbReplicaStorage.close}. Closing an IndexedDB connection lets
+   * the transactions it has already created run to completion, so a handle
+   * closed mid-install still commits its manifest — and releasing the mark
+   * there would let another handle's sweep slip between the last node write and
+   * that commit. Only the install's own `finally` clears it.
    */
   private markMaterializing(partition: string): () => void {
     const marks = this.registry.materializing;
     marks.set(partition, (marks.get(partition) ?? 0) + 1);
-    return this.register(() => {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
       const held = (marks.get(partition) ?? 1) - 1;
       if (held > 0) marks.set(partition, held);
       else marks.delete(partition);
-    });
+    };
   }
 
   /**
@@ -1538,7 +1563,12 @@ export class IndexedDbReplicaStorage {
         continue;
       }
       const garbage = unreachableNodeHashes(stored.hashes, live);
-      const outcome = await this.sweepPartition(partition, stored, garbage);
+      // The boundary between computing what this partition may lose and acting
+      // on it — the last point at which a manifest can move or a holder can
+      // retain roots without the sweep noticing. Inert in production; the
+      // source-only testing assembly parks here to prove both re-checks.
+      await this.boundaries.checkpoint("replica.gc.planned");
+      const outcome = await this.sweepPartition(partition, stored, garbage, live);
       if (outcome === undefined) {
         skipped++;
         continue;
@@ -1635,32 +1665,49 @@ export class IndexedDbReplicaStorage {
     stored: SurveyedPartition,
   ): Promise<ReadonlySet<string> | undefined> {
     if (stored.opaque) return undefined;
-    const roots = [...(stored.roots ?? [])];
-    for (const held of this.registry.retained.get(partition)?.values() ?? []) {
-      roots.push(...held);
-    }
+    const roots = [...(stored.roots ?? []), ...this.retainedRoots(partition)];
     if (roots.length === 0) return new Set<string>();
     const walk = await reachableFromRoots(this.database, partition, roots);
     return walk.complete ? walk.reachable : undefined;
+  }
+
+  /** Every root address an in-process holder currently retains for a partition. */
+  private retainedRoots(partition: string): readonly string[] {
+    const roots: string[] = [];
+    for (const held of this.registry.retained.get(partition)?.values() ?? []) {
+      roots.push(...held);
+    }
+    return roots;
   }
 
   /**
    * Remove one partition's unreachable nodes and impossible staging in a single
    * transaction, or nothing at all.
    *
-   * The materialization check and the transaction creation are one synchronous
-   * block on purpose. Either this pass saw the mark and left the partition
-   * alone, or the install had not yet created a node transaction — and
-   * IndexedDB serializes overlapping `readwrite` transactions in creation
+   * The in-process checks and the transaction creation are one synchronous
+   * block on purpose. Either this pass saw the materialization mark and left
+   * the partition alone, or the install had not yet created a node transaction
+   * — and IndexedDB serializes overlapping `readwrite` transactions in creation
    * order, so every node it writes afterwards lands after these deletes rather
    * than being erased by them.
+   *
+   * Retention is re-read in the same block, because a restore that validated an
+   * older manifest publishes after this pass computed its live set: the session
+   * retains those roots synchronously as it publishes, and the manifest CAS
+   * below cannot see it, since the manifest never moved. A root that has
+   * appeared since and is not already live is exactly that case, so the
+   * partition is skipped and the next pass computes a live set that includes
+   * it. A root that has *gone* is harmless — the live set was merely more
+   * generous than it needed to be — so it does not skip anything.
    */
   private async sweepPartition(
     partition: string,
     stored: SurveyedPartition,
     garbage: readonly string[],
+    live: ReadonlySet<string>,
   ): Promise<{ readonly nodes: number; readonly staging: number } | undefined> {
     if (this.registry.materializing.has(partition)) return undefined;
+    if (this.retainedRoots(partition).some((hash) => !live.has(hash))) return undefined;
     const transaction = this.database.transaction(
       [COMMITTED, NODES, STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
@@ -1854,6 +1901,15 @@ export class IndexedDbReplicaStorage {
    * that survives both is handed to `dbFromRecord`, so a walk that stops
    * half-way yields no `Db` at all rather than one over the datoms it did
    * manage to read.
+   *
+   * A sweep landing in the walk's window is the one outcome that says nothing
+   * about the partition: it means only that the walk's own reading is no longer
+   * safe to publish, and the partition may still hold exactly the value the
+   * caller asked for — commonly it does, because a sweep reclaims *superseded*
+   * roots while the current manifest stands untouched. Reporting an absence
+   * there would strand an offline restore that has no other way to obtain the
+   * value, so the record is read again and walked again, a bounded number of
+   * times, before anything is concluded.
    */
   private async validated(
     record: unknown,
@@ -1862,6 +1918,36 @@ export class IndexedDbReplicaStorage {
     readCompatibilityHash: ReadCompatibilityHash,
     fingerprint?: string,
   ): Promise<ReplicaRestoreOutcome<CommittedRecord>> {
+    let current = record;
+    for (let attempt = 1; attempt <= REPLICA_SWEEP_RESTORE_ATTEMPTS; attempt++) {
+      const outcome = await this.validatedOnce(
+        current,
+        identity,
+        attributes,
+        readCompatibilityHash,
+        fingerprint,
+      );
+      if (outcome !== SWEPT_DURING_WALK) return outcome;
+      current = await this.committed(identity);
+      if (current === undefined) return replicaAbsent();
+      const stored = replicaManifestIdentity(current);
+      if (stored !== undefined && !sameReplicationIdentity(stored, identity)) {
+        return replicaAbsent();
+      }
+    }
+    // Sweeps kept landing in this walk's window. Nothing is damaged and nothing
+    // was withdrawn; the caller simply gets no value this time and may open
+    // again.
+    return replicaAbsent();
+  }
+
+  private async validatedOnce(
+    record: unknown,
+    identity: ReplicationIdentity,
+    attributes: readonly AttributeSpec[],
+    readCompatibilityHash: ReadCompatibilityHash,
+    fingerprint?: string,
+  ): Promise<ReplicaRestoreOutcome<CommittedRecord> | typeof SWEPT_DURING_WALK> {
     const partition = replicaPartitionKey(identity);
     const expect = replicaManifestFingerprint(record);
     // The generations guarding this partition as they stood when the record was
@@ -1931,11 +2017,11 @@ export class IndexedDbReplicaStorage {
     await this.boundaries.checkpoint("replica.validated");
     if (!await this.confirmGuardingGenerations(lease, identity, sweep)) {
       // A sweep removed nodes from this partition while the walk was running.
-      // Nothing is damaged and nothing was lost — the reclaimed roots were
+      // Nothing is damaged and nothing was withdrawn — the reclaimed roots were
       // superseded by an install this walk did not see — but the manifest this
-      // walk validated is no longer safe to construct a `Db` over, so the
-      // caller selects again from what is actually stored.
-      return replicaAbsent<CommittedRecord>();
+      // walk read is no longer safe to construct a `Db` over. The caller reads
+      // the stored record again and walks it again.
+      return SWEPT_DURING_WALK;
     }
     return replicaRestored(manifest.success);
   }

@@ -412,20 +412,74 @@ browserTest(
 
       releaseCheckpoint("replica.validated");
       const outcome = await walking;
-      // No `Db` over deleted nodes, and no spurious quarantine either: the
-      // partition is intact, the walk simply may not publish what it read.
-      expect(outcome._tag).toBe("absent");
+      // The value the parked walk read is never published. It re-reads the
+      // stored record instead, so the restore succeeds — with the revision that
+      // is actually committed, over nodes that actually exist.
+      expect(outcome._tag).toBe("restored");
+      const restored = outcome._tag === "restored" ? outcome.replica : undefined;
+      expect(restored?.revision).toBe(opaque("2"));
+      // A `Db` built over the swept roots would throw here instead of reading.
+      expect((await names(restored!.db)).includes("changed")).toBe(true);
+      // And no spurious quarantine: the partition was intact the whole time.
       expect((await dump(name))[COMMITTED]).toHaveLength(1);
-
-      // Selecting again from what is actually stored yields the new value.
-      const again = await reader.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
-      expect(again._tag).toBe("restored");
-      expect((await reader.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
-        .toBe(opaque("2"));
     } finally {
       resetTestHooks();
       reader.close();
       writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a retention taken after the live set is computed skips the sweep instead of losing it",
+  async ({ browser }) => {
+    const name = `ramose-gc-late-retention-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(120, "seed"));
+      const superseded = await storage.restore(selected, attributes, READ_COMPATIBILITY);
+      expect(superseded?.revision).toBe(opaque("1"));
+      const applied = await storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), "entity-000004".padEnd(43, "z"), "changed"),
+      );
+      expect(applied?.revision).toBe(opaque("2"));
+
+      // Park the pass after it has computed a live set that does not include
+      // the superseded roots, and only then retain them — exactly the shape of
+      // a restore that validated the older manifest and is publishing now. The
+      // manifest never moves, so the CAS alone would not notice.
+      armCheckpoint("replica.gc.planned", "wait");
+      const sweeping = storage.collectGarbage();
+      await reachedCheckpoint("replica.gc.planned");
+      const retention = storage.retainRoots(selected, superseded!.db.roots);
+      releaseCheckpoint("replica.gc.planned");
+      const outcome = await sweeping;
+
+      // The pass that raced the retention deleted nothing and said so.
+      expect(outcome.nodes).toBe(0);
+      expect(outcome.skipped).toBe(1);
+      expect(outcome.swept).toBe(0);
+      expect(await sweepGeneration(name, partition)).toBe(0);
+      // The value that retention protects still reads.
+      expect((await names(superseded!.db)).length).toBe(120);
+
+      // The next pass computes a live set that covers the retention, so it
+      // reclaims only what neither value reaches — and once the retention goes,
+      // the superseded roots go with it.
+      const covered = await storage.collectGarbage();
+      expect(covered.skipped).toBe(0);
+      expect((await names(superseded!.db)).length).toBe(120);
+      retention();
+      const final = await storage.collectGarbage();
+      expect(final.nodes).toBeGreaterThan(0);
+      expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+        .toBe(opaque("2"));
+    } finally {
+      resetTestHooks();
+      storage.close();
       await deleteDatabase(name);
     }
   },
