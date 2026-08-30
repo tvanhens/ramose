@@ -31,11 +31,16 @@
 import * as Data from "effect/Data";
 import * as Result from "effect/Result";
 import type { ReadCompatibilityHash } from "../authorization/identities.ts";
-import { COMPARATORS, type IndexId, IndexName } from "../core/datom.ts";
+import { COMPARATORS, type Datom, type IndexId, IndexName } from "../core/datom.ts";
 import type { Roots } from "../core/db.ts";
 import { FIRST_USER_EID, Schema } from "../core/schema.ts";
 import { NodeKind, type NodeRef, type TreeNode } from "../core/tree.ts";
-import { REPLICA_STORAGE_VERSION, type LogicalDatom, type ReplicationIdentity } from "./protocol.ts";
+import {
+  REPLICA_STORAGE_VERSION,
+  type LogicalDatom,
+  type LogicalValue,
+  type ReplicationIdentity,
+} from "./protocol.ts";
 import type { ReplicaAttributeSpec } from "./replica-schema.ts";
 
 /** One committed replica exactly as a partition stores it. */
@@ -264,19 +269,84 @@ export const validateReplicaRoots = (
 };
 
 /**
+ * Every field {@link sameReplicationIdentity} reads, in the shape it reads it.
+ *
+ * A partially damaged identity is worse than a missing one: comparing it would
+ * throw on the first absent field, and that raw failure would escape the
+ * restore before anything could classify or quarantine the partition — wedging
+ * every later startup on the same record. Nothing may be compared until the
+ * whole shape is known.
+ */
+const isReplicationIdentityShape = (value: unknown): value is ReplicationIdentity =>
+  isRecord(value) && value.version === 1 &&
+  ["server", "principal", "database", "catalog", "readView", "readCompatibilityHash",
+    "authenticator"].every((field) => typeof value[field] === "string") &&
+  Array.isArray(value.graphLineage) &&
+  value.graphLineage.every((entity: unknown) => typeof entity === "string");
+
+/**
  * The identity a stored record claims, before anything else about it is known.
  *
  * A restore needs this to tell "some other value is filed here" — which selects
  * nothing and is not damage — from "this partition's record is unusable".
- * `undefined` means the record cannot even state an identity, which is damage
+ * `undefined` means the record cannot state a complete identity, which is damage
  * and is left to {@link validateReplicaManifest} to classify.
  */
 export const replicaManifestIdentity = (
   record: unknown,
 ): ReplicationIdentity | undefined =>
-  isRecord(record) && isRecord(record.identity)
+  isRecord(record) && isReplicationIdentityShape(record.identity)
     ? record.identity as unknown as ReplicationIdentity
     : undefined;
+
+/**
+ * A stable token for the exact stored manifest a restore validated.
+ *
+ * Quarantine deletes a whole partition, so it must prove it is still deleting
+ * the manifest it refused rather than a replacement another session installed
+ * while the walk was running — that session may already have published a `Db`
+ * over the nodes the deletion would take. Revision plus the four root addresses
+ * changes on every install and is cheap to compare; the datom journal is not.
+ * Unreadable fields become explicit nulls so a damaged record still compares
+ * equal to itself and unequal to a repaired one.
+ */
+export const replicaManifestFingerprint = (record: unknown): string => {
+  const manifest = isRecord(record) ? record : {};
+  const roots = isRecord(manifest.roots) ? manifest.roots : {};
+  return JSON.stringify([
+    typeof manifest.revision === "string" ? manifest.revision : null,
+    ...(["eavt", "aevt", "avet", "vaet"] as const).map((name) => {
+      const ref = roots[name];
+      return isRecord(ref) && typeof ref.hash === "string" ? ref.hash : null;
+    }),
+  ]);
+};
+
+/**
+ * One stored logical value, in exactly one of the variants the wire format
+ * defines. Materialization switches on `type` without a default arm, so an
+ * unknown or wrongly typed variant would throw rather than be refused.
+ */
+const isLogicalValue = (value: unknown): boolean => {
+  if (!isRecord(value)) return false;
+  switch (value.type) {
+    case "long":
+    case "instant":
+      return typeof value.value === "number" && Number.isSafeInteger(value.value);
+    case "double":
+      return (typeof value.value === "number" && Number.isFinite(value.value)) ||
+        value.value === "positive-infinity" || value.value === "negative-infinity";
+    case "boolean":
+      return typeof value.value === "boolean";
+    case "string":
+    case "ref":
+    case "uuid":
+    case "bytes":
+      return typeof value.value === "string";
+    default:
+      return false;
+  }
+};
 
 /** What the caller already knows about the partition it asked to restore. */
 export type ReplicaManifestExpectation = {
@@ -302,6 +372,13 @@ const localIds = (
     const [name, id] = entry as readonly unknown[];
     if (typeof name !== "string" || !isCount(id)) {
       return Result.fail(failure("manifest-undecodable", `malformed ${what} entry`));
+    }
+    // Materialization numbers these from the user range upwards. An id inside
+    // the bootstrap range would overwrite a built-in schema entry while the
+    // indexed facts kept using the id they were built with, so ident-based
+    // reads would silently miss data.
+    if (id < FIRST_USER_EID) {
+      return Result.fail(failure("manifest-invariant", `${what} ${name} is a reserved local id`));
     }
     if (map.has(name)) {
       return Result.fail(failure("manifest-invariant", `duplicate ${what} ${name}`));
@@ -341,15 +418,16 @@ export const validateReplicaManifest = (
         failure("manifest-invariant", "manifest is stored under another partition"),
       );
     }
-    if (!isRecord(record.identity) || typeof record.revision !== "string") {
+    const identity = record.identity;
+    if (!isReplicationIdentityShape(identity) || typeof record.revision !== "string") {
       return yield* Result.fail(
-        failure("manifest-undecodable", "manifest has no identity or revision"),
+        failure("manifest-undecodable", "manifest has no complete identity or revision"),
       );
     }
     // The compatibility hash is duplicated onto the record so a restore can
     // refuse before touching the identity; the two must never disagree.
     if (
-      record.readCompatibilityHash !== record.identity.readCompatibilityHash ||
+      record.readCompatibilityHash !== identity.readCompatibilityHash ||
       record.readCompatibilityHash !== expected.readCompatibilityHash
     ) {
       return yield* Result.fail(
@@ -414,8 +492,18 @@ export const validateReplicaManifest = (
     // field, and any entity it references all need a partition-local id, or
     // materialization would have to invent one and the restored value would
     // silently differ from the committed one.
+    //
+    // The journal is not only a description of the restored value: the next
+    // `Change` rebuilds the whole committed set from it. A malformed value
+    // would throw while materializing, and a `retract` — which the committed
+    // set can never contain, because retraction removes a fact rather than
+    // storing one — would be re-asserted as an ordinary fact.
     for (const datom of record.datoms as readonly LogicalDatom[]) {
-      if (!isRecord(datom) || typeof datom.entity !== "string" || typeof datom.field !== "string") {
+      if (
+        !isRecord(datom) || typeof datom.entity !== "string" ||
+        typeof datom.field !== "string" || datom.op !== "add" ||
+        !isLogicalValue(datom.value)
+      ) {
         return yield* Result.fail(failure("manifest-undecodable", "malformed logical datom"));
       }
       if (!entities.has(datom.entity)) {
@@ -429,8 +517,8 @@ export const validateReplicaManifest = (
         );
       }
       if (
-        isRecord(datom.value) && datom.value.type === "ref" &&
-        (typeof datom.value.value !== "string" || !entities.has(datom.value.value))
+        (datom.value as LogicalValue).type === "ref" &&
+        !entities.has((datom.value as Extract<LogicalValue, { type: "ref" }>).value)
       ) {
         return yield* Result.fail(
           failure("manifest-invariant", "logical reference has no local entity"),
@@ -443,6 +531,117 @@ export const validateReplicaManifest = (
 // ---------------------------------------------------------------------------
 // Node checks
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Whole-tree summaries
+// ---------------------------------------------------------------------------
+
+/**
+ * An order-independent summary of the datoms one index tree holds.
+ *
+ * Node addresses prove each node's own bytes, but the roots live in the
+ * manifest and are not covered by any digest, so a damaged manifest can pair
+ * one index's current root with another index's stale one — every node
+ * validates, and yet entity-ordered and attribute-ordered reads answer from
+ * different values. Comparing counts alone cannot see that; comparing whole
+ * datom sets would need both trees resident. A commutative fold gives the same
+ * answer in constant memory, folded in during the walk that already decodes
+ * every leaf.
+ */
+export type ReplicaIndexDigest = {
+  datoms: number;
+  /** Commutative sum of the per-datom hashes, modulo 2^32. */
+  sum: number;
+  /** Commutative xor of the same hashes: two folds, two ways to disagree. */
+  xor: number;
+  /** The largest transaction number the tree holds. */
+  basis: number;
+};
+
+export const emptyReplicaIndexDigest = (): ReplicaIndexDigest =>
+  ({ datoms: 0, sum: 0, xor: 0, basis: 0 });
+
+const FNV_PRIME = 0x01000193;
+const FNV_OFFSET = 0x811c9dc5;
+
+const mix = (hash: number, word: number): number =>
+  Math.imul(hash ^ (word >>> 0), FNV_PRIME) >>> 0;
+
+const scratch = new DataView(new ArrayBuffer(8));
+
+const mixNumber = (hash: number, value: number): number => {
+  scratch.setFloat64(0, value);
+  return mix(mix(hash, scratch.getUint32(0)), scratch.getUint32(4));
+};
+
+const mixString = (hash: number, value: string): number => {
+  let mixed = mix(hash, value.length);
+  for (let i = 0; i < value.length; i++) mixed = mix(mixed, value.charCodeAt(i));
+  return mixed;
+};
+
+const datomHash = (datom: Datom): number => {
+  let hash = mix(mix(mix(mix(FNV_OFFSET, datom.e), datom.a), datom.t), datom.vt);
+  hash = mix(hash, datom.op ? 1 : 0);
+  const value = datom.v;
+  if (typeof value === "number") return mixNumber(hash, value);
+  if (typeof value === "string") return mixString(hash, value);
+  if (typeof value === "boolean") return mix(hash, value ? 1 : 0);
+  let mixed = mix(hash, value.length);
+  for (let i = 0; i < value.length; i++) mixed = mix(mixed, value[i]);
+  return mixed;
+};
+
+/** Fold one leaf's datoms into the running summary of its tree. */
+export const digestReplicaDatoms = (
+  digest: ReplicaIndexDigest,
+  datoms: readonly Datom[],
+): void => {
+  for (const datom of datoms) {
+    const hash = datomHash(datom);
+    digest.datoms++;
+    digest.sum = (digest.sum + hash) >>> 0;
+    digest.xor = (digest.xor ^ hash) >>> 0;
+    if (datom.t > digest.basis) digest.basis = datom.t;
+  }
+};
+
+/**
+ * Whether two index trees hold the same datoms. EAVT and AEVT are built from
+ * one datom list, so anything else is a manifest that mixes two values.
+ */
+export const sameReplicaIndexContents = (
+  left: ReplicaIndexDigest,
+  right: ReplicaIndexDigest,
+): boolean =>
+  left.datoms === right.datoms && left.sum === right.sum && left.xor === right.xor &&
+  left.basis === right.basis;
+
+/**
+ * The whole-tree conclusions only a completed walk can reach.
+ *
+ * `roots.t` is the manifest's own claim about the basis, and it becomes the
+ * restored value's `basisT`: lowering it silently filters intact facts out of
+ * every read. The build derives it as the largest `t` over the datoms it
+ * indexed, so the walk can check it exactly.
+ */
+export const validateReplicaContents = (
+  roots: Roots,
+  digests: Record<IndexId, ReplicaIndexDigest>,
+): ReplicaIntegrityFailure | undefined => {
+  if (!sameReplicaIndexContents(digests[0], digests[1])) {
+    return failure("manifest-invariant", "eavt and aevt hold different datoms");
+  }
+  if (roots.t !== digests[0].basis) {
+    return failure("manifest-invariant", "the manifest basis is not the indexed basis");
+  }
+  for (const index of [2, 3] as const) {
+    if (digests[index].basis > digests[0].basis) {
+      return failure("manifest-invariant", "a partial index holds a later basis than eavt");
+    }
+  }
+  return undefined;
+};
 
 /** The datoms a node holds directly, or the total its children claim. */
 const nodeCount = (node: TreeNode): number => {
@@ -470,6 +669,13 @@ export const validateReplicaNode = (
   index: IndexId,
   ref: NodeRef,
   decoded: { readonly index: IndexId; readonly node: TreeNode },
+  /**
+   * The separator the parent directory filed this subtree under, absent at a
+   * root. A descent picks a child by comparing these keys, so one that is not
+   * the child's own smallest datom routes a lookup into the wrong subtree and
+   * silently omits facts that are all still present and correctly hashed.
+   */
+  expectedKey?: Datom,
 ): ReplicaIntegrityFailure | undefined => {
   const located = { index, hash: ref.hash };
   if (decoded.index !== index) {
@@ -485,6 +691,22 @@ export const validateReplicaNode = (
     return failure("node-invariant", "node does not hold the referenced datom count", located);
   }
   const comparator = COMPARATORS[index];
+  // The smallest datom this subtree holds. A build always files a subtree under
+  // exactly that datom, at every level, so the separator and the child settle
+  // each other.
+  const smallest = node.kind === NodeKind.Leaf ? node.datoms[0] : node.keys[0];
+  if (expectedKey !== undefined) {
+    if (smallest === undefined) {
+      return failure("node-invariant", "a linked subtree holds no datoms", located);
+    }
+    if (comparator(expectedKey, smallest) !== 0) {
+      return failure(
+        "node-invariant",
+        "directory separator is not the first datom of its subtree",
+        located,
+      );
+    }
+  }
   if (node.kind === NodeKind.Leaf) {
     for (let i = 1; i < node.datoms.length; i++) {
       if (comparator(node.datoms[i - 1], node.datoms[i]) >= 0) {

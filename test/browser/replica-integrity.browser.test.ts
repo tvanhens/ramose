@@ -23,6 +23,7 @@ import type {
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
 import {
   armCheckpoint,
+  releaseCheckpoint,
   resetTestHooks,
   testRuntimeBoundaries,
 } from "../../packages/ramose/src/internal/test-hooks.ts";
@@ -389,6 +390,94 @@ browserTest("counts that no tree could produce are refused", async ({ browser })
     await deleteDatabase(name);
   }
 });
+
+browserTest(
+  "a manifest that mixes two values is refused even though every node is intact",
+  async ({ browser }) => {
+    const name = `ramose-integrity-mixed-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    let storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      // Two committed values with the same datom count. Nothing collects the
+      // superseded nodes yet (#474 slice 11 owns reachability GC), so the older
+      // value's roots are still perfectly loadable.
+      await installOne(storage, selected, opaque("1"), "before");
+      const stale = (await committedOf(name, partition)).roots as Record<
+        string,
+        { hash: string; kind: number; count: number }
+      >;
+      await installOne(storage, selected, opaque("2"), "after");
+      const current = await committedOf(name, partition);
+      const roots = current.roots as Record<string, { hash: string; count: number }>;
+      expect(stale.eavt.count).toBe(roots.eavt.count);
+      expect(stale.eavt.hash).not.toBe(roots.eavt.hash);
+      storage.close();
+
+      // Every count still agrees and every node still hashes to its address;
+      // only entity-ordered and attribute-ordered reads would disagree.
+      await writeRecord(name, COMMITTED, {
+        ...current,
+        roots: { ...roots, aevt: stale.aevt },
+      });
+      storage = await IndexedDbReplicaStorage.open(name);
+      expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
+        .toMatchObject({ _tag: "replacement-required", reason: "manifest-invariant" });
+
+      // The basis is the manifest's own claim, and it becomes the restored
+      // value's `basisT`: lowering it would filter intact facts out of reads.
+      await installOne(storage, selected, opaque("3"), "rebuilt");
+      const rebuilt = await committedOf(name, partition);
+      expect(rebuilt.roots).toMatchObject({ t: expect.any(Number) });
+      storage.close();
+      await writeRecord(name, COMMITTED, {
+        ...rebuilt,
+        roots: { ...rebuilt.roots as Record<string, unknown>, t: 1 },
+      });
+      storage = await IndexedDbReplicaStorage.open(name);
+      expect(await storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY))
+        .toMatchObject({ _tag: "replacement-required", reason: "manifest-invariant" });
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a replacement installed while the walk runs is never quarantined",
+  async ({ browser }) => {
+    const name = `ramose-integrity-race-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const reader = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    const writer = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installOne(reader, selected, opaque("1"), "corrupt");
+      const roots = (await committedOf(name, partition)).roots as Record<string, { hash: string }>;
+      await flipNodeByte(name, partition, roots.eavt.hash);
+
+      // Park the refusal after it decides and before it removes anything.
+      armCheckpoint("replica.refused", "wait");
+      const refusing = reader.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
+      // Another session commits a complete replacement in that window and may
+      // already have published a Db over the nodes a quarantine would take.
+      await installOne(writer, selected, opaque("2"), "replacement");
+      releaseCheckpoint("replica.refused");
+
+      // Nothing was removed, and the refusal describes nothing that is stored.
+      expect(await refusing).toEqual({ _tag: "absent" });
+      expect(await names((await writer.restore(selected, attributes, READ_COMPATIBILITY))!.db))
+        .toEqual(["replacement"]);
+      expect(partitioned((await dump(name))[COMMITTED], partition)).toHaveLength(1);
+    } finally {
+      resetTestHooks();
+      reader.close();
+      writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
 
 browserTest("a manifest that cannot describe its own facts is quarantined", async ({ browser }) => {
   const name = `ramose-integrity-manifest-${browser.uniqueId}`;

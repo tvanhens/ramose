@@ -578,10 +578,13 @@ export class ReplicationSession {
         ) {
           throw new Error("authenticated candidate action disagrees with its frame");
         }
-        const terminal = await this.accept(frame, generation);
-        if (terminal || !this.current(generation)) return terminal;
-        // A quarantined partition simply publishes nothing here; the snapshot
-        // this response is already sending replaces it.
+        // Validate — and if it comes to it, quarantine — the committed value
+        // before this frame stages its replacement. Quarantine removes the
+        // partition's staging along with everything else, so running it
+        // afterwards would delete the staging record this very snapshot is
+        // being written into, and its commit could never install. Doing it
+        // first also lets the new staging record observe the absent committed
+        // revision as its base, so the commit is unconditionally installable.
         const restored = restoredReplica(
           await this.storage.restoreOutcome(
             frame.identity,
@@ -589,6 +592,11 @@ export class ReplicationSession {
             this.readCompatibilityHash,
           ),
         );
+        if (!this.current(generation)) return false;
+        const terminal = await this.accept(frame, generation);
+        if (terminal || !this.current(generation)) return terminal;
+        // A quarantined partition simply publishes nothing here; the snapshot
+        // this response is already sending replaces it.
         if (restored !== undefined) {
           this.publishStale(frame.identity, restored, generation);
         }

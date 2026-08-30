@@ -342,20 +342,45 @@ independently clearable and are never part of candidate lookup or rebinding.
 
 Every restore path — cold restore, confirmed-candidate restore, and exact
 credential-bound restore — validates the whole partition before any `Db` can
-exist. First the committed manifest: it must be this storage version, be filed
-under the partition its own identity derives, agree with itself and the
-installed client about the confirmed compatibility hash, carry four well-formed
-index roots whose counts are consistent (EAVT and AEVT index the same datoms,
-AVET and VAET a subset), and give every fact it keeps a partition-local entity
-and field id below its own allocator. Then every node reachable from those four
-roots: it must exist in this partition's node store, hash to the content address
-it is filed under, decode, and sit in a position its own body agrees with — the
-index it was encoded for, the referenced node kind, the referenced subtree
-count, the directory's key/child arity, and index order within a leaf and across
-a directory's keys. The walk is depth-first and deduplicated by content address,
-so it costs one read, one digest, and one decode per distinct reachable node and
-holds a bounded number of node bodies at a time. A walk that stops part-way
-yields no value at all; a partial `Db` is never constructed.
+exist.
+
+First the committed manifest. It must be this storage version, be filed under
+the partition its own identity derives, state a complete identity (nothing may
+be compared against a half-identity, which would throw before anything could
+classify the record), agree with itself and the installed client about the
+confirmed compatibility hash, carry four well-formed index roots whose counts
+are consistent, and describe a value it can actually materialize: every stored
+attribute well formed and numbered, every partition-local id in the user range
+and below the allocator, no id claimed twice across the entity and attribute
+maps, and every kept fact an assertion with a complete value whose entity,
+field, and referent all have local ids. The journal is held to the same standard
+as the value, because the next `Change` rebuilds the whole committed set from
+it.
+
+Then every node reachable from those four roots: it must exist in this
+partition's node store, hash to the content address it is filed under, decode,
+and sit in a position its own body agrees with — the index it was encoded for,
+the referenced node kind, the referenced subtree count, the directory's
+key/child arity, index order within a leaf and across a directory's keys, and
+the separator its parent filed it under, which is always the smallest datom of
+its own subtree. A bulk build gives every reachable node of one value a distinct
+address, so a repeated address is itself a structural failure and also bounds
+the walk.
+
+Finally the conclusions only a completed walk can reach. The roots live in the
+manifest and no digest covers them, so a damaged manifest can pair one index's
+current root with a superseded root of the same size — every node validates, and
+yet entity-ordered and attribute-ordered reads answer from different values.
+Comparing whole datom sets would need both trees resident; a commutative fold
+over the leaves the walk already decodes settles it in constant memory. The same
+fold carries the largest transaction number, which must equal the manifest's
+claimed basis: that value becomes the restored `basisT`, and lowering it filters
+intact facts out of every read.
+
+The walk is depth-first, so it costs one read, one digest, and one decode per
+reachable node, plus one comparison and one fold step per datom, and holds a
+bounded batch of node bodies at a time. A walk that stops part-way yields no
+value at all; a partial `Db` is never constructed.
 
 Missing node, hash mismatch, structural invariant violation, and undecodable
 record are classified separately for diagnosis and collapse to one caller
@@ -375,6 +400,16 @@ corrupt committed read value is never a reason to discard a durable operation
 identity. Because removal is destructive it is generation-fenced like clearing
 and eviction, and the whole quarantine is one IndexedDB transaction, so a crash
 cut leaves the corrupt partition exactly as it was and a retry completes it.
+
+Validating a partition takes as long as reading it, so another session may
+install a complete replacement — and publish a `Db` over its nodes — while a
+walk is still running. Removal is therefore conditional on the refused manifest
+still being the stored one, compared by revision and the four root addresses.
+A refusal that loses that comparison removes nothing and reports that nothing is
+selected, rather than deleting a value it never examined. For the same reason a
+restore that runs after a snapshot has begun streaming would delete the staging
+its replacement is being written into, so the session validates the committed
+value before it stages the first frame of a replacement.
 
 ## Authorization and noninterference
 

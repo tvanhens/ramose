@@ -2,12 +2,16 @@ import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
 import { ReadCompatibilityHash } from "../../../src/internal/authorization/identities.ts";
 import { Index, ValueTag, type Datom } from "../../../src/internal/core/datom.ts";
+import type { Roots } from "../../../src/internal/core/db.ts";
 import { FIRST_USER_EID } from "../../../src/internal/core/schema.ts";
 import { NodeKind, type NodeRef, type TreeNode } from "../../../src/internal/core/tree.ts";
 import type { ReplicationIdentity } from "../../../src/internal/replication/protocol.ts";
 import {
   ReplicaCorruptError,
+  digestReplicaDatoms,
+  emptyReplicaIndexDigest,
   replicaAbsent,
+  replicaManifestFingerprint,
   replicaManifestIdentity,
   replicaNodeChildren,
   replicaRecoveryAction,
@@ -15,6 +19,8 @@ import {
   replicaRestored,
   replicaUnusable,
   restoredReplica,
+  sameReplicaIndexContents,
+  validateReplicaContents,
   validateReplicaManifest,
   validateReplicaNode,
   validateReplicaNodeRef,
@@ -285,10 +291,96 @@ describe("manifest validation", () => {
       .toBe("manifest-invariant");
   });
 
+  test("local ids inside the bootstrap range are refused", () => {
+    // An attribute materialized at a built-in id would overwrite the bootstrap
+    // schema entry while the indexed facts kept the id they were built with.
+    expect(reasonOf(validated({ attributeIds: [[":item/name", 1], [":item/friend", 1003]] })))
+      .toBe("manifest-invariant");
+    expect(reasonOf(validated({ entityIds: [[opaque("e"), 0], [opaque("f"), 1001]] })))
+      .toBe("manifest-invariant");
+    expect(reasonOf(validated({ entityIds: [[opaque("e"), FIRST_USER_EID - 1], [opaque("f"), 1001]] })))
+      .toBe("manifest-invariant");
+  });
+
+  test("the stored journal must be complete: the next change rebuilds from it", () => {
+    const base = { entity: opaque("e"), field: ":item/name" };
+    // The committed set never holds a retraction — retracting removes a fact
+    // rather than storing one — so a stored one would be re-asserted.
+    expect(reasonOf(validated({
+      datoms: [{ ...base, value: { type: "string", value: "x" }, op: "retract" }],
+    }))).toBe("manifest-undecodable");
+    for (
+      const value of [
+        undefined,
+        null,
+        { type: "string", value: 7 },
+        { type: "long", value: 1.5 },
+        { type: "double", value: "infinity" },
+        { type: "boolean", value: "true" },
+        { type: "instant", value: "2026-01-01" },
+        { type: "geo", value: "x" },
+      ]
+    ) {
+      expect(reasonOf(validated({ datoms: [{ ...base, value, op: "add" }] })))
+        .toBe("manifest-undecodable");
+    }
+    // Every variant the wire format defines still validates.
+    for (
+      const value of [
+        { type: "string", value: "x" },
+        { type: "long", value: 7 },
+        { type: "double", value: 1.5 },
+        { type: "double", value: "positive-infinity" },
+        { type: "double", value: "negative-infinity" },
+        { type: "boolean", value: true },
+        { type: "uuid", value: "e5b8f0ec-0000-4000-8000-000000000000" },
+        { type: "instant", value: 1 },
+        { type: "bytes", value: "AAAA" },
+        { type: "ref", value: opaque("f") },
+      ]
+    ) {
+      expect(Result.isSuccess(validated({ datoms: [{ ...base, value, op: "add" }] }))).toBe(true);
+    }
+  });
+
   test("the claimed identity is readable before anything else about the record is", () => {
     expect(replicaManifestIdentity(manifest())).toMatchObject({ server: opaque("s") });
     expect(replicaManifestIdentity({ identity: "not a record" })).toBeUndefined();
     expect(replicaManifestIdentity(undefined)).toBeUndefined();
+  });
+
+  test("a partly damaged identity is never handed out for comparison", () => {
+    // `sameReplicationIdentity` reads `graphLineage.length` and every opaque
+    // field. Returning a half-identity would throw before anything could
+    // classify or quarantine the record, wedging every later startup on it.
+    for (
+      const damaged of [
+        { ...identity(), graphLineage: undefined },
+        { ...identity(), graphLineage: [7] },
+        { ...identity(), authenticator: undefined },
+        { ...identity(), version: 2 },
+      ]
+    ) {
+      expect(replicaManifestIdentity({ ...manifest(), identity: damaged })).toBeUndefined();
+      expect(reasonOf(validated({ identity: damaged }))).toBe("manifest-undecodable");
+    }
+  });
+
+  test("the quarantine fingerprint changes with the manifest it names", () => {
+    const stored = manifest();
+    expect(replicaManifestFingerprint(stored)).toBe(replicaManifestFingerprint({ ...stored }));
+    // Any install writes a new revision and new roots, so a replacement can
+    // never be mistaken for the manifest a restore refused.
+    expect(replicaManifestFingerprint({ ...stored, revision: opaque("R") }))
+      .not.toBe(replicaManifestFingerprint(stored));
+    expect(replicaManifestFingerprint({
+      ...stored,
+      roots: roots({ eavt: ref({ hash: hash("9"), count: 4 }) }),
+    })).not.toBe(replicaManifestFingerprint(stored));
+    // A damaged record still compares equal to itself, so a refusal of it is
+    // not mistaken for a concurrent replacement.
+    expect(replicaManifestFingerprint({ revision: 7 }))
+      .toBe(replicaManifestFingerprint({ roots: "gone" }));
   });
 });
 
@@ -378,5 +470,127 @@ describe("node validation", () => {
       index: Index.EAVT,
       node: dir([first], [{ hash: "short", kind: NodeKind.Leaf, count: 2 }]),
     })?.reason).toBe("manifest-undecodable");
+  });
+
+  test("a separator must be the first datom of the subtree it files", () => {
+    const node = leaf([second, datom(1002, 20, "c")]);
+    const reference = ref({ count: 2 });
+    // A descent picks a child by its separator, so one that is not the child's
+    // own smallest datom routes a lookup into the preceding subtree — with
+    // every hash, count, and local order still intact.
+    expect(validateReplicaNode(Index.EAVT, reference, { index: Index.EAVT, node }, second))
+      .toBeUndefined();
+    expect(validateReplicaNode(Index.EAVT, reference, { index: Index.EAVT, node }, first)?.reason)
+      .toBe("node-invariant");
+    // A directory is filed under the first key of its own first child.
+    const branch = dir([second, datom(1003, 20, "d")], [
+      ref({ hash: hash("b"), count: 1 }),
+      ref({ hash: hash("c"), count: 1 }),
+    ]);
+    expect(validateReplicaNode(Index.EAVT, ref({ kind: NodeKind.Dir, count: 2 }), {
+      index: Index.EAVT,
+      node: branch,
+    }, second)).toBeUndefined();
+    expect(validateReplicaNode(Index.EAVT, ref({ kind: NodeKind.Dir, count: 2 }), {
+      index: Index.EAVT,
+      node: branch,
+    }, first)?.reason).toBe("node-invariant");
+    // Only a root may hold no datoms; a linked empty subtree is unreachable.
+    expect(validateReplicaNode(Index.EAVT, ref({ count: 0 }), {
+      index: Index.EAVT,
+      node: leaf([]),
+    })).toBeUndefined();
+    expect(validateReplicaNode(Index.EAVT, ref({ count: 0 }), {
+      index: Index.EAVT,
+      node: leaf([]),
+    }, first)?.reason).toBe("node-invariant");
+  });
+});
+
+describe("whole-tree contents", () => {
+  const first = datom(1000, 20, "a");
+  const second = datom(1001, 20, "b");
+  const digestOf = (datoms: readonly Datom[]) => {
+    const digest = emptyReplicaIndexDigest();
+    digestReplicaDatoms(digest, datoms);
+    return digest;
+  };
+
+  test("the fold is order independent and sees a changed value", () => {
+    expect(sameReplicaIndexContents(digestOf([first, second]), digestOf([second, first])))
+      .toBe(true);
+    // EAVT and AEVT hold one datom list in two orders, so equality must not
+    // depend on the order the walk happens to visit leaves in.
+    expect(sameReplicaIndexContents(
+      digestOf([first, second]),
+      digestOf([first, datom(1001, 20, "different")]),
+    )).toBe(false);
+    expect(sameReplicaIndexContents(digestOf([first]), digestOf([first, second]))).toBe(false);
+    for (
+      const changed of [
+        { ...first, e: 1002 },
+        { ...first, a: 21 },
+        { ...first, t: 3 },
+        { ...first, op: false },
+        { ...first, vt: ValueTag.Bool, v: true },
+      ] as readonly Datom[]
+    ) {
+      expect(sameReplicaIndexContents(digestOf([first]), digestOf([changed]))).toBe(false);
+    }
+  });
+
+  test("values of every stored shape take part in the fold", () => {
+    const shaped = (v: Datom["v"], vt: Datom["vt"]): Datom => ({ ...first, vt, v });
+    expect(sameReplicaIndexContents(
+      digestOf([shaped(1.5, ValueTag.Double)]),
+      digestOf([shaped(2.5, ValueTag.Double)]),
+    )).toBe(false);
+    expect(sameReplicaIndexContents(
+      digestOf([shaped(new Uint8Array([1, 2]), ValueTag.Bytes)]),
+      digestOf([shaped(new Uint8Array([1, 3]), ValueTag.Bytes)]),
+    )).toBe(false);
+    expect(sameReplicaIndexContents(
+      digestOf([shaped(new Uint8Array([1, 2]), ValueTag.Bytes)]),
+      digestOf([shaped(new Uint8Array([1, 2]), ValueTag.Bytes)]),
+    )).toBe(true);
+    expect(sameReplicaIndexContents(
+      digestOf([shaped(true, ValueTag.Bool)]),
+      digestOf([shaped(false, ValueTag.Bool)]),
+    )).toBe(false);
+  });
+
+  test("a manifest that mixes two values fails even when the counts agree", () => {
+    const built = roots() as unknown as Roots;
+    const digests = {
+      0: digestOf([first, second]),
+      1: digestOf([second, first]),
+      2: digestOf([first]),
+      3: digestOf([]),
+    };
+    expect(validateReplicaContents({ ...built, t: 2 }, digests)).toBeUndefined();
+    // One index's root swapped for another value's root of the same size.
+    expect(validateReplicaContents({ ...built, t: 2 }, {
+      ...digests,
+      1: digestOf([first, datom(1001, 20, "elsewhere")]),
+    })?.reason).toBe("manifest-invariant");
+  });
+
+  test("the manifest basis must be the basis the trees actually hold", () => {
+    const built = roots() as unknown as Roots;
+    const digests = {
+      0: digestOf([first, second]),
+      1: digestOf([first, second]),
+      2: digestOf([]),
+      3: digestOf([]),
+    };
+    // `roots.t` becomes the restored value's basis, so lowering it silently
+    // filters intact facts out of every read.
+    expect(validateReplicaContents({ ...built, t: 1 }, digests)?.reason).toBe("manifest-invariant");
+    expect(validateReplicaContents({ ...built, t: 3 }, digests)?.reason).toBe("manifest-invariant");
+    expect(validateReplicaContents({ ...built, t: 2 }, digests)).toBeUndefined();
+    expect(validateReplicaContents({ ...built, t: 2 }, {
+      ...digests,
+      2: digestOf([{ ...first, t: 9 }]),
+    })?.reason).toBe("manifest-invariant");
   });
 });

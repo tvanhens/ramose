@@ -11,7 +11,13 @@ import { Novelty } from "../core/novelty.ts";
 import { FIRST_USER_EID, type AttributeSpec, Schema } from "../core/schema.ts";
 import { deserializeNode, gzipCodec, serializeNode } from "../core/store.ts";
 import type { IndexId } from "../core/datom.ts";
-import { decodeNode, type NodeRef, type NodeStore, type TreeNode } from "../core/tree.ts";
+import {
+  decodeNode,
+  NodeKind,
+  type NodeRef,
+  type NodeStore,
+  type TreeNode,
+} from "../core/tree.ts";
 import {
   inertRuntimeBoundaries,
   type RuntimeBoundaries,
@@ -53,14 +59,18 @@ import {
   type ReplicaScope,
 } from "./replica-lifecycle.ts";
 import {
+  digestReplicaDatoms,
+  emptyReplicaIndexDigest,
   replicaAbsent,
+  replicaManifestFingerprint,
   replicaManifestIdentity,
-  replicaNodeChildren,
   replicaRestored,
   replicaUnusable,
   restoredReplica,
+  validateReplicaContents,
   validateReplicaManifest,
   validateReplicaNode,
+  type ReplicaIndexDigest,
   type ReplicaIntegrityFailure,
   type ReplicaManifest,
   type ReplicaRestoreOutcome,
@@ -727,11 +737,10 @@ const dbFromRecord = (
  */
 const VALIDATION_BATCH = 32;
 
-/** What one verified body settles for every reference that names it. */
-type VerifiedNode = {
-  readonly index: IndexId;
-  readonly kind: NodeRef["kind"];
-  readonly count: number;
+/** One queued reference and the separator its parent filed it under. */
+type PendingNode = {
+  readonly ref: NodeRef;
+  readonly key?: Datom;
 };
 
 const readNodeRecords = async (
@@ -762,6 +771,7 @@ const verifyNodeRecord = async (
   index: IndexId,
   ref: NodeRef,
   record: NodeRecord | undefined,
+  expectedKey: Datom | undefined,
 ): Promise<ReplicaIntegrityFailure | DecodedNode> => {
   const located = { index, hash: ref.hash };
   if (record === undefined) {
@@ -779,7 +789,7 @@ const verifyNodeRecord = async (
   } catch {
     return { reason: "node-undecodable", detail: "node body cannot be decoded", ...located };
   }
-  return validateReplicaNode(index, ref, decoded) ?? decoded;
+  return validateReplicaNode(index, ref, decoded, expectedKey) ?? decoded;
 };
 
 /**
@@ -803,49 +813,57 @@ const validateReachableNodes = async (
   database: IDBDatabase,
   manifest: ReplicaManifest,
 ): Promise<ReplicaIntegrityFailure | undefined> => {
-  const verified = new Map<string, VerifiedNode>();
+  // A bulk build slices one strictly sorted datom list into disjoint leaves and
+  // groups those into disjoint directories, and the index tag is part of every
+  // body, so no two reachable nodes of one committed value can share an
+  // address. A repeat is therefore not sharing to deduplicate — it is a link
+  // into a subtree that already has a parent, which also bounds the walk.
+  const seen = new Set<string>();
+  const digests = {
+    0: emptyReplicaIndexDigest(),
+    1: emptyReplicaIndexDigest(),
+    2: emptyReplicaIndexDigest(),
+    3: emptyReplicaIndexDigest(),
+  } satisfies Record<IndexId, ReplicaIndexDigest>;
   for (const index of ALL_INDEXES) {
-    const frontier: NodeRef[] = [rootFor(manifest.roots, index)];
+    const digest = digests[index];
+    // Each pending reference carries the separator its parent filed it under,
+    // so the child can settle whether that separator still routes to it.
+    const frontier: PendingNode[] = [{ ref: rootFor(manifest.roots, index) }];
     while (frontier.length > 0) {
-      const batch: NodeRef[] = [];
+      const batch: PendingNode[] = [];
       while (batch.length < VALIDATION_BATCH && frontier.length > 0) {
-        const ref = frontier.pop()!;
-        const already = verified.get(ref.hash);
-        if (already === undefined) {
-          batch.push(ref);
-          continue;
-        }
-        // The body is already proven; only the claim this reference makes
-        // about it is new, and a disagreement means one of the two positions
-        // is lying about the subtree it links to.
-        if (
-          already.index !== index || already.kind !== ref.kind ||
-          already.count !== ref.count
-        ) {
+        const pending = frontier.pop()!;
+        if (seen.has(pending.ref.hash)) {
           return {
             reason: "node-invariant",
-            detail: "two references disagree about one node",
+            detail: "one node is linked from more than one place",
             index,
-            hash: ref.hash,
+            hash: pending.ref.hash,
           };
         }
+        seen.add(pending.ref.hash);
+        batch.push(pending);
       }
-      if (batch.length === 0) continue;
       const records = await readNodeRecords(
         database,
         manifest.partition,
-        batch.map((ref) => ref.hash),
+        batch.map((pending) => pending.ref.hash),
       );
       for (let i = 0; i < batch.length; i++) {
-        const ref = batch[i];
-        const verifiedNode = await verifyNodeRecord(index, ref, records[i]);
-        if ("reason" in verifiedNode) return verifiedNode;
-        verified.set(ref.hash, { index, kind: ref.kind, count: ref.count });
-        for (const child of replicaNodeChildren(verifiedNode.node)) frontier.push(child);
+        const { ref, key } = batch[i];
+        const node = await verifyNodeRecord(index, ref, records[i], key);
+        if ("reason" in node) return node;
+        if (node.node.kind === NodeKind.Leaf) digestReplicaDatoms(digest, node.node.datoms);
+        else {
+          for (let child = 0; child < node.node.refs.length; child++) {
+            frontier.push({ ref: node.node.refs[child], key: node.node.keys[child] });
+          }
+        }
       }
     }
   }
-  return undefined;
+  return validateReplicaContents(manifest.roots, digests);
 };
 
 export class IndexedDbReplicaStorage {
@@ -1291,8 +1309,13 @@ export class IndexedDbReplicaStorage {
    */
   private async quarantinePartition(
     identity: ReplicationIdentity,
-    options: { readonly fingerprint?: string; readonly lease?: ReplicaLease } = {},
-  ): Promise<void> {
+    options: {
+      /** The exact manifest the caller refused. */
+      readonly expect: string;
+      readonly fingerprint?: string;
+      readonly lease?: ReplicaLease;
+    },
+  ): Promise<boolean> {
     const partition = replicaPartitionKey(identity);
     const fence = replicaFence(options.lease ?? await this.leaseFor(identity), identity);
     const transaction = this.database.transaction(
@@ -1310,6 +1333,18 @@ export class IndexedDbReplicaStorage {
     );
     try {
       await enforceFence(transaction, fence);
+      // Validating a partition takes as long as reading it, and another
+      // session may install a complete replacement in that window — and may
+      // already have published a `Db` over the nodes this deletion would take.
+      // Removing anything is conditional on the refused manifest still being
+      // the one that is stored.
+      const current = await requestResult<unknown>(
+        transaction.objectStore(COMMITTED).get(partition),
+      );
+      if (replicaManifestFingerprint(current) !== options.expect) {
+        await abortTransaction(transaction);
+        return false;
+      }
       transaction.objectStore(COMMITTED).delete(partition);
       transaction.objectStore(COMMITTED_HEADS).delete(partition);
       transaction.objectStore(STAGING).delete(partition);
@@ -1344,6 +1379,7 @@ export class IndexedDbReplicaStorage {
       throw error;
     }
     await commitTransaction(transaction);
+    return true;
   }
 
   /**
@@ -1365,14 +1401,26 @@ export class IndexedDbReplicaStorage {
     fingerprint?: string,
   ): Promise<ReplicaRestoreOutcome<CommittedRecord>> {
     const partition = replicaPartitionKey(identity);
+    const expect = replicaManifestFingerprint(record);
     const quarantine = async (
       reason: Parameters<typeof replicaUnusable>[1],
       detail: string,
     ): Promise<ReplicaRestoreOutcome<CommittedRecord>> => {
-      await this.quarantinePartition(identity, {
+      // The boundary between deciding to refuse and removing anything. Inert in
+      // production; the source-only testing assembly parks here to let another
+      // session install a replacement and prove the removal is conditional.
+      await this.boundaries.checkpoint("replica.refused");
+      const removed = await this.quarantinePartition(identity, {
+        expect,
         ...(fingerprint === undefined ? {} : { fingerprint }),
       });
-      return replicaUnusable<CommittedRecord>(partition, reason, detail);
+      // A concurrent install replaced the manifest this restore refused, so
+      // nothing was removed and nothing here describes what is stored now. The
+      // caller selects again from scratch rather than acting on a stale
+      // refusal.
+      return removed
+        ? replicaUnusable<CommittedRecord>(partition, reason, detail)
+        : replicaAbsent<CommittedRecord>();
     };
     if (identity.readCompatibilityHash !== readCompatibilityHash) {
       return quarantine(
