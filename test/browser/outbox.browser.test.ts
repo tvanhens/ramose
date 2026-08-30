@@ -31,6 +31,7 @@ import {
 } from "../../packages/ramose/src/internal/replication/server-identity.ts";
 import {
   armCheckpoint,
+  releaseCheckpoint,
   resetTestHooks,
   testRuntimeBoundaries,
 } from "../../packages/ramose/src/internal/test-hooks.ts";
@@ -443,6 +444,45 @@ browserTest("a scoped clear removes one principal's queue and preserves the othe
     ).toBe("ReplicaScopeClearedError");
   } finally {
     storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("an enqueue started before a clear cannot land behind it", async ({ browser }) => {
+  const name = `ramose-outbox-clear-race-${browser.uniqueId}`;
+  const left = identity();
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  const writer = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+  const maintainer = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(writer, left, "left");
+
+    // Hold one enqueue open on the boundary immediately before its commit,
+    // with no lease — the case where nothing but the durable generation and
+    // the handle's own terminal state can refuse it.
+    armCheckpoint("outbox.enqueue", "wait");
+    const inFlight = writer.outbox().enqueue(draft(receiver), { scope });
+    // Another handle in the same realm clears the scope while that write is
+    // still in flight.
+    await maintainer.clearScope(scope);
+    releaseCheckpoint("outbox.enqueue");
+    expect(await rejectedTag(inFlight)).toBe("ReplicaFencedError");
+    expect((await dumpMutations(name))["mutation-outbox-v1"]).toEqual([]);
+
+    // The same handle clearing its own scope is terminal from the moment the
+    // clear begins, so a concurrent enqueue cannot repopulate it either.
+    await confirm(writer, left, "left");
+    const clearing = writer.clearScope(scope);
+    expect(
+      await rejectedTag(writer.outbox().enqueue(draft(receiver), { scope })),
+    ).toBe("ReplicaScopeClearedError");
+    await clearing;
+    expect((await dumpMutations(name))["mutation-outbox-v1"]).toEqual([]);
+  } finally {
+    resetTestHooks();
+    writer.close();
+    maintainer.close();
     await deleteDatabase(name);
   }
 });

@@ -41,6 +41,7 @@ import {
 } from "./idb.ts";
 import {
   REPLICA_GENERATIONS_STORE,
+  ReplicaFencedError,
   ReplicaScopeUnconfirmedError,
   replicaScopeKey,
   type ReplicaDatabaseScope,
@@ -289,10 +290,22 @@ export class IndexedDbOutbox {
     }
     const scopeKey = replicaScopeKey(options.scope);
     const partition = mutationPartitionKey(draft.receiver);
+    // The generation this enqueue believes it is writing under, read before the
+    // write transaction exists. A clear that commits in between — from this
+    // handle or another one in the same realm — bumps it, and the comparison
+    // inside the write refuses rather than repopulating what was just deleted.
+    const observed = await this.scopeGeneration(scopeKey);
     const transaction = this.database.transaction([...ENQUEUE_STORES], "readwrite");
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
-      return await this.stageEnqueue(transaction, draft, options, scopeKey, partition);
+      return await this.stageEnqueue(
+        transaction,
+        draft,
+        options,
+        scopeKey,
+        partition,
+        observed,
+      );
     } catch (error) {
       // IndexedDB auto-commits a transaction with no pending request, so a
       // failure after the writes are issued must roll them back explicitly or
@@ -304,12 +317,26 @@ export class IndexedDbOutbox {
     }
   }
 
+  /** The durable generation guarding one scope, or `undefined` when unconfirmed. */
+  private async scopeGeneration(scopeKey: string): Promise<number | undefined> {
+    const transaction = this.database.transaction(
+      REPLICA_GENERATIONS_STORE,
+      "readonly",
+    );
+    const record = await requestResult<{ readonly generation: number } | undefined>(
+      transaction.objectStore(REPLICA_GENERATIONS_STORE).get(scopeKey),
+    );
+    await transactionDone(transaction);
+    return record?.generation;
+  }
+
   private async stageEnqueue(
     transaction: IDBTransaction,
     draft: OutboxDraft,
     options: EnqueueOptions,
     scopeKey: string,
     partition: string,
+    observed: number | undefined,
   ): Promise<OutboxRecord> {
     const generations = transaction.objectStore(REPLICA_GENERATIONS_STORE);
     const outbox = transaction.objectStore(MUTATION_OUTBOX);
@@ -326,6 +353,16 @@ export class IndexedDbOutbox {
     // `clearScope` refuses an unconfirmed scope, so queueing under one would
     // create local data the deletion API can never select.
     if (fence === undefined) throw new ReplicaScopeUnconfirmedError({ scope: scopeKey });
+    // A clear committed between the read above and this transaction. Refusing
+    // here is what stops an enqueue that started before a clear from writing
+    // durable work back into the scope after the deletion committed.
+    if (observed !== undefined && observed !== fence.generation) {
+      throw new ReplicaFencedError({
+        key: scopeKey,
+        expected: observed,
+        observed: fence.generation,
+      });
+    }
     // Only the scope generation guards a queue. Evicting one cached database
     // must not fence the user's unsent work for it.
     options.lease?.observe(scopeKey, fence.generation);
@@ -405,6 +442,10 @@ export class IndexedDbOutbox {
     // production; the source-only testing assembly arms it to cut here, which
     // is what proves the enqueue is all-or-nothing.
     await this.boundaries.checkpoint("outbox.enqueue");
+    // Last look before this becomes durable: a clear this handle began while
+    // the write was in flight has already marked the scope terminal, and the
+    // durable generation cannot see that until the clear itself commits.
+    this.assertScopeLive(options.scope);
     await commitTransaction(transaction);
     return record;
   }

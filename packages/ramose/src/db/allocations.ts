@@ -87,6 +87,14 @@ export type AllocationDeclaration<OCodec> = {
 /** Conservative, stable, and safe as an object key and in a canonical digest. */
 const SLOT_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
+/**
+ * The one slot-name predicate. Declaration, durable construction, and durable
+ * decoding all use it, so a name one of them accepts is never a name another
+ * refuses — which would leave a committed row unreadable on the next restart.
+ */
+export const isAllocationSlotName = (value: unknown): value is string =>
+  typeof value === "string" && SLOT_NAME.test(value);
+
 const invalid = (detail: string): never => {
   throw new Error(`ramose/schema: allocation slot ${detail}`);
 };

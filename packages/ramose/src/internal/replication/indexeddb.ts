@@ -1008,6 +1008,11 @@ export class IndexedDbReplicaStorage {
   async clearScope(scope: ReplicaScope): Promise<ReplicaClearOutcome> {
     const scopeKey = this.assertScopeLive(scope);
     const prefix = replicaScopePartitionPrefix(scope);
+    // Terminal from the moment the clear begins, not from the moment it
+    // commits: a write this handle started concurrently must not be able to
+    // land behind the deletion. A clear that fails releases the mark again,
+    // leaving the old complete state readable and the clear retryable.
+    this.clearedScopes.add(scopeKey);
     const transaction = this.database.transaction(
       [...REPLICA_STORE_FAMILIES, ...MUTATION_STORE_FAMILIES],
       "readwrite",
@@ -1019,11 +1024,11 @@ export class IndexedDbReplicaStorage {
       // IndexedDB auto-commits a transaction with no pending request, so a
       // failure between the deletions and the commit must roll them back
       // explicitly or a partial clear would become durable.
+      this.clearedScopes.delete(scopeKey);
       await abortTransaction(transaction);
       throw error;
     }
     await commitTransaction(transaction);
-    this.clearedScopes.add(scopeKey);
     await this.closeMatching((participant) =>
       replicaScopeKey(participant.scope) === scopeKey
     );

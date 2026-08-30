@@ -277,6 +277,31 @@ describe("building one durable queue record", () => {
     expect(ok.inputRefs).toEqual([{ path: ["author"], ref }]);
   });
 
+  test("a slot name the decoder would refuse never commits", () => {
+    const ref = clientRef();
+    for (const slot of ["", "9bad", "has space", "x".repeat(65)]) {
+      expect(rejection(() =>
+        buildOutboxRecord(
+          draft({ allocations: [{ slot, clientRef: ref }] }),
+          scopeKey,
+          1,
+        )
+      )).toMatch(/is not a slot name/);
+    }
+    // And the decoder refuses the same names in a stored row.
+    const stored = JSON.parse(JSON.stringify(
+      buildOutboxRecord(
+        draft({ allocations: [{ slot: "issue", clientRef: ref }] }),
+        scopeKey,
+        1,
+      ),
+    )) as Record<string, unknown>;
+    expect(decodeOutboxRecord(stored)).toBeDefined();
+    expect(
+      decodeOutboxRecord({ ...stored, allocations: [{ slot: "", clientRef: ref }] }),
+    ).toBeUndefined();
+  });
+
   test("a declared position must be a path the decoder can read back", () => {
     const ref = clientRef();
     // An empty property name is not addressable. Accepting it here would

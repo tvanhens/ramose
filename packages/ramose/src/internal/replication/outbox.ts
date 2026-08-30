@@ -43,7 +43,10 @@
  */
 
 import * as Data from "effect/Data";
-import type { AllocationPathSegment } from "../../db/allocations.ts";
+import {
+  isAllocationSlotName,
+  type AllocationPathSegment,
+} from "../../db/allocations.ts";
 import {
   ENTITY_ID_CODEC,
   entityIdEnvelope,
@@ -453,6 +456,11 @@ export const buildOutboxRecord = (
   const slots = new Set<string>();
   const allocated = new Set<string>();
   for (const allocation of draft.allocations) {
+    // The decoder's own predicate: a name it would refuse must never commit,
+    // or the row it produces holds its partition after the next restart.
+    if (!isAllocationSlotName(allocation.slot)) {
+      reject(`allocation slot ${JSON.stringify(allocation.slot)} is not a slot name`);
+    }
     if (!isClientRef(allocation.clientRef)) {
       reject(`allocation slot ${allocation.slot} has no durable client ref`);
     }
@@ -880,8 +888,8 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
   const allocations: QueuedAllocation[] = [];
   for (const allocation of value.allocations) {
     if (
-      !isPlainObject(allocation) || typeof allocation.slot !== "string" ||
-      allocation.slot.length === 0 || !isClientRef(allocation.clientRef)
+      !isPlainObject(allocation) || !isAllocationSlotName(allocation.slot) ||
+      !isClientRef(allocation.clientRef)
     ) return undefined;
     allocations.push(Object.freeze({ slot: allocation.slot, clientRef: allocation.clientRef }));
   }
