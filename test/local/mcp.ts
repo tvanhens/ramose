@@ -191,11 +191,13 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         input: { name: secret },
         invocationId: crypto.randomUUID(),
       });
-      await ok(base, database, member, "mutate", {
-        operation: ref(discovered, "nativeEncoded", "create"),
-        input: { label: "encoded" },
-        invocationId: crypto.randomUUID(),
-      });
+      for (const label of ["encoded", "encoded-two"]) {
+        await ok(base, database, member, "mutate", {
+          operation: ref(discovered, "nativeEncoded", "create"),
+          input: { label },
+          invocationId: crypto.randomUUID(),
+        });
+      }
 
       const filtered = await read({
         version: 1,
@@ -299,6 +301,7 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         query: {
           version: 1,
           from: { entity: "nativeEncoded" },
+          where: { label: "encoded" },
           select: ["tenantOnly"],
         },
       })).rows).toEqual([{ tenantOnly: "acme-only" }]);
@@ -306,8 +309,31 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       expect((await read({
         version: 1,
         from: { entity: "nativeEncoded" },
+        where: { label: "encoded" },
         select: ["label"],
       })).rows).toEqual([{ label: "encoded" }]);
+
+      // A *row-dependent* rule is one the static layer deliberately declines
+      // to judge, so `rowScoped` does reach the engine. It is hidden on every
+      // row here, and reporting the query's own truncation would then make it
+      // distinguishable from an unknown name. Every row projecting empty
+      // collapses to the absent answer instead.
+      expect((await read({ version: 1, from: { entity: "nativeEncoded" }, limit: 1 }))
+        .truncated).toBe(true);
+      expect(await read({
+        version: 1,
+        from: { entity: "nativeEncoded" },
+        select: ["rowScoped"],
+        limit: 1,
+      })).toEqual({ rows: [], truncated: false });
+      // A mixed selection still reports honestly: the visible subset comes
+      // back, and truncation stays a fact about the query.
+      expect(await read({
+        version: 1,
+        from: { entity: "nativeEncoded" },
+        select: ["label", "rowScoped"],
+        limit: 1,
+      })).toMatchObject({ rows: [{ label: expect.any(String) }], truncated: true });
 
       // The reader proves the hidden row was really there all along.
       const visible = await ok(base, database, reader, "query", {
@@ -452,10 +478,12 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       expect(armed.status).toBe(200);
 
       const title = "Committed before response expiry";
+      const invocationId = crypto.randomUUID();
+      const create = ref(discovered, "nativeItem", "create");
       const pending = callTool(base, database, expiring, "mutate", {
-        operation: ref(discovered, "nativeItem", "create"),
+        operation: create,
         input: { title },
-        invocationId: crypto.randomUUID(),
+        invocationId,
       });
       await waitForCheckpoint(base, database, "operation.response");
 
@@ -464,19 +492,39 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       // Same fence `/op` applies after the awaited Transactor hop: the output
       // may be derived from data this caller can no longer read, so none of
       // it is disclosed and the refusal names nothing.
-      expect(expired).toMatchObject({
-        isError: true,
-        value: { code: "inaccessible", retryable: false },
-      });
       expect(Object.hasOwn(expired.value, "outcome")).toBe(false);
       expect(Object.hasOwn(expired.value, "invocationId")).toBe(false);
+      // The invocation has already run by this point, so the refusal must not
+      // read as "nothing happened": that would send an agent to a fresh
+      // invocationId and execute the intent twice. It is outcome-uncertain
+      // and retryable *under the same id*.
+      expect(expired).toMatchObject({
+        isError: true,
+        value: { code: "invocation_indeterminate", retryable: true },
+      });
+      expect(expired.value.message).toContain("same invocationId");
 
       // As on `/op`, the write itself stayed committed.
-      const persisted = await testAdmin(base, database, "/query", {
-        query: `[:find ?e :where [?e :nativeItem/title ${JSON.stringify(title)}]]`,
+      const committedRows = async () => {
+        const persisted = await testAdmin(base, database, "/query", {
+          query: `[:find ?e :where [?e :nativeItem/title ${JSON.stringify(title)}]]`,
+        });
+        expect(persisted.status).toBe(200);
+        return persisted.body.result as unknown[];
+      };
+      expect(await committedRows()).toEqual([[expect.any(Number)]]);
+
+      // Following the hint is safe: reauthenticating and replaying the same
+      // invocationId returns the stored receipt rather than acting again.
+      const renewed = await signToken(database, "member", "user_ada");
+      const replayed = await ok(base, database, renewed, "mutate", {
+        operation: create,
+        input: { title },
+        invocationId,
       });
-      expect(persisted.status).toBe(200);
-      expect(persisted.body.result).toEqual([[expect.any(Number)]]);
+      expect(replayed).toMatchObject({ invocationId, status: "completed" });
+      // Still exactly one row: the replay did not execute a second time.
+      expect(await committedRows()).toEqual([[expect.any(Number)]]);
     });
 
     test("at traverses the authorized graph of graphs", async () => {

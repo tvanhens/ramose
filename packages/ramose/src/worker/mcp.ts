@@ -188,14 +188,26 @@ const mcpTools = (input: McpRouteInput) => ({
     // the same final Worker checkpoint `/op` takes after that awaited hop, so
     // a credential that lapsed mid-flight cannot disclose output that may be
     // derived from data the caller can no longer read. As on `/op` the write
-    // stays committed — only the response is suppressed — and the same
-    // invocationId replays it once the caller re-authenticates.
+    // stays committed and only the response is suppressed.
     await input.boundaries?.checkpoint("operation.response");
     if (
       !Number.isSafeInteger(input.caller.exp) ||
       input.caller.exp * 1_000 <= Date.now()
     ) {
-      throw inaccessible();
+      // Deliberately *not* the collapsed denial. By this point the invocation
+      // has run and its receipt is stored, so a `retryable: false` refusal
+      // would tell an agent the intent never happened — and the honest way to
+      // act on that is to mint a fresh invocationId, which executes the same
+      // intent twice. `invocation_indeterminate` is the existing
+      // outcome-uncertain code and carries the one safe recovery: the same
+      // invocationId, whose #487 replay returns the original receipt. It
+      // asserts nothing about whether the write landed, so it discloses
+      // nothing the collapsed denial would not have.
+      throw toolFailure(
+        "invocation_indeterminate",
+        "authorization expired before this result could be returned; " +
+          "reauthenticate and retry with the same invocationId",
+      );
     }
     const projected = publicMutateResult(result, resolved.output);
     if ("code" in projected) throw toolFailure(projected.code, projected.message);

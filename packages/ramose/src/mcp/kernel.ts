@@ -436,6 +436,14 @@ export const runQueryDocument = async (
     // never-set, ref-shaped, and unknown field names the one same answer.
     if (Object.keys(out).length > 0) rows.push(out);
   }
+  // Nothing survived projection. The static layer settles a field policy hides
+  // on every row, but it deliberately defers a row-dependent rule, and such a
+  // rule can still hide the selection on every row the query returned. Left
+  // alone that would answer `truncated: true` where an unknown name answers
+  // `truncated: false`, and the flag would be the tell. Collapsing to the
+  // absent answer costs a field visible only past the limit — the same
+  // indistinguishable-from-unset trade the row drop above already makes.
+  if (rows.length === 0) return Object.freeze({ rows: [], truncated: false });
   return Object.freeze({
     rows: Object.freeze(rows),
     // Truncation is a fact about the *query*, not about what survived

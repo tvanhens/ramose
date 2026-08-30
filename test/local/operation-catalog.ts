@@ -227,6 +227,7 @@ const encodedRow = (label: string) => ({
   key: "8f14e45f-ceea-467a-9c8b-4e2f9b7c1a30",
   secret: "policy-hidden",
   tenantOnly: "acme-only",
+  rowScoped: "row-scoped",
 });
 
 /**
@@ -243,6 +244,12 @@ export const Encoded = Entity("nativeEncoded", {
   secret: string(),
   /** Readable only by a principal whose `tenant` claim is `acme`. */
   tenantOnly: string(),
+  /**
+   * Readable only where the row's own `label` matches the caller's `tenant`
+   * claim — decidable per row, never from the principal alone, so the static
+   * layer must defer it to the deployed filter.
+   */
+  rowScoped: string(),
 }, {
   operations: (Operation) => ({
     create: Operation({
@@ -305,6 +312,12 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     // this caller's `tenant` claim is `acme`.
     Policy.read(Encoded.tenantOnly).when(
       Policy.eq(Policy.claim("tenant"), "acme"),
+    ),
+    // Row-dependent: no label in this fixture ever equals a caller's claim,
+    // so the field is hidden on every row while remaining undecidable from
+    // the principal alone.
+    Policy.read(Encoded.rowScoped).when(
+      Policy.eq(Encoded.label, Policy.claim("tenant")),
     ),
     Policy.invoke(Encoded[OwnedOperations].create).when(Policy.hasClass("member")),
     Policy.invoke(Encoded[OwnedOperations].createRenamed).when(Policy.hasClass("member")),
