@@ -9,7 +9,13 @@
 import * as Effect from "effect/Effect";
 import { isAllocationSlotName } from "../../db/allocations.ts";
 import { InvalidRequest } from "../../db/Errors.ts";
-import { isClientRef, isEntityId } from "../../db/refs.ts";
+import {
+  ENTITY_ID_CODEC,
+  entityIdEnvelope,
+  isClientRef,
+  isEntityId,
+} from "../../db/refs.ts";
+import { sameEpochScope, type EpochBoundScope } from "./entity-targets.ts";
 import { sha256Hex } from "../core/bytes.ts";
 import { toJson } from "../core/json.ts";
 import { canonicalizeJson } from "./canonical-json.ts";
@@ -190,17 +196,25 @@ export type InvocationAllocationMappingsV1 = {
  */
 export const allocationMappingsResolvable = (
   mappings: InvocationAllocationMappingsV1,
-  keyId: string,
-  scope: {
-    readonly server: string;
-    readonly principal: string;
-    readonly database: string;
-  },
+  current: EpochBoundScope,
 ): boolean =>
-  mappings.keyId === keyId && mappings.scope.server === scope.server &&
-  mappings.scope.principal === scope.principal &&
-  mappings.scope.database === scope.database &&
-  mappings.entries.every((entry) => isEntityId(entry.entityId));
+  // The same comparison every other participant makes: a stored mapping is an
+  // epoch-bound scope like any other, and the receipt records it precisely so
+  // this can be asked.
+  sameEpochScope(mappings, current) &&
+  // And every handle must say so itself. The recorded epoch is not believed on
+  // its own — the same rule the client's durable mapping store applies — so a
+  // row whose `keyId` was rewritten cannot present handles this build has no
+  // key for. The preamble carries both facts, and reading it is what
+  // distinguishes "openable" from merely "the right shape": a newer codec may
+  // keep this envelope length and change only its version byte, and those
+  // handles must quarantine rather than be handed back unusable.
+  mappings.entries.every((entry) => {
+    const envelope = entityIdEnvelope(entry.entityId);
+    return envelope !== undefined &&
+      envelope.codecVersion === ENTITY_ID_CODEC &&
+      envelope.keyId === current.keyId;
+  });
 
 export type CompletedInvocationReceipt = InvocationReceiptIdentity & {
   readonly status: "completed";

@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
   allocatedEids,
+  decideEpoch,
   extractAllocations,
   isEntityRefPath,
   parseEntityIdScope,
   parseInvocationAllocations,
   resolveSealedTarget,
+  sameEpochScope,
   sealAllocationMappings,
   type InvocationAllocation,
 } from "../../../src/internal/authorization/entity-targets.ts";
@@ -115,6 +117,55 @@ describe("parseInvocationAllocations", () => {
       { slot: "a", clientRef: ref(), extra: 1 },
     ])).toBeUndefined();
     expect(parseInvocationAllocations("nope")).toBeUndefined();
+  });
+});
+
+describe("sealing-root epoch coherence", () => {
+  const bound = { keyId: sealing.keyId, scope };
+
+  test("one key may act on the scope its own epoch derived", () => {
+    expect(decideEpoch(bound, sealing)).toEqual({
+      _tag: "Agreed",
+      sealing,
+      scope,
+    });
+    // Same key id, different material is not a case that can arise from the
+    // durable root — the id names the material — but the comparison is over
+    // the id because that is what every participant can carry.
+    expect(decideEpoch(bound, { ...sealing, keyId: sealing.keyId })._tag)
+      .toBe("Agreed");
+  });
+
+  test("a moved epoch is a quarantine, never a denial", () => {
+    // The rule the whole class rests on: the caller is authorized and its
+    // handles are genuine, so telling it to update is the only answer that
+    // lets a durable client mint fresh identities instead of retrying forever.
+    expect(decideEpoch(bound, rotatedSealing)).toEqual({ _tag: "UpdateRequired" });
+  });
+
+  test("two epoch-bound scopes agree only on every component and the epoch", () => {
+    expect(sameEpochScope(bound, { keyId: sealing.keyId, scope: { ...scope } }))
+      .toBe(true);
+    expect(sameEpochScope(bound, { keyId: rotatedSealing.keyId, scope }))
+      .toBe(false);
+    for (const component of ["server", "principal", "database"] as const) {
+      expect(sameEpochScope(bound, {
+        keyId: sealing.keyId,
+        scope: { ...scope, [component]: "elsewhere" },
+      })).toBe(false);
+    }
+  });
+
+  test("a scope from one epoch and a key from another seal nothing openable", async () => {
+    // Why the comparison exists, demonstrated rather than asserted: the scope
+    // is the additional data, so a handle sealed under a disagreeing pair
+    // authenticates against material the other key cannot reproduce.
+    const underRotated = await sealEntityId(rotatedSealing, scope, 4242);
+    expect(await resolveSealedTarget(sealing, scope, underRotated))
+      .toEqual({ _tag: "UpdateRequired" });
+    const otherScopeToken = await sealEntityId(sealing, otherScope, 4242);
+    expect(await resolveSealedTarget(sealing, scope, otherScopeToken))
+      .toEqual({ _tag: "Denied" });
   });
 });
 

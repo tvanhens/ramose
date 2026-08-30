@@ -75,6 +75,7 @@ import {
   authorizeCatalogOperationGrant,
   authorizeCatalogOperationReplay,
   catalogProvisioningAttributes,
+  decideEpoch,
   decideInvocationReceipt,
   deployedOperationVersion,
   executeCatalogOperation,
@@ -599,11 +600,10 @@ export class Transactor {
     // A receipt with mappings was claimed under an invocation that bound slots,
     // and the binding is in the digest, so a matching replay bound them too.
     if (context === undefined) return false;
-    return allocationMappingsResolvable(
-      receipt.allocations,
-      context.sealing.keyId,
-      context.scope,
-    );
+    return allocationMappingsResolvable(receipt.allocations, {
+      keyId: context.sealing.keyId,
+      scope: context.scope,
+    });
   }
 
   /**
@@ -614,15 +614,29 @@ export class Transactor {
    * refused here, before the operation body runs, so the sealing step that
    * follows the staged commit cannot be the thing that fails.
    */
-  private requireSealingContext(
+  private decideInvocationEpoch(
     p: Pending,
-    operation: AuthoritativeOperationInvocation,
-  ): SealingContext {
+  ):
+    | { readonly _tag: "Agreed"; readonly context: SealingContext | undefined }
+    | { readonly _tag: "UpdateRequired" }
+  {
+    const operation = p.operation!;
+    // An invocation that names no opaque handle has no epoch to agree about.
+    if (!this.needsSealingKey(operation)) return { _tag: "Agreed", context: undefined };
     const scope = operation.entityIdScope;
-    if (p.sealing === undefined || scope === undefined) {
+    const keyId = operation.entityIdKeyId;
+    // `invoke` established both before this was queued and the route refuses an
+    // invocation carrying one without the other, so absence here is an engine
+    // defect rather than a caller error or a moved epoch.
+    if (p.sealing === undefined || scope === undefined || keyId === undefined) {
       throw opaqueOperationDenial();
     }
-    return { sealing: p.sealing, scope };
+    const decision = decideEpoch({ keyId, scope }, p.sealing);
+    if (decision._tag === "UpdateRequired") return decision;
+    return {
+      _tag: "Agreed",
+      context: { sealing: decision.sealing, scope: decision.scope },
+    };
   }
 
   /**
@@ -911,28 +925,16 @@ export class Transactor {
               // caller's handle with the private eid, and every ordinary
               // visibility, type, and admission check below then runs against
               // that eid exactly as it would for a numeric target.
-              // Resolved before the body runs, not after the commit: sealing an
-              // allocated eid must not be able to fail between the staged
+              // The one epoch comparison, made once, before anything is opened
+              // or sealed. Resolved before the body runs — not after the commit
+              // — so sealing an allocated eid cannot fail between the staged
               // transaction and the durable batch write.
-              const sealingContext = this.needsSealingKey(p.operation)
-                ? this.requireSealingContext(p, p.operation)
-                : undefined;
-              // The Worker derived the scope under its own cached epoch, and
-              // this isolate caches the root separately. If a replacement left
-              // them disagreeing, every scope component — each a PRF of the
-              // root — names something this key cannot reproduce: opening a
-              // handle would fail as a denial rather than a quarantine, and
-              // sealing one would commit a handle encrypted under one epoch and
-              // bound to a scope derived under another, openable by neither
-              // once they converge and already durable on the client. Ask again
-              // instead; by then they agree, or the client learns to update.
-              if (
-                sealingContext !== undefined &&
-                p.operation.entityIdKeyId !== sealingContext.sealing.keyId
-              ) {
+              const epoch = this.decideInvocationEpoch(p);
+              if (epoch._tag === "UpdateRequired") {
                 await resolveCompatibility("UpdateRequired");
                 continue;
               }
+              const sealingContext = epoch.context;
               const operation = await this.resolveInvocationTarget(
                 p,
                 sealingContext,

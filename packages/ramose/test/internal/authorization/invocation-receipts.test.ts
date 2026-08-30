@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
-import { clientRef } from "../../../src/db/refs.ts";
+import { clientRef, ENTITY_ID_CODEC } from "../../../src/db/refs.ts";
+import { sealEntityId } from "../../../src/internal/replication/entity-id.ts";
+import { base64Url } from "../../../src/internal/replication/server-identity.ts";
 import {
   allocationMappingsResolvable,
   CatalogId,
@@ -22,8 +24,27 @@ import {
 
 const unitHash = CatalogUnitHash.make("ab".repeat(32));
 const allocatedRef = clientRef();
+const idScope = Object.freeze({
+  server: "srv",
+  principal: "prn",
+  database: "dbs",
+});
+/** The epoch the fixture mappings record, and one that is not it. */
+const fixtureEpoch = Object.freeze({
+  keyId: "AAECAwQFBgcICQoLDA0ODw",
+  material: "c2VhbGluZy1tYXRlcmlhbC1mb3ItcmVjZWlwdC1maXh0dXJlcw",
+});
+const otherEpoch = Object.freeze({
+  keyId: "EBESExQVFhcYGRobHB0eHw",
+  material: "YW5vdGhlci1zZWFsaW5nLXJvb3QtZm9yLXJlY2VpcHQtdGVzdHM",
+});
 const otherAllocatedRef = clientRef();
-const sealedEntityId = "A".repeat(54) + "A";
+/**
+ * A genuinely sealed handle, not a synthetic 55-character string: the durable
+ * mapping check reads each handle's own preamble for the codec version and the
+ * key epoch, so only a real one can stand in for a stored mapping.
+ */
+const sealedEntityId = await sealEntityId(fixtureEpoch, idScope, 4242);
 const operationVersion = OperationVersion.make("1f".repeat(32));
 const otherOperationVersion = OperationVersion.make("2e".repeat(32));
 
@@ -351,13 +372,13 @@ describe("authoritative invocation receipt serialization", () => {
     expect(publicText).not.toContain("receipts");
   });
 
-  test("the mapping extension round-trips, projects sealed handles, and never admits an eid", () => {
+  test("the mapping extension round-trips, projects sealed handles, and never admits an eid", async () => {
     const claim = decideInvocationReceipt(undefined, preparedFixture());
     if (claim._tag !== "Claim") throw new Error("expected claim");
     const allocations = {
       version: 1 as const,
-      keyId: "AAECAwQFBgcICQoLDA0ODw",
-      scope: { server: "srv", principal: "prn", database: "dbs" },
+      keyId: fixtureEpoch.keyId,
+      scope: idScope,
       entries: [{
         slot: "item",
         clientRef: allocatedRef,
@@ -423,14 +444,38 @@ describe("authoritative invocation receipt serialization", () => {
     // The stored handles are openable only under the epoch and scope they were
     // sealed to. A rotated key or a second public origin serving the same
     // database must not hand back mappings the caller can never resolve.
-    expect(allocationMappingsResolvable(allocations, allocations.keyId, allocations.scope))
-      .toBe(true);
-    expect(allocationMappingsResolvable(allocations, "another-key-epoch", allocations.scope))
-      .toBe(false);
+    const bound = { keyId: allocations.keyId, scope: allocations.scope };
+    expect(allocationMappingsResolvable(allocations, bound)).toBe(true);
+    // Every handle must say the epoch itself. The recorded `keyId` is not
+    // believed alone, so a row whose epoch was rewritten to the current one
+    // cannot present handles this build has no key for.
+    expect(allocationMappingsResolvable({
+      ...allocations,
+      entries: [{
+        ...allocations.entries[0]!,
+        entityId: await sealEntityId(otherEpoch, idScope, 4242),
+      }],
+    }, bound)).toBe(false);
+    // And a newer codec that keeps this envelope *length* and moves only its
+    // version byte is not merely the right shape — it is unopenable, and the
+    // preamble is where that shows.
+    const futureEnvelope = new Uint8Array(41);
+    futureEnvelope[0] = ENTITY_ID_CODEC + 1;
+    expect(allocationMappingsResolvable({
+      ...allocations,
+      entries: [{
+        ...allocations.entries[0]!,
+        entityId: base64Url(futureEnvelope),
+      }],
+    }, bound)).toBe(false);
+    expect(allocationMappingsResolvable(allocations, {
+      ...bound,
+      keyId: "another-key-epoch",
+    })).toBe(false);
     for (const component of ["server", "principal", "database"] as const) {
-      expect(allocationMappingsResolvable(allocations, allocations.keyId, {
-        ...allocations.scope,
-        [component]: "elsewhere",
+      expect(allocationMappingsResolvable(allocations, {
+        ...bound,
+        scope: { ...bound.scope, [component]: "elsewhere" },
       })).toBe(false);
     }
   });
@@ -452,8 +497,8 @@ describe("authoritative invocation receipt serialization", () => {
       }),
       allocations: {
         version: 1 as const,
-        keyId: "AAECAwQFBgcICQoLDA0ODw",
-        scope: { server: "srv", principal: "prn", database: "dbs" },
+        keyId: fixtureEpoch.keyId,
+        scope: idScope,
         entries: [{ slot: "item", clientRef: allocatedRef, entityId: future }],
       },
     };
@@ -462,11 +507,10 @@ describe("authoritative invocation receipt serialization", () => {
     // And it is not replayable: this build cannot open those handles, so the
     // caller is told to update rather than handed something unusable.
     const stored = decoded as typeof rolled;
-    expect(allocationMappingsResolvable(
-      stored.allocations,
-      stored.allocations.keyId,
-      stored.allocations.scope,
-    )).toBe(false);
+    expect(allocationMappingsResolvable(stored.allocations, {
+      keyId: stored.allocations.keyId,
+      scope: stored.allocations.scope,
+    })).toBe(false);
     // A numeric eid is still refused outright — that is a type error, not a
     // codec generation, and no rollback can produce it.
     expect(() => parseStoredInvocationReceipt({

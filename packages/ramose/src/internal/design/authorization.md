@@ -386,14 +386,40 @@ handles the caller could never open. A client must never durably persist a
 client-ref mapping it cannot resolve, and a durable row a newer codec wrote is
 recognized and answered, never treated as corruption.
 
-**WR-14.** The scope and the handle sealed under it must come from one epoch.
-Every scope component is a PRF of the durable root, and the Worker and the
-writer cache that root in separate isolates, so a root replacement can leave
-them briefly disagreeing. The Worker sends the key id its scope was derived
-under; the writer compares it before opening or sealing anything and answers
-update-required on a mismatch. Sealing across a disagreement would commit a
-handle encrypted under one epoch and bound to a scope derived under another —
-openable by neither once they converge, and already durable on the client.
+**WR-14. Sealing-root epoch coherence.** Every scope component is a PRF of the
+durable identity root, and every sealed handle is ciphertext under a key
+derived from it with the scope as additional data, so a scope and a handle from
+different epochs name nothing. The participants do not share an isolate, and a
+root replacement can leave any pair of them disagreeing. One rule covers all of
+them: **carry the epoch you derived under, compare before acting, and answer
+the typed data-free quarantine on disagreement** — never a sealed denial, and
+never a 500/503 inconsistency for the same dependency failure.
+
+`EpochBoundScope` is what makes the rule hard to forget: a scope cannot be
+passed anywhere without the epoch that produced it, and `decideEpoch` is the
+single comparison.
+
+| participant | carries | compares against | on disagreement |
+|---|---|---|---|
+| Worker scope derivation | `entityIdScope` + `entityIdKeyId` from its cached root | — (it *is* the claim) | root unreachable → 503 + `retry-after` |
+| Writer sealing-key acquisition | its own cached root | — | root unreachable → 503 + `retry-after` (same answer, either side) |
+| Writer epoch gate (`decideInvocationEpoch`) | the carried `{keyId, scope}` | its own `sealing.keyId` | `invocation_update_required` |
+| Sealed-target resolution | the token's own preamble | the writer's key id, inside the codec | `update-required` (epoch/codec) or the sealed denial (everything else) |
+| Allocation sealing | the agreed `{keyId, scope}` | — (agreement already established) | unreachable by construction |
+| Durable receipt mappings | recorded `keyId` + `scope`, and each handle's own preamble | the replaying caller's `EpochBoundScope` | `invocation_update_required` |
+
+A stored mapping's recorded epoch is never believed on its own — the same rule
+the client's durable mapping store applies. Each handle's preamble must itself
+name this codec version and this key id, so neither a rewritten `keyId` nor a
+newer codec that kept the envelope *length* can present handles the caller
+could not open.
+
+Coverage boundary, stated honestly: the local lane exercises a cold Worker
+isolate re-deriving against the live root, and both quarantine reasons for a
+handle from a foreign epoch or codec. Forcing the Worker and the writer to hold
+*different* live roots would need a root-replacement hook that does not exist;
+that seam is covered at the unit level, over `decideEpoch` and
+`allocationMappingsResolvable` directly.
 
 **WR-15.** A momentarily unreachable sealing root is a transient dependency
 failure, not an engine defect and not a denial: 503 with `retry-after`, from

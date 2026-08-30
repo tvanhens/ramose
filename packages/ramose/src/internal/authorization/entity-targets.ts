@@ -97,6 +97,77 @@ export const parseInvocationAllocations = (
   );
 };
 
+/* ── sealing-root epoch coherence ─────────────────────────────────────────
+ *
+ * Every scope component is a PRF of the durable identity root, and every
+ * sealed handle is ciphertext under a key derived from it with the scope as
+ * additional data. A scope and a handle from *different* epochs therefore name
+ * nothing: the handle authenticates against additional data the other key
+ * cannot reproduce.
+ *
+ * The participants do not share an isolate. The Worker derives the scope from
+ * its cached root; the writer seals and opens from its own; the durable receipt
+ * holds mappings minted under whatever epoch was current when it committed. A
+ * root replacement — or two isolates warming at different moments across one —
+ * can leave any pair of them disagreeing.
+ *
+ * One rule covers all of them: **carry the epoch you derived under, compare
+ * before acting, and answer the typed data-free quarantine on disagreement.**
+ * Never a sealed denial: the caller is authorized and its handles are genuine,
+ * they have simply moved out of reach, and only `update-required` tells a
+ * durable client to mint fresh identities instead of retrying forever.
+ *
+ * {@link EpochBoundScope} is what makes the rule hard to forget — a scope
+ * cannot be passed anywhere without the epoch that produced it.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * A scope and the sealing key epoch it was derived under. One value, because a
+ * scope apart from its epoch is not merely useless but actively unsafe: it
+ * looks usable and produces handles nothing can open.
+ */
+export type EpochBoundScope = {
+  readonly keyId: string;
+  readonly scope: EntityIdScope;
+};
+
+/** The one outcome of an epoch comparison. Disagreement is never a denial. */
+export type EpochDecision =
+  | {
+    readonly _tag: "Agreed";
+    readonly sealing: ServerSealingKey;
+    readonly scope: EntityIdScope;
+  }
+  | { readonly _tag: "UpdateRequired" };
+
+const EPOCH_UPDATE_REQUIRED = Object.freeze(
+  { _tag: "UpdateRequired" },
+) as EpochDecision;
+
+/**
+ * Whether this key may act on that scope.
+ *
+ * The single comparison every participant makes before it opens a handle,
+ * seals one, or hands stored mappings back.
+ */
+export const decideEpoch = (
+  bound: EpochBoundScope,
+  sealing: ServerSealingKey,
+): EpochDecision =>
+  bound.keyId === sealing.keyId
+    ? Object.freeze({ _tag: "Agreed", sealing, scope: bound.scope })
+    : EPOCH_UPDATE_REQUIRED;
+
+/** Whether two epoch-bound scopes name the same realm under the same epoch. */
+export const sameEpochScope = (
+  left: EpochBoundScope,
+  right: EpochBoundScope,
+): boolean =>
+  left.keyId === right.keyId &&
+  left.scope.server === right.scope.server &&
+  left.scope.principal === right.scope.principal &&
+  left.scope.database === right.scope.database;
+
 /**
  * Strict decode of the scope the Worker derived. It arrives over the
  * authenticated internal channel, so this is a shape check rather than an

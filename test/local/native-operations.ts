@@ -1521,6 +1521,65 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
       });
 
+      test("a cold Worker isolate re-derives the same epoch and scope", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-cold";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_sealed_cold");
+
+        // The Worker derives the scope from its cached root and the writer
+        // seals from its own; the two caches are independent. Discarding the
+        // Worker's forces a fresh derivation against the same durable root,
+        // which is the seam the epoch rule exists to keep coherent — if the
+        // carried key id and the writer's disagreed, this would quarantine
+        // rather than commit.
+        const forget = await testAdmin(base, database, "/server-identity", {
+          action: "forget-isolate-cache",
+        });
+        expect(forget.status).toBe(200);
+
+        const created = await invokeWith(base, database, token, {
+          invocationId: "sealed-cold-create-01",
+          operation: createItem,
+          input: { title: "Cold isolate" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+        const entityId = created.body.mappings[0].entityId as string;
+        expect(isEntityId(entityId)).toBe(true);
+
+        // Cold again, then use the handle the previous (equally cold)
+        // derivation produced: it resolves under the scope this fresh
+        // derivation computes, which is the whole point of binding the two.
+        await testAdmin(base, database, "/server-identity", {
+          action: "forget-isolate-cache",
+        });
+        const renamed = await invokeWith(base, database, token, {
+          invocationId: "sealed-cold-rename-01",
+          operation: renameItem,
+          target: entityId,
+          input: { title: "Renamed after a cold derivation" },
+        });
+        expect(renamed.status).toBe(200);
+
+        // And the exact replay across another cold derivation is byte-identical:
+        // sealing is deterministic in (root, scope, eid), so a restarted isolate
+        // reproduces the same handle rather than minting a second identity.
+        await testAdmin(base, database, "/server-identity", {
+          action: "forget-isolate-cache",
+        });
+        const replayed = await invokeWith(base, database, token, {
+          invocationId: "sealed-cold-create-01",
+          operation: createItem,
+          input: { title: "Cold isolate" },
+          allocations: created.body.mappings.map((mapping: {
+            readonly clientRef: string;
+          }) => ({ slot: "item", clientRef: mapping.clientRef })),
+        });
+        expect(replayed.status).toBe(200);
+        expect(replayed.body.mappings).toEqual(created.body.mappings);
+      });
+
       test("a slot bound to an entity the commit did not allocate is refused", async () => {
         const base = ctx.urls().nativeOperationsUrl;
         const database = "operations-allocation-misbound";
