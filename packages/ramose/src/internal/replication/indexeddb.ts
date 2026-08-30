@@ -119,18 +119,32 @@ const STORAGE_V2_DATABASE_VERSION = 5;
 /** The IndexedDB version that added the durable lifecycle generation records. */
 const LIFECYCLE_DATABASE_VERSION = 6;
 /**
- * The version that added #475's mutation queue store families, and the one
+ * The version that added #475's mutation queue store families, and the ones
  * that added their global-identity indexes.
  *
- * Version 7 existed only inside this unreleased change.
+ * Versions 7 and 8 existed only inside this unreleased change.
  *
  * Opening at an unchanged version never fires `upgradeneeded`, so a database
  * an earlier build of this same unreleased format already created would keep
  * the older index shape and fail at the first allocating enqueue. The bump is
  * what makes {@link createMutationStores} run again and reconcile them.
  */
-const MUTATION_INDEX_DATABASE_VERSION = 8;
-const DATABASE_VERSION = MUTATION_INDEX_DATABASE_VERSION;
+/**
+ * Version 9 moved global invocation ownership onto the receipt store.
+ *
+ * The outbox's own `by-invocation` index only holds while the row does, and an
+ * acknowledgement removes the row — so after one, the same globally unique
+ * invocation id could be queued again for a *sibling* database and execute a
+ * second time. Receipts outlive their rows, so they are where that ownership
+ * belongs.
+ */
+const MUTATION_INDEX_DATABASE_VERSION = 9;
+/**
+ * The version this build opens at. Exported so a test that inspects the raw
+ * database cannot pin a stale number and start failing on the next bump.
+ */
+export const REPLICA_DATABASE_VERSION = MUTATION_INDEX_DATABASE_VERSION;
+const DATABASE_VERSION = REPLICA_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
 const COMMITTED_HEADS = "replica-committed-heads-v1";
 const STAGING = "replica-staging-v1";

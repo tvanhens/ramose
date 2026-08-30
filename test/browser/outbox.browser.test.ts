@@ -1507,6 +1507,106 @@ browserTest(
 );
 
 browserTest(
+  "a settled invocation id is still owned after its row is gone",
+  async ({ browser }) => {
+    const name = `ramose-outbox-ownership-${browser.uniqueId}`;
+    const left = identity();
+    const other = identity({ database: OTHER_DATABASE });
+    const receiver = replicaDatabaseScopeOf(left);
+    const otherReceiver = replicaDatabaseScopeOf(other);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      await confirm(storage, other, "left-other");
+      const outbox = storage.outbox();
+      const record = await outbox.enqueue(draft(receiver), { scope });
+      await outbox.acknowledge(
+        record,
+        { _tag: "Committed", output: null, mappings: [] },
+        1_700_000_000_007,
+      );
+
+      // The outbox row is gone, so its own index no longer speaks for this id.
+      // The receipt outlives it and still does: queueing the same id again —
+      // for this database or a sibling — would execute one intent twice.
+      for (const target of [receiver, otherReceiver]) {
+        expect(
+          await rejectedTag(outbox.enqueue(
+            draft(target, { invocation: record.invocation }),
+            { scope },
+          )),
+        ).toBe("OutboxInvocationConflict");
+      }
+      expect(await outbox.plan(scope)).toEqual([]);
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a repeated acknowledgement with a different output is never a replay",
+  async ({ browser }) => {
+    const name = `ramose-outbox-output-conflict-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      const outbox = storage.outbox();
+      const record = await outbox.enqueue(draft(receiver), { scope });
+      await outbox.acknowledge(
+        record,
+        {
+          _tag: "Committed",
+          output: JSON.parse('{"id":"first","tags":["a","b"]}'),
+          mappings: [],
+        },
+        1_700_000_000_008,
+      );
+      const settled = JSON.stringify(await dumpMutations(name));
+
+      // Two passes can be in flight at once. Same mappings, different result:
+      // accepting the second as an exact replay would leave a wrong
+      // user-visible output durable with no request left to replay for.
+      for (const output of [
+        { id: "second", tags: ["a", "b"] },
+        { id: "first", tags: ["b", "a"] },
+        null,
+      ]) {
+        expect(
+          await rejectedTag(outbox.acknowledge(record, {
+            _tag: "Committed",
+            output,
+            mappings: [],
+          })),
+        ).toBe("OutboxInvocationConflict");
+      }
+      expect(JSON.stringify(await dumpMutations(name))).toBe(settled);
+
+      // But a re-serialization that only reordered object keys is the same
+      // answer, so the exact replay still converges rather than conflicting.
+      await outbox.acknowledge(
+        record,
+        {
+          _tag: "Committed",
+          output: JSON.parse('{"tags":["a","b"],"id":"first"}'),
+          mappings: [],
+        },
+        1_700_000_000_009,
+      );
+      expect(JSON.stringify(await dumpMutations(name))).toBe(settled);
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a rejection carries its dependents with it instead of stranding them",
   async ({ browser }) => {
     const name = `ramose-outbox-cascade-${browser.uniqueId}`;

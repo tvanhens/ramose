@@ -5,6 +5,7 @@ import type { Db } from "../../packages/ramose/src/internal/core/db.ts";
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
 import {
   IndexedDbReplicaStorage,
+  REPLICA_DATABASE_VERSION,
   replicaPartitionKey,
 } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
 import type {
@@ -491,7 +492,7 @@ browserTest("a documentation-only catalog change reuses the replica without any 
     expect(installed?.revision).toBe(revision);
 
     // No documentation reaches the persisted manifest or the local indexes.
-    const inspected = await openDatabase(name, 8);
+    const inspected = await openDatabase(name, REPLICA_DATABASE_VERSION);
     const inspectTx = inspected.transaction(["replica-committed-v1", "replica-nodes-v1"], "readonly");
     const [manifests, nodes] = await Promise.all([
       requestResult<Record<string, unknown>[]>(
@@ -542,7 +543,7 @@ browserTest("a documentation-only catalog change reuses the replica without any 
     expect(modes.length).toBeGreaterThan(0);
     expect(modes.every((mode) => mode === "readonly")).toBe(true);
 
-    const after = await openDatabase(name, 8);
+    const after = await openDatabase(name, REPLICA_DATABASE_VERSION);
     const afterTx = after.transaction(["replica-committed-v1", "replica-nodes-v1"], "readonly");
     const [afterManifests, afterNodes] = await Promise.all([
       requestResult<Record<string, unknown>[]>(
@@ -575,7 +576,7 @@ browserTest("a documentation-only catalog change reuses the replica without any 
         type: "SnapshotCommit", protocol: 1, identity: selected,
         snapshot: opaque("s"), revision, chunks: 1,
       }, redocumented)).toBeDefined();
-      const twinDb = await openDatabase(twinName, 8);
+      const twinDb = await openDatabase(twinName, REPLICA_DATABASE_VERSION);
       const twinTx = twinDb.transaction("replica-committed-v1", "readonly");
       const twinManifests = await requestResult<Record<string, unknown>[]>(
         twinTx.objectStore("replica-committed-v1").getAll(),

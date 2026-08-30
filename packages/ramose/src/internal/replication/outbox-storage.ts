@@ -30,6 +30,8 @@ import * as Data from "effect/Data";
 import type { RuntimeBoundaries } from "../runtime-boundaries.ts";
 import type { EntityId, InvocationId } from "../../db/refs.ts";
 import { isClientRef, isEntityId } from "../../db/refs.ts";
+import { canonicalizeJson } from "../authorization/canonical-json.ts";
+import type { JsonValue } from "../authorization/json.ts";
 import type { MutationAcknowledgement } from "./submission.ts";
 import {
   abortTransaction,
@@ -185,7 +187,17 @@ export const createMutationStores = (
   };
   ensure(MUTATION_QUEUES, "partition");
   ensure(MUTATION_OUTBOX, ["partition", "sequence"], [[BY_INVOCATION, "invocation"]]);
-  ensure(MUTATION_RECEIPTS, ["partition", "invocation"]);
+  // Global invocation ownership lives here, not on the outbox.
+  //
+  // The outbox's own index only holds while the row does, and an
+  // acknowledgement removes the row — so after one, the same globally unique
+  // invocation id could be queued again for a *sibling* database, find no
+  // outbox row, miss the old receipt under its own `[partition, invocation]`
+  // key, and execute a second time. A receipt outlives its row, so it is what
+  // can say "this id is spoken for" forever.
+  ensure(MUTATION_RECEIPTS, ["partition", "invocation"], [
+    [BY_INVOCATION, "invocation"],
+  ]);
   ensure(MUTATION_CLIENT_REFS, ["partition", "clientRef"], [
     [BY_CLIENT_REF, "clientRef"],
   ]);
@@ -254,6 +266,20 @@ const epochsOf = (
   mapped: ReadonlyMap<string, ClientRefMappingRecord>,
 ): ReadonlyMap<string, SealingEpoch> =>
   new Map([...mapped].map(([key, record]) => [key, record.sealing] as const));
+
+/**
+ * Whether two terminal receipts carry the same authoritative output.
+ *
+ * Canonical, so a re-serialization that only reordered object keys is still
+ * recognized as the same answer, while any actual difference is a conflict.
+ */
+const sameReceiptOutput = (
+  left: JsonValue | null,
+  right: JsonValue | null,
+): boolean =>
+  left === null || right === null
+    ? left === right
+    : canonicalizeJson(left) === canonicalizeJson(right);
 
 /** Order-insensitive, because two mappings of one ref cannot both exist. */
 const sameMappings = (
@@ -453,6 +479,18 @@ export class IndexedDbOutbox {
       }
       await transactionDone(transaction);
       return queued;
+    }
+    // No queued row — but an acknowledgement removes the row while its receipt
+    // survives, and that receipt is what still owns this invocation id. Without
+    // this, the same id could be queued again for a sibling database, miss the
+    // old receipt under its own `[partition, invocation]` key, and execute the
+    // same intent a second time.
+    const settled = await requestResult<unknown>(
+      transaction.objectStore(MUTATION_RECEIPTS).index(BY_INVOCATION)
+        .get(draft.invocation),
+    );
+    if (settled !== undefined) {
+      throw new OutboxInvocationConflict({ invocation: draft.invocation, partition });
     }
     // A cursor this build cannot read is not a number to count from.
     const current = cursor === undefined ? undefined : decodeQueueCursor(cursor);
@@ -897,7 +935,15 @@ export class IndexedDbOutbox {
       // claimed for one invocation, and the durable one wins.
       if (
         current.state !== next.state || current.failure?.code !== next.failure?.code ||
-        !sameMappings(current.mappings, next.mappings)
+        !sameMappings(current.mappings, next.mappings) ||
+        // The output too. Two passes can be in flight at once, and while an
+        // incompatible responder is being rolled they can come back with the
+        // same mappings and different results. Omitting this would silently
+        // accept the second as an exact replay and leave the first durable —
+        // a wrong user-visible result with no request left to replay for the
+        // right one. Compared canonically, so a re-serialization that only
+        // reordered keys is still the same answer.
+        !sameReceiptOutput(current.output, next.output)
       ) {
         throw new OutboxInvocationConflict({
           invocation: record.invocation,

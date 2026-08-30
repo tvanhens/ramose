@@ -3,6 +3,7 @@ import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/author
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
 import {
   IndexedDbReplicaStorage,
+  REPLICA_DATABASE_VERSION,
   replicaPartitionKey,
   type ReplicaCacheCandidate,
 } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
@@ -608,7 +609,7 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
 
     upgraded = await IndexedDbReplicaStorage.open(legacyName);
     const reopened = await openNative(legacyName);
-    expect(reopened.version).toBe(8);
+    expect(reopened.version).toBe(REPLICA_DATABASE_VERSION);
     expect([...reopened.objectStoreNames]).toContain("replica-route-slots-v1");
     const inspect = reopened.transaction([
       ...LEGACY_STORE_KEY_PATHS.map(([store]) => store),
