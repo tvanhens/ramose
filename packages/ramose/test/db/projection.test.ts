@@ -118,6 +118,14 @@ describe("native execution", () => {
     expect(outcome.type === "failed" && outcome.reason).toContain("synchronous");
   });
 
+  test("a rejecting async projection does not leak an unhandled rejection", () => {
+    const outcome = runProjection<null>(
+      (() => Promise.reject(new Error("async boom"))) as never,
+      { input: null },
+    );
+    expect(outcome.type).toBe("failed");
+  });
+
   test("the builder is inert once the projection has returned", () => {
     let escaped: ProjectionTx | undefined;
     const ops = changeset((tx) => {

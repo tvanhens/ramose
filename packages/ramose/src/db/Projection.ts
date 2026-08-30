@@ -403,6 +403,11 @@ export const runProjection = <Input>(
       typeof (returned as { readonly then?: unknown } | undefined)?.then ===
         "function"
     ) {
+      // Refusing the value does not unsubscribe from it. An async projection
+      // that also rejects would otherwise surface as an unhandled rejection —
+      // crashing the host on Node's default policy — for a result this call has
+      // already decided to discard.
+      void (returned as Promise<unknown>).catch(() => {});
       return Object.freeze({
         type: "failed" as const,
         reason: "ramose/projection: a projection must be synchronous",
