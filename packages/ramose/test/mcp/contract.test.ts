@@ -19,6 +19,7 @@ import {
   publicMutateResult,
   publishableWithoutReferences,
   queryReadFailure,
+  requireBoundedImplicitProjection,
 } from "../../src/mcp/kernel.ts";
 import { QueryBudgetError } from "../../src/internal/core/query/engine.ts";
 import type { OperationInputShape } from "../../src/internal/authorization/catalog.ts";
@@ -115,6 +116,22 @@ describe("minimal query document", () => {
         where: { owner: { entity: "user" } },
       })
     )).toBe("invalid_query");
+  });
+
+  test("keeps a __proto__ filter as a real own-property clause", () => {
+    // Assigning into a plain object would hit the inherited setter and drop
+    // the clause, turning a filtered query into an unfiltered one.
+    const document = parseQueryDocument({
+      version: 1,
+      from: { entity: "issue" },
+      where: JSON.parse('{"__proto__": "x", "status": "open"}'),
+    });
+    const where = document.where!;
+    expect(Object.hasOwn(where, "__proto__")).toBe(true);
+    expect(Object.entries(where)).toEqual([["__proto__", "x"], ["status", "open"]]);
+    // The clause is data, never a prototype mutation.
+    expect(Object.getPrototypeOf(where)).toBe(Object.prototype);
+    expect((Object.prototype as Record<string, unknown>).status).toBeUndefined();
   });
 
   test("bounds where, select, and limit", () => {
@@ -247,6 +264,29 @@ describe("publishable output contracts", () => {
     };
     expect(projectOperationOutcome(shape, { wire_title: "kept" }))
       .toEqual({ wire_title: "kept" });
+  });
+});
+
+describe("implicit projection bound", () => {
+  test("accepts an entity at the select bound", () => {
+    expect(() => requireBoundedImplicitProjection(0)).not.toThrow();
+    expect(() => requireBoundedImplicitProjection(64)).not.toThrow();
+  });
+
+  test("refuses a wider one rather than silently truncating the row", () => {
+    // A truncated projection would be indistinguishable from a row that
+    // simply lacks the rest, so the request is refused instead.
+    expect(codeOf(() => requireBoundedImplicitProjection(65))).toBe("invalid_query");
+    const failure = (() => {
+      try {
+        requireBoundedImplicitProjection(65);
+      } catch (cause) {
+        return cause as McpToolFailure;
+      }
+      throw new Error("expected a tool failure");
+    })();
+    expect(failure.envelope.message).toContain("explicit select");
+    expect(failure.envelope.retryable).toBe(false);
   });
 });
 

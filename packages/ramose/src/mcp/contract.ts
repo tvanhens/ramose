@@ -269,8 +269,13 @@ export const parseQueryDocument = (value: unknown): QueryDocumentV1 => {
     if (entries.length > MAX_WHERE_KEYS) {
       return invalidQuery("query.where exceeds the clause bound");
     }
-    where = {};
-    for (const [key, entry] of entries) where[key] = parseScalar(entry, key);
+    // `Object.fromEntries` creates every key as an *own* data property.
+    // Assigning into a plain `{}` would instead hit the inherited `__proto__`
+    // setter, which silently swallows that key — and a swallowed filter is an
+    // unfiltered query, so the caller would get back every visible row.
+    where = Object.fromEntries(
+      entries.map(([key, entry]) => [key, parseScalar(entry, key)] as const),
+    );
   }
   let select: readonly string[] | undefined;
   if (value.select !== undefined) {

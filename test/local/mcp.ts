@@ -592,6 +592,27 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       });
       expect(await select(["secret"])).toEqual(unknown);
       expect(await select(["sealedNote"])).toEqual(unknown);
+
+      // The same holds one tier up: `nativeOther` is readable only by
+      // `reader`, so for this principal the entity itself never reaches the
+      // engine and reads exactly like an entity name that does not exist.
+      const fromEntity = (entity: string) =>
+        callTool(base, database, member, "query", {
+          query: { version: 1, from: { entity }, select: ["name"] },
+        });
+      expect(await fromEntity("noSuchEntity")).toEqual(unknown);
+      expect(await fromEntity("nativeOther")).toEqual(unknown);
+
+      // A filter key that names no field is an unknown field, not a dropped
+      // clause: it must never widen the query into an unfiltered one.
+      expect(await callTool(base, database, member, "query", {
+        query: {
+          version: 1,
+          from: { entity: "nativeEncoded" },
+          where: JSON.parse('{"__proto__": "x"}'),
+          select: ["label"],
+        },
+      })).toEqual(unknown);
     });
 
     test("at traverses the authorized graph of graphs", async () => {

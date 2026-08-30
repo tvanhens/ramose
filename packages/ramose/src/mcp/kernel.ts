@@ -41,6 +41,7 @@ import { RAMOSE_TYPE_IDENT } from "../internal/core/schema.ts";
 import {
   DEFAULT_QUERY_LIMIT,
   MAX_DESCRIBE_ITEMS,
+  MAX_SELECT_FIELDS,
   encodeOperationVersionToken,
   McpToolFailure,
   toolFailure,
@@ -297,6 +298,30 @@ const decisionStaticallyDenies = (
 };
 
 /**
+ * Whether policy denies this entity to this principal on *every* row.
+ *
+ * Mirrors `isRowReadable` in `read-filter.ts`, whose entity decision — like a
+ * trait's, and unlike a field's — denies when it is missing.
+ */
+const staticallyHiddenEntity = (
+  context: AuthorizedRequestContext,
+  caller: AuthenticatedCaller,
+  entity: string,
+): boolean => {
+  const policy = context.unit.policy;
+  const decision = policy.decisions.entities.find(
+    (entry) => entry.target.name === entity,
+  )?.decision;
+  if (decision === undefined) return true;
+  return decisionStaticallyDenies(
+    decision,
+    new Map(policy.rules.map((rule) => [rule.id, rule])),
+    caller,
+    context.principal.subject,
+  );
+};
+
+/**
  * Whether policy denies this field to this principal *whatever row it is on*.
  *
  * This is a conservative pre-filter, never an authorization decision: the
@@ -305,9 +330,11 @@ const decisionStaticallyDenies = (
  * hidden name cannot be told apart from an unknown one by which failure mode
  * it produces — a budgeted pull can fail, and the sealed empty answer cannot.
  *
- * It mirrors `isFieldReadable` in `read-filter.ts`, including the two
- * defaults that differ from each other there:
+ * Together with {@link staticallyHiddenEntity} this now mirrors all three
+ * tiers of the deployed hierarchy — entity, then trait, then field — with the
+ * defaults `read-filter.ts` actually uses at each, and they are not the same:
  *
+ * - an **entity** with no decision is denied (`isRowReadable` returns false);
  * - a **trait**-owned field first needs its owning trait readable, and a
  *   trait with no decision at all is denied (`isTraitReadable` returns false);
  * - a field with no decision *of its own* is governed entirely by its row, so
@@ -379,6 +406,27 @@ const scalarFieldsOf = (
 };
 
 /**
+ * Refuse a select-less document against an entity wider than the select bound.
+ *
+ * An explicit `select` is bounded by {@link MAX_SELECT_FIELDS}; the implicit
+ * projection was not, so a wide entity could exceed it by omission. Silently
+ * projecting the first 64 fields would misrepresent the row — the caller could
+ * not tell a truncated projection from a row that simply lacks the rest — so
+ * the request is refused and the caller asked for an explicit `select`.
+ * Refusing is additive: relaxing it later is a two-way door, publishing a
+ * quietly truncated row is not.
+ */
+export const requireBoundedImplicitProjection = (visibleFields: number): void => {
+  if (visibleFields > MAX_SELECT_FIELDS) {
+    throw toolFailure(
+      "invalid_query",
+      `this entity exposes more than ${MAX_SELECT_FIELDS} readable fields; ` +
+        "name the ones you want with an explicit select",
+    );
+  }
+};
+
+/**
  * Lower the minimal document onto an ordinary datalog query.
  *
  * Returns `undefined` when the document names something this catalog does not
@@ -399,8 +447,15 @@ export const lowerQueryDocument = (
   const entity = context.unit.catalog.entities.find(
     (candidate) => candidate.id.name === document.from.entity,
   );
-  if (entity === undefined) return undefined;
+  // An entity this principal can never read leaves by the same door a name
+  // this catalog does not have: it must not reach the engine, where the work
+  // it does before returning nothing is itself observable.
+  if (
+    entity === undefined ||
+    staticallyHiddenEntity(context, caller, entity.id.name)
+  ) return undefined;
   const available = scalarFieldsOf(context, caller, entity.id.name);
+  if (document.select === undefined) requireBoundedImplicitProjection(available.size);
   const selected = document.select === undefined
     ? [...available.values()]
     : document.select.flatMap((name) => {
@@ -477,9 +532,9 @@ export const runQueryDocument = async (
   const pulled = Array.isArray(result) ? result : [];
   const rows: Record<string, unknown>[] = [];
   for (const row of pulled) {
-    const out: Record<string, unknown> = {};
     if (row === null || typeof row !== "object") continue;
     const record = row as Record<string, unknown>;
+    const projected: (readonly [string, unknown])[] = [];
     for (const field of lowered.fields) {
       // An absent key is the sealed answer for both "no value" and "hidden".
       // `toJson` is the engine's existing wire encoding — the same one `/query`
@@ -487,7 +542,7 @@ export const runQueryDocument = async (
       // canonical `$inst` / `$uuid` / `$bytes` form instead of being mangled
       // by `JSON.stringify` into an object of numeric indices.
       if (record[field.ident] !== undefined) {
-        out[field.name] = toJson(record[field.ident]);
+        projected.push([field.name, toJson(record[field.ident])] as const);
       }
     }
     // A row that projects no visible value is not reported at all. Emitting an
@@ -495,7 +550,9 @@ export const runQueryDocument = async (
     // unknown one — the hidden field yields one `{}` per readable row, and
     // that count is itself the disclosure. Dropping the row gives hidden,
     // never-set, ref-shaped, and unknown field names the one same answer.
-    if (Object.keys(out).length > 0) rows.push(out);
+    // `fromEntries` so a field an author named `__proto__` lands as an own
+    // property rather than vanishing into the inherited setter.
+    if (projected.length > 0) rows.push(Object.fromEntries(projected));
   }
   // Nothing survived projection. The static layer settles a field policy hides
   // on every row, but it deliberately defers a row-dependent rule, and such a
