@@ -581,13 +581,37 @@ describe("sealed handles at declared input entity-ref positions", () => {
     // is not a handle answers yes. It costs one cached root read and decides
     // nothing: `inputEntityRefHandles` makes every real decision.
     expect(mayCarrySealedEntityId({ digest: "a".repeat(64) })).toBe(true);
-    // Nothing shorter than the frozen preamble plus a payload, nothing outside
-    // the alphabet, and no non-string can be an envelope of any version.
+    // A future codec whose envelope is *shorter* than v1's still has to be
+    // recognized, down to the frozen preamble — this is the exact case that
+    // would otherwise strand a durable queue after a rollback.
+    expect(mayCarrySealedEntityId({ item: handle.slice(0, 24) })).toBe(true);
+    // Nothing shorter than the frozen preamble, nothing outside the alphabet,
+    // and no non-string can be an envelope of any version.
     expect(mayCarrySealedEntityId({ title: "a short title" })).toBe(false);
-    expect(mayCarrySealedEntityId({ title: "a".repeat(33) })).toBe(false);
+    expect(mayCarrySealedEntityId({ title: "a".repeat(22) })).toBe(false);
     expect(mayCarrySealedEntityId({ title: `${"a".repeat(54)}!` })).toBe(false);
     expect(mayCarrySealedEntityId({ count: 4242, ok: true, none: null })).toBe(false);
     expect(mayCarrySealedEntityId(undefined)).toBe(false);
+  });
+
+  test("what the predicate refuses, the resolver would have denied anyway", async () => {
+    // The property the whole design rests on: a string the Worker declines to
+    // derive a scope for reaches the writer with none, where it is the sealed
+    // denial — and that is only the *right* answer if the resolver itself
+    // would never have quarantined it. The two bounds are the same constant,
+    // and this asserts they agree rather than trusting that they do.
+    const versioned = (length: number) => {
+      const envelope = new Uint8Array(length);
+      envelope[0] = ENTITY_ID_CODEC_VERSION + 1;
+      for (let index = 1; index < length; index++) envelope[index] = 0xa5;
+      return base64Url(envelope);
+    };
+    for (let bytes = 1; bytes <= 24; bytes++) {
+      const token = versioned(bytes);
+      const quarantines =
+        (await resolveSealedTarget(sealing, scope, token))._tag === "UpdateRequired";
+      expect([bytes, mayCarrySealedEntityId(token)]).toEqual([bytes, quarantines]);
+    }
   });
 
   test("a cyclic input terminates rather than exhausting the stack", () => {

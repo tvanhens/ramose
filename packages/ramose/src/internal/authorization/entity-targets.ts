@@ -44,6 +44,7 @@ import { isClientRef, type ClientRef } from "../../db/refs.ts";
 import {
   openEntityId,
   sealEntityId,
+  SEALED_ENTITY_ID_MIN_LENGTH,
   type EntityIdScope,
   type SealedEntityId,
 } from "../replication/entity-id.ts";
@@ -522,22 +523,22 @@ export const sealOutputEntityRefs = async (
  * deployed codec exactly as it was submitted.
  * ──────────────────────────────────────────────────────────────────────── */
 
-/**
- * The shortest string that could be *any* codec version's envelope.
- *
- * Byte 0 is the version and bytes 1..17 are the key id in every envelope
- * version — that preamble is frozen — and an envelope that named nothing would
- * be pointless, so 17 preamble bytes plus an eight-byte payload is the floor:
- * 25 bytes, 34 canonical base64url characters. Deliberately not v1's 55: this
- * predicate must not become the shape gate **WR-10** forbids.
- */
-const MIN_SEALED_ENVELOPE_LENGTH = 34;
-
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
-/** Whether one string could be a sealed handle minted by *some* codec version. */
+/**
+ * Whether one string could be a sealed handle minted by *some* codec version.
+ *
+ * Exactly the resolver's own floor, not a guess and not v1's length: the codec
+ * owns {@link SEALED_ENTITY_ID_MIN_LENGTH} because it owns the frozen
+ * `version ‖ keyId` preamble, and it denies anything shorter rather than
+ * quarantining it. So a string this refuses is one `resolveSealedTarget` would
+ * have denied — which is what makes the taxonomy at an input position
+ * identical to the taxonomy at the target, including for a handle minted by a
+ * codec whose envelope is shorter than v1's (**WR-17b**). A v1-length gate
+ * here would be the shape gate **WR-10** forbids.
+ */
 const mayBeSealedEntityId = (value: string): boolean =>
-  value.length >= MIN_SEALED_ENVELOPE_LENGTH &&
+  value.length >= SEALED_ENTITY_ID_MIN_LENGTH &&
   value.length <= MAX_SEALED_TARGET_LENGTH &&
   // Canonical unpadded base64url. A length congruent to 1 (mod 4) cannot encode
   // any byte string, so it is not canonical whatever its alphabet.

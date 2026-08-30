@@ -193,6 +193,11 @@ export const Item = Entity("nativeItem", {
      * sealed handle there: a position the deployed input shape does not
      * declare as a ref is data, so the handle must come back verbatim rather
      * than opened.
+     *
+     * It returns the same entity at a declared output reference position, so
+     * one invocation exercises both directions: the handle opened inbound and
+     * the eid sealed outbound must be byte-identical, which they can only be
+     * if both ran under the one epoch this request agreed on.
      */
     retitleByRef: Operation({
       self: false,
@@ -202,12 +207,13 @@ export const Item = Entity("nativeItem", {
         note: EffectSchema.String,
       }),
       output: EffectSchema.Struct({
+        item: OperationEntityId,
         title: EffectSchema.String,
         note: EffectSchema.String,
       }),
       run(op, input) {
         op.set(Item, input.item, Item.title, input.title);
-        return { title: input.title, note: input.note };
+        return { item: input.item, title: input.title, note: input.note };
       },
     }),
     deleteAndEchoTitle: Operation({

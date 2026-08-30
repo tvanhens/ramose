@@ -160,8 +160,14 @@ const invokeWith = async (
  */
 const unreadableEntityId = (
   kind: "codec-version" | "key-epoch",
+  /**
+   * A future codec's envelope need not be v1's 41 bytes. It must only carry
+   * the frozen `version || keyId` preamble, so this is how a build that cannot
+   * read it still has to quarantine rather than deny (#475 WR-17b).
+   */
+  bytes = 41,
 ): string => {
-  const envelope = new Uint8Array(41);
+  const envelope = new Uint8Array(bytes);
   envelope[0] = kind === "codec-version" ? 2 : 1;
   // A key id no server ever minted, so the epoch cannot match.
   for (let index = 1; index < 17; index++) envelope[index] = 0xa5;
@@ -1712,8 +1718,11 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         const retitled = await invokeWith(base, database, token, body);
         expect(retitled.status).toBe(200);
         // An undeclared position is data: the handle was never opened, so it
-        // comes back exactly as it was submitted.
+        // comes back exactly as it was submitted. And the entity that *was*
+        // opened, returned at a declared output reference position, is sealed
+        // back to the identical bytes — one epoch, both directions.
         expect(retitled.body.result).toEqual({
+          item: entityId,
           title: "Retitled through an input handle",
           note: entityId,
         });
@@ -1832,12 +1841,23 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         // An unreadable codec version or a replaced key epoch is the typed,
         // data-free quarantine — decided from the envelope preamble, exactly as
         // it is for a target.
-        for (const kind of ["codec-version", "key-epoch"] as const) {
+        // The last case is the one that makes the taxonomy identical rather
+        // than merely similar: a future codec whose envelope is *shorter* than
+        // v1's. The edge decides whether to derive a scope at all before it can
+        // see the deployed input shape, so a v1-length floor there would answer
+        // this with a denial and strand a durable queue after a rollback.
+        for (
+          const [kind, handle] of [
+            ["codec-version", unreadableEntityId("codec-version")],
+            ["key-epoch", unreadableEntityId("key-epoch")],
+            ["short-future-codec", unreadableEntityId("codec-version", 20)],
+          ] as const
+        ) {
           const quarantined = await invokeWith(base, database, token, {
             invocationId: `sealed-input-tax-${kind}`,
             operation: retitleByRef,
             input: {
-              item: unreadableEntityId(kind),
+              item: handle,
               title: "Should never land",
               note: "",
             },
@@ -1847,6 +1867,14 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
             error: "request rejected",
             code: "invocation_update_required",
           });
+          // The identical token at the target position answers identically.
+          const asTarget = await invokeWith(base, database, token, {
+            invocationId: `sealed-input-tax-target-${kind}`,
+            operation: renameItem,
+            target: handle,
+            input: { title: "Should never land" },
+          });
+          expect([kind, asTarget.body]).toEqual([kind, quarantined.body]);
         }
 
         // Everything else collapses into the ordinary sealed denial. A string

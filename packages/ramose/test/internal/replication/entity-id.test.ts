@@ -3,6 +3,7 @@ import {
   base64Url,
   ENTITY_ID_CODEC_VERSION,
   openEntityId,
+  SEALED_ENTITY_ID_MIN_LENGTH,
   SEALED_ENTITY_ID_PATTERN,
   sealEntityId,
   type EntityIdScope,
@@ -115,6 +116,18 @@ describe("the sealed EntityId codec", () => {
     // A future envelope need not even be 53 bytes to classify.
     expect(
       await openEntityId(sealing, scope(), base64Url(versioned.slice(0, 20))),
+    ).toEqual({ type: "update-required", reason: "codec-version" });
+    // But it must at least carry the frozen `version || keyId` preamble.
+    // Below that it is no version's envelope, and claiming a codec exists that
+    // spends fewer bytes than every version must would also cost the
+    // authoritative edge its exact provisioning predicate (#475).
+    expect(
+      await openEntityId(sealing, scope(), base64Url(versioned.slice(0, 16))),
+    ).toEqual({ type: "denied" });
+    expect(base64Url(versioned.slice(0, 17)).length)
+      .toBe(SEALED_ENTITY_ID_MIN_LENGTH);
+    expect(
+      await openEntityId(sealing, scope(), base64Url(versioned.slice(0, 17))),
     ).toEqual({ type: "update-required", reason: "codec-version" });
 
     // A replaced root: a different key id quarantines rather than denying, so

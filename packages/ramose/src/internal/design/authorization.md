@@ -344,6 +344,14 @@ newer codec. That is harmless: both answers are effect-free, neither names an
 entity, and a durable queue cannot produce one, because only a well-formed
 sealed handle is ever stored as an entity target.
 
+The resolver judges exactly one length before the version byte, and it is not a
+shape gate: a token too short to carry the frozen `version ‖ keyId` preamble is
+denied rather than quarantined, because no version's envelope can be shorter
+than the bytes every version is required to spend. That bound belongs to the
+codec, which publishes it, so a caller that must decide *without a key* whether
+a string could be a handle at all can be exactly as permissive as the resolver
+— which is what **WR-17c** needs.
+
 **WR-11.** An operation that declares named allocation slots binds each slot
 to a typed entity-reference path in its own declared output. The authoritative
 edge reads the slot's eid out of the *materialized authoritative output* at
@@ -524,19 +532,24 @@ whether to derive the `{ server, principal, database }` scope *before* it can
 see the deployed input shape, so it cannot know which positions are refs. It
 therefore over-approximates: a sealed target, a bound allocation slot, or an
 input containing any string that *could* be an envelope of any codec version —
-canonical unpadded base64url, no shorter than the frozen
-`version ‖ keyId ‖ payload` preamble allows. The predicate is a provisioning
-decision and carries no semantics: nothing is opened because of it, and nothing
-is refused because of it.
+canonical unpadded base64url, no shorter than the frozen `version ‖ keyId`
+preamble. That floor is the codec's own published bound (**WR-10**), not a
+guess and not v1's length, so the predicate accepts exactly the strings the
+resolver would answer something other than a denial for — including a handle
+from a future codec whose envelope is *shorter* than v1's. The predicate is a
+provisioning decision and carries no semantics: nothing is opened because of
+it, and nothing is refused because of it.
 
 Precision is recovered inside the writer, which does have the descriptor. The
 epoch comparison and the resolver run only when a *declared* ref position
 actually holds a string, so a false positive costs one isolate-cached root read
 and changes no answer — in particular it can never turn an ordinary operation
 into `update-required` during a root replacement. A false *negative* is
-impossible for anything a codec could have minted; a string too short or not
-canonical base64url is not a handle of any version, and reaches the writer with
-no scope, where it is the ordinary sealed denial.
+impossible for anything a codec could have minted; a string below the preamble floor or not
+canonical base64url is not a handle of any version — the resolver denies it too
+— and it reaches the writer with no scope, where it is the ordinary sealed
+denial. The two bounds are one constant, and a unit test walks every envelope
+length across it rather than trusting that they agree.
 
 The cost of the over-approximation is bounded and stated plainly: while the
 sealing root is unreachable, an operation whose input merely contains a long

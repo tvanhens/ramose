@@ -92,6 +92,25 @@ const ENVELOPE_BYTES = 1 + KEY_ID_BYTES + SIV_BYTES + EID_BYTES;
 const SIV_AT = 1 + KEY_ID_BYTES;
 const SEALED_AT = SIV_AT + SIV_BYTES;
 
+/** The frozen `version || keyId` preamble every envelope version begins with. */
+const PREAMBLE_BYTES = SIV_AT;
+
+/**
+ * The shortest string any envelope version can be, in canonical base64url
+ * characters.
+ *
+ * The preamble is frozen at seventeen bytes, and seventeen bytes encode to
+ * twenty-three characters. Anything shorter is no version's envelope, so
+ * {@link openEntityId} denies it rather than quarantining it: a quarantine
+ * there would claim a codec exists that spends fewer bytes than every version
+ * is required to.
+ *
+ * Callers that must decide, without a key, whether a string could be a handle
+ * at all use this. The authoritative edge's provisioning predicate is one
+ * (#475), and it is exact only because this bound and the resolver's agree.
+ */
+export const SEALED_ENTITY_ID_MIN_LENGTH = 23;
+
 /**
  * Canonical unpadded base64url of exactly {@link ENVELOPE_BYTES} bytes.
  *
@@ -401,6 +420,12 @@ export const openEntityId = async (
 ): Promise<EntityIdResolution> => {
   const envelope = decodeCanonicalBase64Url(token);
   if (envelope === undefined) return DENIED;
+  // Too short to carry the frozen `version || keyId` preamble, so it is no
+  // version's envelope and a quarantine would be a lie about it. This is the
+  // one length the resolver may judge before the version byte, and it is what
+  // lets a caller decide *without a key* whether a string could be a handle at
+  // all — see {@link SEALED_ENTITY_ID_MIN_LENGTH}.
+  if (envelope.length < PREAMBLE_BYTES) return DENIED;
   // Decided from the preamble alone, before a key exists: never an oracle.
   if (envelope[0] !== ENTITY_ID_CODEC_VERSION) return quarantine("codec-version");
   if (envelope.length !== ENVELOPE_BYTES) return DENIED;
