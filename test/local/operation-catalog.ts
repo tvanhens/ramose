@@ -12,8 +12,11 @@ import {
   OwnedOperations,
   Ref,
   Schema,
+  bytes,
   stored,
   string,
+  timestamp,
+  uuid,
 } from "ramose/db";
 
 export const OPERATION_DATABASES = Object.freeze([
@@ -216,7 +219,41 @@ export const Item = Entity("nativeItem", {
   }),
 });
 
-export const OperationSchema = Schema({ nativeItem: Item, nativeOther: Other });
+/**
+ * Field types JSON cannot represent natively, so a transport that forgets the
+ * engine's canonical `$inst` / `$uuid` / `$bytes` encoding is caught rather
+ * than silently mangling the value.
+ */
+export const Encoded = Entity("nativeEncoded", {
+  label: string(),
+  at: timestamp(),
+  blob: bytes(),
+  key: uuid(),
+}, {
+  operations: (Operation) => ({
+    create: Operation({
+      self: false,
+      input: EffectSchema.Struct({ label: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        return {
+          id: op.create({
+            label: input.label,
+            at: new Date(1_700_000_000_000),
+            blob: new Uint8Array([1, 2, 3, 250]),
+            key: "8f14e45f-ceea-467a-9c8b-4e2f9b7c1a30",
+          }),
+        };
+      },
+    }),
+  }),
+});
+
+export const OperationSchema = Schema({
+  nativeItem: Item,
+  nativeOther: Other,
+  nativeEncoded: Encoded,
+});
 
 const policy = await Effect.runPromise(Policy.compileReadAuthorization({
   schema: OperationSchema,
@@ -240,6 +277,8 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     Policy.invoke(Item[OwnedOperations].echoExactWireValues).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].reject).when(Policy.hasClass("member")),
     Policy.invoke(Other[OwnedOperations].create).when(Policy.hasClass("member")),
+    Policy.read(Encoded).when(Policy.hasClass("member")),
+    Policy.invoke(Encoded[OwnedOperations].create).when(Policy.hasClass("member")),
   ],
 }));
 

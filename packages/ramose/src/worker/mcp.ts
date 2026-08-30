@@ -32,7 +32,6 @@ import {
   toolFailure,
 } from "../mcp/contract.ts";
 import { describeGraph, publicMutateResult, runQueryDocument } from "../mcp/kernel.ts";
-import { handleMcpRequest } from "../mcp/server.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import { acquireCurrentDb, provisionResolvedDatabase, queryMaxCells } from "./authorized-read.ts";
 import { invokeAuthoritativeOperation } from "./authorized-operation.ts";
@@ -51,11 +50,27 @@ export type McpRouteInput = {
 const inaccessible = () =>
   toolFailure("inaccessible", "nothing addressable is available there");
 
-const resolveTarget = async (
+/** A tool body's own failure, carried out through the traversal's channel. */
+class ToolBodyFailure {
+  constructor(readonly cause: unknown) {}
+}
+
+/**
+ * Resolve `at` and run `use` **inside** the authorization lease.
+ *
+ * `executeAuthorizedGraphPathTarget` holds the lease only for the duration of
+ * its callback: it fences JWT expiry and caps how long one authorized read may
+ * run. Returning the target and reading afterwards would let an expired
+ * credential — or an unbounded read — finish against the retained snapshot,
+ * so the whole read happens in the callback, exactly as `runOneShotRead` does
+ * on `/query`, `/pull`, and `/entity`.
+ */
+const withAuthorizedTarget = async <A>(
   input: McpRouteInput,
   at: readonly string[],
-): Promise<AuthorizedGraphPathTarget> => {
-  // The traversal's whole failure channel is already the collapsed denial
+  use: (target: AuthorizedGraphPathTarget) => Promise<A>,
+): Promise<A> => {
+  // The traversal's own failure channel is already the collapsed denial
   // (`opaqueGraphPathDenial`): hidden, absent, and unauthorized arrive here
   // identical. A defect is something else and must not read as a denial.
   let resolved;
@@ -76,14 +91,20 @@ const resolveTarget = async (
             derivation: DatabaseRouteDerivation,
           ) => provisionResolvedDatabase(input.env, route, derivation),
         },
-        (target) => Effect.succeed(target),
+        (target) =>
+          Effect.tryPromise({
+            try: () => use(target),
+            catch: (cause) => new ToolBodyFailure(cause),
+          }),
       ).pipe(Effect.result),
     );
   } catch {
     throw toolFailure("internal_error", "the graph could not be read");
   }
-  if (Result.isFailure(resolved)) throw inaccessible();
-  return resolved.success;
+  if (Result.isSuccess(resolved)) return resolved.success;
+  // The body's own refusal is already public; only the traversal collapses.
+  if (resolved.failure instanceof ToolBodyFailure) throw resolved.failure.cause;
+  throw inaccessible();
 };
 
 /** Restate a thrown invocation failure without engine, codec, or route detail. */
@@ -105,31 +126,53 @@ const mutateTransportFailure = (cause: unknown): never => {
 };
 
 const mcpTools = (input: McpRouteInput) => ({
-  describe: async (raw: unknown) => {
+  describe: (raw: unknown) => {
     const args = requireArgs(raw ?? {});
     const at = parseAt(args.at);
-    const target = await resolveTarget(input, at);
-    return describeGraph(target.context, input.caller, at);
+    return withAuthorizedTarget(input, at, (target) =>
+      describeGraph(target.context, input.caller, at));
   },
-  query: async (raw: unknown) => {
+  query: (raw: unknown) => {
     const args = requireArgs(raw);
     const at = parseAt(args.at);
     const document = parseQueryDocument(args.query);
-    const target = await resolveTarget(input, at);
-    return runQueryDocument(target.context, document, {
-      maxCells: queryMaxCells(input.env),
-    });
+    return withAuthorizedTarget(input, at, (target) =>
+      runQueryDocument(target.context, document, {
+        maxCells: queryMaxCells(input.env),
+      }));
   },
   mutate: async (raw: unknown) => {
     const args = parseMutateArgs(raw);
     const operationVersion = decodeOperationVersionToken(args.operation.version)!;
-    const target = await resolveTarget(input, args.at);
+    // Path resolution is the same short read lease `/op` uses, and — as there
+    // — the invocation deliberately runs after it: the authoritative
+    // Transactor owns the operation's own JWT-expiry fence, and a trusted
+    // body must not be capped by a read lease merely because its database is
+    // nested. What the lease does supply is the sealed unit whose declared
+    // output contract the result is projected through.
+    const resolved = await withAuthorizedTarget(input, args.at, (target) => {
+      const descriptor = target.context.unit.catalog.operations.find(
+        (candidate) =>
+          candidate.id.owner.kind === args.operation.owner.kind &&
+          candidate.id.owner.name === args.operation.owner.name &&
+          candidate.id.localName === args.operation.name,
+      );
+      // Without the declared contract the output cannot be proven free of
+      // storage ids, so there is nothing safe to invoke toward. The
+      // Transactor refuses an unknown operation the same way.
+      if (descriptor === undefined) throw inaccessible();
+      return Promise.resolve({
+        output: descriptor.output,
+        route: target.route,
+        derivation: target.derivation,
+      });
+    });
     const result = await invokeAuthoritativeOperation(
       input.env,
-      target.route.database,
+      resolved.route.database,
       {
-        catalogKey: target.route.deployed.catalogKey,
-        unitHash: target.route.deployed.unitHash,
+        catalogKey: resolved.route.deployed.catalogKey,
+        unitHash: resolved.route.deployed.unitHash,
         owner: args.operation.owner,
         localName: args.operation.name,
         invocationId: args.invocationId,
@@ -137,20 +180,30 @@ const mcpTools = (input: McpRouteInput) => ({
         input: args.input,
       },
       input.caller,
-      target.derivation,
+      resolved.derivation,
     ).catch(mutateTransportFailure);
-    const projected = publicMutateResult(result);
+    const projected = publicMutateResult(result, resolved.output);
     if ("code" in projected) throw toolFailure(projected.code, projected.message);
     return projected;
   },
 });
 
-/** Serve one experimental MCP request against this authorized root. */
+/**
+ * Serve one experimental MCP request against this authorized root.
+ *
+ * The MCP SDK is reached through a dynamic import so it is evaluated on the
+ * first MCP request and never otherwise. Its module graph builds a large
+ * schema object at module scope, and every Ramose Worker shares this file:
+ * evaluating that eagerly would charge the cost to every isolate — including
+ * ones that only ever serve queries, operations, or replication — for a route
+ * they never receive.
+ */
 export const mcpResponse = (
   input: McpRouteInput,
 ): Effect.Effect<Response, Internal> =>
   Effect.tryPromise({
     try: async () => {
+      const { handleMcpRequest } = await import("../mcp/server.ts");
       const response = await handleMcpRequest(input.request, mcpTools(input));
       const headers = new Headers(response.headers);
       for (const [name, value] of Object.entries(input.headers)) {

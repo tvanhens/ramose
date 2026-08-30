@@ -171,6 +171,11 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         input: { name: secret },
         invocationId: crypto.randomUUID(),
       });
+      await ok(base, database, member, "mutate", {
+        operation: ref(discovered, "nativeEncoded", "create"),
+        input: { label: "encoded" },
+        invocationId: crypto.randomUUID(),
+      });
 
       const filtered = await read({
         version: 1,
@@ -179,6 +184,23 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         select: ["title", "state"],
       });
       expect(filtered.rows).toEqual([{ title: "alpha", state: "new" }]);
+
+      // Values JSON cannot represent natively keep the engine's canonical
+      // wire encoding instead of being mangled by JSON.stringify — a
+      // Uint8Array would otherwise arrive as an object of numeric indices and
+      // a Date as an ISO string the client cannot tell from text. A uuid's
+      // public value is already a canonical string, so it stays one.
+      const encoded = await read({
+        version: 1,
+        from: { entity: "nativeEncoded" },
+        where: { label: "encoded" },
+      });
+      expect(encoded.rows).toEqual([{
+        label: "encoded",
+        at: { $inst: 1_700_000_000_000 },
+        blob: { $bytes: "AQID+g==" },
+        key: "8f14e45f-ceea-467a-9c8b-4e2f9b7c1a30",
+      }]);
 
       const limited = await read({ version: 1, from: { entity: "nativeItem" }, limit: 1 });
       expect(limited.rows).toHaveLength(1);
@@ -230,7 +252,11 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
 
       const committed = await ok(base, database, member, "mutate", call("once"));
       expect(committed).toMatchObject({ invocationId, status: "completed" });
-      expect(typeof committed.outcome.id).toBe("number");
+      // The operation returns an EntityId. S1 has no public entity reference,
+      // so the slot is withheld rather than carrying the storage id — and no
+      // bare integer may appear anywhere in the result.
+      expect(committed.outcome).toEqual({ id: { withheld: "reference" } });
+      expect(JSON.stringify(committed.outcome)).not.toMatch(/\d/);
       expect(await ok(base, database, member, "mutate", call("once"))).toEqual(committed);
 
       const rows = await ok(base, database, member, "query", {

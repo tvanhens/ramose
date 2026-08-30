@@ -13,7 +13,12 @@ import {
   parseMutateArgs,
   parseQueryDocument,
 } from "../../src/mcp/contract.ts";
-import { publicMutateResult } from "../../src/mcp/kernel.ts";
+import {
+  REFERENCE_WITHHELD,
+  maskReferenceOutput,
+  publicMutateResult,
+} from "../../src/mcp/kernel.ts";
+import type { OperationInputShape } from "../../src/internal/authorization/catalog.ts";
 import type { AuthoritativeInvocationResult } from "../../src/internal/authorization/invocation-receipts.ts";
 
 const digest = (byte: string) => byte.repeat(32);
@@ -175,24 +180,81 @@ describe("mutate arguments", () => {
   });
 });
 
+describe("reference masking", () => {
+  const ref: OperationInputShape = { _tag: "ref", refTarget: { _tag: "self" } };
+  const scalar: OperationInputShape = { _tag: "scalar", valueType: "string" };
+
+  test("withholds a reference-shaped slot wherever the contract declares one", () => {
+    const shape: OperationInputShape = {
+      _tag: "struct",
+      fields: [
+        { key: "id", optional: false, shape: ref },
+        { key: "title", optional: false, shape: scalar },
+        { key: "related", optional: false, shape: { _tag: "array", items: ref } },
+      ],
+    };
+    const masked = maskReferenceOutput(shape, {
+      id: 4_099,
+      title: "kept",
+      related: [17, 18],
+    });
+    expect(masked).toEqual({
+      id: REFERENCE_WITHHELD,
+      title: "kept",
+      related: [REFERENCE_WITHHELD, REFERENCE_WITHHELD],
+    });
+    expect(JSON.stringify(masked)).not.toContain("4099");
+    expect(JSON.stringify(masked)).not.toContain("17");
+  });
+
+  test("the contract decides, not the value's shape", () => {
+    // A declared long stays a long even though it looks like an entity id.
+    expect(maskReferenceOutput({ _tag: "scalar", valueType: "long" }, 4_099)).toBe(4_099);
+    // An opaque contract declares nothing about its interior to identify.
+    expect(maskReferenceOutput({ _tag: "opaque" }, { id: 4_099 }))
+      .toEqual({ id: 4_099 });
+    // Absent stays absent rather than becoming a withheld value.
+    expect(maskReferenceOutput(ref, null)).toBeNull();
+  });
+});
+
 describe("invocation outcome projection", () => {
   const receipt = { version: 2 as const, invocationId: "01K" };
-  const project = (result: unknown) =>
-    publicMutateResult(result as AuthoritativeInvocationResult);
+  const opaque: OperationInputShape = { _tag: "opaque" };
+  const project = (result: unknown, shape: OperationInputShape = opaque) =>
+    publicMutateResult(result as AuthoritativeInvocationResult, shape);
 
   test("projects a completed invocation without receipt internals", () => {
     const result = project({
       _tag: "Completed",
       receipt: { ...receipt, status: "completed" },
       committedT: 42,
-      output: { id: 7 },
+      output: { title: "done" },
     });
     expect(result).toEqual({
       invocationId: "01K",
       status: "completed",
-      outcome: { id: 7 },
+      outcome: { title: "done" },
     });
     expect(JSON.stringify(result)).not.toContain("42");
+  });
+
+  test("a completed outcome never carries a storage id", () => {
+    const result = project({
+      _tag: "Completed",
+      receipt: { ...receipt, status: "completed" },
+      committedT: 9,
+      output: { id: 4_099 },
+    }, {
+      _tag: "struct",
+      fields: [{
+        key: "id",
+        optional: false,
+        shape: { _tag: "ref", refTarget: { _tag: "self" } },
+      }],
+    });
+    expect(result).toMatchObject({ outcome: { id: REFERENCE_WITHHELD } });
+    expect(JSON.stringify(result)).not.toContain("4099");
   });
 
   test("maps every transport-neutral refusal to its public code", () => {

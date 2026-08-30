@@ -17,11 +17,13 @@
  *   It mints no version, digest, or receipt of its own.
  */
 
+import type { OperationInputShape } from "../internal/authorization/catalog.ts";
 import type { AuthenticatedCaller, AuthorizedRequestContext } from "../internal/authorization/request.ts";
 import { operationGrantAllows } from "../internal/authorization/operation-grant.ts";
 import type { AuthoritativeInvocationResult } from "../internal/authorization/invocation-receipts.ts";
 import { runOneShotRead } from "../internal/authorization/reads.ts";
 import { Index, ValueTag } from "../internal/core/datom.ts";
+import { toJson } from "../internal/core/json.ts";
 import { RAMOSE_TYPE_IDENT } from "../internal/core/schema.ts";
 import {
   DEFAULT_QUERY_LIMIT,
@@ -165,8 +167,10 @@ type ResolvedField = { readonly name: string; readonly ident: string };
 /**
  * Public field names an entity exposes, mapped to their storage idents.
  *
- * Only scalar fields are projectable in this slice: a ref value is an entity
- * id, and S1 has no public entity reference to project one into.
+ * Only scalar fields are projectable in this slice. A ref field's value is an
+ * entity id, and S1 has no public entity reference to project one into, so
+ * offering one would put a storage id on the wire; excluding the field keeps
+ * it indistinguishable from any other name this catalog does not expose.
  */
 const scalarFieldsOf = (
   context: AuthorizedRequestContext,
@@ -270,7 +274,13 @@ export const runQueryDocument = async (
     const record = row as Record<string, unknown>;
     for (const field of lowered.fields) {
       // An absent key is the sealed answer for both "no value" and "hidden".
-      if (record[field.ident] !== undefined) out[field.name] = record[field.ident];
+      // `toJson` is the engine's existing wire encoding — the same one `/query`
+      // applies — so an instant, uuid, or byte value reaches the client in its
+      // canonical `$inst` / `$uuid` / `$bytes` form instead of being mangled
+      // by `JSON.stringify` into an object of numeric indices.
+      if (record[field.ident] !== undefined) {
+        out[field.name] = toJson(record[field.ident]);
+      }
     }
     return out;
   });
@@ -291,19 +301,70 @@ export type MutateResultV1 = {
 };
 
 /**
+ * What stands in for a reference-shaped value an operation returned.
+ *
+ * An operation that yields an entity reference yields a storage id, and S1 has
+ * no public entity reference to project one into. Rather than put the id on
+ * the wire or invent an encoding this slice cannot commit to, the slot is
+ * replaced by this self-describing marker. A later slice replaces the marker
+ * with a real reference; until then a client can see that a value existed and
+ * that it is deliberately withheld.
+ */
+export const REFERENCE_WITHHELD = Object.freeze({ withheld: "reference" });
+
+/**
+ * Replace every reference-shaped slot of one operation output with
+ * {@link REFERENCE_WITHHELD}, guided by the operation's declared output shape.
+ *
+ * The shape — not the value — decides: a plain number stays a number unless
+ * the contract says that position holds a reference. An `opaque` contract
+ * declares nothing about its interior, so nothing there can be identified as
+ * a reference and the value passes through as the operation's own codec
+ * produced it.
+ */
+export const maskReferenceOutput = (
+  shape: OperationInputShape,
+  value: unknown,
+): unknown => {
+  switch (shape._tag) {
+    case "ref":
+      return value === null || value === undefined ? value : REFERENCE_WITHHELD;
+    case "array":
+      return Array.isArray(value)
+        ? value.map((item) => maskReferenceOutput(shape.items, item))
+        : value;
+    case "struct": {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        return value;
+      }
+      const out: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+      for (const field of shape.fields) {
+        if (!Object.hasOwn(out, field.key)) continue;
+        out[field.key] = maskReferenceOutput(field.shape, out[field.key]);
+      }
+      return out;
+    }
+    case "scalar":
+    case "opaque":
+      return value;
+  }
+};
+
+/**
  * Restate one authoritative invocation outcome as the public MCP projection.
  * Every refusal below is produced by the existing #487 primitive; none of them
  * is re-derived here, and none names the deployed operation.
  */
 export const publicMutateResult = (
   result: AuthoritativeInvocationResult,
+  outputShape: OperationInputShape,
 ): MutateResultV1 | ErrorEnvelopeV1 => {
   switch (result._tag) {
     case "Completed":
       return Object.freeze({
         invocationId: result.receipt.invocationId,
         status: "completed" as const,
-        outcome: result.output,
+        outcome: maskReferenceOutput(outputShape, result.output),
       });
     case "Conflict":
       return toolFailure(
