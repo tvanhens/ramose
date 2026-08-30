@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import { Catalog } from "../../src/Catalog.ts";
 import { Entity, Field, Schema, string } from "../../src/db/internal.ts";
 import { compileReadAuthorization } from "../../src/internal/authorization/index.ts";
+import { queryObservationKey } from "../../src/client/database.ts";
 import {
   ClientClosedError,
   ClientConfigurationError,
@@ -83,6 +84,29 @@ describe("createClient", () => {
     // The portable language, unchanged: an inert value, not a client DSL.
     expect(typeof query.orderBy).toBe("function");
     expect(client.sync.getSnapshot().status).toBe("idle");
+  });
+});
+
+describe("queryObservationKey", () => {
+  test("is the same for two independently built equal queries", () => {
+    const left = createClient(options()).open().query.from(Note).where({ title: "a" });
+    const right = createClient(options()).open().query.from(Note).where({ title: "a" });
+    expect(queryObservationKey(right)).toBe(queryObservationKey(left));
+  });
+
+  test("separates questions whose answers are shaped differently", () => {
+    const db = createClient(options()).open();
+    const base = db.query.from(Note).orderBy(Note.title);
+    const keys = [
+      queryObservationKey(base),
+      // Same `limit: 1` on the wire, a row rather than an array in the answer.
+      queryObservationKey(base.limit(1)),
+      queryObservationKey(base.one()),
+      queryObservationKey(base.oneOrFail()),
+      queryObservationKey(db.query.from(Note).orderBy(Note.title).where({ title: "a" })),
+      queryObservationKey(base.select({ title: Note.title })),
+    ];
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });
 

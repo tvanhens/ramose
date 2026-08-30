@@ -70,6 +70,28 @@ export type QuerySnapshot<Out> = {
 
 export type QuerySubscription<Out> = Subscription<QuerySnapshot<Out>>;
 
+/**
+ * The identity two observations of the same question share.
+ *
+ * The lowered wire query carries the whole of *what* is asked — the lowering
+ * resets its variable counter, so two independently built equal queries produce
+ * identical text, which is what lets them share one execution.
+ *
+ * It does not carry the whole of *how the answer is shaped*: `.one()` lowers to
+ * the same `limit: 1` as `.limit(1)` while returning a row instead of an array,
+ * and a paged query returns `{ rows, cursor }`. Those decisions ride on the
+ * query value rather than the wire form, so they are part of the identity too —
+ * without them two questions with different answer shapes would share one
+ * observation and one of them would read the other's rows.
+ */
+export const queryObservationKey = (query: AnyQueryObject): string =>
+  JSON.stringify([
+    lowerQueryObject(query).query,
+    query.take ?? null,
+    query.stripCursor === true,
+    query.seek === undefined || query.seek === null ? null : "paged",
+  ]);
+
 const PENDING: QuerySnapshot<never> = Object.freeze({
   status: "pending" as const,
   data: undefined,
@@ -237,11 +259,9 @@ export class ClientDatabaseHandle implements ClientDatabase {
 
   observe<Row, Out>(query: QueryObject<Row, Out>): QuerySubscription<Out> {
     this.context.assertLive("observe");
-    const lowered = lowerQueryObject(query as AnyQueryObject);
-    // Canonical because the lowering resets its variable counter: two
-    // independently built equal queries produce identical text, which is what
-    // lets equal queries share one observation.
-    const key = JSON.stringify(lowered.query);
+    const value = query as AnyQueryObject;
+    const lowered = lowerQueryObject(value);
+    const key = queryObservationKey(value);
     const observer = this.observers.get(key) ??
       this.install(key, new QueryObserver(lowered, () => {
         this.observers.delete(key);
