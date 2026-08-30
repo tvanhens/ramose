@@ -15,13 +15,24 @@ import { ReadCompatibilityHash } from "../authorization/identities.ts";
 export const REPLICATION_PROTOCOL_VERSION = 1 as const;
 
 /**
- * Local layers own these independently; neither value is sent on the wire.
- * Version 2 was the documentation-free replica schema with stable route slots;
- * version 3 adds the persisted sealed-`EntityId` binding every replicated
- * entity now arrives with. Every earlier record is dropped by one atomic
- * pre-public migration — a replica stored without the binding cannot produce a
- * mutation target for a row it holds, and inventing one is exactly what the
- * binding exists to prevent.
+ * The persisted *manifest* format, and nothing else.
+ *
+ * Local layers own this independently of the wire; it is never sent. Version 2
+ * was the documentation-free replica schema with stable route slots; version 3
+ * adds the persisted sealed-`EntityId` binding every replicated entity now
+ * arrives with. A manifest stored without the binding cannot produce a mutation
+ * target for a row it holds, and inventing one is exactly what the binding
+ * exists to prevent, so version 3 resets the stored *values* — manifests,
+ * heads, staging, nodes, credential bindings, cache candidates, route slots —
+ * in one atomic upgrade transaction.
+ *
+ * It resets nothing else, and deliberately cannot. Queued invocations,
+ * receipts, client refs, optimistic layers, and the durable lifecycle
+ * generation records are separate families keyed by a separately versioned
+ * `REPLICA_LIFECYCLE_KEY_VERSION`, so a manifest-format change can neither
+ * clear them nor re-key them. That separation is load-bearing: a durable outbox
+ * row carries the scope key it was written with, so a bump that moved the key
+ * space would leave every existing row refusing its own acknowledgement.
  */
 export const REPLICA_STORAGE_VERSION = 3 as const;
 export const INITIAL_REPLICA_BUILD_ID = "ramose-client-v1" as const;
@@ -173,8 +184,10 @@ const positiveNatural = Schema.Natural.check(Schema.makeFilter(
  * the sixteen alphabet positions divisible by four are canonical there —
  * accepting the rest would let one entity's handle be respelled.
  */
+export const SEALED_ENTITY_HANDLE_PATTERN = /^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/;
+
 export const SealedEntityHandle = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/),
+  Schema.isPattern(SEALED_ENTITY_HANDLE_PATTERN),
 );
 export type SealedEntityHandle = typeof SealedEntityHandle.Type;
 

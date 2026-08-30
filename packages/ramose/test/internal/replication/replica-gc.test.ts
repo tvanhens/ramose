@@ -180,7 +180,10 @@ describe("keys", () => {
 
   test("a partition key names the scope that owns it", () => {
     expect(replicaPartitionScopeKey("ramose-replica-v3:s:p:d:v:h"))
-      .toBe("ramose-replica-scope-v3:s:p");
+      // The scope key is versioned independently of the manifest: a partition
+      // that moved to storage version 3 still names a version-2 lifecycle key,
+      // because outbox rows and generation records carry that spelling.
+      .toBe("ramose-replica-scope-v2:s:p");
   });
 
   test("anything that is not a partition key owns no scope", () => {

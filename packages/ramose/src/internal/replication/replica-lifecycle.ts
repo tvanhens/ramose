@@ -71,10 +71,36 @@ export const replicaDatabaseScopeOf = (
   database: identity.database,
 });
 
+/**
+ * The version of the *lifecycle* key space, and deliberately not
+ * {@link REPLICA_STORAGE_VERSION}.
+ *
+ * The two key spaces describe different things and rotate for different
+ * reasons. The replica partition key below names the committed value's own
+ * families — manifests, heads, staging, nodes — and it *should* rotate whenever
+ * the persisted manifest shape changes, because those records become
+ * unreadable. The two keys here name neither: they key the durable generation
+ * records, and they are stamped into the `scope` field of every outbox row and
+ * every receipt, families a replica reset deliberately never clears.
+ *
+ * Tying them to the manifest version made a replica-format change silently
+ * re-key unsubmitted work. A queued row keeps the spelling it was written
+ * with, so an acknowledgement recomputing the newer one would refuse its own
+ * record — permanently, since the row is never removed and the recomputation
+ * never changes. Separating the constants removes the whole class: a manifest
+ * change cannot reach the mutation or lifecycle families at all, whatever
+ * either version becomes.
+ *
+ * Bump this one only for a change to what these keys *mean*, and only with a
+ * migration that carries the affected outbox, receipt, and generation records
+ * across.
+ */
+export const REPLICA_LIFECYCLE_KEY_VERSION = 2 as const;
+
 /** Durable key of the generation record guarding one scope. */
 export const replicaScopeKey = (scope: ReplicaScope): string =>
   [
-    `ramose-replica-scope-v${REPLICA_STORAGE_VERSION}`,
+    `ramose-replica-scope-v${REPLICA_LIFECYCLE_KEY_VERSION}`,
     scope.server,
     scope.principal,
   ].join(":");
@@ -82,7 +108,7 @@ export const replicaScopeKey = (scope: ReplicaScope): string =>
 /** Durable key of the generation record guarding one stable graph database. */
 export const replicaDatabaseKey = (scope: ReplicaDatabaseScope): string =>
   [
-    `ramose-replica-database-v${REPLICA_STORAGE_VERSION}`,
+    `ramose-replica-database-v${REPLICA_LIFECYCLE_KEY_VERSION}`,
     scope.server,
     scope.principal,
     scope.database,

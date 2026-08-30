@@ -95,22 +95,35 @@ const requireIdentity = (
 /**
  * Merge one frame's bindings into an accumulating set.
  *
- * A rebinding is a protocol violation, not a later truth: sealing is
- * deterministic per `(root, scope, eid)` and the wire identity is a PRF of the
- * same eid, so one identity can only ever carry one handle within a partition.
- * Two different handles for one identity would mean two entities are sharing a
- * wire name — and silently taking the newer one would hand a mutation the wrong
- * target — so the transition fails instead.
+ * The binding is a bijection within a partition, and both directions are
+ * enforced. Sealing is deterministic per `(root, scope, eid)` and injective in
+ * the eid within one scope, and the wire identity is a PRF of the same eid — so
+ * one identity carries exactly one handle, and one handle names exactly one
+ * identity.
+ *
+ * Violating either direction is a protocol error rather than a later truth: two
+ * handles for one identity would mean two entities share a wire name, and one
+ * handle for two identities would mean two rows share a mutation target. In
+ * both cases the honest answer is to refuse the frame, because the persisted
+ * manifest declares the same bijection and would refuse the value afterwards
+ * anyway — better here, where the committed value is still untouched.
  */
 const mergeHandles = (
   prior: EntityHandles,
   bindings: readonly EntityHandleBinding[],
 ): EntityHandles | undefined => {
   let merged: Map<string, string> | undefined;
+  let claimed: Set<string> | undefined;
+  const current = (): EntityHandles => merged ?? prior;
   for (const binding of bindings) {
-    const existing = (merged ?? prior).get(binding.entity);
+    const existing = current().get(binding.entity);
     if (existing === binding.handle) continue;
     if (existing !== undefined) return undefined;
+    // The reverse direction, built lazily: a frame that binds nothing new pays
+    // nothing, and one that does pays it once for the whole merge.
+    claimed ??= new Set(current().values());
+    if (claimed.has(binding.handle)) return undefined;
+    claimed.add(binding.handle);
     merged ??= new Map(prior);
     merged.set(binding.entity, binding.handle);
   }
@@ -318,9 +331,17 @@ const applyChange = (
     else facts.set(key, datom);
   }
   const datoms = Object.freeze([...facts.values()]);
+  // Subjects *and* reference targets, exactly as the snapshot commit checks
+  // them. A reference is a way to reach an entity, so a target the value cannot
+  // address is the same hole as an unaddressable subject — and the persisted
+  // manifest requires a binding for both, so an asymmetric check here would
+  // install a value the next restore refuses.
   for (const datom of datoms) {
     if (!handles.has(datom.entity)) {
       return fail("change leaves an entity with no sealed handle");
+    }
+    if (datom.value.type === "ref" && !handles.has(datom.value.value)) {
+      return fail("change leaves a referenced entity with no sealed handle");
     }
   }
   return Result.succeed({

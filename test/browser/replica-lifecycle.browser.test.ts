@@ -618,10 +618,18 @@ browserTest("a replica stored before generations existed stays clearable", async
     }]);
 
     // The owner of a pre-generation replica can still delete their own data.
+    //
+    // The stored *value* is already gone by the time the clear runs: an origin
+    // this old predates storage version 3, whose upgrade resets every manifest
+    // written without a sealed-handle binding (#477). The backfill above is
+    // what survives it — the generation records, and the ownership it wrote
+    // onto the ownerless observation — and those are what this clear has to
+    // reach. Reaching them is the whole claim: an ownerless observation the
+    // reset left behind would otherwise be unremovable by anyone.
     const outcome = await storage.clearScope(scopeOf(left));
-    expect(outcome.partitions).toBe(1);
-    expect(outcome.nodes).toBe(1);
-    expect(outcome.bindings).toBe(1);
+    expect(outcome.partitions).toBe(0);
+    expect(outcome.nodes).toBe(0);
+    expect(outcome.bindings).toBe(0);
     expect(outcome.generation).toBe(2);
     const cleared = await dump(name);
     expect(cleared["replica-committed-v1"]).toEqual([]);

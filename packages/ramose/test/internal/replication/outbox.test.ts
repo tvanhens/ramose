@@ -32,6 +32,7 @@ import {
   sealEntityId,
   type EntityIdScope,
 } from "../../../src/internal/replication/entity-id.ts";
+import { SEALED_ENTITY_HANDLE_PATTERN } from "../../../src/internal/replication/protocol.ts";
 import {
   buildOutboxRecord,
   decideOutboxEntry,
@@ -147,6 +148,12 @@ describe("durable client identities", () => {
 
   test("the public wire pattern is the engine's sealed envelope pattern", () => {
     expect(ENTITY_ID_PATTERN.source).toBe(SEALED_ENTITY_ID_PATTERN.source);
+    // Three copies now: the portable one an application's handles are checked
+    // against, the engine codec's own, and the replication frame's binding
+    // (#477). One entity is one string everywhere it travels, so a copy that
+    // drifted would make a handle legal on one boundary and unspellable on the
+    // next — and only against the same durable target.
+    expect(SEALED_ENTITY_HANDLE_PATTERN.source).toBe(SEALED_ENTITY_ID_PATTERN.source);
     expect(ENTITY_ID_CODEC).toBe(ENTITY_ID_CODEC_VERSION);
   });
 

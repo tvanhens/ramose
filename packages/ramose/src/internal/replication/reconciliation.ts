@@ -169,10 +169,16 @@ export type ReconciliationOptions = {
   /** The sealing epoch the current authenticated session confirmed, if any. */
   readonly keyId?: string | undefined;
   /**
-   * The committed replica's handle-to-local-id binding. Absent until #477 hands
-   * an application a handle for a replicated row; until then a layer addressed
-   * by a handle this replica holds is refused rather than invented, exactly as
-   * the overlay documents.
+   * The committed replica's sealed-handle to local-id binding, which logical
+   * replication now carries per entity (#477).
+   *
+   * Supplied by whoever owns the committed value, and read on every call rather
+   * than captured: a reconciler outlives any one committed value, and a layer
+   * must resolve a handle against the value it is being projected onto. Absent
+   * — or answering `undefined` for a handle this replica does not hold — still
+   * means the layer is refused rather than invented, exactly as the overlay
+   * documents: only a ref this device minted may bring a new entity into the
+   * local view.
    */
   readonly entity?: ((id: EntityId) => number | undefined) | undefined;
 };

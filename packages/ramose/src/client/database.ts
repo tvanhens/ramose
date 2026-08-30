@@ -798,7 +798,12 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       // again. The commonest cause is entirely ordinary — the storage handle
       // closed while this bind was in flight — and the next activation opens
       // its own.
-      if (this.reconcilerKey === key) {
+      //
+      // Cleared by *promise* identity, not by the key. A partition transition
+      // between two binds can leave the key equal while the pending promise is
+      // a different one: an earlier bind rejecting late would then strip a
+      // healthy successor's memo and make every reader rebuild it.
+      if (this.reconcilerPending === pending) {
         this.reconcilerKey = undefined;
         this.reconcilerPending = undefined;
       }

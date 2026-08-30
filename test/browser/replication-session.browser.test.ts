@@ -27,6 +27,27 @@ import {
   rootReplicaRouteSlot,
   stableReplicaRouteSlot,
 } from "../../packages/ramose/src/internal/replication/route-slot.ts";
+import {
+  REPLICA_GENERATIONS_STORE,
+  replicaDatabaseKey,
+  replicaDatabaseScopeOf,
+  replicaScopeKey,
+  replicaScopeOf,
+} from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
+import {
+  createMutationStores,
+  MUTATION_OUTBOX,
+  MUTATION_QUEUES,
+  MUTATION_RECEIPTS,
+} from "../../packages/ramose/src/internal/replication/outbox-storage.ts";
+import {
+  buildOutboxRecord,
+  buildQueueCursor,
+  buildReceipt,
+  mutationPartitionKey,
+} from "../../packages/ramose/src/internal/replication/outbox.ts";
+import { invocationId } from "../../packages/ramose/src/db/refs.ts";
+import type { OperationVersion } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import { browserTest } from "./fixtures.ts";
 import { snapshotChunk, changeFrame } from "../../packages/ramose/test/replication-fixtures.ts";
 
@@ -73,10 +94,12 @@ const transactionDone = (transaction: IDBTransaction): Promise<void> =>
 const openNative = (
   name: string,
   version?: number,
-  upgrade?: (database: IDBDatabase) => void,
+  upgrade?: (database: IDBDatabase, transaction: IDBTransaction) => void,
 ): Promise<IDBDatabase> => new Promise((resolve, reject) => {
   const request = version === undefined ? indexedDB.open(name) : indexedDB.open(name, version);
-  request.addEventListener("upgradeneeded", () => upgrade?.(request.result), { once: true });
+  request.addEventListener("upgradeneeded", () => {
+    upgrade?.(request.result, request.transaction!);
+  }, { once: true });
   request.addEventListener("success", () => resolve(request.result), { once: true });
   request.addEventListener("error", () => reject(request.error), { once: true });
 });
@@ -653,6 +676,179 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
     await deleteDatabase(legacyName);
   }
 });
+
+/**
+ * Every store the previous build owned, at the shape it owned them.
+ *
+ * Storage version 3 adds no store — it only changes what a manifest holds — so
+ * seeding this set at the previous database version produces exactly the
+ * database an origin running the last build is sitting on.
+ */
+const PREVIOUS_STORE_KEY_PATHS: readonly (readonly [string, string | string[]])[] = [
+  ...LEGACY_STORE_KEY_PATHS,
+  ["replica-route-slots-v1", ["scope", "pathKey"]],
+  [REPLICA_GENERATIONS_STORE, "key"],
+];
+
+browserTest(
+  "the storage-version-3 upgrade resets stored values and leaves queued work and fence state alone",
+  async ({ browser }) => {
+    const name = `ramose-session-storage-v3-${browser.uniqueId}`;
+    const scope = replicaScopeOf(selected);
+    const receiver = replicaDatabaseScopeOf(selected);
+    // The spelling the previous build stamped into every row it queued, written
+    // out literally. That is what makes this a regression rather than a
+    // tautology: if a manifest bump moved the lifecycle key space,
+    // `replicaScopeKey` would stop producing this string and the row below
+    // would refuse its own acknowledgement forever.
+    const scopeKey = ["ramose-replica-scope-v2", selected.server, selected.principal]
+      .join(":");
+    expect(replicaScopeKey(scope)).toBe(scopeKey);
+    const partition = mutationPartitionKey(receiver);
+    const legacyPartition = replicaPartitionKey(selected).replace(
+      "ramose-replica-v3:",
+      "ramose-replica-v2:",
+    );
+    // Written by the previous build, through the very builders that build
+    // wrote them with — so the `scope` these rows carry is not a guess about
+    // the old spelling, it is the spelling this build still computes.
+    const record = buildOutboxRecord({
+      invocation: invocationId(),
+      receiver,
+      operation: {
+        catalog: "app" as never,
+        owner: { kind: "entity", name: "issue" },
+        localName: "create",
+      },
+      operationVersion: "b".repeat(64) as OperationVersion,
+      target: { type: "none" },
+      input: { title: "queued before the upgrade" },
+      allocations: [],
+      inputRefs: [],
+      enqueuedAt: 1_700_000_000_000,
+    }, scopeKey, 1);
+    let upgraded: IndexedDbReplicaStorage | undefined;
+    try {
+      const previous = await openNative(
+        name,
+        REPLICA_DATABASE_VERSION - 1,
+        (database, upgrade) => {
+          for (const [store, keyPath] of PREVIOUS_STORE_KEY_PATHS) {
+            database.createObjectStore(store, { keyPath: keyPath as string | string[] });
+          }
+          createMutationStores(database, upgrade, false);
+        },
+      );
+      const seed = previous.transaction([
+        "replica-committed-v1",
+        "replica-nodes-v1",
+        REPLICA_GENERATIONS_STORE,
+        MUTATION_OUTBOX,
+        MUTATION_QUEUES,
+        MUTATION_RECEIPTS,
+      ], "readwrite");
+      // A storage-version-2 manifest: no sealed-handle binding, so every row it
+      // holds could be read and never addressed.
+      seed.objectStore("replica-committed-v1").put({
+        partition: legacyPartition,
+        storageVersion: 2,
+        identity: selected,
+        readCompatibilityHash: selected.readCompatibilityHash,
+        revision: opaque("r"),
+        datoms: [],
+        attributes: [],
+        entityIds: [],
+        attributeIds: [],
+        roots: {},
+        nextLocalId: 1_000,
+      });
+      seed.objectStore("replica-nodes-v1").put({
+        partition: legacyPartition,
+        hash: "version-2-node",
+        body: new Uint8Array([1, 2, 3]),
+      });
+      // Fence state, well past its initial value — which is the whole point:
+      // recreating it at 1 would unfence work a completed clear had fenced off.
+      const generations = seed.objectStore(REPLICA_GENERATIONS_STORE);
+      generations.put({ key: scopeKey, generation: 7, confirmedAt: 1_700_000_000_000 });
+      generations.put({
+        key: replicaDatabaseKey(receiver),
+        generation: 4,
+        confirmedAt: 1_700_000_000_000,
+      });
+      seed.objectStore(MUTATION_OUTBOX).add(record);
+      seed.objectStore(MUTATION_QUEUES).put(buildQueueCursor({
+        partition,
+        scope: scopeKey,
+        receiver: record.receiver,
+        nextSequence: 2,
+        sealing: null,
+        activation: 0,
+        updatedAt: record.enqueuedAt,
+      }));
+      seed.objectStore(MUTATION_RECEIPTS).add(buildReceipt({
+        partition,
+        invocation: record.invocation,
+        scope: scopeKey,
+        state: "queued",
+        observation: null,
+        activation: 0,
+        output: null,
+        mappings: [],
+        failure: null,
+        updatedAt: record.enqueuedAt,
+      }));
+      await transactionDone(seed);
+      previous.close();
+
+      upgraded = await IndexedDbReplicaStorage.open(name);
+
+      const inspect = (await openNative(name)).transaction([
+        "replica-committed-v1",
+        "replica-nodes-v1",
+        REPLICA_GENERATIONS_STORE,
+        MUTATION_OUTBOX,
+      ], "readonly");
+      const [manifests, nodes, scopeGeneration, databaseGeneration, queued] =
+        await Promise.all([
+          requestResult(inspect.objectStore("replica-committed-v1").count()),
+          requestResult(inspect.objectStore("replica-nodes-v1").count()),
+          requestResult<{ readonly generation: number } | undefined>(
+            inspect.objectStore(REPLICA_GENERATIONS_STORE).get(scopeKey),
+          ),
+          requestResult<{ readonly generation: number } | undefined>(
+            inspect.objectStore(REPLICA_GENERATIONS_STORE)
+              .get(replicaDatabaseKey(receiver)),
+          ),
+          requestResult(inspect.objectStore(MUTATION_OUTBOX).count()),
+        ]);
+      await transactionDone(inspect);
+      inspect.db.close();
+
+      // (a) The unreadable manifests and their nodes are gone.
+      expect(manifests).toBe(0);
+      expect(nodes).toBe(0);
+      // (b) The queued invocation is untouched…
+      expect(queued).toBe(1);
+      // …and still acknowledges. This is the regression: the row carries the
+      // scope key the previous build stamped it with, and an acknowledgement
+      // recomputes that key. If a manifest-format bump could move the lifecycle
+      // key space, this row would refuse its own acknowledgement — permanently,
+      // since it is never removed and the recomputation never changes.
+      await expect(upgraded.outbox().acknowledge(record, {
+        _tag: "Committed",
+        output: null,
+        mappings: [],
+      })).resolves.toMatchObject({ state: "committed" });
+      // (c) And the fence state is exactly where the previous build left it.
+      expect(scopeGeneration?.generation).toBe(7);
+      expect(databaseGeneration?.generation).toBe(4);
+    } finally {
+      upgraded?.close();
+      await deleteDatabase(name);
+    }
+  },
+);
 
 browserTest("stable route slots survive a rename and refuse a delete/recreate", async ({ browser }) => {
   const name = `ramose-session-route-slots-${browser.uniqueId}`;
