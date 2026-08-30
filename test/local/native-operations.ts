@@ -137,6 +137,40 @@ const targetedCreateVersion = async (): Promise<string> => {
   return lowered.descriptors[0]!.version as string;
 };
 
+/**
+ * `retitleByRef`'s contract from before its `item` position became an entity
+ * reference — the shape change that makes a *pinned* invocation's ordinary
+ * string look, to the deployed shape, like a malformed sealed handle.
+ */
+const stringItemRetitleVersion = async (): Promise<string> => {
+  const Replica = Entity("nativeItem", { title: string() }, {
+    operations: (Operation) => ({
+      retitleByRef: Operation({
+        self: false,
+        input: EffectSchema.Struct({
+          item: EffectSchema.String,
+          title: EffectSchema.String,
+          note: EffectSchema.String,
+        }),
+        output: EffectSchema.Struct({
+          item: OperationEntityId,
+          title: EffectSchema.String,
+          note: EffectSchema.String,
+        }),
+        run(_op, input) {
+          return { item: 1, title: input.title, note: input.note };
+        },
+      }),
+    }),
+  });
+  const lowered = await Effect.runPromise(lowerOwnedOperations(
+    CatalogId.make("local-native-operations"),
+    Schema({ nativeItem: Replica }),
+    DigestHex.make("7d".repeat(32)),
+  ));
+  return lowered.descriptors[0]!.version as string;
+};
+
 /** The same `/op` boundary, for bodies this contract shapes itself. */
 const invokeWith = async (
   base: string,
@@ -1821,6 +1855,40 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           query: '[:find ?e :where [?e :nativeOther/name "Consumed"]]',
         });
         expect(rows.body.result).toEqual([]);
+      });
+
+      test("a stale pin is decided before the new input shape reads its value", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-input-pinned";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_sealed_input_pin");
+        const receiptsBefore = await operationReceiptCount(base, database);
+
+        // The queued invocation was minted when `item` was a plain string, and
+        // it carries one. The deployed shape now declares that position an
+        // entity reference, so reading the durable value through *this*
+        // contract makes it a handle no codec could have minted.
+        //
+        // The pin decides first. Answering the caller from a contract it never
+        // agreed to would leave a durable outbox retrying a refusal forever
+        // instead of taking its update-required path — the same reason a stale
+        // pin already outranks the deployed target shape.
+        const refused = await invokeWith(base, database, token, {
+          invocationId: "sealed-input-pinned-01",
+          operationVersion: await stringItemRetitleVersion(),
+          operation: retitleByRef,
+          input: { item: "a plain string", title: "Must not execute", note: "" },
+        });
+        expect(refused.status).toBe(409);
+        expect(refused.body).toEqual({
+          error: "request rejected",
+          code: "operation_changed",
+        });
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const absent = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Must not execute"]]',
+        });
+        expect(absent.body.result).toEqual([]);
       });
 
       test("input handles carry the target position's exact failure taxonomy", async () => {

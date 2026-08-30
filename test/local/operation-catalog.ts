@@ -54,6 +54,7 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-sealed-input",
   "operations-sealed-input-taxonomy",
   "operations-sealed-input-consumed",
+  "operations-sealed-input-pinned",
   "operations-client-input-refs",
 ]);
 

@@ -485,6 +485,20 @@ shape is what makes the position real, the same reason **WR-11** reads
 allocation slots against the declared output shape rather than off a raw
 number.
 
+**Stated boundary: the handle is opened on the wire body.** The declared shape
+describes the *decoded* value, and an input codec may transform between the
+two, so an operation whose wire structure differs from its decoded structure at
+or above a ref position does not get input handles: the walk finds no string at
+the declared path, nothing is opened, and the ordinary refusal stands. That is
+the safe direction — no wrong entity is ever named — and it is the same
+shape-over-exact-JSON correspondence **WR-11** already relies on to read
+allocation slots out of materialized output. The consequence to state plainly
+is that such an operation cannot be the target of an offline dependency until
+the descriptor carries an encoded-side shape too. Every operation whose input
+codec preserves its structure — which is every operation the offline queue can
+declare input refs for today, because the client writes the handle into the
+same wire body — is unaffected.
+
 Opening grants nothing here either (**WR-9**). Input refs are deliberately not
 target-visibility checked — an admitted operation is trusted server code whose
 reads are not filtered by caller read policy (**WR-5**, **WR-6**) — and that is
