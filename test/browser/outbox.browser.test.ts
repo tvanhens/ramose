@@ -1390,6 +1390,42 @@ browserTest(
 );
 
 browserTest(
+  "an acknowledgement that leaves an allocated slot unmapped is refused",
+  async ({ browser }) => {
+    const name = `ramose-outbox-unmapped-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      const outbox = storage.outbox();
+      const record = await outbox.enqueue(
+        draft(receiver, { allocations: [{ slot: "issue", clientRef: clientRef() }] }),
+        { scope },
+      );
+      const before = JSON.stringify(await dumpMutations(name));
+      // Removing the queued row while a registered client ref stays
+      // unresolvable would block every dependent invocation forever, with
+      // nothing left in the queue to explain why.
+      expect(
+        await rejectedTag(outbox.acknowledge(record, {
+          _tag: "Committed",
+          output: null,
+          mappings: [],
+        })),
+      ).toBe("ClientRefMappingRefused");
+      expect(JSON.stringify(await dumpMutations(name))).toBe(before);
+      expect((await outbox.receipt(receiver, record.invocation))?.state)
+        .toBe("queued");
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "an authoritative output the canonicalizer would refuse still commits",
   async ({ browser }) => {
     const name = `ramose-outbox-output-${browser.uniqueId}`;

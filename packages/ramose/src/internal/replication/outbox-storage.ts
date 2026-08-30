@@ -275,6 +275,8 @@ export class ClientRefMappingRefused extends Data.TaggedError(
     | "not-a-ref-pair"
     | "unreadable-handle"
     | "not-allocated-here"
+    /** An acknowledgement that leaves a slot this record allocated unmapped. */
+    | "slot-unmapped"
     | "already-mapped";
 }> {}
 
@@ -897,6 +899,24 @@ export class IndexedDbOutbox {
       return current;
     }
     if (acknowledgement._tag === "Committed") {
+      // Every slot this record allocated has to come back mapped. Removing the
+      // outbox row while a registered client ref stays unresolvable would
+      // block every dependent invocation forever, with nothing left in the
+      // queue to explain why. Over-supply is refused separately, by
+      // `stageMappings`: a ref this invocation does not own is not mappable
+      // here at all.
+      const mapped = new Set(
+        acknowledgement.mappings.map((mapping) => mapping.clientRef),
+      );
+      for (const allocation of record.allocations) {
+        if (!mapped.has(allocation.clientRef)) {
+          throw new ClientRefMappingRefused({
+            partition: record.partition,
+            clientRef: allocation.clientRef,
+            reason: "slot-unmapped",
+          });
+        }
+      }
       await this.stageMappings(
         transaction,
         record.partition,
