@@ -125,6 +125,12 @@ describe("queryObservationKey", () => {
       queryObservationKey(base.select({ title: Note.title })),
       // Same `:find` on the wire, a different output key in the answer.
       queryObservationKey(base.select({ heading: Note.title })),
+      // Same pull pattern on the wire; optionality is enforced client-side, so
+      // one of these drops a row where the other reports `undefined`.
+      queryObservationKey(base.select({ title: Note.title.optional })),
+      // The whole-entity default row is itself a top-level pull.
+      queryObservationKey(db.query.from(Note)),
+      queryObservationKey(db.query.from(Note).ids()),
     ];
     expect(new Set(keys).size).toBe(keys.length);
   });

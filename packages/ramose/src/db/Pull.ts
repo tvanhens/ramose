@@ -1149,6 +1149,48 @@ export const lowerPullPattern = (pattern: unknown): unknown[] => {
  * array (empty `[]` is still a valid many). Ident-keyed arrays and the
  * wildcard are left as the peer returned them (all optional in the type).
  */
+/**
+ * A canonical description of what {@link reshapePullResult} will do.
+ *
+ * The lowered wire pattern is not enough to tell two pulls apart: a required
+ * field and the same field `.optional` lower identically, because optionality
+ * is enforced here rather than by the peer. Anything that reuses one execution
+ * across two query values — a live subscription, a cache — has to compare this
+ * as well, or a missing datom silently drops one caller's row or hands the
+ * other an `undefined` where a required value belongs.
+ *
+ * It mirrors {@link filterPull}'s own walk, so a change to the reshaping rules
+ * that this description missed would be a change to a branch it reads.
+ */
+export const pullReshapeIdentity = (pattern: unknown): unknown => {
+  if (isAllShape(pattern)) return "*";
+  if (isAgain(pattern)) return "again";
+  // An ident-keyed escape is returned exactly as the peer sent it, so the
+  // lowered pattern already describes it completely.
+  if (Array.isArray(pattern)) return "idents";
+  const fields = fieldsOf(pattern);
+  return Object.entries(fields).map(([key, field]) => {
+    const info = inspectPullField(field);
+    const nested = info.nestedPattern === undefined
+      ? null
+      : isAgain(info.nestedPattern)
+        // `again` re-applies the enclosing shape; recursing would not
+        // terminate, and the marker is what the reshaping branches on.
+        ? "again"
+        : pullReshapeIdentity(info.nestedPattern);
+    return [
+      key,
+      info.optional,
+      info.hasDefault,
+      // Tagged by type so a `1` default and a `"1"` default are two plans.
+      info.hasDefault ? [typeof info.defaultValue, info.defaultValue] : null,
+      info.many,
+      info.reverse,
+      nested,
+    ];
+  });
+};
+
 export const reshapePullResult = (pattern: unknown, result: unknown): unknown => {
   if (result === null || result === undefined) return null;
   if (isAllShape(pattern) || Array.isArray(pattern)) return result;

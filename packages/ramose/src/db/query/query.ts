@@ -38,6 +38,7 @@ import {
   isAgain,
   isAllShape,
   lowerPullPattern,
+  pullReshapeIdentity,
   reshapePullResult,
 } from "../Pull.ts";
 import {
@@ -1067,6 +1068,11 @@ interface FlatCell {
   readonly elem: unknown;
   readonly read: (cell: unknown) => unknown;
   readonly agg?: AggSpec["fn"];
+  /**
+   * For a pull cell, what its reshaping will do — the half of `read` the wire
+   * pattern does not describe. Absent for every other cell.
+   */
+  readonly plan?: unknown;
 }
 
 /** Each aggregate's answer over no rows at all: the fn over the empty set. */
@@ -1602,6 +1608,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
         path,
         elem: ["pull", focus, lowerPullPattern(map)],
         read: (c) => reshapePullResult(map, c),
+        plan: pullReshapeIdentity(map),
       });
       return;
     }
@@ -1621,9 +1628,18 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
 
   let finalizeRows: (tuples: unknown[][]) => unknown;
   let scalar = false;
+  /**
+   * Which projection branch shaped the answer, and — for a top-level pull,
+   * which produces no flat cell at all — what its reshaping will do. Both are
+   * part of {@link LoweredKernelQuery.shape}: without them two projections that
+   * send the same `:find` but return different rows are indistinguishable.
+   */
+  let projection: "value" | "ids" | "pull" | "rows" = "rows";
+  let rootPlan: unknown = null;
 
   const proj = built.proj;
   if (isValueSpec(proj)) {
+    projection = "value";
     flattenCell(["$"], proj.cell as Cell);
     find.push(flats[0]!.elem, ".");
     scalar = true;
@@ -1634,13 +1650,16 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       return raw;
     };
   } else if (isIdsSpec(proj)) {
+    projection = "ids";
     find.push(nameOf(proj.v));
     finalizeRows = (tuples) =>
       tuples.map((t) =>
         typeof t[0] === "number" ? { id: makeEid(t[0]) } : t[0],
       );
   } else if (isPullSpec(proj)) {
+    projection = "pull";
     const map = shapeToPullMap(proj.shape);
+    rootPlan = pullReshapeIdentity(map);
     const focus = nameOf(proj.focus);
     where.push(...requiredClauses(focus, map));
     find.push(["pull", focus, lowerPullPattern(map)]);
@@ -2061,14 +2080,17 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   return {
     query,
     // Everything `finalize` decides that the wire query does not already say:
-    // where each projected cell lands in the row, whether the answer is one
-    // scalar, whether it is one row or a page, and which aggregate empties to
-    // what. `.one()` and `.limit(1)` send the same query and return different
-    // shapes, and two selects that differ only in output key names send the
-    // same `:find`; a caller that intends to reuse one execution for two query
-    // values has to compare this as well as the query itself.
+    // which projection branch shaped the answer, where each cell lands in the
+    // row, which aggregate empties to what, and what each pull's reshaping will
+    // do. `.one()` and `.limit(1)` send the same query and return different
+    // shapes; two selects differing only in output key names send the same
+    // `:find`; a required pull field and the same field `.optional` lower to
+    // the same pattern. A caller that intends to reuse one execution across two
+    // query values has to compare this as well as the query itself.
     shape: JSON.stringify({
-      cells: flats.map((cell) => [cell.path, cell.agg ?? null]),
+      projection,
+      root: rootPlan,
+      cells: flats.map((cell) => [cell.path, cell.agg ?? null, cell.plan ?? null]),
       scalar,
       take: take ?? null,
       paged: seek !== undefined,

@@ -266,6 +266,11 @@ browserTest("reattaches a subscription that is resubscribed after its last liste
     expect(reattached.data).toEqual([{ title: "kept" }]);
     // Reattached to *the* observation for this query, not to a private copy.
     expect(titles(db).getSnapshot()).toBe(notes.getSnapshot());
+
+    // Cleanup is idempotent, as the subscription contract promises: calling the
+    // first one again must not evict the observation the second one is using.
+    first();
+    expect(titles(db).getSnapshot()).toBe(notes.getSnapshot());
     second();
   } finally {
     await client.close();

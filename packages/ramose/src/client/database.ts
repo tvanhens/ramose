@@ -188,24 +188,38 @@ export type DatabaseContext = {
  */
 class QueryObserver {
   readonly store = new Store<QuerySnapshot<unknown>>(PENDING);
-  /** The newest generation whose result has been published. */
-  private applied = -1;
+  /**
+   * The newest generation this observer has been asked to answer for.
+   *
+   * Claimed when a run *starts*, not when one publishes: a query is async, so
+   * an older run can finish after a newer one has already been scheduled, and
+   * comparing against the last published generation would let it publish rows
+   * from a view that has since been superseded.
+   */
+  private scheduled = -1;
 
   constructor(
     private readonly lowered: LoweredKernelQuery,
-    private readonly release: () => void,
+    private readonly release: (self: QueryObserver) => void,
   ) {}
 
   subscribe(onChange: () => void): () => void {
     const stop = this.store.subscribe(onChange);
+    // Idempotent, as the public subscription contract promises. A second call
+    // must not release again: the query may have been reacquired in between,
+    // and releasing then would detach the replacement's live listeners.
+    let released = false;
     return () => {
+      if (released) return;
+      released = true;
       stop();
-      if (this.store.size === 0) this.release();
+      if (this.store.size === 0) this.release(this);
     };
   }
 
   async run(generation: number, view: Db | undefined, stale: boolean): Promise<void> {
-    if (generation < this.applied) return;
+    if (generation < this.scheduled) return;
+    this.scheduled = generation;
     if (view === undefined) {
       this.publish(generation, "pending", undefined, true, undefined);
       return;
@@ -245,8 +259,7 @@ class QueryObserver {
     stale: boolean,
     error: Error | undefined,
   ): void {
-    if (generation < this.applied) return;
-    this.applied = generation;
+    if (generation < this.scheduled) return;
     const prior = this.store.getSnapshot();
     const unchangedData = sameResult(prior.data, data);
     if (
@@ -359,8 +372,10 @@ export class ClientDatabaseHandle implements ClientDatabase {
   private acquire(key: string, lowered: LoweredKernelQuery): QueryObserver {
     const existing = this.observers.get(key);
     if (existing !== undefined) return existing;
-    const observer = new QueryObserver(lowered, () => {
-      this.observers.delete(key);
+    const observer = new QueryObserver(lowered, (self) => {
+      // Only if it is still the installed one: a release that raced a
+      // reacquisition must not evict the replacement.
+      if (this.observers.get(key) === self) this.observers.delete(key);
     });
     // A closed database installs nothing: its observers were released and
     // nothing will ever run again, so the fresh one is handed back detached
@@ -508,10 +523,16 @@ export class ClientDatabaseHandle implements ClientDatabase {
   /**
    * The replication status, plus this database's own scope-wide layer
    * quarantine — which the session knows nothing about.
+   *
+   * The quarantine loses to the server's own answers. Both fence the data, but
+   * they ask for different things: a refused credential is recovered by signing
+   * in again, and telling that application to ship a new build instead would
+   * leave it with no way back.
    */
   private statusOf(snapshot: ReplicationSessionSnapshot): SyncStatus {
-    if (this.updateRequired) return "update-required";
-    return readSessionSnapshot(snapshot).status;
+    const status = readSessionSnapshot(snapshot).status;
+    if (status === "authentication-required" || status === "closed") return status;
+    return this.updateRequired ? "update-required" : status;
   }
 
   private publishStatus(status: SyncStatus): void {
