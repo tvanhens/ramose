@@ -175,13 +175,16 @@ describe("classifyMutationResponse", () => {
   const response = (status: number, body: unknown) =>
     ({ _tag: "Response", status, body }) as const;
 
+  const completedReceipt = (invocation: string) =>
+    ({ version: 2, invocationId: invocation, status: "completed" }) as const;
+
   test("a completed answer commits with the exact mappings", () => {
     const mapped = handle("E");
     expect(classifyMutationResponse(
       bound,
       response(200, {
         result: { id: 7 },
-        receipt: { version: 2, invocationId: bound.invocation, status: "completed" },
+        receipt: completedReceipt(bound.invocation),
         mappings: [{ clientRef: ref, entityId: mapped }],
       }),
     )).toEqual({
@@ -189,6 +192,24 @@ describe("classifyMutationResponse", () => {
       output: { id: 7 },
       mappings: [{ clientRef: ref, entityId: mapped }],
     });
+  });
+
+  test("a 200 without the durable completed receipt is not a commit", () => {
+    // An incompatible server mid-rollout, a proxy, a captive portal. The row
+    // must stay queued: acknowledging removes it irreversibly, and for an
+    // allocating invocation it is the only chance to get the mappings.
+    const mappings = [{ clientRef: ref, entityId: handle("E") }];
+    for (const receipt of [
+      undefined,
+      { version: 2, invocationId: bound.invocation, status: "rejected" },
+      { version: 1, invocationId: bound.invocation, status: "completed" },
+      completedReceipt("iv1_00000000-0000-7000-8000-000000000000"),
+    ]) {
+      expect(classifyMutationResponse(
+        bound,
+        response(200, { result: { id: 7 }, receipt, mappings }),
+      )).toEqual({ _tag: "Retry", reason: "malformed" });
+    }
   });
 
   test("a commit that does not map every declared slot is never a commit", () => {
@@ -206,14 +227,20 @@ describe("classifyMutationResponse", () => {
     ]) {
       expect(classifyMutationResponse(
         bound,
-        response(200, { result: {}, mappings }),
+        response(200, {
+          result: {},
+          receipt: completedReceipt(bound.invocation),
+          mappings,
+        }),
       )).toEqual({ _tag: "Retry", reason: "malformed" });
     }
   });
 
   test("an invocation that binds nothing commits without mappings", () => {
-    expect(classifyMutationResponse(plain, response(200, { result: null })))
-      .toEqual({ _tag: "Committed", output: null, mappings: [] });
+    expect(classifyMutationResponse(plain, response(200, {
+      result: null,
+      receipt: completedReceipt(plain.invocation),
+    }))).toEqual({ _tag: "Committed", output: null, mappings: [] });
   });
 
   test("the compatibility answers are non-terminal and typed, never dropped", () => {

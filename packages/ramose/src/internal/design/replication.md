@@ -377,18 +377,22 @@ the record stays queued at its head and the reason is reported. A transport
 failure and an answer this build cannot interpret are both `Retry`, never a
 silent commit.
 
-**A terminal rejection needs proof.** Removing a durable outbox row is
-irreversible, and for an allocating invocation it also throws away the only
-chance to recover the authoritative mappings, leaving every dependent record
-blocked on a ref nothing can resolve. Only two answers are terminal: a refusal
-the server bound to a durable receipt for this exact invocation, and
-`invocation_conflict`, which says a *different* receipt already owns this id.
-A status code alone is never enough — the Worker deliberately answers a bare,
-receipt-free 403 when the caller's lease expires between the authoritative
-commit and the response, and that invocation *did* commit. A 409 code this
-build does not recognize is non-terminal for the same reason: a newer server
-may name an outcome an older client has never heard of, and the client must
-not answer that by destroying durable work.
+**Every terminal answer needs proof.** Acting on one is irreversible: it
+removes the durable outbox row, and for an allocating invocation it is also the
+only chance to recover the authoritative mappings — miss it and every dependent
+record blocks on a ref nothing can resolve. A commit is accepted only with the
+durable `completed` receipt for that exact invocation, so an object-shaped 200
+from an incompatible server mid-rollout, a proxy, or a captive portal stays
+queued rather than being read as a commit. A refusal is terminal only when the
+server bound it to a durable receipt, or when it is `invocation_conflict`, which
+says a *different* receipt already owns this id.
+
+A status code alone is never enough in either direction. The Worker
+deliberately answers a bare, receipt-free 403 when the caller's lease expires
+between the authoritative commit and the response, and that invocation *did*
+commit. A 409 code this build does not recognize is non-terminal for the same
+reason: a newer server may name an outcome an older client has never heard of,
+and the client must not answer that by destroying durable work.
 
 ## Integrity validation and corruption recovery
 

@@ -264,22 +264,31 @@ const readMappings = (
 };
 
 /**
- * Whether this answer carries a durable *terminal* receipt for this exact
- * invocation.
+ * The durable receipt generation this client understands. A receipt naming
+ * another generation is not proof of anything this build can reason about.
+ */
+const RECEIPT_VERSION = 2;
+
+/**
+ * Whether this answer carries a durable receipt for this exact invocation in
+ * one of the given states.
  *
  * It is the client's only proof that the server reached a decision it will
- * keep. Without it, a refusal may have been decided before any receipt was
- * written — and the queue must not discard the user's work on the strength of
- * a status code alone.
+ * keep — in *either* direction. Without it a refusal may have been decided
+ * before any receipt was written, and a 200 may not be an authoritative commit
+ * at all. The queue must not act irreversibly on the strength of a status code
+ * alone.
  */
-const hasTerminalReceipt = (
+const hasReceipt = (
   record: OutboxRecord,
   body: Record<string, unknown> | undefined,
+  states: readonly string[],
 ): boolean => {
   const receipt = body?.receipt;
   if (!isRecord(receipt)) return false;
-  return receipt.invocationId === record.invocation &&
-    (receipt.status === "rejected" || receipt.status === "failed");
+  return receipt.version === RECEIPT_VERSION &&
+    receipt.invocationId === record.invocation &&
+    typeof receipt.status === "string" && states.includes(receipt.status);
 };
 
 /** The typed failure a receipt-backed refusal is recorded under. */
@@ -300,13 +309,15 @@ const rejectionCode = (
  * Fail-open is not an option in either direction: an answer this build cannot
  * interpret is `Retry`, never a silent commit and never a silent drop.
  *
- * **A terminal rejection needs proof.** Removing a durable outbox row is
- * irreversible, and for an allocating invocation it also throws away the only
- * chance to recover the authoritative mappings — leaving every dependent
- * record blocked on a ref nothing can ever resolve. So only two things are
- * terminal: a refusal the server bound to a durable receipt for this exact
- * invocation, and `invocation_conflict`, which says a *different* receipt
- * already owns this id. A status code on its own is never enough.
+ * **Every terminal answer needs proof.** Acting on one is irreversible: it
+ * removes the durable outbox row, and for an allocating invocation it is also
+ * the only chance to recover the authoritative mappings — miss it and every
+ * dependent record blocks on a ref nothing can ever resolve. So a commit is
+ * accepted only with the durable `completed` receipt for this exact
+ * invocation, and only two things are terminal refusals: one the server bound
+ * to a durable receipt, and `invocation_conflict`, which says a *different*
+ * receipt already owns this id. A status code on its own is never enough in
+ * either direction.
  *
  * That matters most for a bare 403. The Worker deliberately answers one, with
  * no receipt, when the caller's lease expires between the authoritative commit
@@ -329,6 +340,13 @@ export const classifyMutationResponse = (
   const code = typeof body?.code === "string" ? body.code : undefined;
   if (status === 200) {
     if (body === undefined) return RETRY("malformed");
+    // A commit needs proof exactly as a rejection does. The server's completed
+    // answer always carries the durable receipt for this invocation, so a
+    // missing, mismatched, or non-completed one means this 200 is not evidence
+    // that anything committed — an incompatible server mid-rollout, a proxy, a
+    // captive portal. Acknowledging it would irreversibly remove the outbox
+    // row for work that may never have happened.
+    if (!hasReceipt(record, body, ["completed"])) return RETRY("malformed");
     const mappings = readMappings(record, body.mappings);
     if (mappings === undefined) return RETRY("malformed");
     const output = body.result === undefined
@@ -360,7 +378,7 @@ export const classifyMutationResponse = (
         return REJECTED("invocation_conflict");
     }
   }
-  if (hasTerminalReceipt(record, body)) {
+  if (hasReceipt(record, body, ["rejected", "failed"])) {
     return REJECTED(rejectionCode(status, body));
   }
   if (status === 429 || status >= 500) return RETRY("unavailable");

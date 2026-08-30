@@ -1696,19 +1696,62 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           ...overrides,
         }, "scope", 1);
 
-      const submit = async (
+      /**
+       * The classification, and the raw answer it came from.
+       *
+       * The raw answer is kept so an unexpected classification names the status
+       * and body the server actually sent. A bare "expected Committed, received
+       * Retry" says nothing about which 5xx produced it, and a `/op` answer this
+       * contract did not anticipate is exactly the thing worth seeing.
+       */
+      const submitRaw = async (
         record: OutboxRecord,
         endpoint: ReturnType<typeof endpointFor>,
         handles: ReadonlyMap<string, EntityId> = new Map(),
       ) => {
         const substituted = substituteMutationRefs(record, handles);
         expect(substituted).toBeDefined();
-        return classifyMutationResponse(
-          record,
-          await submitMutation(
-            buildMutationRequest(record, endpoint, substituted!),
-          ),
+        const response = await submitMutation(
+          buildMutationRequest(record, endpoint, substituted!),
         );
+        return {
+          acknowledgement: classifyMutationResponse(record, response),
+          raw: JSON.stringify(response),
+        };
+      };
+
+      const submit = async (
+        record: OutboxRecord,
+        endpoint: ReturnType<typeof endpointFor>,
+        handles: ReadonlyMap<string, EntityId> = new Map(),
+      ) => (await submitRaw(record, endpoint, handles)).acknowledgement;
+
+      /**
+       * Submit until the queue reaches an answer it would act on.
+       *
+       * `Retry` is *defined* as non-terminal: the record stays queued and the
+       * driver asks again. A test that demanded a terminal answer from the
+       * first attempt would be asserting something stronger than the contract,
+       * and would fail on any transient the contract already covers — a
+       * momentarily unreachable sealing root, a restarting Durable Object. What
+       * the contract does promise is that the answer eventually reached is
+       * exact and idempotent, which is what the callers below assert.
+       */
+      const submitUntilTerminal = async (
+        record: OutboxRecord,
+        endpoint: ReturnType<typeof endpointFor>,
+        handles: ReadonlyMap<string, EntityId> = new Map(),
+      ) => {
+        const seen: string[] = [];
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const result = await submitRaw(record, endpoint, handles);
+          seen.push(result.raw);
+          if (result.acknowledgement._tag !== "Retry") {
+            return { ...result, seen: seen.join(" | ") };
+          }
+          await Bun.sleep(100);
+        }
+        throw new Error(`submission never left Retry: ${seen.join(" | ")}`);
       };
 
       test("a queued create commits, and the lost-ack retry returns the identical mappings", async () => {
@@ -1724,8 +1767,9 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           allocations: [{ slot: "item", clientRef: ref }],
         });
 
-        const committed = await submit(record, endpoint);
-        expect(committed._tag).toBe("Committed");
+        const first = await submitUntilTerminal(record, endpoint);
+        const committed = first.acknowledgement;
+        expect([first.seen, committed._tag]).toEqual([first.seen, "Committed"]);
         if (committed._tag !== "Committed") throw new Error("expected a commit");
         expect(committed.mappings).toHaveLength(1);
         expect(committed.mappings[0]!.clientRef).toBe(ref);
@@ -1733,8 +1777,12 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
 
         const receiptsBefore = await operationReceiptCount(base, database);
         // The acknowledgement this client never received: resubmitting the same
-        // durable row consumes #487's exact replay.
-        expect(await submit(record, endpoint)).toEqual(committed);
+        // durable row consumes #487's exact replay. However many times it takes
+        // to get an answer, the answer is byte-identical and commits nothing
+        // further — that idempotence is the whole contract.
+        const replayed = await submitUntilTerminal(record, endpoint);
+        expect([replayed.seen, replayed.acknowledgement])
+          .toEqual([replayed.seen, committed]);
         expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
         const rows = await testAdmin(base, database, "/query", {
           query: '[:find ?e :where [?e :nativeItem/title "Queued offline"]]',
@@ -1760,7 +1808,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           enqueuedAt: 1_700_000_000_001,
         }, "scope", 2);
         expect(substituteMutationRefs(dependent, new Map())).toBeUndefined();
-        const renamed = await submit(
+        const renamed = await submitUntilTerminal(
           dependent,
           endpoint,
           new Map([[
@@ -1768,10 +1816,10 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
             committed.mappings[0]!.entityId as EntityId,
           ]]),
         );
-        expect(renamed).toMatchObject({
-          _tag: "Committed",
-          output: { title: "Renamed through the queue" },
-        });
+        expect([renamed.seen, renamed.acknowledgement]).toMatchObject([
+          renamed.seen,
+          { _tag: "Committed", output: { title: "Renamed through the queue" } },
+        ]);
       });
 
       test("every non-terminal and terminal answer classifies from the real Worker", async () => {
@@ -1786,7 +1834,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         const record = queued(version, {
           allocations: [{ slot: "item", clientRef: ref }],
         });
-        expect((await submit(record, endpoint))._tag).toBe("Committed");
+        expect((await submitUntilTerminal(record, endpoint)).acknowledgement._tag).toBe("Committed");
 
         // Same id, a different durable client identity for the slot.
         const rebound = buildOutboxRecord({
@@ -1800,7 +1848,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           inputRefs: [],
           enqueuedAt: 1_700_000_000_002,
         }, "scope", 1);
-        expect(await submit(rebound, endpoint))
+        expect((await submitUntilTerminal(rebound, endpoint)).acknowledgement)
           .toEqual({ _tag: "Rejected", code: "invocation_conflict" });
 
         // A queued invocation pinned to a contract the deployment has moved
@@ -1808,7 +1856,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         const stale = queued(versions.get("nativeItem/create")!, {
           allocations: [{ slot: "item", clientRef: clientRef() }],
         });
-        expect(await submit(stale, endpoint))
+        expect((await submitUntilTerminal(stale, endpoint)).acknowledgement)
           .toEqual({ _tag: "UpdateRequired", reason: "operation-changed" });
 
         // An unreadable sealing epoch reaches the same non-terminal state
@@ -1831,7 +1879,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           inputRefs: [],
           enqueuedAt: 1_700_000_000_003,
         }, "scope", 3);
-        expect(await submit(quarantined, endpoint)).toEqual({
+        expect((await submitUntilTerminal(quarantined, endpoint)).acknowledgement).toEqual({
           _tag: "UpdateRequired",
           reason: "invocation-update-required",
         });
@@ -1854,7 +1902,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           inputRefs: [],
           enqueuedAt: 1_700_000_000_004,
         }, "scope", 4);
-        expect(await submit(refused, endpoint))
+        expect((await submitUntilTerminal(refused, endpoint)).acknowledgement)
           .toEqual({ _tag: "Rejected", code: "operation_rejected" });
 
         // A refusal the server reached *before* writing any receipt carries
