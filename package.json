@@ -27,6 +27,7 @@
     "test:browser": "bunx vitest run --config vitest.browser.config.ts",
     "test:conformance": "CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun test --parallel=1 test/local/integration.test.ts",
     "test:local": "bun run test:conformance",
+    "test:stress": "CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun test --parallel=1 test/local/stress.test.ts",
     "test": "bun run test:unit && bun run test:local",
     "test:all": "bun run test && bun run test:e2e",
     "test:e2e": "bun test test/e2e",

@@ -102,6 +102,11 @@ export const invoke = (
 ) => json(base, `/db/${database}/op`, {
   method: "POST",
   token,
+  // #551: these invocations are also issued behind parked live/replication
+  // reads, so they can land on a socket the local runtime closed at its
+  // unadvertised 5000ms idle bound. `invocationId` is fixed per call, so a
+  // re-issue replays the durable receipt rather than invoking again.
+  retryPreResponse: true,
   headers: { "content-type": "application/json", ...originHeaders },
   body: JSON.stringify({
     ...conformanceProof,

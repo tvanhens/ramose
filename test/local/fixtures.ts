@@ -16,7 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Ramose from "ramose";
 import Stack from "./alchemy.run.ts";
 import { TEST_CAPABILITY } from "./test-hooks-env.ts";
-import { withRequestDeadline } from "../support/stream.ts";
+import { REQUEST_DEADLINE_MS, withRequestDeadline } from "../support/stream.ts";
 import { expect } from "bun:test";
 import type { EntityIdScope } from "../../packages/ramose/src/internal/replication/entity-id.ts";
 
@@ -171,12 +171,83 @@ export const fetchPastProxyBlip = async (
   throw last;
 };
 
+/* ── #551: the local runtime's unadvertised keep-alive bound ─────────────── */
+
+/**
+ * Last completed exchange per origin, so a call site can report how long the
+ * connection it is about to reuse has been idle.
+ *
+ * This is the measurement that explained #551. The local stack is served by a
+ * workerd proxy process that FINs an idle HTTP/1.1 keep-alive socket at a hard
+ * 5000ms and sends no `Keep-Alive: timeout=` (nor even `Connection:`) header,
+ * so a pooling client has no way to learn the bound. The two `/op` posts #551
+ * names are issued 5003ms and 5006ms after the previous request to the same
+ * origin — they wait on a replication frame that arrives on a *different*
+ * socket about five seconds later — which puts them 1–6ms past a close the
+ * client cannot anticipate.
+ */
+const lastExchangeAt = new Map<string, number>();
+
+const originIdleMs = (origin: string, now: number): number | undefined => {
+  const previous = lastExchangeAt.get(origin);
+  return previous === undefined ? undefined : now - previous;
+};
+
+const noteOriginActivity = (origin: string): void => {
+  lastExchangeAt.set(origin, Date.now());
+};
+
+/** `RAMOSE_TRACE_IDLE=1` prints the idle age of every reused connection. */
+const traceIdle = (
+  label: string,
+  idleBeforeMs: number | undefined,
+  tookMs: number,
+  outcome: string,
+): void => {
+  if (process.env.RAMOSE_TRACE_IDLE !== "1") return;
+  console.log(
+    `IDLE ${label} idleBefore=${idleBeforeMs ?? "-"}ms took=${tookMs}ms -> ${outcome}`,
+  );
+};
+
+/**
+ * Attempts for a request that died before the Worker answered.
+ *
+ * Bun's `fetch` rejects only while it is still establishing the exchange, so
+ * such a rejection proves the Worker produced no response. Combined with the
+ * durable invocation receipt every `/op` carries — an identical `invocationId`
+ * replays rather than re-executes — re-issuing the byte-identical request is
+ * at-most-once. Off by default: a caller opts in only where both halves of
+ * that argument hold.
+ */
+const PRE_RESPONSE_ATTEMPTS = 3;
+
+/**
+ * Per-attempt bound for those call sites.
+ *
+ * A request written into the closing socket has two endings, both measured
+ * against the local runtime: it is reset, or it is *silently discarded* — the
+ * server neither dispatches nor answers it, and the caller waits for its own
+ * deadline. Only the first raises a transport code, so the bound is what
+ * catches the second. Three attempts stay under `REQUEST_DEADLINE_MS`, and an
+ * `/op` on this stack answers in single-digit ms, so this is never a race
+ * against real work.
+ */
+const PRE_RESPONSE_ATTEMPT_DEADLINE_MS = 10_000;
+
 export const json = async (
   base: string,
   path: string,
-  init: RequestInit & { token?: string } = {},
+  init: RequestInit & {
+    token?: string;
+    /**
+     * Re-issue this request if the connection died before any response
+     * (#551). Only for requests whose replay is provably at-most-once.
+     */
+    retryPreResponse?: boolean;
+  } = {},
 ): Promise<{ status: number; body: any; text: string; res: Response }> => {
-  const { token, ...rest } = init;
+  const { token, retryPreResponse = false, ...rest } = init;
   const headers = new Headers(rest.headers);
   if (token !== undefined) headers.set("authorization", `Bearer ${token}`);
   if (path.startsWith("/__test__/")) {
@@ -186,10 +257,14 @@ export const json = async (
   const label = `${rest.method ?? "GET"} ${path}`;
   const exchange = async (
     signal: AbortSignal | undefined,
+    fresh: boolean,
   ): Promise<{ res: Response; text: string }> => {
+    const attemptHeaders = fresh ? new Headers(headers) : headers;
+    // Evicts the dead pooled socket so the next dial is a fresh one.
+    if (fresh) attemptHeaders.set("connection", "close");
     const res = await fetch(url, {
       ...rest,
-      headers,
+      headers: attemptHeaders,
       ...(signal === undefined ? {} : { signal }),
     });
     // Inside the same bound: the deadline keeps running after the headers
@@ -197,11 +272,53 @@ export const json = async (
     // reports the same way as a request that never answered at all.
     return { res, text: await res.text() };
   };
+  let fresh = false;
   for (let attempt = 0; ; attempt++) {
-    // Callers never pass their own signal today; honour one if they start to.
-    const { res, text } = rest.signal === undefined
-      ? await withRequestDeadline(exchange, label)
-      : await exchange(undefined);
+    const origin = new URL(url).origin;
+    const startedAt = Date.now();
+    const idleBefore = originIdleMs(origin, startedAt);
+    let res: Response;
+    let text: string;
+    try {
+      // Callers never pass their own signal today; honour one if they start to.
+      const exchanged = rest.signal === undefined
+        ? await withRequestDeadline(
+          (signal) => exchange(signal, fresh),
+          label,
+          retryPreResponse
+            ? PRE_RESPONSE_ATTEMPT_DEADLINE_MS
+            : REQUEST_DEADLINE_MS,
+        )
+        : await exchange(undefined, fresh);
+      res = exchanged.res;
+      text = exchanged.text;
+    } catch (error) {
+      noteOriginActivity(origin);
+      const elapsed = Date.now() - startedAt;
+      // Either ending of a request written into the closing socket: a
+      // transport code, or nothing at all until this attempt's bound.
+      const lostBeforeTheWorker = isPreResponseFailure(error) ||
+        elapsed >= PRE_RESPONSE_ATTEMPT_DEADLINE_MS;
+      if (
+        !retryPreResponse ||
+        attempt >= PRE_RESPONSE_ATTEMPTS - 1 ||
+        !lostBeforeTheWorker
+      ) {
+        throw error;
+      }
+      traceIdle(
+        label,
+        idleBefore,
+        elapsed,
+        isPreResponseFailure(error) ? "reset" : "dropped",
+      );
+      // Dial a fresh socket rather than whatever the pool hands back.
+      fresh = true;
+      await Bun.sleep(proxyBlipBackoffMs(attempt));
+      continue;
+    }
+    noteOriginActivity(origin);
+    traceIdle(label, idleBefore, Date.now() - startedAt, String(res.status));
     let body: any;
     try {
       body = text ? JSON.parse(text) : null;

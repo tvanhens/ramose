@@ -100,6 +100,12 @@ const invoke = (
 ) => json(base, `/db/${GRAPH_PATH_ROOT_DATABASE}/op`, {
   method: "POST",
   token,
+  // #551: this is the call site that loses a pooled socket to the local
+  // runtime's unadvertised 5000ms keep-alive close, because it is issued
+  // right after a parked replication read that takes about that long. The
+  // `invocationId` below is fixed for the life of this call, so a re-issue
+  // replays the durable receipt instead of invoking again.
+  retryPreResponse: true,
   headers: { "content-type": "application/json" },
   body: JSON.stringify({
     ...(options.at === undefined ? graphPathRootProof : { at: options.at }),
