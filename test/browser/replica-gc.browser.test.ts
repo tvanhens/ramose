@@ -432,6 +432,61 @@ browserTest(
 );
 
 browserTest(
+  "a decodable body under the wrong address stops the sweep instead of orphaning a subtree",
+  async ({ browser }) => {
+    const name = `ramose-gc-misfiled-node-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      // Wide enough for real directories, so a misbelieved body really would
+      // hide a subtree rather than one leaf.
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(4000, "seed"));
+      const before = await nodeHashes(name, partition);
+      expect(before.length).toBeGreaterThan(4);
+      storage.close();
+
+      // Refile one real, perfectly decodable node body under another node's
+      // address. Nothing here is malformed: every body still decompresses and
+      // decodes, so only the content address can tell the two apart.
+      const database = await openNative(name);
+      const swap = database.transaction(NODES, "readwrite");
+      const store = swap.objectStore(NODES);
+      const donor = await requestResult<{ body: Uint8Array }>(
+        store.get([partition, before[before.length - 1]]),
+      );
+      store.put({ partition, hash: before[0], body: donor.body });
+      await transactionDone(swap);
+      database.close();
+
+      const reopened = await IndexedDbReplicaStorage.open(name);
+      try {
+        const outcome = await reopened.collectGarbage();
+        // The walk could not authenticate a node, so it knows nothing about
+        // what this partition may lose and takes nothing.
+        expect(outcome.skipped).toBe(1);
+        expect(outcome.swept).toBe(0);
+        expect(outcome.nodes).toBe(0);
+        expect(await nodeHashes(name, partition)).toEqual(before);
+        expect(await sweepGeneration(name, partition)).toBe(0);
+        // Classification is still the restore walk's job, and it happens on the
+        // ordinary path with every node the sweep declined to delete in place.
+        const restored = await reopened.restoreOutcome(
+          selected,
+          attributes,
+          READ_COMPATIBILITY,
+        );
+        expect(restored._tag).toBe("replacement-required");
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a retention taken after the live set is computed skips the sweep instead of losing it",
   async ({ browser }) => {
     const name = `ramose-gc-late-retention-${browser.uniqueId}`;

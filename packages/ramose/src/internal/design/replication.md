@@ -534,10 +534,17 @@ and zero heads for any GC pass.
 ### Sweep invariants
 
 - **Fail closed on damage.** The live set is computed by walking each live root
-  set. A walk that cannot complete — a missing, undecodable, or wrongly-kinded
-  node — leaves the partition's live set unknown, and GC then sweeps nothing in
-  that partition. Damage is never converted into deletion; the restore walk is
-  what classifies and quarantines it.
+  set, and the sweep refuses to *believe* a node it cannot authenticate: a body
+  believed wrongly under-reports its children, and intact descendants would then
+  be classified as garbage. The content address is what makes belief safe and is
+  sufficient on its own — a body that hashes to the address it is filed under is
+  the node that address names, so the children it lists are the real ones, while
+  a body that does not (a valid leaf stored under a directory's address, a
+  half-written record, anything at all) is refused. A missing, misfiled, or
+  undecodable node therefore leaves the partition's live set unknown, and GC
+  sweeps nothing in that partition. Damage is never converted into deletion; the
+  restore walk is what classifies and quarantines it, on nodes the sweep left in
+  place.
 - **Materialization exclusion.** An install marks its partition in flight
   synchronously before materialization creates its first node transaction, and
   clears the mark only after the install transaction settles — closing the

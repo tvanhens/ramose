@@ -914,11 +914,19 @@ const validateReachableNodes = async (
  * Reach every node one set of roots depends on, without validating any of it.
  *
  * A sweep asks a different question than a restore: not "is this value intact"
- * but "which addresses must survive". It therefore reads and decodes, and
- * checks nothing else — a node that fails to read or decode makes the walk
- * incomplete, and an incomplete walk sweeps nothing, so damage is never turned
- * into deletion. Classifying and quarantining that damage belongs to the
- * restore walk, which is the only path that can act on it.
+ * but "which addresses must survive". It does not classify damage — that is the
+ * restore walk's job, and the only path that can act on it — but it must still
+ * refuse to *believe* a record it cannot authenticate, because a body believed
+ * wrongly under-reports children and would turn intact descendants into
+ * garbage.
+ *
+ * The content address is exactly the check that makes belief safe, and it is
+ * sufficient on its own. A body that hashes to the address it is filed under is
+ * the node that address names, so the children it lists are that node's real
+ * children; a body that does not — a valid leaf stored under a directory's
+ * address, a half-written record, anything at all — is refused, and the walk is
+ * incomplete. An incomplete walk sweeps nothing, so no amount of damage can
+ * become deletion.
  */
 const reachableFromRoots = async (
   database: IDBDatabase,
@@ -929,8 +937,13 @@ const reachableFromRoots = async (
   while (walk.pending) {
     const batch = walk.next(VALIDATION_BATCH);
     const records = await readNodeRecords(database, partition, batch);
-    for (const record of records) {
+    for (let i = 0; i < batch.length; i++) {
+      const record = records[i];
       if (record === undefined || !(record.body instanceof Uint8Array)) {
+        walk.fail();
+        return walk;
+      }
+      if (await sha256Hex(record.body) !== batch[i]) {
         walk.fail();
         return walk;
       }
