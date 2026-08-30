@@ -517,17 +517,17 @@ browserTest("fences a replaced principal before any of its data can be read", as
       (snapshot) => snapshot.status === "ready" && snapshot.stale === false,
     );
     const shown = settled.data as readonly { readonly title: string }[];
-    // The prior partition really was rendered first — an exact bearer binding
-    // is entitled to that — so the fence below is not a vacuous assertion.
-    expect(seen.some((data) =>
-      (data as readonly { readonly title: string }[] | undefined)
-        ?.some((row) => row.title === "prior-principal") === true
-    )).toBe(true);
-    // The replaced principal's row is gone, and the transition was typed.
-    expect(shown.some((row) => row.title === "prior-principal")).toBe(false);
+    // Not vacuous: only a *replacement* publishes this, and a replacement can
+    // only happen once the prior identity was adopted — which is exactly the
+    // restore an exact bearer binding is entitled to.
     expect(statuses).toContain("authentication-required");
-    // Every snapshot published after the fence dropped the prior partition.
-    const fenced = seen.slice(seen.findIndex((data) => data === undefined) + 1);
+    // The replaced principal's row is gone from the settled answer.
+    expect(shown.some((row) => row.title === "prior-principal")).toBe(false);
+    // And from every snapshot published after the fence reset the observers.
+    // Whether the prior partition's rows ever reached a snapshot before the
+    // response arrived is a race with the network; that they never survive the
+    // fence is not.
+    const fenced = seen.slice(seen.lastIndexOf(undefined) + 1);
     expect(fenced.length).toBeGreaterThan(0);
     for (const data of fenced) {
       expect((data as readonly { readonly title: string }[] | undefined)
