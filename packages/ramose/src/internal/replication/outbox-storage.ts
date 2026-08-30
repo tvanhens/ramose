@@ -22,6 +22,7 @@ import {
   type LayerRows,
   type OptimisticLayerRecord,
 } from "./overlay-records.ts";
+import type { LeadershipFence } from "./leadership.ts";
 import type { ProjectionIdentity } from "./projection-binding.ts";
 import {
   REPLICA_COMMITTED_HEADS_STORE,
@@ -287,6 +288,8 @@ export class IndexedDbOutbox {
     private readonly database: IDBDatabase,
     private readonly boundaries: RuntimeBoundaries,
     private readonly assertScopeLive: (scope: ReplicaScope) => void,
+    private readonly leader: (() => LeadershipFence | undefined) | undefined =
+      undefined,
   ) {}
 
   async enqueue(
@@ -363,6 +366,25 @@ export class IndexedDbOutbox {
       });
     }
     lease?.observe(scopeKey, current.generation);
+  }
+
+  /**
+   * Refuse an acknowledgement from a submitter whose leadership another tab
+   * has already taken over.
+   */
+  private async fenceLeadership(transaction: IDBTransaction): Promise<void> {
+    const fence = this.leader?.();
+    if (fence === undefined) return;
+    const held = await requestResult<{ readonly generation: number } | undefined>(
+      transaction.objectStore(REPLICA_GENERATIONS_STORE).get(fence.key),
+    );
+    const generation = held?.generation ?? 0;
+    if (generation === fence.epoch) return;
+    throw new ReplicaFencedError({
+      key: fence.key,
+      expected: fence.epoch,
+      observed: generation,
+    });
   }
 
   private async stageEnqueue(
@@ -697,6 +719,7 @@ export class IndexedDbOutbox {
     );
     try {
       await this.fenceScope(transaction, scopeKey, observed, undefined);
+      await this.fenceLeadership(transaction);
       const receipt = await this.stageAcknowledgement(
         transaction,
         record,

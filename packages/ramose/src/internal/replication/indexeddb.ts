@@ -63,6 +63,7 @@ import {
   unreachableNodeHashes,
   type ReplicaGcOutcome,
 } from "./replica-gc.ts";
+import type { LeadershipFence } from "./leadership.ts";
 import {
   identityInDatabase,
   identityInScope,
@@ -216,7 +217,7 @@ type RouteSlotRecord = {
 
 type GenerationRecord = {
   readonly key: string;
-  readonly kind: "scope" | "database" | "partition";
+  readonly kind: "scope" | "database" | "partition" | "leader";
   readonly scope: string;
   readonly generation: number;
   readonly confirmedAt: number;
@@ -926,12 +927,39 @@ export class IndexedDbReplicaStorage {
     return once;
   }
 
-  outbox(): IndexedDbOutbox {
+  /**
+   * @param leader the leadership epoch a submitter revalidates as it settles a
+   * queue. Enqueuing needs none, so every tab keeps queuing durably.
+   */
+  outbox(leader?: () => LeadershipFence | undefined): IndexedDbOutbox {
     return new IndexedDbOutbox(
       this.database,
       this.boundaries,
       (scope) => void this.assertScopeLive(scope),
+      leader,
     );
+  }
+
+  /**
+   * Take the durable leadership epoch of `key`, one higher than the epoch of
+   * whoever held it before.
+   */
+  async claimLeadership(key: string, scope: ReplicaScope): Promise<number> {
+    const scopeKey = this.assertScopeLive(scope);
+    const transaction = this.database.transaction(GENERATIONS, "readwrite");
+    const store = transaction.objectStore(GENERATIONS);
+    const held = await requestResult<GenerationRecord | undefined>(store.get(key));
+    const generation = (held?.generation ?? 0) + 1;
+    store.put({
+      key,
+      kind: "leader",
+      scope: scopeKey,
+      generation,
+      confirmedAt: Date.now(),
+      fencedAt: null,
+    } satisfies GenerationRecord);
+    await commitTransaction(transaction);
+    return generation;
   }
 
   lease(): ReplicaLease {

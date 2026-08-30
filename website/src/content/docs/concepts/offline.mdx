@@ -40,7 +40,7 @@ Invocations, client-created references, queue order, and receipts are persisted 
 
 ## One browser, one replica
 
-Tabs coordinate through browser locks, IndexedDB, and broadcast messages. One leader owns server synchronization; every tab can enqueue. If the leader closes, another resumes without a second commit or partial state.
+Tabs coordinate through browser locks, IndexedDB, and broadcast messages. One leader owns server synchronization; every tab can enqueue. If the leader closes, another resumes without a second commit or partial state. Where the browser offers no lock manager, every tab synchronizes for itself: correctness is unchanged, because concurrent writers converge on the same durable records, but the work is duplicated.
 
 Under storage pressure, Ramose may evict inactive child graphs as complete units. It does not evict the active root, outbox, receipts, or part of a graph. Logout or principal replacement purges or quarantines the previous principal's partition before the next principal can render.
 

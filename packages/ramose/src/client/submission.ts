@@ -1,6 +1,7 @@
 
 import type { InvocationId } from "../db/refs.ts";
 import type { IndexedDbReplicaStorage } from "../internal/replication/indexeddb.ts";
+import type { SyncLeadership } from "../internal/replication/leadership.ts";
 import {
   replicaDatabaseKey,
   type ReplicaDatabaseScope,
@@ -33,6 +34,11 @@ type PassCredential = {
 /** What the loop needs from the client that owns it. */
 export type SubmissionContext = {
   readonly storage: () => Promise<IndexedDbReplicaStorage>;
+  /**
+   * This tab's sync leadership, once a confirmed scope has one to elect for.
+   * A follower keeps enqueuing durably and submits nothing.
+   */
+  readonly leadership: () => SyncLeadership | undefined;
   readonly credential: () => Promise<PassCredential>;
   readonly endpoint: (
     receiver: ReplicaDatabaseScope,
@@ -82,11 +88,13 @@ export class SubmissionLoop {
 
   private async pass(scope: ReplicaScope): Promise<void> {
     if (!this.context.live()) return;
+    const leadership = this.context.leadership();
+    if (leadership === undefined || !leadership.submits()) return;
     const storage = await this.context.storage();
     const credential = await this.context.credential();
-    if (!this.context.live()) return;
+    if (!this.context.live() || !leadership.submits()) return;
     const progress = await runSubmissionPass({
-      store: storage.outbox(),
+      store: storage.outbox(() => leadership.fence()),
       scope,
       endpoints: (receiver) => this.context.endpoint(receiver, credential),
       transport: submitMutation,
