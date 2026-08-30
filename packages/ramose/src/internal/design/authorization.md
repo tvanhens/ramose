@@ -462,8 +462,10 @@ may also name an entity as a sealed `EntityId` at any position the *deployed*
 opens each one under the same scope it opens a target with, replaces it with
 the private eid *before* the #487 primitive sees the invocation, and every
 ordinary check then runs against a numeric input exactly as it always did:
-existence, entity-type compatibility (**WR-3**), and the replay-fence
-exemptions. The target and input positions are one mechanism with one scope,
+existence, the entity-type compatibility that ref position declares, and the
+replay-fence exemptions. A sealed target keeps **WR-9**'s treatment unchanged,
+including the target readability **WR-3** establishes; nothing about that moves
+here. The target and input positions are one mechanism with one scope,
 one epoch comparison, and one failure taxonomy — a dependent offline invocation
 that targets a created entity and one that passes it as an argument are the
 same thing to the writer.
