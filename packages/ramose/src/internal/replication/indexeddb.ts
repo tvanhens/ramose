@@ -1437,7 +1437,11 @@ export class IndexedDbReplicaStorage {
     });
   }
 
-  /** {@link IndexedDbReplicaStorage.restoreOutcome}, for callers that only want the value. */
+  /**
+   * The value {@link IndexedDbReplicaStorage.restoreOutcome} restored, for a
+   * caller that has nothing different to do about a refusal. A refused
+   * partition has already been quarantined either way.
+   */
   async restore(
     identity: ReplicationIdentity,
     attributes: readonly AttributeSpec[],
@@ -1525,7 +1529,7 @@ export class IndexedDbReplicaStorage {
     });
   }
 
-  /** {@link IndexedDbReplicaStorage.restoreCandidateOutcome}, value only. */
+  /** The value {@link IndexedDbReplicaStorage.restoreCandidateOutcome} restored. */
   async restoreConfirmedCandidate(
     candidate: ReplicaCacheCandidate,
     attributes: readonly AttributeSpec[],
@@ -1681,7 +1685,7 @@ export class IndexedDbReplicaStorage {
     });
   }
 
-  /** {@link IndexedDbReplicaStorage.restoreBoundOutcome}, value only. */
+  /** The value {@link IndexedDbReplicaStorage.restoreBoundOutcome} restored. */
   async restoreBound(
     fingerprint: string,
     attributes: readonly AttributeSpec[],
