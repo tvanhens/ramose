@@ -480,7 +480,8 @@ document.addEventListener('DOMContentLoaded', async function() {
             if (card.style.display !== 'grid') card.style.display = 'grid';
           });
           const bounds = strip.getBoundingClientRect();
-          const top = Math.round(bounds.top * 100) / 100 + 'px';
+          const maxTop = Math.max(0, document.documentElement.clientHeight - caption.offsetHeight);
+          const top = Math.round(Math.min(bounds.top, maxTop) * 100) / 100 + 'px';
           const left = Math.round(bounds.left * 100) / 100 + 'px';
           const width = Math.round(bounds.width * 100) / 100 + 'px';
           if (caption.style.top !== top) caption.style.top = top;
