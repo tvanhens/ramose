@@ -1,0 +1,595 @@
+import { expect } from "vitest";
+import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
+import { Index } from "../../packages/ramose/src/internal/core/datom.ts";
+import type { Db } from "../../packages/ramose/src/internal/core/db.ts";
+import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
+import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
+import {
+  replicaDatabaseKey,
+  replicaDatabaseScopeOf,
+  replicaScopeKey,
+  replicaScopeOf,
+} from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
+import type {
+  ReplicationIdentity,
+  SnapshotDatom,
+} from "../../packages/ramose/src/internal/replication/protocol.ts";
+import { ReplicationSession } from "../../packages/ramose/src/internal/replication/session.ts";
+import { rootReplicaRouteSlot } from "../../packages/ramose/src/internal/replication/route-slot.ts";
+import {
+  replicationActivationAddress,
+  replicationCredentialFingerprint,
+} from "../../packages/ramose/src/internal/replication/transport.ts";
+import { browserTest } from "./fixtures.ts";
+
+const opaque = (character: string): string => character.repeat(43);
+
+const SERVER = opaque("s");
+const LEFT = opaque("l");
+const RIGHT = opaque("r");
+const ROOT_DATABASE = opaque("d");
+const CHILD_DATABASE = opaque("e");
+const SIBLING_DATABASE = opaque("f");
+const READ_COMPATIBILITY = ReadCompatibilityHash.make(opaque("k"));
+
+const identity = (overrides: Partial<ReplicationIdentity> = {}): ReplicationIdentity => ({
+  version: 1,
+  server: SERVER,
+  principal: LEFT,
+  database: ROOT_DATABASE,
+  catalog: opaque("c"),
+  readView: opaque("v"),
+  readCompatibilityHash: READ_COMPATIBILITY,
+  graphLineage: [],
+  authenticator: opaque("a"),
+  ...overrides,
+});
+
+const attributes: readonly AttributeSpec[] = [
+  { ident: ":item/name", valueType: ":db.type/string", cardinality: "one", index: true },
+];
+
+const requestResult = <T>(request: IDBRequest<T>): Promise<T> =>
+  new Promise((resolve, reject) => {
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+
+const transactionDone = (transaction: IDBTransaction): Promise<void> =>
+  new Promise((resolve, reject) => {
+    transaction.addEventListener("complete", () => resolve(), { once: true });
+    transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
+  });
+
+const openNative = (
+  name: string,
+  version?: number,
+  upgrade?: (database: IDBDatabase) => void,
+): Promise<IDBDatabase> =>
+  new Promise((resolve, reject) => {
+    const request = version === undefined ? indexedDB.open(name) : indexedDB.open(name, version);
+    request.addEventListener("upgradeneeded", () => upgrade?.(request.result), { once: true });
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("blocked", () => reject(new Error("upgrade blocked")), { once: true });
+  });
+
+const deleteDatabase = (name: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(name);
+    request.addEventListener("success", () => resolve(), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+
+/** Every record of every store, as a comparable value. */
+const dump = async (name: string): Promise<Record<string, unknown[]>> => {
+  const database = await openNative(name);
+  const stores = [...database.objectStoreNames];
+  const transaction = database.transaction(stores, "readonly");
+  const contents: Record<string, unknown[]> = {};
+  for (const store of stores) {
+    contents[store] = await requestResult<unknown[]>(
+      transaction.objectStore(store).getAll(),
+    );
+  }
+  await transactionDone(transaction);
+  database.close();
+  return contents;
+};
+
+/** Records of one store whose primary key begins with a partition prefix. */
+const partitioned = (records: unknown[], prefix: string): unknown[] =>
+  records.filter((record) =>
+    typeof (record as { partition?: unknown }).partition === "string" &&
+    (record as { partition: string }).partition.startsWith(prefix)
+  );
+
+const bytes = (value: unknown): string => JSON.stringify(value);
+
+const scopeOf = (selected: ReplicationIdentity) => replicaScopeOf(selected);
+const databaseOf = (selected: ReplicationIdentity) => replicaDatabaseScopeOf(selected);
+
+const scopePrefix = (selected: ReplicationIdentity): string =>
+  ["ramose-replica-v2", selected.server, selected.principal, ""].join(":");
+
+const snapshotDatom = (value: string): SnapshotDatom => ({
+  entity: opaque("x"),
+  field: ":item/name",
+  value: { type: "string", value },
+  op: "add",
+});
+
+const installSnapshot = async (
+  storage: IndexedDbReplicaStorage,
+  selected: ReplicationIdentity,
+  revision: string,
+  value: string,
+): Promise<void> => {
+  const snapshot = opaque("q");
+  await storage.startSnapshot({
+    type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
+  });
+  await storage.stageSnapshotChunk({
+    type: "SnapshotChunk", protocol: 1, identity: selected, snapshot, index: 0,
+    datoms: [snapshotDatom(value)],
+  });
+  expect(await storage.commitSnapshot({
+    type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
+  }, attributes)).toBeDefined();
+};
+
+/**
+ * Record the confirmation an authenticated response would have written. Only
+ * this path marks a scope confirmed, so only a scope reached this way can ever
+ * be cleared.
+ */
+const confirm = async (
+  storage: IndexedDbReplicaStorage,
+  selected: ReplicationIdentity,
+  label: string,
+  route?: { readonly scope: string; readonly pathKey: string; readonly slot: string },
+): Promise<void> => {
+  await storage.bindAuthenticated({
+    fingerprint: `fingerprint-${label}`,
+    identity: selected,
+    candidateKey: { selector: `selector-${label}`, routeSlot: `slot-${label}` },
+    ...(route === undefined ? {} : { route }),
+  });
+};
+
+const names = async (db: Db): Promise<string[]> => {
+  const attribute = db.attr(":item/name")!;
+  return (await db.datomsArray(Index.AEVT, { a: attribute.id })).map((datom) => datom.v as string);
+};
+
+browserTest("clears one confirmed scope and preserves every other realm byte-identically", async ({ browser }) => {
+  const name = `ramose-lifecycle-clear-${browser.uniqueId}`;
+  const foreign = `ramose-lifecycle-foreign-${browser.uniqueId}`;
+  const left = identity();
+  const leftChild = identity({ database: CHILD_DATABASE });
+  const right = identity({ principal: RIGHT });
+  const sharedRoute = { scope: "origin-root", pathKey: "path-key", slot: "slot-shared" };
+
+  // An unrelated application database in the same origin.
+  const application = await openNative(foreign, 1, (database) => {
+    database.createObjectStore("notes", { keyPath: "id" });
+  });
+  const seed = application.transaction("notes", "readwrite");
+  seed.objectStore("notes").put({ id: 1, body: "unrelated application data" });
+  await transactionDone(seed);
+  application.close();
+  const foreignBefore = bytes(await dump(foreign));
+
+  let storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await installSnapshot(storage, left, opaque("1"), "left-root");
+    await installSnapshot(storage, leftChild, opaque("2"), "left-child");
+    await installSnapshot(storage, right, opaque("3"), "right-root");
+    await confirm(storage, left, "left", sharedRoute);
+    await confirm(storage, leftChild, "left-child");
+    await confirm(storage, right, "right", sharedRoute);
+
+    const before = await dump(name);
+    const rightPrefix = scopePrefix(right);
+    const rightCommitted = bytes(partitioned(before["replica-committed-v1"]!, rightPrefix));
+    const rightNodes = bytes(
+      before["replica-nodes-v1"]!.filter((record) =>
+        (record as { partition: string }).partition.startsWith(rightPrefix)
+      ),
+    );
+    expect(partitioned(before["replica-committed-v1"]!, scopePrefix(left))).toHaveLength(2);
+
+    const outcome = await storage.clearScope(scopeOf(left));
+    expect(outcome.scope).toBe(replicaScopeKey(scopeOf(left)));
+    expect(outcome.generation).toBe(2);
+    expect(outcome.partitions).toBe(2);
+    expect(outcome.nodes).toBeGreaterThan(0);
+    expect(outcome.bindings).toBe(2);
+    expect(outcome.candidates).toBe(2);
+    expect(outcome.routeObservations).toBe(1);
+
+    const after = await dump(name);
+    // Nothing of the cleared scope survives, in any family.
+    expect(partitioned(after["replica-committed-v1"]!, scopePrefix(left))).toEqual([]);
+    expect(partitioned(after["replica-committed-heads-v1"]!, scopePrefix(left))).toEqual([]);
+    expect(partitioned(after["replica-staging-v1"]!, scopePrefix(left))).toEqual([]);
+    expect(partitioned(after["replica-staging-chunks-v1"]!, scopePrefix(left))).toEqual([]);
+    expect(
+      after["replica-nodes-v1"]!.filter((record) =>
+        (record as { partition: string }).partition.startsWith(scopePrefix(left))
+      ),
+    ).toEqual([]);
+    expect(after["replica-credential-bindings-v1"]).toHaveLength(1);
+    expect(after["replica-cache-candidates-v1"]).toHaveLength(1);
+
+    // The other principal is untouched, byte for byte.
+    expect(bytes(partitioned(after["replica-committed-v1"]!, rightPrefix))).toBe(rightCommitted);
+    expect(
+      bytes(
+        after["replica-nodes-v1"]!.filter((record) =>
+          (record as { partition: string }).partition.startsWith(rightPrefix)
+        ),
+      ),
+    ).toBe(rightNodes);
+
+    // A route observation both principals confirmed keeps the other's claim.
+    const routes = after["replica-route-slots-v1"] as {
+      readonly replicaScopes: readonly string[];
+    }[];
+    expect(routes).toHaveLength(1);
+    expect(routes[0]!.replicaScopes).toEqual([replicaScopeKey(scopeOf(right))]);
+
+    // The generation record survives the clear and moved forward, so #478 can
+    // read the same durable barrier from another tab.
+    const generations = after["replica-generations-v1"] as {
+      readonly key: string;
+      readonly generation: number;
+    }[];
+    expect(
+      generations.find((record) => record.key === replicaScopeKey(scopeOf(left)))?.generation,
+    ).toBe(2);
+    expect(
+      generations.find((record) => record.key === replicaScopeKey(scopeOf(right)))?.generation,
+    ).toBe(1);
+
+    // The clearing handle is terminal for that scope and cannot repopulate it.
+    await expect(storage.restore(left, attributes, READ_COMPATIBILITY)).rejects.toMatchObject({
+      _tag: "ReplicaScopeClearedError",
+    });
+    await expect(storage.startSnapshot({
+      type: "SnapshotStart", protocol: 1, identity: left,
+      snapshot: opaque("z"), revision: opaque("9"),
+    })).rejects.toMatchObject({ _tag: "ReplicaScopeClearedError" });
+    await expect(confirm(storage, left, "again")).rejects.toMatchObject({
+      _tag: "ReplicaScopeClearedError",
+    });
+    await expect(storage.clearScope(scopeOf(left))).rejects.toMatchObject({
+      _tag: "ReplicaScopeClearedError",
+    });
+    // The surviving principal keeps working on the very same handle.
+    expect(await names((await storage.restore(right, attributes, READ_COMPATIBILITY))!.db))
+      .toEqual(["right-root"]);
+
+    // A fresh handle sees the cleared scope as absent, not as terminal.
+    storage.close();
+    storage = await IndexedDbReplicaStorage.open(name);
+    expect(await storage.restore(left, attributes, READ_COMPATIBILITY)).toBeUndefined();
+    expect(await storage.restoreBound("fingerprint-left", attributes, READ_COMPATIBILITY))
+      .toBeUndefined();
+    expect(await storage.restore(right, attributes, READ_COMPATIBILITY)).toBeDefined();
+
+    expect(bytes(await dump(foreign))).toBe(foreignBefore);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+    await deleteDatabase(foreign);
+  }
+});
+
+browserTest("an aborted clear transaction leaves the old complete state", async ({ browser }) => {
+  const name = `ramose-lifecycle-abort-${browser.uniqueId}`;
+  const left = identity();
+  const storage = await IndexedDbReplicaStorage.open(name);
+  const prototype = IDBTransaction.prototype;
+  const nativeCommit = prototype.commit;
+  try {
+    await installSnapshot(storage, left, opaque("1"), "left-root");
+    await confirm(storage, left, "left", {
+      scope: "origin-root", pathKey: "path-key", slot: "slot-shared",
+    });
+    const before = bytes(await dump(name));
+
+    // Cut the very transaction that performs the clear, using real IndexedDB
+    // abort semantics rather than a substitute store.
+    let cut = false;
+    prototype.commit = function (this: IDBTransaction): void {
+      if (!cut && this.db.name === name) {
+        cut = true;
+        this.abort();
+        return;
+      }
+      nativeCommit.call(this);
+    } as IDBTransaction["commit"];
+    await expect(storage.clearScope(scopeOf(left))).rejects.toHaveProperty("name", "AbortError");
+    prototype.commit = nativeCommit;
+    expect(cut).toBe(true);
+
+    // Every family, including the generation fence, is exactly as it was.
+    expect(bytes(await dump(name))).toBe(before);
+    // The handle never became terminal, so the old complete value still reads.
+    expect(await names((await storage.restore(left, attributes, READ_COMPATIBILITY))!.db))
+      .toEqual(["left-root"]);
+    // Retrying completes the clear.
+    expect((await storage.clearScope(scopeOf(left))).generation).toBe(2);
+  } finally {
+    prototype.commit = nativeCommit;
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a fenced lease cannot repopulate a cleared scope or write nodes after eviction", async ({ browser }) => {
+  const name = `ramose-lifecycle-fence-${browser.uniqueId}`;
+  const left = identity();
+  const writer = await IndexedDbReplicaStorage.open(name);
+  const maintainer = await IndexedDbReplicaStorage.open(name);
+  const evictor = await IndexedDbReplicaStorage.open(name);
+  try {
+    await installSnapshot(writer, left, opaque("1"), "left-root");
+    await confirm(writer, left, "left");
+
+    // A session-shaped lease adopts the generations it is writing under.
+    const lease = writer.lease();
+    await writer.startSnapshot({
+      type: "SnapshotStart", protocol: 1, identity: left,
+      snapshot: opaque("q"), revision: opaque("2"),
+    }, { lease });
+    expect(lease.generationOf(replicaScopeKey(scopeOf(left)))).toBe(1);
+
+    // Another handle clears the scope; the durable generation moves.
+    expect((await maintainer.clearScope(scopeOf(left))).generation).toBe(2);
+
+    // The fenced lease cannot bring any of it back.
+    await expect(writer.startSnapshot({
+      type: "SnapshotStart", protocol: 1, identity: left,
+      snapshot: opaque("q"), revision: opaque("2"),
+    }, { lease })).rejects.toMatchObject({
+      _tag: "ReplicaFencedError",
+      key: replicaScopeKey(scopeOf(left)),
+      expected: 1,
+      observed: 2,
+    });
+    await expect(writer.bindAuthenticated({
+      fingerprint: "fingerprint-left", identity: left,
+    }, { lease })).rejects.toMatchObject({ _tag: "ReplicaFencedError" });
+    const afterFence = await dump(name);
+    expect(afterFence["replica-staging-v1"]).toEqual([]);
+    expect(afterFence["replica-credential-bindings-v1"]).toEqual([]);
+
+    // A fresh lease is not fenced: it adopts the current generation.
+    const renewed = writer.lease();
+    await writer.bindAuthenticated({ fingerprint: "fingerprint-left", identity: left }, {
+      lease: renewed,
+    });
+    await writer.startSnapshot({
+      type: "SnapshotStart", protocol: 1, identity: left,
+      snapshot: opaque("q"), revision: opaque("2"),
+    }, { lease: renewed });
+    await writer.stageSnapshotChunk({
+      type: "SnapshotChunk", protocol: 1, identity: left, snapshot: opaque("q"), index: 0,
+      datoms: [snapshotDatom("reinstalled")],
+    }, { lease: renewed });
+
+    // Evicting the database bumps only its own generation. The renewed lease
+    // now loses it and is refused while materializing content nodes, so no
+    // node of the evicted database is ever written.
+    expect((await evictor.evictDatabase(databaseOf(left))).generation).toBe(2);
+    await writer.startSnapshot({
+      type: "SnapshotStart", protocol: 1, identity: left,
+      snapshot: opaque("q"), revision: opaque("2"),
+    }, { lease: writer.lease() });
+    await writer.stageSnapshotChunk({
+      type: "SnapshotChunk", protocol: 1, identity: left, snapshot: opaque("q"), index: 0,
+      datoms: [snapshotDatom("reinstalled")],
+    });
+    await expect(writer.commitSnapshot({
+      type: "SnapshotCommit", protocol: 1, identity: left,
+      snapshot: opaque("q"), revision: opaque("2"), chunks: 1,
+    }, attributes, { lease: renewed })).rejects.toMatchObject({
+      _tag: "ReplicaFencedError",
+      key: replicaDatabaseKey(databaseOf(left)),
+    });
+    const afterEviction = await dump(name);
+    expect(afterEviction["replica-nodes-v1"]).toEqual([]);
+    expect(afterEviction["replica-committed-v1"]).toEqual([]);
+  } finally {
+    writer.close();
+    maintainer.close();
+    evictor.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("evicts one inactive database across its read views and refuses an active one", async ({ browser }) => {
+  const name = `ramose-lifecycle-evict-${browser.uniqueId}`;
+  const parent = identity();
+  const child = identity({ database: CHILD_DATABASE });
+  const childOtherView = identity({ database: CHILD_DATABASE, readView: opaque("w") });
+  const sibling = identity({ database: SIBLING_DATABASE });
+  const other = identity({ principal: RIGHT, database: CHILD_DATABASE });
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await installSnapshot(storage, parent, opaque("1"), "parent");
+    await installSnapshot(storage, child, opaque("2"), "child");
+    await installSnapshot(storage, childOtherView, opaque("3"), "child-other-view");
+    await installSnapshot(storage, sibling, opaque("4"), "sibling");
+    await installSnapshot(storage, other, opaque("5"), "other-principal");
+    for (const [label, selected] of [
+      ["parent", parent],
+      ["child", child],
+      ["child-view", childOtherView],
+      ["sibling", sibling],
+      ["other", other],
+    ] as const) {
+      await confirm(storage, selected, label);
+    }
+
+    // A pinned database is active and refuses eviction without deleting a byte.
+    const release = storage.pinDatabase(databaseOf(child));
+    const before = bytes(await dump(name));
+    await expect(storage.evictDatabase(databaseOf(child))).rejects.toMatchObject({
+      _tag: "ReplicaDatabaseActiveError",
+      database: replicaDatabaseKey(databaseOf(child)),
+      pins: 1,
+    });
+    expect(bytes(await dump(name))).toBe(before);
+    release();
+
+    const outcome = await storage.evictDatabase(databaseOf(child));
+    expect(outcome.partitions).toBe(2);
+    expect(outcome.bindings).toBe(2);
+    expect(outcome.candidates).toBe(2);
+    expect(outcome.generation).toBe(2);
+
+    // Both read views of the evicted database are gone, with their nodes.
+    expect(await storage.restore(child, attributes, READ_COMPATIBILITY)).toBeUndefined();
+    expect(await storage.restore(childOtherView, attributes, READ_COMPATIBILITY)).toBeUndefined();
+    expect(await storage.restoreBound("fingerprint-child", attributes, READ_COMPATIBILITY))
+      .toBeUndefined();
+
+    // Ancestors, siblings, and the other principal remain restorable.
+    expect(await names((await storage.restore(parent, attributes, READ_COMPATIBILITY))!.db))
+      .toEqual(["parent"]);
+    expect(await names((await storage.restore(sibling, attributes, READ_COMPATIBILITY))!.db))
+      .toEqual(["sibling"]);
+    expect(await names((await storage.restore(other, attributes, READ_COMPATIBILITY))!.db))
+      .toEqual(["other-principal"]);
+    expect(
+      (await storage.restoreBound("fingerprint-parent", attributes, READ_COMPATIBILITY))?.revision,
+    ).toBe(opaque("1"));
+
+    // Only the evicted database's generation moved, so sibling sessions in the
+    // same scope keep their leases.
+    const generations = (await dump(name))["replica-generations-v1"] as {
+      readonly key: string;
+      readonly generation: number;
+    }[];
+    expect(
+      generations.find((record) => record.key === replicaScopeKey(scopeOf(child)))?.generation,
+    ).toBe(1);
+    expect(
+      generations.find((record) => record.key === replicaDatabaseKey(databaseOf(sibling)))
+        ?.generation,
+    ).toBe(1);
+
+    // Re-activation needs a fresh snapshot, and then reads normally again.
+    await installSnapshot(storage, child, opaque("6"), "child-again");
+    expect(await names((await storage.restore(child, attributes, READ_COMPATIBILITY))!.db))
+      .toEqual(["child-again"]);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("unconfirmed and wrong-scope requests are typed failures that delete nothing", async ({ browser }) => {
+  const name = `ramose-lifecycle-unconfirmed-${browser.uniqueId}`;
+  const left = identity();
+  const unconfirmed = identity({ principal: RIGHT });
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await installSnapshot(storage, left, opaque("1"), "left-root");
+    await installSnapshot(storage, unconfirmed, opaque("2"), "never-confirmed");
+    // Only the left scope was ever confirmed by an authenticated response.
+    await confirm(storage, left, "left");
+    const before = bytes(await dump(name));
+
+    // A scope with stored data but no confirmation deletes nothing.
+    await expect(storage.clearScope(scopeOf(unconfirmed))).rejects.toMatchObject({
+      _tag: "ReplicaScopeUnconfirmedError",
+      scope: replicaScopeKey(scopeOf(unconfirmed)),
+    });
+    // Neither does a scope this client has never seen at all.
+    await expect(storage.clearScope({ server: opaque("S"), principal: opaque("P") }))
+      .rejects.toMatchObject({ _tag: "ReplicaScopeUnconfirmedError" });
+    await expect(storage.evictDatabase(databaseOf(unconfirmed))).rejects.toMatchObject({
+      _tag: "ReplicaScopeUnconfirmedError",
+    });
+    expect(bytes(await dump(name))).toBe(before);
+    expect(await names((await storage.restore(unconfirmed, attributes, READ_COMPATIBILITY))!.db))
+      .toEqual(["never-confirmed"]);
+
+    // Clearing the confirmed scope removes only that scope.
+    await storage.clearScope(scopeOf(left));
+    expect(await names((await storage.restore(unconfirmed, attributes, READ_COMPATIBILITY))!.db))
+      .toEqual(["never-confirmed"]);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("destructive maintenance closes the sessions bound to the affected realm", async ({ browser }) => {
+  const name = `ramose-lifecycle-sessions-${browser.uniqueId}`;
+  const left = identity();
+  const sibling = identity({ database: SIBLING_DATABASE });
+  const storage = await IndexedDbReplicaStorage.open(name);
+  const address = replicationActivationAddress({
+    server: "http://127.0.0.1:1",
+    root: "root",
+    graphPath: [],
+  });
+  const routeSlot = await rootReplicaRouteSlot();
+  let leftSession: ReplicationSession | undefined;
+  let siblingSession: ReplicationSession | undefined;
+  try {
+    await installSnapshot(storage, left, opaque("1"), "left-root");
+    await installSnapshot(storage, sibling, opaque("2"), "sibling");
+    // An exact credential binding lets each session restore and adopt its
+    // identity immediately, so it pins its database and enrolls itself before
+    // any network frame arrives over the unreachable server.
+    for (const [credential, selected] of [
+      ["left-credential", left],
+      ["sibling-credential", sibling],
+    ] as const) {
+      await storage.bindAuthenticated({
+        fingerprint: await replicationCredentialFingerprint(credential, address, routeSlot),
+        identity: selected,
+      });
+    }
+
+    const openSession = (credential: string): Promise<ReplicationSession> =>
+      ReplicationSession.open({
+        activation: { server: "http://127.0.0.1:1", root: "root", graphPath: [] },
+        credential,
+        attributes,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+    leftSession = await openSession("left-credential");
+    siblingSession = await openSession("sibling-credential");
+    expect(leftSession.snapshot().value?.revision).toBe(opaque("1"));
+    expect(siblingSession.snapshot().value?.revision).toBe(opaque("2"));
+
+    // A live session pins its database, so eviction refuses it outright.
+    await expect(storage.evictDatabase(databaseOf(left))).rejects.toMatchObject({
+      _tag: "ReplicaDatabaseActiveError",
+      pins: 1,
+    });
+    expect((await storage.restore(left, attributes, READ_COMPATIBILITY))?.revision)
+      .toBe(opaque("1"));
+
+    // Clearing the scope closes every session in it, both databases at once.
+    await storage.clearScope(scopeOf(left));
+    expect(leftSession.snapshot().status).toBe("closed");
+    expect(siblingSession.snapshot().status).toBe("closed");
+    const after = await dump(name);
+    expect(after["replica-committed-v1"]).toEqual([]);
+    expect(after["replica-credential-bindings-v1"]).toEqual([]);
+  } finally {
+    await leftSession?.close();
+    await siblingSession?.close();
+    storage.close();
+    await deleteDatabase(name);
+  }
+});

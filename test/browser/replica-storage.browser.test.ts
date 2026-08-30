@@ -446,8 +446,8 @@ browserTest("an open adapter does not block a future IndexedDB schema upgrade", 
   const name = `ramose-replica-upgrade-${browser.uniqueId}`;
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-    const upgraded = await openDatabase(name, 6);
-    expect(upgraded.version).toBe(6);
+    const upgraded = await openDatabase(name, 7);
+    expect(upgraded.version).toBe(7);
     upgraded.close();
   } finally {
     storage.close();
@@ -486,7 +486,7 @@ browserTest("a documentation-only catalog change reuses the replica without any 
     expect(installed?.revision).toBe(revision);
 
     // No documentation reaches the persisted manifest or the local indexes.
-    const inspected = await openDatabase(name, 5);
+    const inspected = await openDatabase(name, 6);
     const inspectTx = inspected.transaction(["replica-committed-v1", "replica-nodes-v1"], "readonly");
     const [manifests, nodes] = await Promise.all([
       requestResult<Record<string, unknown>[]>(
@@ -537,7 +537,7 @@ browserTest("a documentation-only catalog change reuses the replica without any 
     expect(modes.length).toBeGreaterThan(0);
     expect(modes.every((mode) => mode === "readonly")).toBe(true);
 
-    const after = await openDatabase(name, 5);
+    const after = await openDatabase(name, 6);
     const afterTx = after.transaction(["replica-committed-v1", "replica-nodes-v1"], "readonly");
     const [afterManifests, afterNodes] = await Promise.all([
       requestResult<Record<string, unknown>[]>(
@@ -570,7 +570,7 @@ browserTest("a documentation-only catalog change reuses the replica without any 
         type: "SnapshotCommit", protocol: 1, identity: selected,
         snapshot: opaque("s"), revision, chunks: 1,
       }, redocumented)).toBeDefined();
-      const twinDb = await openDatabase(twinName, 5);
+      const twinDb = await openDatabase(twinName, 6);
       const twinTx = twinDb.transaction("replica-committed-v1", "readonly");
       const twinManifests = await requestResult<Record<string, unknown>[]>(
         twinTx.objectStore("replica-committed-v1").getAll(),

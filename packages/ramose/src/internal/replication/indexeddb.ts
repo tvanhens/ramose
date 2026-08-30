@@ -31,6 +31,25 @@ import {
 } from "./replica-schema.ts";
 import type { ReplicaRouteSlot } from "./route-slot.ts";
 import {
+  identityInDatabase,
+  identityInScope,
+  replicaDatabaseKey,
+  replicaDatabasePartitionPrefix,
+  replicaDatabaseScopeOf,
+  replicaPartitionKey,
+  replicaScopeKey,
+  replicaScopeOf,
+  replicaScopePartitionPrefix,
+  withConfirmedScope,
+  withoutConfirmedScope,
+  ReplicaDatabaseActiveError,
+  ReplicaLease,
+  ReplicaScopeClearedError,
+  ReplicaScopeUnconfirmedError,
+  type ReplicaDatabaseScope,
+  type ReplicaScope,
+} from "./replica-lifecycle.ts";
+import {
   applyReplicationFrame,
   emptyClientReplicationState,
   ReplicationTransitionError,
@@ -41,7 +60,9 @@ import {
 
 /** The IndexedDB version that introduced replica storage version 2. */
 const STORAGE_V2_DATABASE_VERSION = 5;
-const DATABASE_VERSION = STORAGE_V2_DATABASE_VERSION;
+/** The IndexedDB version that added the durable lifecycle generation records. */
+const LIFECYCLE_DATABASE_VERSION = 6;
+const DATABASE_VERSION = LIFECYCLE_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
 const COMMITTED_HEADS = "replica-committed-heads-v1";
 const STAGING = "replica-staging-v1";
@@ -50,6 +71,7 @@ const NODES = "replica-nodes-v1";
 const CREDENTIAL_BINDINGS = "replica-credential-bindings-v1";
 const CACHE_CANDIDATES = "replica-cache-candidates-v1";
 const ROUTE_SLOTS = "replica-route-slots-v1";
+const GENERATIONS = "replica-generations-v1";
 const USER_T = 2;
 
 /**
@@ -66,20 +88,30 @@ const REPLICA_STORE_FAMILIES = [
   CREDENTIAL_BINDINGS,
   CACHE_CANDIDATES,
   ROUTE_SLOTS,
+  GENERATIONS,
 ] as const;
+
+/**
+ * Families keyed by the replica partition key alone.
+ *
+ * Scoped clear and database eviction delete one prefix range from each family
+ * below, so the #475/#476 mutation families — outbox, receipts, ClientRef
+ * mappings, optimistic layers, observation markers — are removed by the same
+ * transaction with no new selection logic as soon as they adopt one of these
+ * two index shapes.
+ */
+const PARTITION_KEYED_FAMILIES = [COMMITTED, COMMITTED_HEADS, STAGING] as const;
+
+/** Families whose compound key begins with the replica partition key. */
+const PARTITION_PREFIXED_FAMILIES = [STAGING_CHUNKS, NODES] as const;
+
+/** Families holding one authenticated identity per record. */
+const IDENTITY_KEYED_FAMILIES = [CREDENTIAL_BINDINGS, CACHE_CANDIDATES] as const;
 
 export const DEFAULT_REPLICA_DATABASE_NAME = "ramose-replicas";
 
 /** Authenticator and catalog rotation do not create another stored partition. */
-export const replicaPartitionKey = (identity: ReplicationIdentity): string =>
-  [
-    `ramose-replica-v${REPLICA_STORAGE_VERSION}`,
-    identity.server,
-    identity.principal,
-    identity.database,
-    identity.readView,
-    identity.readCompatibilityHash,
-  ].join(":");
+export { replicaPartitionKey } from "./replica-lifecycle.ts";
 
 type CommittedRecord = {
   readonly partition: string;
@@ -148,6 +180,33 @@ type RouteSlotRecord = {
   readonly scope: string;
   readonly pathKey: string;
   readonly slot: ReplicaRouteSlot;
+  /**
+   * Replica scopes that have confirmed this observation. An observation is
+   * looked up before any identity is known, so it cannot be keyed by
+   * principal; this list lets a scoped clear withdraw only its own
+   * confirmation and delete the record only once nobody else claims it.
+   */
+  readonly replicaScopes?: readonly string[];
+};
+
+/**
+ * The durable fence guarding one scope or one stable graph database.
+ *
+ * Generations only ever increase, and the record survives a clear, so a
+ * session leased under an older generation can never become writable again.
+ * #478 extends this same record into the all-tab barrier: it is durable,
+ * readable inside any write transaction, and independent of BroadcastChannel.
+ */
+type GenerationRecord = {
+  readonly key: string;
+  readonly kind: "scope" | "database";
+  /** Owning scope key; a scope record owns itself. */
+  readonly scope: string;
+  readonly generation: number;
+  /** When this realm was first confirmed by an authenticated response. */
+  readonly confirmedAt: number;
+  /** When the last destructive maintenance bumped this record. */
+  readonly fencedAt: number | null;
 };
 
 export type ReplicaRouteObservation = {
@@ -197,6 +256,43 @@ export type ReplicaAuthenticatedBinding = {
 export type ReplicaInstallOptions = {
   /** Aborting leaves the previously committed manifest queryable. */
   readonly signal?: AbortSignal;
+  /**
+   * The caller's lifecycle lease. Supplying one makes this write refuse to
+   * install data whose scope or database was fenced by a clear or eviction.
+   */
+  readonly lease?: ReplicaLease | undefined;
+};
+
+/** What one scoped clear removed, for callers that report or assert on it. */
+export type ReplicaClearOutcome = {
+  readonly scope: string;
+  readonly generation: number;
+  readonly partitions: number;
+  readonly nodes: number;
+  readonly bindings: number;
+  readonly candidates: number;
+  readonly routeObservations: number;
+};
+
+/** What one database eviction removed. */
+export type ReplicaEvictOutcome = {
+  readonly database: string;
+  readonly generation: number;
+  readonly partitions: number;
+  readonly nodes: number;
+  readonly bindings: number;
+  readonly candidates: number;
+};
+
+/**
+ * A live participant that destructive maintenance must close before it
+ * returns. #478 replaces the in-process registry with the all-tab barrier.
+ */
+export type ReplicaScopeParticipant = {
+  readonly scope: ReplicaScope;
+  /** Absent means the participant spans the whole scope. */
+  readonly database?: ReplicaDatabaseScope | undefined;
+  readonly close: () => Promise<void>;
 };
 
 const requestResult = <T>(request: IDBRequest<T>): Promise<T> =>
@@ -205,15 +301,23 @@ const requestResult = <T>(request: IDBRequest<T>): Promise<T> =>
     request.addEventListener("error", () => reject(request.error), { once: true });
   });
 
+/**
+ * An aborted transaction carries no error of its own, and the requests it
+ * cancels bubble their own failure first, so both endings must be reported as
+ * one inspectable exception rather than a bare `null`.
+ */
+const transactionFailure = (transaction: IDBTransaction): DOMException =>
+  transaction.error ?? new DOMException("transaction aborted", "AbortError");
+
 const transactionDone = (transaction: IDBTransaction): Promise<void> =>
   new Promise((resolve, reject) => {
     transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener(
-      "abort",
-      () => reject(transaction.error ?? new DOMException("transaction aborted", "AbortError")),
-      { once: true },
-    );
-    transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    transaction.addEventListener("abort", () => reject(transactionFailure(transaction)), {
+      once: true,
+    });
+    transaction.addEventListener("error", () => reject(transactionFailure(transaction)), {
+      once: true,
+    });
   });
 
 const commitTransaction = async (transaction: IDBTransaction): Promise<void> => {
@@ -249,6 +353,16 @@ const chunkRange = (partition: string): IDBKeyRange =>
 const nodeRange = (partition: string): IDBKeyRange =>
   IDBKeyRange.bound([partition, ""], [partition, "\uffff"]);
 
+/**
+ * Partition keys are built from opaque identifiers that never contain the
+ * separator, so a string prefix selects exactly one scope or one database.
+ */
+const prefixRange = (prefix: string): IDBKeyRange =>
+  IDBKeyRange.bound(prefix, `${prefix}\uffff`);
+
+const compoundPrefixRange = (prefix: string): IDBKeyRange =>
+  IDBKeyRange.bound([prefix], [`${prefix}\uffff`]);
+
 const sameJson = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
 
@@ -261,11 +375,54 @@ const transition = (
   return result.success;
 };
 
+/** The durable generation records one write must still be leasing. */
+type ReplicaFence = {
+  readonly lease: ReplicaLease;
+  readonly scopeKey: string;
+  readonly databaseKey: string;
+};
+
+const replicaFence = (
+  lease: ReplicaLease | undefined,
+  identity: ReplicationIdentity,
+): ReplicaFence | undefined =>
+  lease === undefined ? undefined : {
+    lease,
+    scopeKey: replicaScopeKey(replicaScopeOf(identity)),
+    databaseKey: replicaDatabaseKey(replicaDatabaseScopeOf(identity)),
+  };
+
+/**
+ * Read both guarding generations inside the caller's own transaction and hold
+ * the lease to them. A lease that lost either generation aborts the
+ * transaction, so a fenced session can never interleave old-generation data
+ * with a completed clear or eviction.
+ */
+const enforceFence = async (
+  transaction: IDBTransaction,
+  fence: ReplicaFence | undefined,
+): Promise<void> => {
+  if (fence === undefined) return;
+  const generations = transaction.objectStore(GENERATIONS);
+  const [scope, database] = await Promise.all([
+    requestResult<GenerationRecord | undefined>(generations.get(fence.scopeKey)),
+    requestResult<GenerationRecord | undefined>(generations.get(fence.databaseKey)),
+  ]);
+  try {
+    fence.lease.observe(fence.scopeKey, scope?.generation ?? 0);
+    fence.lease.observe(fence.databaseKey, database?.generation ?? 0);
+  } catch (error) {
+    await abortTransaction(transaction);
+    throw error;
+  }
+};
+
 class IndexedDbNodeStore implements NodeStore {
   constructor(
     private readonly database: IDBDatabase,
     private readonly partition: string,
     private readonly signal?: AbortSignal,
+    private readonly fence?: ReplicaFence | undefined,
   ) {}
 
   peek(_hash: string): TreeNode | undefined {
@@ -287,7 +444,11 @@ class IndexedDbNodeStore implements NodeStore {
     this.signal?.throwIfAborted();
     const { ref, body } = await serializeNode(index, node, gzipCodec);
     this.signal?.throwIfAborted();
-    const transaction = this.database.transaction(NODES, "readwrite");
+    const transaction = this.database.transaction(
+      this.fence === undefined ? [NODES] : [NODES, GENERATIONS],
+      "readwrite",
+    );
+    await enforceFence(transaction, this.fence);
     transaction.objectStore(NODES).put({
       partition: this.partition,
       hash: ref.hash,
@@ -344,6 +505,7 @@ const materialize = async (
   attributes: readonly AttributeSpec[],
   prior: CommittedRecord | undefined,
   signal?: AbortSignal,
+  fence?: ReplicaFence | undefined,
 ): Promise<Materialized> => {
   signal?.throwIfAborted();
   const partition = replicaPartitionKey(identity);
@@ -389,7 +551,7 @@ const materialize = async (
     facts.push({ e, a, vt, v: datomValue(logical.value, entities), t: USER_T, op: true });
   }
 
-  const store = new IndexedDbNodeStore(database, partition, signal);
+  const store = new IndexedDbNodeStore(database, partition, signal, fence);
   const roots = await buildRoots(
     store,
     schema,
@@ -456,6 +618,17 @@ const dbFromRecord = (
 };
 
 export class IndexedDbReplicaStorage {
+  /**
+   * Scopes this handle has cleared. A cleared scope is terminal for this
+   * instance: no read, restore, or install may touch it again, so the handle
+   * cannot lazily repopulate what the user asked to delete. Fresh state for
+   * that scope requires a fresh {@link IndexedDbReplicaStorage.open}, which is
+   * how #477's `clearLocalData()` makes the clearing client terminal.
+   */
+  private readonly clearedScopes = new Set<string>();
+  private readonly pins = new Map<string, number>();
+  private readonly participants = new Set<ReplicaScopeParticipant>();
+
   private constructor(
     readonly name: string,
     private readonly database: IDBDatabase,
@@ -491,6 +664,9 @@ export class IndexedDbReplicaStorage {
       if (!database.objectStoreNames.contains(ROUTE_SLOTS)) {
         database.createObjectStore(ROUTE_SLOTS, { keyPath: ["scope", "pathKey"] });
       }
+      if (!database.objectStoreNames.contains(GENERATIONS)) {
+        database.createObjectStore(GENERATIONS, { keyPath: "key" });
+      }
       const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
       if (oldVersion > 0 && oldVersion < STORAGE_V2_DATABASE_VERSION && request.transaction !== null) {
         // One atomic pre-public reset. Every stored record older than storage
@@ -511,6 +687,239 @@ export class IndexedDbReplicaStorage {
 
   close(): void {
     this.database.close();
+  }
+
+  /**
+   * A fresh in-process lease. One session holds exactly one and passes it to
+   * every install, so a clear or eviction fences it deterministically.
+   */
+  lease(): ReplicaLease {
+    return new ReplicaLease();
+  }
+
+  /**
+   * Pin one stable graph database for as long as a session is reading it.
+   * Eviction refuses a pinned database; the returned callback releases the pin
+   * and is idempotent.
+   */
+  pinDatabase(scope: ReplicaDatabaseScope): () => void {
+    const key = replicaDatabaseKey(scope);
+    this.pins.set(key, (this.pins.get(key) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const held = (this.pins.get(key) ?? 1) - 1;
+      if (held > 0) this.pins.set(key, held);
+      else this.pins.delete(key);
+    };
+  }
+
+  /**
+   * Enroll a live session so destructive maintenance closes it before
+   * returning. The durable generation is what actually prevents an
+   * old-generation write; closing makes the outcome observable and
+   * deterministic. #478 extends this to the other tabs.
+   */
+  enroll(participant: ReplicaScopeParticipant): () => void {
+    this.participants.add(participant);
+    return () => this.participants.delete(participant);
+  }
+
+  private assertScopeLive(scope: ReplicaScope): string {
+    const key = replicaScopeKey(scope);
+    if (this.clearedScopes.has(key)) throw new ReplicaScopeClearedError({ scope: key });
+    return key;
+  }
+
+  private async closeMatching(
+    match: (participant: ReplicaScopeParticipant) => boolean,
+  ): Promise<void> {
+    for (const participant of [...this.participants]) {
+      if (!match(participant)) continue;
+      this.participants.delete(participant);
+      await participant.close();
+    }
+  }
+
+  /**
+   * Atomically remove every replica store family belonging to one confirmed
+   * server/principal scope, fencing it first so no session can write
+   * old-generation data afterwards. One IndexedDB transaction performs the
+   * fence and the deletion together, so a crash cut leaves either the old
+   * complete state or the fully cleared state.
+   *
+   * Only a scope this client previously or currently confirmed with the server
+   * can be named: the confirmation record is written solely by
+   * {@link IndexedDbReplicaStorage.bindAuthenticated}, so `cacheKey`, bearer
+   * text, path text, and unconfirmed candidates cannot select a deletion. An
+   * unconfirmed scope deletes nothing and fails with a typed error.
+   *
+   * Other principals, other servers, other applications' IndexedDB databases,
+   * and store families this format does not own are untouched.
+   */
+  async clearScope(scope: ReplicaScope): Promise<ReplicaClearOutcome> {
+    const scopeKey = this.assertScopeLive(scope);
+    const prefix = replicaScopePartitionPrefix(scope);
+    const transaction = this.database.transaction([...REPLICA_STORE_FAMILIES], "readwrite");
+    const generations = transaction.objectStore(GENERATIONS);
+    const confirmed = await requestResult<GenerationRecord | undefined>(
+      generations.get(scopeKey),
+    );
+    if (confirmed === undefined) {
+      await abortTransaction(transaction);
+      throw new ReplicaScopeUnconfirmedError({ scope: scopeKey });
+    }
+    const [partitions, nodes] = await Promise.all([
+      requestResult<number>(transaction.objectStore(COMMITTED).count(prefixRange(prefix))),
+      requestResult<number>(
+        transaction.objectStore(NODES).count(compoundPrefixRange(prefix)),
+      ),
+    ]);
+    for (const family of PARTITION_KEYED_FAMILIES) {
+      transaction.objectStore(family).delete(prefixRange(prefix));
+    }
+    for (const family of PARTITION_PREFIXED_FAMILIES) {
+      transaction.objectStore(family).delete(compoundPrefixRange(prefix));
+    }
+    const bindingStore = transaction.objectStore(CREDENTIAL_BINDINGS);
+    const candidateStore = transaction.objectStore(CACHE_CANDIDATES);
+    const routeStore = transaction.objectStore(ROUTE_SLOTS);
+    const [bindingRecords, candidateRecords, routeRecords] = await Promise.all([
+      requestResult<CredentialBindingRecord[]>(bindingStore.getAll()),
+      requestResult<CacheCandidateRecord[]>(candidateStore.getAll()),
+      requestResult<RouteSlotRecord[]>(routeStore.getAll()),
+    ]);
+    let bindings = 0;
+    for (const binding of bindingRecords) {
+      if (!identityInScope(binding.identity, scope)) continue;
+      bindingStore.delete(binding.fingerprint);
+      bindings++;
+    }
+    let candidates = 0;
+    for (const candidate of candidateRecords) {
+      if (!identityInScope(candidate.identity, scope)) continue;
+      candidateStore.delete([candidate.selector, candidate.routeSlot]);
+      candidates++;
+    }
+    let routeObservations = 0;
+    for (const observation of routeRecords) {
+      if (!(observation.replicaScopes ?? []).includes(scopeKey)) continue;
+      routeObservations++;
+      const remaining = withoutConfirmedScope(observation.replicaScopes, scopeKey);
+      if (remaining.length === 0) {
+        routeStore.delete([observation.scope, observation.pathKey]);
+      } else {
+        routeStore.put({ ...observation, replicaScopes: remaining } satisfies RouteSlotRecord);
+      }
+    }
+    const generation = confirmed.generation + 1;
+    generations.put({
+      ...confirmed,
+      generation,
+      fencedAt: Date.now(),
+    } satisfies GenerationRecord);
+    await commitTransaction(transaction);
+    this.clearedScopes.add(scopeKey);
+    await this.closeMatching((participant) =>
+      replicaScopeKey(participant.scope) === scopeKey
+    );
+    return Object.freeze({
+      scope: scopeKey,
+      generation,
+      partitions,
+      nodes,
+      bindings,
+      candidates,
+      routeObservations,
+    });
+  }
+
+  /**
+   * Evict one inactive stable graph database as a unit: every read view it has
+   * ever had, all of their content nodes, staged snapshots, and the bindings
+   * and candidates that select them. Ancestors, siblings, other principals, and
+   * the scope's future mutation families are untouched, and the durable route
+   * observation is kept so a later re-activation still finds the same stable
+   * slot — it simply needs a fresh snapshot from the server.
+   *
+   * Eviction bumps only this database's generation, so sibling sessions in the
+   * same scope keep running. A database still pinned by a live session refuses
+   * eviction and deletes nothing.
+   */
+  async evictDatabase(scope: ReplicaDatabaseScope): Promise<ReplicaEvictOutcome> {
+    const scopeKey = this.assertScopeLive(scope);
+    const databaseKey = replicaDatabaseKey(scope);
+    const pins = this.pins.get(databaseKey) ?? 0;
+    if (pins > 0) throw new ReplicaDatabaseActiveError({ database: databaseKey, pins });
+    const prefix = replicaDatabasePartitionPrefix(scope);
+    const transaction = this.database.transaction([
+      ...PARTITION_KEYED_FAMILIES,
+      ...PARTITION_PREFIXED_FAMILIES,
+      ...IDENTITY_KEYED_FAMILIES,
+      GENERATIONS,
+    ], "readwrite");
+    const generations = transaction.objectStore(GENERATIONS);
+    const [confirmed, current] = await Promise.all([
+      requestResult<GenerationRecord | undefined>(generations.get(scopeKey)),
+      requestResult<GenerationRecord | undefined>(generations.get(databaseKey)),
+    ]);
+    if (confirmed === undefined) {
+      await abortTransaction(transaction);
+      throw new ReplicaScopeUnconfirmedError({ scope: scopeKey });
+    }
+    const [partitions, nodes] = await Promise.all([
+      requestResult<number>(transaction.objectStore(COMMITTED).count(prefixRange(prefix))),
+      requestResult<number>(
+        transaction.objectStore(NODES).count(compoundPrefixRange(prefix)),
+      ),
+    ]);
+    for (const family of PARTITION_KEYED_FAMILIES) {
+      transaction.objectStore(family).delete(prefixRange(prefix));
+    }
+    for (const family of PARTITION_PREFIXED_FAMILIES) {
+      transaction.objectStore(family).delete(compoundPrefixRange(prefix));
+    }
+    const bindingStore = transaction.objectStore(CREDENTIAL_BINDINGS);
+    const candidateStore = transaction.objectStore(CACHE_CANDIDATES);
+    const [bindingRecords, candidateRecords] = await Promise.all([
+      requestResult<CredentialBindingRecord[]>(bindingStore.getAll()),
+      requestResult<CacheCandidateRecord[]>(candidateStore.getAll()),
+    ]);
+    let bindings = 0;
+    for (const binding of bindingRecords) {
+      if (!identityInDatabase(binding.identity, scope)) continue;
+      bindingStore.delete(binding.fingerprint);
+      bindings++;
+    }
+    let candidates = 0;
+    for (const candidate of candidateRecords) {
+      if (!identityInDatabase(candidate.identity, scope)) continue;
+      candidateStore.delete([candidate.selector, candidate.routeSlot]);
+      candidates++;
+    }
+    const generation = (current?.generation ?? 0) + 1;
+    generations.put({
+      key: databaseKey,
+      kind: "database",
+      scope: scopeKey,
+      generation,
+      confirmedAt: current?.confirmedAt ?? Date.now(),
+      fencedAt: Date.now(),
+    } satisfies GenerationRecord);
+    await commitTransaction(transaction);
+    await this.closeMatching((participant) =>
+      participant.database !== undefined &&
+      replicaDatabaseKey(participant.database) === databaseKey
+    );
+    return Object.freeze({
+      database: databaseKey,
+      generation,
+      partitions,
+      nodes,
+      bindings,
+      candidates,
+    });
   }
 
   private async committed(identity: ReplicationIdentity): Promise<CommittedRecord | undefined> {
@@ -578,6 +987,7 @@ export class IndexedDbReplicaStorage {
     attributes: readonly AttributeSpec[],
     readCompatibilityHash: ReadCompatibilityHash,
   ): Promise<RestoredReplica | undefined> {
+    this.assertScopeLive(replicaScopeOf(identity));
     const record = await this.committed(identity);
     if (record === undefined) return undefined;
     if (record.storageVersion !== REPLICA_STORAGE_VERSION) return undefined;
@@ -651,6 +1061,7 @@ export class IndexedDbReplicaStorage {
     attributes: readonly AttributeSpec[],
     readCompatibilityHash: ReadCompatibilityHash,
   ): Promise<BoundRestoredReplica | undefined> {
+    this.assertScopeLive(replicaScopeOf(candidate.identity));
     const record = await this.committed(candidate.identity);
     if (
       record === undefined ||
@@ -699,12 +1110,57 @@ export class IndexedDbReplicaStorage {
     binding: ReplicaAuthenticatedBinding,
     options: ReplicaInstallOptions = {},
   ): Promise<void> {
+    const scopeKey = this.assertScopeLive(replicaScopeOf(binding.identity));
+    const databaseKey = replicaDatabaseKey(replicaDatabaseScopeOf(binding.identity));
     const transaction = this.database.transaction(
-      [CREDENTIAL_BINDINGS, CACHE_CANDIDATES, ROUTE_SLOTS],
+      [CREDENTIAL_BINDINGS, CACHE_CANDIDATES, ROUTE_SLOTS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
+      // This is the only path that carries a server-confirmed identity, so it
+      // is also the only path that may record a scope as confirmed. A clear
+      // request naming a scope no such response ever produced deletes nothing.
+      const generations = transaction.objectStore(GENERATIONS);
+      const [scopeRecord, databaseRecord, existingRoute] = await Promise.all([
+        requestResult<GenerationRecord | undefined>(generations.get(scopeKey)),
+        requestResult<GenerationRecord | undefined>(generations.get(databaseKey)),
+        binding.route === undefined
+          ? undefined
+          : requestResult<RouteSlotRecord | undefined>(
+            transaction.objectStore(ROUTE_SLOTS).get([binding.route.scope, binding.route.pathKey]),
+          ),
+      ]);
+      const now = Date.now();
+      if (scopeRecord === undefined) {
+        generations.put({
+          key: scopeKey,
+          kind: "scope",
+          scope: scopeKey,
+          generation: 1,
+          confirmedAt: now,
+          fencedAt: null,
+        } satisfies GenerationRecord);
+      }
+      if (databaseRecord === undefined) {
+        generations.put({
+          key: databaseKey,
+          kind: "database",
+          scope: scopeKey,
+          generation: 1,
+          confirmedAt: now,
+          fencedAt: null,
+        } satisfies GenerationRecord);
+      }
+      if (options.lease !== undefined) {
+        try {
+          options.lease.observe(scopeKey, scopeRecord?.generation ?? 1);
+          options.lease.observe(databaseKey, databaseRecord?.generation ?? 1);
+        } catch (error) {
+          await abortTransaction(transaction);
+          throw error;
+        }
+      }
       transaction.objectStore(CREDENTIAL_BINDINGS).put({
         fingerprint: binding.fingerprint,
         identity: binding.identity,
@@ -721,6 +1177,14 @@ export class IndexedDbReplicaStorage {
           scope: binding.route.scope,
           pathKey: binding.route.pathKey,
           slot: binding.route.slot,
+          // A re-keyed slot invalidates every other scope's confirmation of
+          // this path text, so only the confirming scope survives it.
+          replicaScopes: withConfirmedScope(
+            existingRoute?.slot === binding.route.slot
+              ? existingRoute.replicaScopes
+              : undefined,
+            scopeKey,
+          ),
         } satisfies RouteSlotRecord);
       }
       await commitTransaction(transaction);
@@ -785,20 +1249,39 @@ export class IndexedDbReplicaStorage {
   }
 
   /** Reset abandons only incomplete staging; a same-identity committed value survives. */
-  async resetStaging(identity: ReplicationIdentity): Promise<void> {
+  async resetStaging(
+    identity: ReplicationIdentity,
+    options: ReplicaInstallOptions = {},
+  ): Promise<void> {
+    this.assertScopeLive(replicaScopeOf(identity));
+    const fence = replicaFence(options.lease, identity);
     const partition = replicaPartitionKey(identity);
-    const transaction = this.database.transaction([STAGING, STAGING_CHUNKS], "readwrite");
+    const transaction = this.database.transaction(
+      fence === undefined
+        ? [STAGING, STAGING_CHUNKS]
+        : [STAGING, STAGING_CHUNKS, GENERATIONS],
+      "readwrite",
+    );
+    await enforceFence(transaction, fence);
     transaction.objectStore(STAGING).delete(partition);
     transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
     await commitTransaction(transaction);
   }
 
-  async startSnapshot(frame: SnapshotStart): Promise<void> {
+  async startSnapshot(
+    frame: SnapshotStart,
+    options: ReplicaInstallOptions = {},
+  ): Promise<void> {
+    this.assertScopeLive(replicaScopeOf(frame.identity));
+    const fence = replicaFence(options.lease, frame.identity);
     const partition = replicaPartitionKey(frame.identity);
     const transaction = this.database.transaction(
-      [COMMITTED, STAGING, STAGING_CHUNKS],
+      fence === undefined
+        ? [COMMITTED, STAGING, STAGING_CHUNKS]
+        : [COMMITTED, STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
+    await enforceFence(transaction, fence);
     const staging = transaction.objectStore(STAGING);
     const [current, committed] = await Promise.all([
       requestResult<StagingRecord | undefined>(staging.get(partition)),
@@ -824,9 +1307,20 @@ export class IndexedDbReplicaStorage {
     await commitTransaction(transaction);
   }
 
-  async stageSnapshotChunk(frame: SnapshotChunk): Promise<void> {
+  async stageSnapshotChunk(
+    frame: SnapshotChunk,
+    options: ReplicaInstallOptions = {},
+  ): Promise<void> {
+    this.assertScopeLive(replicaScopeOf(frame.identity));
+    const fence = replicaFence(options.lease, frame.identity);
     const partition = replicaPartitionKey(frame.identity);
-    const transaction = this.database.transaction([STAGING, STAGING_CHUNKS], "readwrite");
+    const transaction = this.database.transaction(
+      fence === undefined
+        ? [STAGING, STAGING_CHUNKS]
+        : [STAGING, STAGING_CHUNKS, GENERATIONS],
+      "readwrite",
+    );
+    await enforceFence(transaction, fence);
     const staging = await requestResult<StagingRecord | undefined>(
       transaction.objectStore(STAGING).get(partition),
     );
@@ -894,6 +1388,8 @@ export class IndexedDbReplicaStorage {
     attributes: readonly AttributeSpec[],
     options: ReplicaInstallOptions = {},
   ): Promise<RestoredReplica | undefined> {
+    this.assertScopeLive(replicaScopeOf(frame.identity));
+    const fence = replicaFence(options.lease, frame.identity);
     const [staged, prior] = await Promise.all([
       this.stagedState(frame),
       this.committed(frame.identity),
@@ -908,14 +1404,18 @@ export class IndexedDbReplicaStorage {
       attributes,
       prior,
       options.signal,
+      fence,
     );
     options.signal?.throwIfAborted();
     const transaction = this.database.transaction(
-      [COMMITTED, COMMITTED_HEADS, STAGING, STAGING_CHUNKS],
+      fence === undefined
+        ? [COMMITTED, COMMITTED_HEADS, STAGING, STAGING_CHUNKS]
+        : [COMMITTED, COMMITTED_HEADS, STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
+      await enforceFence(transaction, fence);
       const current = await requestResult<StagingRecord | undefined>(
         transaction.objectStore(STAGING).get(built.record.partition),
       );
@@ -946,6 +1446,8 @@ export class IndexedDbReplicaStorage {
     frame: Change,
     options: ReplicaInstallOptions = {},
   ): Promise<RestoredReplica | undefined> {
+    this.assertScopeLive(replicaScopeOf(frame.identity));
+    const fence = replicaFence(options.lease, frame.identity);
     const partition = replicaPartitionKey(frame.identity);
     const read = this.database.transaction(COMMITTED, "readonly");
     const prior = await requestResult<CommittedRecord | undefined>(
@@ -971,14 +1473,18 @@ export class IndexedDbReplicaStorage {
       prior.attributes,
       prior,
       options.signal,
+      fence,
     );
     options.signal?.throwIfAborted();
     const write = this.database.transaction(
-      [COMMITTED, COMMITTED_HEADS],
+      fence === undefined
+        ? [COMMITTED, COMMITTED_HEADS]
+        : [COMMITTED, COMMITTED_HEADS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(write, options.signal);
     try {
+      await enforceFence(write, fence);
       const current = await requestResult<CommittedRecord | undefined>(
         write.objectStore(COMMITTED).get(partition),
       );

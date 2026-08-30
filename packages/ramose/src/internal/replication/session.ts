@@ -11,6 +11,11 @@ import {
   type RestoredReplica,
 } from "./indexeddb.ts";
 import { sameReplicationIdentity } from "./state.ts";
+import {
+  replicaDatabaseScopeOf,
+  replicaScopeOf,
+  type ReplicaLease,
+} from "./replica-lifecycle.ts";
 import type { ReplicationFrame, ReplicationIdentity } from "./protocol.ts";
 import {
   openReplicationResponse,
@@ -155,6 +160,13 @@ export class ReplicationSession {
   private generation = 1;
   private loop: Promise<void>;
   private state: ReplicationSessionSnapshot;
+  /**
+   * The lifecycle lease this session writes under. A scoped clear or a
+   * database eviction bumps the durable generation it holds, so every later
+   * install of this session is refused rather than interleaved.
+   */
+  private readonly lease: ReplicaLease;
+  private tracking: readonly (() => void)[] = [];
 
   private constructor(
     private readonly storage: IndexedDbReplicaStorage,
@@ -163,13 +175,36 @@ export class ReplicationSession {
     initial: BoundRestoredReplica | undefined,
     run: (session: ReplicationSession, generation: number) => Promise<void>,
   ) {
+    this.lease = storage.lease();
     this.state = Object.freeze({
       status: "connecting",
       ...(initial === undefined
         ? {}
         : { value: valueFrom(initial.identity, initial, true) }),
     });
+    if (initial !== undefined) this.track(initial.identity);
     this.loop = run(this, this.generation);
+  }
+
+  /**
+   * Pin the database this session reads and enroll the session so destructive
+   * maintenance closes it deterministically before deleting anything.
+   */
+  private track(identity: ReplicationIdentity): void {
+    if (this.tracking.length > 0) return;
+    this.tracking = [
+      this.storage.pinDatabase(replicaDatabaseScopeOf(identity)),
+      this.storage.enroll({
+        scope: replicaScopeOf(identity),
+        database: replicaDatabaseScopeOf(identity),
+        close: () => this.close(),
+      }),
+    ];
+  }
+
+  private untrack(): void {
+    for (const release of this.tracking) release();
+    this.tracking = [];
   }
 
   static async open(options: ReplicationSessionOptions): Promise<ReplicationSession> {
@@ -243,6 +278,7 @@ export class ReplicationSession {
               }
               if (responseIdentity === undefined) {
                 responseIdentity = frameIdentity;
+                session.track(frameIdentity);
                 if (
                   session.state.value !== undefined &&
                   !sameReplicationIdentity(session.state.value.identity, frameIdentity)
@@ -277,7 +313,7 @@ export class ReplicationSession {
                     ? {}
                     : { candidateKey: { selector: candidateKey.selector, routeSlot: confirmedSlot } }),
                   route: { ...observation, slot: confirmedSlot },
-                }, { signal: session.controller.signal });
+                }, { signal: session.controller.signal, lease: session.lease });
                 if (!session.current(generation)) return;
                 bindingConfirmed = true;
                 if (session.state.value === undefined) {
@@ -324,6 +360,7 @@ export class ReplicationSession {
 
   async close(): Promise<void> {
     if (this.state.status === "closed") return;
+    this.untrack();
     this.generation++;
     this.controller.abort(new DOMException("replication session closed", "AbortError"));
     try {
@@ -421,6 +458,7 @@ export class ReplicationSession {
         }
         const installed = await this.storage.applyChange(frame, {
           signal: this.controller.signal,
+          lease: this.lease,
         });
         if (installed === undefined || installed.revision !== frame.revision) {
           throw new Error("authenticated change did not continue the cache candidate");
@@ -477,7 +515,7 @@ export class ReplicationSession {
     if (!this.current(generation)) return true;
     switch (frame.type) {
       case "Reset":
-        await this.storage.resetStaging(frame.identity);
+        await this.storage.resetStaging(frame.identity, { lease: this.lease });
         if (!this.current(generation)) return true;
         if (
           this.state.value !== undefined &&
@@ -490,7 +528,7 @@ export class ReplicationSession {
         }
         return false;
       case "SnapshotStart":
-        await this.storage.startSnapshot(frame);
+        await this.storage.startSnapshot(frame, { lease: this.lease });
         if (
           this.current(generation) && this.state.value !== undefined &&
           sameReplicationIdentity(this.state.value.identity, frame.identity)
@@ -502,13 +540,13 @@ export class ReplicationSession {
         }
         return false;
       case "SnapshotChunk":
-        await this.storage.stageSnapshotChunk(frame);
+        await this.storage.stageSnapshotChunk(frame, { lease: this.lease });
         return false;
       case "SnapshotCommit": {
         const installed = await this.storage.commitSnapshot(
           frame,
           this.attributes,
-          { signal: this.controller.signal },
+          { signal: this.controller.signal, lease: this.lease },
         );
         if (installed !== undefined && installed.revision === frame.revision) {
           this.publishReplica(frame.identity, installed, false, generation);
@@ -524,6 +562,7 @@ export class ReplicationSession {
         }
         const installed = await this.storage.applyChange(frame, {
           signal: this.controller.signal,
+          lease: this.lease,
         });
         if (installed !== undefined && installed.revision === frame.revision) {
           this.publishReplica(frame.identity, installed, false, generation);
