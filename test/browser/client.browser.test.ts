@@ -451,3 +451,90 @@ browserTest("a committed value enters a query already being observed", async ({ 
     await deleteDatabase(name);
   }
 });
+
+browserTest("fences a replaced principal before any of its data can be read", async ({ browser }) => {
+  const name = `ramose-client-transition-${browser.uniqueId}`;
+  const installed = await installClientCatalog(ConformanceCatalog);
+  // A complete, compatible replica for a *different* principal, bound to the
+  // exact bearer this client presents. It is entitled to render stale offline —
+  // and it must stop being readable the moment the server names another one.
+  const prior: ReplicationIdentity = {
+    ...(recorded.identity as unknown as ReplicationIdentity),
+    principal: opaque("x"),
+    authenticator: opaque("y"),
+  };
+  const entity = opaque("z");
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    const snapshot = opaque("q");
+    const revision = opaque("r");
+    await storage.startSnapshot({
+      type: "SnapshotStart", protocol: 1, identity: prior, snapshot, revision,
+    });
+    await storage.stageSnapshotChunk({
+      type: "SnapshotChunk", protocol: 1, identity: prior, snapshot, index: 0,
+      datoms: [
+        { entity, field: ":ramose/type", value: { type: "string", value: ":conformanceIssue" }, op: "add" },
+        { entity, field: ":conformanceIssue/title", value: { type: "string", value: "prior-principal" }, op: "add" },
+      ],
+    });
+    (await storage.commitSnapshot({
+      type: "SnapshotCommit", protocol: 1, identity: prior, snapshot, revision, chunks: 1,
+    }, installed.attributes))!.release();
+    await storage.bindAuthenticated({
+      fingerprint: await replicationCredentialFingerprint(
+        "session-credential",
+        replicationActivationAddress({
+          server: globalThis.location.origin, root: "optimistic-fence", graphPath: [],
+        }),
+        await rootReplicaRouteSlot(),
+      ),
+      identity: prior,
+    });
+  } finally {
+    storage.close();
+  }
+
+  const client = createClient({
+    url: globalThis.location.origin,
+    root: "optimistic-fence",
+    catalog: ConformanceCatalog,
+    auth: () => ({ token: "session-credential", cacheKey: "recorded" }),
+    storageName: name,
+  });
+  try {
+    const db = client.open();
+    const statuses: string[] = [];
+    client.sync.subscribe(() => statuses.push(client.sync.getSnapshot().status));
+    const issues = db.observe(
+      db.query.from(ConformanceIssue).select({ title: ConformanceIssue.title }),
+    );
+    const seen: unknown[] = [];
+    issues.subscribe(() => seen.push(issues.getSnapshot().data));
+
+    const settled = await waitFor(
+      issues,
+      (snapshot) => snapshot.status === "ready" && snapshot.stale === false,
+    );
+    const shown = settled.data as readonly { readonly title: string }[];
+    // The prior partition really was rendered first — an exact bearer binding
+    // is entitled to that — so the fence below is not a vacuous assertion.
+    expect(seen.some((data) =>
+      (data as readonly { readonly title: string }[] | undefined)
+        ?.some((row) => row.title === "prior-principal") === true
+    )).toBe(true);
+    // The replaced principal's row is gone, and the transition was typed.
+    expect(shown.some((row) => row.title === "prior-principal")).toBe(false);
+    expect(statuses).toContain("authentication-required");
+    // Every snapshot published after the fence dropped the prior partition.
+    const fenced = seen.slice(seen.findIndex((data) => data === undefined) + 1);
+    expect(fenced.length).toBeGreaterThan(0);
+    for (const data of fenced) {
+      expect((data as readonly { readonly title: string }[] | undefined)
+        ?.some((row) => row.title === "prior-principal") ?? false).toBe(false);
+    }
+  } finally {
+    await client.close();
+    await deleteDatabase(name);
+  }
+});
