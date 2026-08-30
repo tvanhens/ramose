@@ -13,6 +13,7 @@
  * tree and never looks a name up again.
  */
 
+import { fromJson } from "../../../internal/core/json.ts";
 import type { AnyComposer } from "../../Composer.ts";
 import type { QueryCatalogV1 } from "./catalog.ts";
 import type { FieldRefV1, FunctionDefinitionV1, FunctionRegistryV1 } from "./registry.ts";
@@ -170,7 +171,59 @@ const assertKey = (key: string, path: QueryDocumentPath): string => {
   return key;
 };
 
-/** Depth-bounded JSON check: no `undefined`, functions, NaN, or exotic objects. */
+/**
+ * The typed-value tags a document may write. These are Ramose's existing
+ * canonical JSON encoding for values JSON cannot carry natively — the same
+ * `{ $inst } / { $bytes } / { $uuid }` form the HTTP API, the DO RPC
+ * bodies, and `Query.encodeCursor` already round-trip through
+ * `internal/core/json.ts`. A document does not invent a second encoding.
+ */
+const VALUE_TAGS: Readonly<Record<string, ValueTypeV1>> = {
+  $inst: "instant",
+  $bytes: "bytes",
+  $uuid: "uuid",
+};
+
+const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/** Validate and canonicalize one tagged value. One tag, one canonical form. */
+const assertTagged = (
+  tag: string,
+  payload: unknown,
+  path: QueryDocumentPath,
+): QueryJsonValue => {
+  if (tag === "$inst") {
+    // Epoch milliseconds is the canonical form; an ISO string is accepted
+    // and normalized to it, so one instant has one serialization.
+    if (typeof payload === "number" && Number.isInteger(payload)) return { $inst: payload };
+    if (typeof payload === "string") {
+      const ms = Date.parse(payload);
+      if (!Number.isNaN(ms)) return { $inst: ms };
+    }
+    return malformed(path, "$inst is epoch milliseconds or an ISO-8601 string") as never;
+  }
+  if (tag === "$uuid") {
+    if (typeof payload !== "string" || !UUID.test(payload)) {
+      return malformed(path, "$uuid is a canonical UUID string") as never;
+    }
+    return { $uuid: payload.toLowerCase() };
+  }
+  if (typeof payload !== "string" || payload.length % 4 !== 0 || !BASE64.test(payload)) {
+    return malformed(path, "$bytes is a base64 string") as never;
+  }
+  return { $bytes: payload };
+};
+
+/**
+ * Depth-bounded JSON check: no `undefined`, functions, NaN, or exotic
+ * objects, plus the typed-value tags above.
+ *
+ * Every other `$`-prefixed key is refused. That reservation is what keeps
+ * a future tagged encoding *additive*: a document accepted today can never
+ * be reinterpreted tomorrow, because no document carrying an unrecognized
+ * `$` tag was ever accepted.
+ */
 const assertJson = (value: unknown, path: QueryDocumentPath, depth = 0): QueryJsonValue => {
   if (depth > 16) return malformed(path, "value nests deeper than the document allows") as never;
   if (value === null || typeof value === "boolean" || typeof value === "string") {
@@ -184,9 +237,19 @@ const assertJson = (value: unknown, path: QueryDocumentPath, depth = 0): QueryJs
     return value.map((v, i) => assertJson(v, [...path, i], depth + 1)) as QueryJsonValue;
   }
   if (isPlainObject(value)) {
+    const keys = Object.keys(value);
+    if (keys.length === 1 && Object.hasOwn(VALUE_TAGS, keys[0]!)) {
+      return assertTagged(keys[0]!, value[keys[0]!], path);
+    }
     const out: Record<string, QueryJsonValue> = {};
-    for (const key of Object.keys(value).sort()) {
+    for (const key of keys.sort()) {
       if (RESERVED_KEYS.has(key)) return malformed([...path, key], `"${key}" is not a usable key`) as never;
+      if (key.startsWith("$")) {
+        return malformed(
+          [...path, key],
+          `the "$" prefix is reserved for typed value encodings (${Object.keys(VALUE_TAGS).join(", ")})`,
+        ) as never;
+      }
       out[key] = assertJson(value[key], [...path, key], depth + 1);
     }
     return out;
@@ -194,16 +257,32 @@ const assertJson = (value: unknown, path: QueryDocumentPath, depth = 0): QueryJs
   return malformed(path, "a value is plain JSON") as never;
 };
 
-const constantType = (value: unknown): ValueTypeV1 => {
+/** The declared type of a canonical literal — read off its tag, not its
+ * decoded JavaScript shape (a UUID decodes to a string). */
+const constantType = (value: QueryJsonValue): ValueTypeV1 => {
   if (typeof value === "string") return "string";
   if (typeof value === "number") return "number";
   if (typeof value === "boolean") return "boolean";
   if (value === null) return "any";
+  if (!Array.isArray(value)) {
+    const keys = Object.keys(value);
+    if (keys.length === 1 && Object.hasOwn(VALUE_TAGS, keys[0]!)) return VALUE_TAGS[keys[0]!]!;
+  }
   return "json";
 };
 
+/** The engine-ready value a canonical literal denotes: `{ $inst }` is a
+ * `Date`, `{ $bytes }` a `Uint8Array`, `{ $uuid }` the canonical string. */
+const constantValue = (value: QueryJsonValue): unknown => fromJson(value);
+
 const assignable = (actual: ValueTypeV1, expected: ValueTypeV1): boolean =>
-  expected === "any" || actual === "any" || expected === "json" || actual === expected;
+  expected === "any" ||
+  actual === "any" ||
+  expected === "json" ||
+  actual === expected ||
+  // an entity id is a number on the wire; the public document never sees
+  // any other spelling of one
+  (expected === "ref" && actual === "number");
 
 // ── expression resolution ───────────────────────────────────────────────────
 
@@ -306,7 +385,7 @@ const resolveExpr = (
     }
     case "value": {
       const value = assertJson(obj["value"], [...path, "value"]);
-      return { kind: "constant", value, type: constantType(value) };
+      return { kind: "constant", value: constantValue(value), type: constantType(value) };
     }
     case "param": {
       const name = assertName(obj["param"], [...path, "param"], "a parameter name");
@@ -314,7 +393,7 @@ const resolveExpr = (
         malformed([...path, "param"], `no parameter "${name}" is declared`);
       }
       const value = scope.params.get(name)!;
-      return { kind: "constant", value, type: constantType(value) };
+      return { kind: "constant", value: constantValue(value), type: constantType(value) };
     }
     case "var": {
       const name = assertName(obj["var"], [...path, "var"], "a binding name");
@@ -841,6 +920,16 @@ export const validateQueryDocumentUnsafe = (
   const selectRaw = member(raw, "select");
   const select =
     selectRaw === undefined ? null : validateProjection(selectRaw, scope, composer, ["select"], 1);
+  // A row of only derived values has no entity behind it: the engine has no
+  // focus to break a cursor tie on, and two entities that compute the same
+  // value would collapse into one row. v1 requires at least one column of
+  // the entity itself. Lifting this later is additive.
+  if (select !== null && !select.some((s) => s.kind === "nested" || s.expr.kind === "field")) {
+    malformed(
+      ["select"],
+      "a projection names at least one field of the entity — a row of only derived values has no entity to page or distinguish rows by",
+    );
+  }
   const orderByRaw = member(raw, "orderBy");
   const orderBy = validateOrderBy(orderByRaw, scope);
   const page = validatePage(member(raw, "page"), limits, cardinality, orderBy.length);

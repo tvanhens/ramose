@@ -14,7 +14,23 @@
  * builder produces.
  */
 
-/** Plain JSON — the only values a document may carry. */
+/**
+ * Plain JSON — the only values a document may carry.
+ *
+ * Values JSON cannot represent natively use Ramose's existing canonical
+ * encoding, the same one the HTTP API, the DO RPC bodies, and
+ * `Query.encodeCursor` already round-trip:
+ *
+ * - `{ "$inst": 1767225600000 }` — an instant (epoch milliseconds; an
+ *   ISO-8601 string is accepted and normalized to the number).
+ * - `{ "$uuid": "…" }` — a UUID, normalized to lower case.
+ * - `{ "$bytes": "<base64>" }` — bytes.
+ *
+ * An entity id is a plain number; the public document has no other
+ * spelling of one. Every *other* `$`-prefixed object key is refused, which
+ * is what keeps a future tagged encoding additive: no document carrying an
+ * unrecognized `$` tag was ever accepted, so none can be reinterpreted.
+ */
 export type QueryJsonValue =
   | null
   | boolean
@@ -22,6 +38,9 @@ export type QueryJsonValue =
   | string
   | readonly QueryJsonValue[]
   | { readonly [key: string]: QueryJsonValue };
+
+/** The typed-value tags a `{ value }` literal or a parameter may carry. */
+export const QUERY_VALUE_TAGS = ["$inst", "$uuid", "$bytes"] as const;
 
 /** The grammar version this module defines and compiles. */
 export const QUERY_DOCUMENT_VERSION = 1;

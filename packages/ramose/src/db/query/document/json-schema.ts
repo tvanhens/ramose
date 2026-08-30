@@ -17,6 +17,13 @@ import { QUERY_DOCUMENT_SCHEMA_ID, QUERY_DOCUMENT_VERSION } from "./types.ts";
 
 const NAME_PATTERN = "^[A-Za-z_][A-Za-z0-9_]*$";
 
+/**
+ * The value encoding, stated in the published schema so a client in
+ * another language reads it from the contract rather than from this repo.
+ */
+const VALUE_ENCODING =
+  'Plain JSON. Values JSON cannot carry natively use Ramose\'s canonical encoding: { "$inst": <epoch milliseconds, or an ISO-8601 string> }, { "$uuid": "<uuid>" }, { "$bytes": "<base64>" }. An entity id is a plain number. Every other "$"-prefixed object key is reserved and refused, so a future tagged encoding is additive rather than a reinterpretation of documents already accepted.';
+
 export const queryDocumentJsonSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   $id: QUERY_DOCUMENT_SCHEMA_ID,
@@ -59,7 +66,7 @@ export const queryDocumentJsonSchema = {
       ],
     },
     params: {
-      description: "Plain-data query parameters, referenced by { param }.",
+      description: `Plain-data query parameters, referenced by { param }. ${VALUE_ENCODING}`,
       type: "object",
       propertyNames: { pattern: NAME_PATTERN },
       additionalProperties: true,
@@ -84,7 +91,7 @@ export const queryDocumentJsonSchema = {
           type: "object",
           additionalProperties: false,
           required: ["value"],
-          properties: { value: {} },
+          properties: { value: { description: VALUE_ENCODING } },
         },
         {
           type: "object",

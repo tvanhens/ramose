@@ -97,7 +97,7 @@ export const compileQueryDocument = (
   };
   let query: AnyQueryObject;
   try {
-    query = lowerResolvedDocument(resolved, targetOf);
+    query = lowerResolvedDocument(resolved, options.catalog);
   } catch (error) {
     return Result.fail(
       new QueryDocumentInvalid({

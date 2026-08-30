@@ -99,6 +99,11 @@ export { values, type NestedOpts, type ValuesField } from "./shapes.ts";
 // `Query.q` remains the generator-tier constructor.
 export { Q } from "./query/index.ts";
 export * as Query from "./query/surface.ts";
+// `QueryDocument` is the portable plain-data query representation: the
+// versioned grammar, its JSON Schema, the deterministic compiler onto the
+// query language above, and the function-registry seam. Transport free —
+// a wire envelope refers to it; it refers to no transport.
+export * as QueryDocument from "./query/document/index.ts";
 export type {
   AnyQueryObject,
   Cursor,

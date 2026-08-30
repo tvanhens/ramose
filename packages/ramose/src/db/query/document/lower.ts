@@ -16,7 +16,6 @@
  */
 
 import { entities, select as selectStage, stage } from "../lib.ts";
-import { entityShape } from "../fluent.ts";
 import { Q, type AnyVar, type CellRecord, type QueryGen } from "../kernel.ts";
 import {
   makeQueryObject,
@@ -27,6 +26,7 @@ import {
 import { decodeCursor } from "../cursor.ts";
 import { cardsOf, pathOf, revsOf, type PathCarrier, type Shape } from "../../shapes.ts";
 import type { AnyComposer } from "../../Composer.ts";
+import type { QueryCatalogV1 } from "./catalog.ts";
 import type { LoweringApiV1, OperandV1 } from "./registry.ts";
 import type {
   FieldStepV1,
@@ -69,19 +69,52 @@ const leafCell = (step: FieldStepV1, target: AnyComposer | undefined): unknown =
 
 const shapeOf = (
   selections: readonly ResolvedSelectionV1[],
-  targetOf: (owner: AnyComposer, step: FieldStepV1) => AnyComposer | undefined,
+  catalog: QueryCatalogV1,
 ): Shape => {
   const out: Record<string, unknown> = {};
   for (const sel of selections) {
     if (sel.kind === "nested") {
       const attr = sel.step.field.attr as unknown as Nav;
-      const nested = attr.select(shapeOf(sel.select, targetOf));
+      const nested = attr.select(shapeOf(sel.select, catalog));
       out[sel.key] = sel.step.field.many ? nested : nested.optional;
       continue;
     }
     if (sel.expr.kind !== "field") continue;
     const step = sel.expr.steps[sel.expr.steps.length - 1]!;
-    out[sel.key] = leafCell(step, targetOf(step.owner, step));
+    out[sel.key] = leafCell(step, catalog.target(step.owner, step.field));
+  }
+  return out as Shape;
+};
+
+/**
+ * The full-entity row a select-less document projects — the same shape
+ * `entityShape` builds for the fluent chain, except that it enumerates the
+ * *catalog's* visible fields rather than the composer's raw field map.
+ *
+ * That difference is the visibility seal: a filtered catalog that hides a
+ * field must hide it from the compiled pull, not merely from the derived
+ * result shape. Building the default row from the composer would send the
+ * hidden cell to the peer.
+ *
+ * Card-one fields are `.optional` here exactly as `entityShape` makes them
+ * — a missing datom must not drop the row.
+ */
+const defaultShapeOf = (root: AnyComposer, catalog: QueryCatalogV1): Shape => {
+  const out: Record<string, unknown> = {};
+  const id = catalog.field(root, "id");
+  if (id !== undefined) out["id"] = id.attr;
+  for (const key of Object.keys(root.fields as Record<string, unknown>)) {
+    const field = catalog.field(root, key);
+    if (field === undefined) continue;
+    const attr = field.attr as unknown as Nav;
+    if (field.type === "ref") {
+      // An untargeted or invisible target still projects the `{ id }` cell;
+      // the nested shape reads `:db/id` and nothing of the target.
+      const nested = attr.select({ id: (catalog.target(root, field) ?? root).id } as unknown as Shape);
+      out[key] = field.many ? nested : nested.optional;
+    } else {
+      out[key] = field.many ? attr : attr.optional;
+    }
   }
   return out as Shape;
 };
@@ -154,11 +187,18 @@ function* operandOf(expr: ResolvedExprV1, api: LoweringApiV1, env: Env): QueryGe
 
 function* emitPredicate(expr: ResolvedExprV1, api: LoweringApiV1, env: Env): QueryGen<void> {
   if (expr.kind === "call" && expr.predicate && expr.def.lower.kind === "predicate") {
+    const params = expr.def.signature.params;
+    const rest = params.length > 0 && params[params.length - 1]!.rest === true;
+    const fixed = rest ? params.length - 1 : params.length;
     const args: OperandV1[] = [];
-    for (const arg of expr.args) {
-      if (arg.kind === "call" && arg.predicate) {
-        // a nested filter stays a filter: `and` / `or` / `not` receive it
-        // as a thunk and decide where its clauses land
+    for (let i = 0; i < expr.args.length; i++) {
+      const arg = expr.args[i]!;
+      const param = i < fixed ? params[i]! : params[params.length - 1]!;
+      if (param.type === "boolean") {
+        // Every boolean parameter of a predicate is a *filter position*, so
+        // it always arrives as the thunk `OperandV1` promises — a nested
+        // call, a boolean field, or a bound boolean alike. `and` / `or` /
+        // `not` then decide where those clauses land.
         args.push({ kind: "predicate", emit: () => emitPredicate(arg, api, env) });
       } else {
         args.push(yield* operandOf(arg, api, env));
@@ -233,7 +273,7 @@ const orderCarrier = (steps: readonly FieldStepV1[]): PathCarrier => {
  */
 export const lowerResolvedDocument = (
   resolved: ResolvedQueryDocumentV1,
-  targetOf: (owner: AnyComposer, step: FieldStepV1) => AnyComposer | undefined,
+  catalog: QueryCatalogV1,
 ): AnyQueryObject => {
   const env: Env = { vars: new Map(), orderVars: new Map() };
   const selections = resolved.select;
@@ -242,7 +282,13 @@ export const lowerResolvedDocument = (
       ? []
       : selections.filter((s) => s.kind === "expr" && s.expr.kind !== "field");
   const fieldShape =
-    selections === null ? entityShape(resolved.root) : shapeOf(selections, targetOf);
+    selections === null ? defaultShapeOf(resolved.root, catalog) : shapeOf(selections, catalog);
+  if (Object.keys(fieldShape).length === 0) {
+    // Validation already refuses a derived-only projection; a root whose
+    // every field is hidden lands here too, and must not compile into a
+    // focus-less row.
+    throw new LoweringFailure("engine", "this projection has no visible column");
+  }
 
   const body = (): unknown => {
     if (derived.length === 0) {
@@ -255,10 +301,10 @@ export const lowerResolvedDocument = (
       const focus = (yield* entities(resolved.root)) as unknown as AnyVar;
       const cells: Record<string, AnyVar> = {};
       yield* emitBody(resolved, focus, env, derived, cells);
-      const hasFields = Object.keys(fieldShape).length > 0;
-      return hasFields
-        ? Q.row(Q.pull(focus as never, fieldShape as never), cells as CellRecord)
-        : Q.rows(cells as CellRecord);
+      // The base pull keeps the root focus on the row, which is what lets
+      // an ordered document carry a keyset cursor and keeps two entities
+      // that derive the same value two rows.
+      return Q.row(Q.pull(focus as never, fieldShape as never), cells as CellRecord);
     })();
   };
 

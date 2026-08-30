@@ -176,6 +176,34 @@ const includes: FunctionDefinitionV1 = predicate(
   },
 );
 
+/** A typed temporal predicate — the reason `{ $inst }` has to be expressible. */
+const after: FunctionDefinitionV1 = predicate(
+  "time.after",
+  [
+    { name: "left", type: "instant" },
+    { name: "right", type: "instant" },
+  ],
+  function* (api, args) {
+    const left = yield* api.bind(args[0]!);
+    const right = yield* valueOf(api, args[1]!);
+    yield* Q.gt(left as never, right as never);
+  },
+);
+
+/** A typed reference predicate — an entity id is a plain number. */
+const sameEntity: FunctionDefinitionV1 = predicate(
+  "entity.is",
+  [
+    { name: "left", type: "ref" },
+    { name: "right", type: "ref" },
+  ],
+  function* (api, args) {
+    const left = yield* api.bind(args[0]!);
+    const right = yield* valueOf(api, args[1]!);
+    yield* Q.eq(left as never, right as never);
+  },
+);
+
 const lowerCase: ScalarLoweringV1 = function* (api, args) {
   const value = yield* api.bind(args[0]!);
   const result: AnyVar = yield* Q.call("lower-case", value);
@@ -194,7 +222,17 @@ const lower: FunctionDefinitionV1 = {
   lower: { kind: "scalar", emit: lowerCase },
 };
 
-const registry = makeFunctionRegistry(1, [eq, and, or, not, gt, includes, lower]);
+const registry = makeFunctionRegistry(1, [
+  eq,
+  and,
+  or,
+  not,
+  gt,
+  includes,
+  lower,
+  after,
+  sameEntity,
+]);
 
 const options = { catalog, registry };
 
@@ -780,6 +818,7 @@ describe("the expression lowering seam", () => {
 
   test("a registry publishes its definitions for capability projection", () => {
     expect(registry.list().map((d) => d.name)).toEqual([
+      "entity.is",
       "logic.and",
       "logic.eq",
       "logic.not",
@@ -787,6 +826,7 @@ describe("the expression lowering seam", () => {
       "number.gt",
       "text.includes",
       "text.lower",
+      "time.after",
     ]);
     expect(registry.lookup("text.lower")?.signature.contexts).toContain("select");
   });
@@ -882,9 +922,291 @@ describe("the JSON Schema", () => {
   });
 });
 
+// ── the visibility seal reaches the compiled plan ───────────────────────────
+
+describe("catalog visibility", () => {
+  /** A catalog that hides one field, the way a capability projection does. */
+  const hidingRank: QueryCatalogV1 = {
+    ...catalog,
+    field: (owner, key) =>
+      owner === Issue && key === "rank" ? undefined : catalog.field(owner, key),
+  };
+
+  const compiledWith = (cat: QueryCatalogV1, doc: unknown): string => {
+    const result = compileQueryDocument(doc, { catalog: cat, registry });
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+    return JSON.stringify(lowerQueryAst(result.success.query));
+  };
+
+  test("a hidden field never reaches the compiled pull of a select-less document", () => {
+    const doc = { version: 1, from: { entity: "issue" } };
+    // the unfiltered catalog does project it — so the assertion below is
+    // about the filter, not about the field being absent from the schema
+    expect(compiledWith(catalog, doc)).toContain(":issue/rank");
+    expect(compiledWith(hidingRank, doc)).not.toContain(":issue/rank");
+    // and the rest of the row is still there
+    expect(compiledWith(hidingRank, doc)).toContain(":issue/title");
+  });
+
+  test("the compiled plan and the derived result shape agree about what is visible", () => {
+    const result = compileQueryDocument(
+      { version: 1, from: { entity: "issue" } },
+      { catalog: hidingRank, registry },
+    );
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+    const row = result.success.resultShape.row as { fields: Record<string, unknown> };
+    expect("rank" in row.fields).toBe(false);
+    expect("title" in row.fields).toBe(true);
+  });
+
+  test("naming a hidden field is an unknown definition, not a leak", () => {
+    const result = compileQueryDocument(
+      { version: 1, from: { entity: "issue" }, select: { r: { field: ["rank"] } } },
+      { catalog: hidingRank, registry },
+    );
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure.issues[0]).toEqual({
+        code: "unknown_definition",
+        path: ["select", "r", "field", 0],
+        message: 'unknown field "rank"',
+      });
+    }
+  });
+});
+
+// ── boolean parameters are always filter positions ──────────────────────────
+
+describe("nested boolean expressions", () => {
+  const whereText = (where: unknown): string => {
+    const document = compile({
+      version: 1,
+      from: { entity: "issue" },
+      select: { id: { field: ["id"] } },
+      where,
+      page: { first: 5 },
+    });
+    return JSON.stringify((lowerQueryAst(document.query) as { where: unknown[] }).where);
+  };
+
+  test("a bare boolean field in a predicate parameter is a filter, not an operand", () => {
+    const text = whereText({ call: "logic.not", args: [{ field: ["done"] }] });
+    expect(text).toContain("not");
+    expect(text).toContain(":issue/done");
+  });
+
+  test("a connective mixes bare fields and nested calls", () => {
+    const text = whereText({
+      call: "logic.and",
+      args: [{ field: ["done"] }, eqCall(["status"], "open")],
+    });
+    expect(text).toContain(":issue/done");
+    expect(text).toContain(":issue/status");
+  });
+
+  test("a bound boolean binding is a filter in predicate position", () => {
+    const document = compile({
+      version: 1,
+      from: { entity: "issue" },
+      let: [{ as: "isDone", expr: { field: ["done"] } }],
+      select: { id: { field: ["id"] } },
+      where: { call: "logic.not", args: [{ var: "isDone" }] },
+      page: { first: 5 },
+    });
+    const text = JSON.stringify((lowerQueryAst(document.query) as { where: unknown[] }).where);
+    expect(text).toContain("not");
+    expect(text).toContain(":issue/done");
+  });
+
+  test("a non-boolean expression in a predicate parameter is still refused", () => {
+    expect(
+      failure({
+        version: 1,
+        from: { entity: "issue" },
+        where: { call: "logic.not", args: [{ field: ["title"] }] },
+      }),
+    ).toMatchObject({ code: "malformed", path: ["where", "args", 0] });
+  });
+});
+
+// ── typed value encodings ───────────────────────────────────────────────────
+
+describe("value encodings", () => {
+  test("an instant literal satisfies an instant parameter and reaches the plan", () => {
+    const document = compile({
+      version: 1,
+      from: { entity: "issue" },
+      select: { id: { field: ["id"] } },
+      where: {
+        call: "time.after",
+        args: [{ field: ["createdAt"] }, { value: { $inst: 1767225600000 } }],
+      },
+      page: { first: 5 },
+    });
+    expect(JSON.stringify(lowerQueryAst(document.query))).toContain("2026-01-01T00:00:00.000Z");
+  });
+
+  test("an ISO instant normalizes to the canonical epoch form", () => {
+    const { document, serialized } = compile({
+      version: 1,
+      from: { entity: "issue" },
+      select: { id: { field: ["id"] } },
+      where: {
+        call: "time.after",
+        args: [{ field: ["createdAt"] }, { value: { $inst: "2026-01-01T00:00:00.000Z" } }],
+      },
+      page: { first: 5 },
+    });
+    expect(serialized).toContain('{"$inst":1767225600000}');
+    // and the normalized form is a fixed point
+    expect(compile(document).serialized).toBe(serialized);
+  });
+
+  test("a bare string is not an instant", () => {
+    expect(
+      failure({
+        version: 1,
+        from: { entity: "issue" },
+        where: {
+          call: "time.after",
+          args: [{ field: ["createdAt"] }, { value: "2026-01-01T00:00:00.000Z" }],
+        },
+      }),
+    ).toMatchObject({ code: "malformed", path: ["where", "args", 1] });
+  });
+
+  test("an entity id is a plain number in a reference position", () => {
+    expect(() =>
+      compile({
+        version: 1,
+        from: { entity: "issue" },
+        select: { id: { field: ["id"] } },
+        where: { call: "entity.is", args: [{ field: ["owner"] }, { value: 7 }] },
+        page: { first: 5 },
+      }),
+    ).not.toThrow();
+    expect(
+      failure({
+        version: 1,
+        from: { entity: "issue" },
+        where: { call: "entity.is", args: [{ field: ["owner"] }, { value: "seven" }] },
+      }),
+    ).toMatchObject({ path: ["where", "args", 1] });
+  });
+
+  test("uuid and bytes literals are validated and canonicalized", () => {
+    const { serialized } = compile({
+      version: 1,
+      from: { entity: "issue" },
+      params: {
+        token: { $uuid: "3F2504E0-4F89-11D3-9A0C-0305E82C3301" },
+        blob: { $bytes: "AAEC" },
+      },
+      select: { id: { field: ["id"] } },
+      page: { first: 5 },
+    });
+    expect(serialized).toContain('"token":{"$uuid":"3f2504e0-4f89-11d3-9a0c-0305e82c3301"}');
+    expect(serialized).toContain('"blob":{"$bytes":"AAEC"}');
+    expect(
+      failure({ version: 1, from: { entity: "issue" }, params: { t: { $uuid: "nope" } } }),
+    ).toMatchObject({ code: "malformed", path: ["params", "t"] });
+    expect(
+      failure({ version: 1, from: { entity: "issue" }, params: { b: { $bytes: "!!!" } } }),
+    ).toMatchObject({ code: "malformed", path: ["params", "b"] });
+  });
+
+  test("every other $-prefixed key is reserved, so a later tag cannot reinterpret a document", () => {
+    expect(
+      failure({ version: 1, from: { entity: "issue" }, params: { p: { $ref: 7 } } }),
+    ).toMatchObject({ code: "malformed", path: ["params", "p", "$ref"] });
+    expect(
+      failure({
+        version: 1,
+        from: { entity: "issue" },
+        where: eqCall(["title"], { $future: 1 }),
+      }).code,
+    ).toBe("malformed");
+    // a plain object is still ordinary opaque JSON
+    expect(() =>
+      compile({
+        version: 1,
+        from: { entity: "issue" },
+        params: { p: { a: 1, b: [2, 3] } },
+        select: { id: { field: ["id"] } },
+        page: { first: 5 },
+      }),
+    ).not.toThrow();
+  });
+
+  test("the published schema states the encoding", () => {
+    const text = JSON.stringify(queryDocumentJsonSchema);
+    expect(text).toContain("$inst");
+    expect(text).toContain("$bytes");
+    expect(text).toContain("$uuid");
+    expect(text).toContain("reserved");
+  });
+});
+
+// ── a row always has an entity behind it ────────────────────────────────────
+
+describe("derived-only projections", () => {
+  test("are refused, so no document compiles into a focus-less row", () => {
+    expect(
+      failure({
+        version: 1,
+        from: { entity: "issue" },
+        let: [{ as: "lowered", expr: { call: "text.lower", args: [{ field: ["title"] }] } }],
+        select: { lowered: { var: "lowered" } },
+        orderBy: [{ expr: { field: ["createdAt"] } }],
+        page: { first: 5 },
+      }),
+    ).toMatchObject({ code: "malformed", path: ["select"] });
+    expect(
+      failure({
+        version: 1,
+        from: { entity: "issue" },
+        select: { constant: { value: 1 } },
+      }),
+    ).toMatchObject({ code: "malformed", path: ["select"] });
+  });
+
+  test("one field is enough to keep the focus, and it pages", () => {
+    const document = compile({
+      version: 1,
+      from: { entity: "issue" },
+      let: [{ as: "lowered", expr: { call: "text.lower", args: [{ field: ["title"] }] } }],
+      select: { id: { field: ["id"] }, lowered: { var: "lowered" } },
+      orderBy: [{ expr: { field: ["createdAt"] } }],
+      page: { first: 5 },
+    });
+    const ast = lowerQueryAst(document.query) as { order: { var: string }[] };
+    // the keyset tie-breaker exists, which is only possible with a focus
+    expect(ast.order.length).toBe(2);
+    expect(document.resultShape.paged).toBe(true);
+  });
+});
+
 // ── the module boundary ─────────────────────────────────────────────────────
 
 describe("the module boundary", () => {
+  test("the namespace is reachable through the published `ramose/db` barrel", async () => {
+    const db = (await import("../../src/db/index.ts")) as Record<string, unknown>;
+    expect("QueryDocument" in db).toBe(true);
+    const namespace = db["QueryDocument"] as Record<string, unknown>;
+    for (const name of [
+      "compileQueryDocument",
+      "validateQueryDocument",
+      "queryDocumentJsonSchema",
+      "catalogFromSchema",
+      "makeFunctionRegistry",
+      "serializeQueryDocument",
+      "QUERY_DOCUMENT_VERSION",
+      "DEFAULT_QUERY_LIMITS",
+    ]) {
+      expect(name in namespace).toBe(true);
+    }
+  });
+
   test("validation without lowering answers the same normalized document", () => {
     const doc = {
       version: 1,
