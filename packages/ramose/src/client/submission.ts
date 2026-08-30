@@ -93,8 +93,9 @@ export class SubmissionLoop {
     const storage = await this.context.storage();
     const credential = await this.context.credential();
     if (!this.context.live() || !leadership.submits()) return;
+    const fence = leadership.fence();
     const progress = await runSubmissionPass({
-      store: storage.outbox(() => leadership.fence()),
+      store: storage.outbox(() => fence),
       scope,
       endpoints: (receiver) => this.context.endpoint(receiver, credential),
       transport: submitMutation,

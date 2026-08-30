@@ -96,6 +96,7 @@ class RamoseClient implements Client {
   private compositionIndex: CompositionIndex | undefined;
   private submissionLoop: SubmissionLoop | undefined;
   private leadership: SyncLeadership | undefined;
+  private leaderName: string | undefined;
   private terminal: "closed" | "cleared" | "fenced" | undefined;
   private termination: Promise<void> | undefined;
   private clearing = false;
@@ -175,16 +176,21 @@ class RamoseClient implements Client {
 
   /**
    * Stand for the leadership of the confirmed root scope. Every tab of one
-   * server, root, and principal stands for the same one, and only the tab
-   * holding it submits.
+   * storage namespace, server, root, and principal stands for the same one,
+   * and only the tab holding it submits. A confirmation that names another
+   * scope gives the leadership of the previous one back.
    */
   private elect(identity: ReplicationIdentity): void {
-    if (this.leadership !== undefined || this.terminal !== undefined) return;
+    if (this.terminal !== undefined) return;
     const scope = replicaScopeOf(identity);
     const name = replicaLeaderKey(
       replicaDatabaseScopeOf(identity),
       this.storageName(),
     );
+    if (this.leaderName === name) return;
+    this.leaderName = name;
+    const stood = this.leadership;
+    if (stood !== undefined) void stood.release();
     const leadership = SyncLeadership.begin({
       name,
       locks: platformLocks(),

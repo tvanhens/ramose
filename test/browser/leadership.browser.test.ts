@@ -316,6 +316,48 @@ browserTest("a crashed leader releases leadership to a waiting tab", async ({ br
 });
 
 browserTest(
+  "a leader that cannot record its epoch stands again once storage recovers",
+  async ({ browser }) => {
+    const name = `ramose-leadership-claim-${browser.uniqueId}`;
+    const left = identity({ database: databaseOf(browser.uniqueId) });
+    const key = replicaLeaderKey(replicaDatabaseScopeOf(left), name);
+    const scope = replicaScopeOf(left);
+    let storage = await IndexedDbReplicaStorage.open(name);
+    storage.close();
+    const leadership = SyncLeadership.begin({
+      name: key,
+      locks: platformLocks(),
+      claim: () => storage.claimLeadership(key, scope),
+      onLeading: () => undefined,
+    });
+    try {
+      await until(
+        () => lockHeld(key),
+        (isHeld) => !isHeld,
+        "the ungranted lock to go back",
+      );
+      expect([leadership.status(), leadership.submits()]).toEqual([
+        "waiting",
+        false,
+      ]);
+
+      storage = await IndexedDbReplicaStorage.open(name);
+      await until(
+        () => Promise.resolve(leadership.status()),
+        (status) => status === "leading",
+        "leadership after storage recovers",
+      );
+      expect(leadership.fence()?.epoch).toBe(1);
+      expect(await durableEpoch(name, key)).toBe(1);
+    } finally {
+      await leadership.release();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a leader whose storage another version closes gives the lock up",
   async ({ browser }) => {
     const name = `ramose-leadership-invalidated-${browser.uniqueId}`;

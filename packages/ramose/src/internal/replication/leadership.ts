@@ -31,6 +31,8 @@ export type LeadershipFence = {
 
 export type LeadershipStatus = "waiting" | "leading" | "unelected" | "released";
 
+const ELECTION_RETRY_MS = 1_000;
+
 export type LeadershipOptions = {
   readonly name: string;
   /** `navigator.locks`, or undefined to leave every tab unelected. */
@@ -63,6 +65,7 @@ export class SyncLeadership {
   private held: (() => void) | undefined;
   private granted: Promise<unknown> = Promise.resolve();
   private readonly queued = new AbortController();
+  private standing: ReturnType<typeof setTimeout> | undefined;
 
   private constructor(private readonly options: LeadershipOptions) {}
 
@@ -102,9 +105,27 @@ export class SyncLeadership {
       .catch(() => undefined);
   }
 
+  /**
+   * A grant this tab could not record is leadership it does not have, so it
+   * gives the lock back and stands again once storage may have recovered.
+   */
+  private stand(): void {
+    if (this.state !== "waiting" || this.standing !== undefined) return;
+    this.standing = setTimeout(() => {
+      this.standing = undefined;
+      if (this.state === "waiting") this.elect();
+    }, ELECTION_RETRY_MS);
+  }
+
   private async lead(): Promise<void> {
     if (this.state !== "waiting") return;
-    const epoch = await this.options.claim();
+    let epoch: number;
+    try {
+      epoch = await this.options.claim();
+    } catch {
+      this.stand();
+      return;
+    }
     if (this.state !== "waiting") return;
     const hold = new Promise<void>((resolve) => {
       this.held = resolve;
@@ -125,6 +146,8 @@ export class SyncLeadership {
     const leading = this.state === "leading";
     this.state = "released";
     this.epoch = undefined;
+    if (this.standing !== undefined) clearTimeout(this.standing);
+    this.standing = undefined;
     if (leading) this.held?.();
     else this.queued.abort();
     await this.granted;
