@@ -57,6 +57,7 @@ import {
   classifyReplicaStorageFailure,
   replicaQuotaRecovery,
   replicaSweepKey,
+  replicaSweepPrefix,
   ReplicaQuotaExhaustedError,
   ReplicaReachability,
   stagingIsSweepable,
@@ -90,6 +91,7 @@ import {
   emptyReplicaIndexDigest,
   expectedReplicaContents,
   replicaAbsent,
+  replicaContended,
   replicaManifestFingerprint,
   replicaManifestIdentity,
   replicaRestored,
@@ -341,6 +343,27 @@ const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
 export type RestoredReplica = {
   readonly db: Db;
   readonly revision: string;
+  /**
+   * Release this value's claim on the nodes it reads.
+   *
+   * A `Db` holds its roots and its node store directly, so a reachability
+   * sweep that reclaimed those roots would turn it into a value that throws
+   * mid-query. Every value handed out here is therefore already retained when
+   * the caller receives it — taken synchronously, before the transaction that
+   * cleared it to be handed out, which is the only ordering under which the
+   * publish fence and a sweep's own synchronous re-check compose.
+   *
+   * The caller owns exactly one release per value and must call it when it
+   * drops the value; a leaked release pins that value's nodes for the life of
+   * the storage handle. Closing the handle releases whatever is left.
+   */
+  readonly release: () => void;
+};
+
+/** A validated manifest and the retention taken for it before its fence. */
+type RetainedRecord = {
+  readonly record: CommittedRecord;
+  readonly release: () => void;
 };
 
 export type BoundRestoredReplica = RestoredReplica & {
@@ -1362,6 +1385,10 @@ export class IndexedDbReplicaStorage {
     for (const family of PARTITION_PREFIXED_FAMILIES) {
       transaction.objectStore(family).delete(compoundPrefixRange(prefix));
     }
+    // The sweep generations guarding exactly the partitions just deleted. They
+    // are named after those partitions, so nothing would ever remove them once
+    // the partitions are gone.
+    generations.delete(prefixRange(replicaSweepPrefix(prefix)));
     const bindingStore = transaction.objectStore(CREDENTIAL_BINDINGS);
     const candidateStore = transaction.objectStore(CACHE_CANDIDATES);
     const routeStore = transaction.objectStore(ROUTE_SLOTS);
@@ -1484,6 +1511,10 @@ export class IndexedDbReplicaStorage {
     for (const family of PARTITION_PREFIXED_FAMILIES) {
       transaction.objectStore(family).delete(compoundPrefixRange(prefix));
     }
+    // The sweep generations guarding exactly the partitions just deleted. They
+    // are named after those partitions, so nothing would ever remove them once
+    // the partitions are gone.
+    generations.delete(prefixRange(replicaSweepPrefix(prefix)));
     const bindingStore = transaction.objectStore(CREDENTIAL_BINDINGS);
     const candidateStore = transaction.objectStore(CACHE_CANDIDATES);
     const [bindingRecords, candidateRecords] = await Promise.all([
@@ -1954,7 +1985,7 @@ export class IndexedDbReplicaStorage {
     attributes: readonly AttributeSpec[],
     readCompatibilityHash: ReadCompatibilityHash,
     fingerprint?: string,
-  ): Promise<ReplicaRestoreOutcome<CommittedRecord>> {
+  ): Promise<ReplicaRestoreOutcome<RetainedRecord>> {
     let current = record;
     for (let attempt = 1; attempt <= REPLICA_SWEEP_RESTORE_ATTEMPTS; attempt++) {
       const outcome = await this.validatedOnce(
@@ -1973,9 +2004,13 @@ export class IndexedDbReplicaStorage {
       }
     }
     // The partition kept moving under every attempt. Nothing is damaged and
-    // nothing was withdrawn; the caller simply gets no value this time and may
-    // open again.
-    return replicaAbsent();
+    // nothing was withdrawn, and something is certainly stored — so this is
+    // reported as contention rather than as an absence the caller would read
+    // as an empty partition worth re-snapshotting from scratch.
+    return replicaContended(
+      replicaPartitionKey(identity),
+      REPLICA_SWEEP_RESTORE_ATTEMPTS,
+    );
   }
 
   private async validatedOnce(
@@ -1984,7 +2019,7 @@ export class IndexedDbReplicaStorage {
     attributes: readonly AttributeSpec[],
     readCompatibilityHash: ReadCompatibilityHash,
     fingerprint?: string,
-  ): Promise<ReplicaRestoreOutcome<CommittedRecord> | typeof RECORD_MOVED> {
+  ): Promise<ReplicaRestoreOutcome<RetainedRecord> | typeof RECORD_MOVED> {
     const partition = replicaPartitionKey(identity);
     const expect = replicaManifestFingerprint(record);
     // The generations guarding this partition as they stood when the record was
@@ -2001,7 +2036,7 @@ export class IndexedDbReplicaStorage {
     const quarantine = async (
       reason: Parameters<typeof replicaUnusable>[1],
       detail: string,
-    ): Promise<ReplicaRestoreOutcome<CommittedRecord> | typeof RECORD_MOVED> => {
+    ): Promise<ReplicaRestoreOutcome<RetainedRecord> | typeof RECORD_MOVED> => {
       // The boundary between deciding to refuse and removing anything. Inert in
       // production; the source-only testing assembly parks here to let another
       // session install a replacement and prove the removal is conditional.
@@ -2018,7 +2053,7 @@ export class IndexedDbReplicaStorage {
       // refused manifest's now-superseded nodes is exactly how a healthy
       // partition reaches this branch. Read the record again and walk that.
       return removed
-        ? replicaUnusable<CommittedRecord>(partition, reason, detail)
+        ? replicaUnusable<RetainedRecord>(partition, reason, detail)
         : RECORD_MOVED;
     };
     if (identity.readCompatibilityHash !== readCompatibilityHash) {
@@ -2054,15 +2089,34 @@ export class IndexedDbReplicaStorage {
     // be published. Inert in production; the source-only testing assembly parks
     // here to run a clear against a replica that has just validated.
     await this.boundaries.checkpoint("replica.validated");
+    // Retain before the fence transaction exists, synchronously, with no await
+    // in between — this is what makes the fence and the sweep's own
+    // synchronous re-check compose rather than pass each other.
+    //
+    // A sweep decides in one synchronous block: read the retentions, then
+    // create its transaction. So exactly one of two orders can hold. If the
+    // sweep's block ran before this line, its transaction was created before
+    // the fence's, IndexedDB orders the generation bump ahead of the fence's
+    // read, and the fence sees it and refuses. If it runs after, it sees this
+    // retention covering the very roots it was about to reclaim and skips the
+    // partition. There is no third interleaving: without this line the sweep
+    // could plan while nothing was retained and still transact after a fence
+    // that had already read a generation of zero, and the published value
+    // would be left reading nodes the sweep then deleted.
+    //
+    // The retention outlives this method on the success path and belongs to
+    // whoever receives the value; every failure path below releases it here.
+    const retention = this.retainRoots(identity, manifest.success.roots);
     if (!await this.confirmGuardingGenerations(lease, identity, sweep)) {
       // A sweep removed nodes from this partition while the walk was running.
       // Nothing is damaged and nothing was withdrawn — the reclaimed roots were
       // superseded by an install this walk did not see — but the manifest this
       // walk read is no longer safe to construct a `Db` over. The caller reads
       // the stored record again and walks it again.
+      retention();
       return RECORD_MOVED;
     }
-    return replicaRestored(manifest.success);
+    return replicaRestored({ record: manifest.success, release: retention });
   }
 
   /**
@@ -2196,8 +2250,9 @@ export class IndexedDbReplicaStorage {
     );
     if (validated._tag !== "restored") return validated;
     return replicaRestored({
-      db: dbFromRecord(this.database, validated.replica, readCompatibilityHash),
-      revision: validated.replica.revision,
+      db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
+      revision: validated.replica.record.revision,
+      release: validated.replica.release,
     });
   }
 
@@ -2285,11 +2340,15 @@ export class IndexedDbReplicaStorage {
     // The candidate nominated one exact revision and the response confirmed
     // that revision; a manifest that moved underneath is a concurrent install,
     // not damage, and this path simply fails closed.
-    if (validated.replica.revision !== candidate.revision) return replicaAbsent();
+    if (validated.replica.record.revision !== candidate.revision) {
+      validated.replica.release();
+      return replicaAbsent();
+    }
     return replicaRestored({
       identity: candidate.identity,
-      db: dbFromRecord(this.database, validated.replica, readCompatibilityHash),
-      revision: validated.replica.revision,
+      db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
+      revision: validated.replica.record.revision,
+      release: validated.replica.release,
     });
   }
 
@@ -2444,8 +2503,9 @@ export class IndexedDbReplicaStorage {
     if (validated._tag !== "restored") return validated;
     return replicaRestored({
       identity: binding.identity,
-      db: dbFromRecord(this.database, validated.replica, readCompatibilityHash),
-      revision: validated.replica.revision,
+      db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
+      revision: validated.replica.record.revision,
+      release: validated.replica.release,
     });
   }
 
@@ -2805,7 +2865,14 @@ export class IndexedDbReplicaStorage {
     } finally {
       removeAbort();
     }
-    return { db: built.db, revision: built.record.revision };
+    // Retained before this method returns, so the value is never momentarily
+    // unclaimed: an install that supersedes it immediately afterwards makes
+    // these roots garbage, and the caller has not had a chance to retain yet.
+    return {
+      db: built.db,
+      revision: built.record.revision,
+      release: this.retainRoots(frame.identity, built.record.roots),
+    };
   }
 
   async applyChange(
@@ -2857,9 +2924,15 @@ export class IndexedDbReplicaStorage {
       // materialized — never a record taken off disk unverified. Damage that
       // appears afterwards is found by the next restore's walk, which is where
       // every other stored-node failure is found too.
+      //
+      // This value is derived from a manifest read a moment ago rather than
+      // from one this call installed, so it is retained here for the same
+      // reason a restore retains before its fence: a sweep that planned while
+      // nothing held these roots must find them claimed before it transacts.
       return {
         db: dbFromRecord(this.database, prior, frame.identity.readCompatibilityHash),
         revision: prior.revision,
+        release: this.retainRoots(frame.identity, prior.roots),
       };
     }
     // Held across the build and the install, for the same reason a snapshot
@@ -2930,6 +3003,13 @@ export class IndexedDbReplicaStorage {
     } finally {
       removeAbort();
     }
-    return { db: built.db, revision: built.record.revision };
+    // Retained before this method returns, so the value is never momentarily
+    // unclaimed: an install that supersedes it immediately afterwards makes
+    // these roots garbage, and the caller has not had a chance to retain yet.
+    return {
+      db: built.db,
+      revision: built.record.revision,
+      release: this.retainRoots(frame.identity, built.record.roots),
+    };
   }
 }

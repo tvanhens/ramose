@@ -173,6 +173,15 @@ export type ReplicaRestoreOutcome<A> =
   | { readonly _tag: "restored"; readonly replica: A }
   /** Nothing is stored for this selection. Not an error; snapshot from scratch. */
   | { readonly _tag: "absent" }
+  /**
+   * The partition is intact and probably still holds exactly what was asked
+   * for, but it kept moving — an install, or a sweep of the roots that install
+   * superseded — for every attempt this restore was willing to make. Nothing
+   * was refused and nothing was withdrawn; opening again is the whole remedy.
+   * It is deliberately distinct from `absent`, which asserts that nothing is
+   * stored, so a caller can never mistake contention for an empty partition.
+   */
+  | { readonly _tag: "contended"; readonly partition: string; readonly attempts: number }
   /** The partition was quarantined; the caller must re-snapshot it. */
   | {
     readonly _tag: "replacement-required";
@@ -193,6 +202,11 @@ export const replicaRestored = <A>(replica: A): ReplicaRestoreOutcome<A> =>
 
 export const replicaAbsent = <A>(): ReplicaRestoreOutcome<A> =>
   Object.freeze({ _tag: "absent" });
+
+export const replicaContended = <A>(
+  partition: string,
+  attempts: number,
+): ReplicaRestoreOutcome<A> => Object.freeze({ _tag: "contended", partition, attempts });
 
 /** Build the outcome a reason implies, so classification lives in one place. */
 export const replicaUnusable = <A>(

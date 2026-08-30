@@ -242,6 +242,38 @@ const reachedCheckpoint = async (name: string): Promise<void> => {
   throw new Error(`checkpoint ${name} was never reached`);
 };
 
+/**
+ * Read a value's revision and release its retention immediately.
+ *
+ * Every value the storage hands out arrives retained, and the caller owns the
+ * release whether it keeps the value or only glances at it. A test that leaked
+ * one would pin exactly the nodes the next sweep is asserted to reclaim, so
+ * these suites release as explicitly as a real holder does.
+ */
+const revisionOf = async (
+  pending: Promise<{ readonly revision: string; readonly release: () => void } | undefined>,
+): Promise<string | undefined> => {
+  const value = await pending;
+  value?.release();
+  return value?.revision;
+};
+
+/** Release a value this test is done with. */
+const dropped = (value: { readonly release: () => void } | undefined): void => {
+  value?.release();
+};
+
+/**
+ * Let queued microtasks run without yielding to the task queue.
+ *
+ * This is what puts a released restore's fence transaction in flight while a
+ * parked sweep has not yet reached its synchronous block: IndexedDB requests
+ * settle in a later task, so nothing the fence issued can complete here.
+ */
+const drainMicrotasks = async (turns: number): Promise<void> => {
+  for (let turn = 0; turn < turns; turn++) await Promise.resolve();
+};
+
 const snapshotDatom = (entity: string, value: string): SnapshotDatom => ({
   entity,
   field: ":item/name",
@@ -267,10 +299,12 @@ const installSnapshot = async (
       datoms: datoms.slice(offset, offset + 16),
     });
   }
-  expect(await storage.commitSnapshot({
+  const committed = await storage.commitSnapshot({
     type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision,
     chunks: index,
-  }, attributes)).toBeDefined();
+  }, attributes);
+  expect(committed).toBeDefined();
+  dropped(committed);
 };
 
 /** A replica wide enough that one changed datom really orphans interior nodes. */
@@ -334,6 +368,7 @@ browserTest(
         changeOne(selected, opaque("1"), opaque("2"), seed[7].entity, "changed"),
       );
       expect(applied?.revision).toBe(opaque("2"));
+      dropped(applied);
       const afterChange = await nodeHashes(name, partition);
       // One datom rewrote a whole root-to-leaf path per index, so the store now
       // holds both the current value and everything the change superseded.
@@ -374,9 +409,9 @@ browserTest("a second pass over settled storage removes nothing", async ({ brows
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
     await installSnapshot(storage, selected, opaque("1"), wideDatoms(80, "seed"));
-    await storage.applyChange(
+    dropped(await storage.applyChange(
       changeOne(selected, opaque("1"), opaque("2"), "entity-000003".padEnd(43, "z"), "changed"),
-    );
+    ));
     const first = await storage.collectGarbage();
     expect(first.nodes).toBeGreaterThan(0);
     const settled = bytes(await dump(name));
@@ -461,9 +496,144 @@ browserTest(
       expect(dumped[STAGING_CHUNKS]).toEqual([]);
       expect(dumped[COMMITTED_HEADS]).toHaveLength(1);
       expect(
-        (await storage.restore(sibling, attributes, READ_COMPATIBILITY))?.revision,
+        await revisionOf(storage.restore(sibling, attributes, READ_COMPATIBILITY)),
       ).toBe(opaque("3"));
     } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a sweep planned before the publish fence but transacted after it still cannot take the value",
+  async ({ browser }) => {
+    const name = `ramose-gc-fence-ordering-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(120, "seed"));
+      const original = await nodeHashes(name, partition);
+
+      // A restore walks the committed manifest and parks immediately before its
+      // publish fence.
+      armCheckpoint("replica.validated", "wait");
+      const walking = storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
+      await reachedCheckpoint("replica.validated");
+
+      // An install supersedes exactly what that walk validated.
+      const applied = await storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), "entity-000009".padEnd(43, "z"), "changed"),
+      );
+      expect(applied?.revision).toBe(opaque("2"));
+      dropped(applied);
+
+      const beforeSweep = await nodeHashes(name, partition);
+      expect(beforeSweep.length).toBeGreaterThan(original.length);
+
+      // A sweep plans its live set from the new manifest — the superseded roots
+      // are claimed by nobody at that instant — and parks before acting.
+      armCheckpoint("replica.gc.planned", "wait");
+      const sweeping = storage.collectGarbage();
+      await reachedCheckpoint("replica.gc.planned");
+
+      // Release the walk first, so its fence transaction is created in the
+      // microtasks that follow and is still in flight — IndexedDB requests
+      // settle in a later task, never in a microtask. Only then does the
+      // sweep's synchronous block run, creating its transaction after the
+      // fence's. Neither the fence's generation read nor the sweep's CAS can
+      // see the other: the retention taken before the fence is what composes
+      // them, forcing the sweep to skip.
+      releaseCheckpoint("replica.validated");
+      await drainMicrotasks(50);
+      releaseCheckpoint("replica.gc.planned");
+
+      const outcome = await walking;
+      const swept = await sweeping;
+      expect(outcome._tag).toBe("restored");
+      const restored = outcome._tag === "restored" ? outcome.replica : undefined;
+      try {
+        // The published value reads. Without the retention the sweep would have
+        // deleted these nodes and this would throw "missing replica node".
+        expect((await names(restored!.db)).length).toBe(120);
+        expect(swept.nodes).toBe(0);
+        expect(swept.skipped).toBe(1);
+        // Nothing at all was removed: not the roots this value reads, and not
+        // the ones the pass had written off before the retention appeared.
+        expect(await nodeHashes(name, partition)).toEqual(beforeSweep);
+      } finally {
+        dropped(restored);
+      }
+
+      // Once the holder lets go, the superseded roots really are reclaimable.
+      const after = await storage.collectGarbage();
+      expect(after.nodes).toBeGreaterThan(0);
+      expect(await revisionOf(storage.restore(selected, attributes, READ_COMPATIBILITY)))
+        .toBe(opaque("2"));
+    } finally {
+      resetTestHooks();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "quota recovery's own pass cannot take a concurrent restore's nodes",
+  async ({ browser }) => {
+    const name = `ramose-gc-quota-race-${browser.uniqueId}`;
+    const selected = identity();
+    const partition = replicaPartitionKey(selected);
+    const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    try {
+      await installSnapshot(storage, selected, opaque("1"), wideDatoms(120, "seed"));
+      const original = await nodeHashes(name, partition);
+
+      armCheckpoint("replica.validated", "wait");
+      const walking = storage.restoreOutcome(selected, attributes, READ_COMPATIBILITY);
+      await reachedCheckpoint("replica.validated");
+
+      const applied = await storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("2"), "entity-000009".padEnd(43, "z"), "one"),
+      );
+      expect(applied?.revision).toBe(opaque("2"));
+      dropped(applied);
+
+      // Nobody calls `collectGarbage` here. The next install exhausts storage
+      // at the real boundary, and its own bounded recovery is the sweep that
+      // races the parked restore — the same hazard, reached the way production
+      // reaches it.
+      armCheckpointThrow("replica.install", {
+        errorName: "QuotaExceededError",
+        error: "storage is full",
+        times: 1,
+      });
+      armCheckpoint("replica.gc.planned", "wait");
+      const installing = storage.applyChange(
+        changeOne(selected, opaque("2"), opaque("3"), "entity-000010".padEnd(43, "z"), "two"),
+      );
+      await reachedCheckpoint("replica.gc.planned");
+
+      releaseCheckpoint("replica.validated");
+      await drainMicrotasks(50);
+      releaseCheckpoint("replica.gc.planned");
+
+      const outcome = await walking;
+      const installed = await installing;
+      expect(outcome._tag).toBe("restored");
+      const restored = outcome._tag === "restored" ? outcome.replica : undefined;
+      try {
+        expect((await names(restored!.db)).length).toBe(120);
+        expect(await nodeHashes(name, partition)).toEqual(
+          expect.arrayContaining(original),
+        );
+      } finally {
+        dropped(restored);
+        dropped(installed);
+      }
+    } finally {
+      resetTestHooks();
       storage.close();
       await deleteDatabase(name);
     }
@@ -495,6 +665,7 @@ browserTest(
         changeOne(selected, opaque("1"), opaque("2"), "entity-000009".padEnd(43, "z"), "changed"),
       );
       expect(applied?.revision).toBe(opaque("2"));
+      dropped(applied);
       const sweep = await writer.collectGarbage();
       expect(sweep.nodes).toBeGreaterThan(0);
       const survivors = new Set(await nodeHashes(name, partition));
@@ -594,6 +765,7 @@ browserTest(
         changeOne(selected, opaque("1"), opaque("2"), "entity-000008".padEnd(43, "z"), "changed"),
       );
       expect(applied?.revision).toBe(opaque("2"));
+      dropped(applied);
       const before = await nodeHashes(name, partition);
       const current = await committedOf(name, partition);
       storage.close();
@@ -645,11 +817,18 @@ browserTest(
         changeOne(selected, opaque("1"), opaque("2"), "entity-000004".padEnd(43, "z"), "changed"),
       );
       expect(applied?.revision).toBe(opaque("2"));
+      dropped(applied);
+
+      // Drop the retention the restore handed out, so the pass below really
+      // does plan a live set with nothing claiming these roots. That is the
+      // state the sweep's own re-check exists for; the restore path reaches it
+      // by a different route, which its own test covers.
+      dropped(superseded);
 
       // Park the pass after it has computed a live set that does not include
       // the superseded roots, and only then retain them — exactly the shape of
-      // a restore that validated the older manifest and is publishing now. The
-      // manifest never moves, so the CAS alone would not notice.
+      // a holder claiming a superseded value the pass has already written off.
+      // The manifest never moves, so the CAS alone would not notice.
       armCheckpoint("replica.gc.planned", "wait");
       const sweeping = storage.collectGarbage();
       await reachedCheckpoint("replica.gc.planned");
@@ -674,7 +853,7 @@ browserTest(
       retention();
       const final = await storage.collectGarbage();
       expect(final.nodes).toBeGreaterThan(0);
-      expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+      expect(await revisionOf(storage.restore(selected, attributes, READ_COMPATIBILITY)))
         .toBe(opaque("2"));
     } finally {
       resetTestHooks();
@@ -726,6 +905,7 @@ browserTest(
         changeOne(selected, opaque("1"), opaque("2"), "entity-000005".padEnd(43, "z"), "changed"),
       );
       expect(applied?.revision).toBe(opaque("2"));
+      dropped(applied);
 
       const outcome = await storage.collectGarbage();
       // Both root sets are live, so only what neither reaches is reclaimed and
@@ -740,6 +920,7 @@ browserTest(
         changeOne(selected, opaque("2"), opaque("3"), "entity-000006".padEnd(43, "z"), "later"),
       );
       expect(next?.revision).toBe(opaque("3"));
+      dropped(next);
 
       // Closing the session releases the retention, so the next pass reclaims
       // exactly the roots that session had been keeping alive.
@@ -747,7 +928,7 @@ browserTest(
       session = undefined;
       const after = await storage.collectGarbage();
       expect(after.nodes).toBeGreaterThan(0);
-      expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+      expect(await revisionOf(storage.restore(selected, attributes, READ_COMPATIBILITY)))
         .toBe(opaque("3"));
     } finally {
       await session?.close();
@@ -764,9 +945,9 @@ browserTest("a crash cut during a sweep leaves the partition untouched", async (
   let storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
   try {
     await installSnapshot(storage, selected, opaque("1"), wideDatoms(60, "seed"));
-    await storage.applyChange(
+    dropped(await storage.applyChange(
       changeOne(selected, opaque("1"), opaque("2"), "entity-000002".padEnd(43, "z"), "changed"),
-    );
+    ));
     const before = bytes(await dump(name));
     const beforeHashes = await nodeHashes(name, partition);
 
@@ -783,12 +964,12 @@ browserTest("a crash cut during a sweep leaves the partition untouched", async (
     // pass completes it.
     storage.close();
     storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
-    expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+    expect(await revisionOf(storage.restore(selected, attributes, READ_COMPATIBILITY)))
       .toBe(opaque("2"));
     const retried = await storage.collectGarbage();
     expect(retried.nodes).toBe(beforeHashes.length - retried.retained);
     expect(retried.nodes).toBeGreaterThan(0);
-    expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+    expect(await revisionOf(storage.restore(selected, attributes, READ_COMPATIBILITY)))
       .toBe(opaque("2"));
   } finally {
     resetTestHooks();
@@ -806,9 +987,9 @@ browserTest(
     const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
     try {
       await installSnapshot(storage, selected, opaque("1"), wideDatoms(80, "seed"));
-      await storage.applyChange(
+      dropped(await storage.applyChange(
         changeOne(selected, opaque("1"), opaque("2"), "entity-000001".padEnd(43, "z"), "one"),
-      );
+      ));
       // Nothing has swept this partition yet, so any advance below is the one
       // recovery pass and nothing else.
       expect(await sweepGeneration(name, partition)).toBe(0);
@@ -826,7 +1007,7 @@ browserTest(
       // One pass, one retry, and the retry installed.
       expect(applied?.revision).toBe(opaque("3"));
       expect(await sweepGeneration(name, partition)).toBe(1);
-      expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+      expect(await revisionOf(storage.restore(selected, attributes, READ_COMPATIBILITY)))
         .toBe(opaque("3"));
       // The arm fired exactly once: the retry ran through the real boundary.
       expect(checkpointStatus()["replica.install"]).toBeUndefined();
@@ -911,7 +1092,7 @@ browserTest(
       // sweep may have taken, and the previously committed value is untouched.
       await expect(installing).rejects.toMatchObject({ _tag: "ReplicaFencedError" });
       expect(bytes((await dump(name))[COMMITTED])).toBe(before);
-      expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
+      expect(await revisionOf(storage.restore(selected, attributes, READ_COMPATIBILITY)))
         .toBe(opaque("1"));
     } finally {
       resetTestHooks();
@@ -952,9 +1133,9 @@ browserTest(
       expect(queued).toContain("offline");
 
       // A change orphans roots, so the pass below really does delete something.
-      await storage.applyChange(
+      dropped(await storage.applyChange(
         changeOne(selected, opaque("1"), opaque("2"), "entity-000003".padEnd(43, "z"), "changed"),
-      );
+      ));
       const swept = await storage.collectGarbage();
       expect(swept.nodes).toBeGreaterThan(0);
       expect(bytes(await dumpMutations(name))).toBe(queued);
@@ -970,6 +1151,7 @@ browserTest(
         changeOne(selected, opaque("2"), opaque("3"), "entity-000004".padEnd(43, "z"), "later"),
       );
       expect(applied?.revision).toBe(opaque("3"));
+      dropped(applied);
       expect(bytes(await dumpMutations(name))).toBe(queued);
     } finally {
       resetTestHooks();
@@ -993,6 +1175,18 @@ browserTest(
       await confirm(storage, selected, "root");
       await confirm(storage, child, "child");
 
+      // Give both partitions a real sweep generation, so the clear and the
+      // eviction below have a record to take with them.
+      dropped(await storage.applyChange(
+        changeOne(selected, opaque("1"), opaque("5"), "entity-000001".padEnd(43, "z"), "moved"),
+      ));
+      dropped(await storage.applyChange(
+        changeOne(child, opaque("2"), opaque("6"), "entity-000001".padEnd(43, "z"), "moved"),
+      ));
+      expect((await storage.collectGarbage()).nodes).toBeGreaterThan(0);
+      expect(await sweepGeneration(name, childPartition)).toBe(1);
+      expect(await sweepGeneration(name, replicaPartitionKey(selected))).toBe(1);
+
       // Eviction deletes the database's records outright, so a later pass finds
       // no partition to sweep there and the ancestor is untouched.
       const evicted = await storage.evictDatabase({
@@ -1000,11 +1194,14 @@ browserTest(
       });
       expect(evicted.nodes).toBeGreaterThan(0);
       expect(await nodeHashes(name, childPartition)).toEqual([]);
+      // The evicted database took its sweep generation with it: nothing would
+      // ever remove a record named after a partition that no longer exists.
+      expect(await sweepGeneration(name, childPartition)).toBe(0);
       const afterEvict = await storage.collectGarbage();
       expect(afterEvict.partitions).toBe(1);
       expect(afterEvict.nodes).toBe(0);
-      expect((await storage.restore(selected, attributes, READ_COMPATIBILITY))?.revision)
-        .toBe(opaque("1"));
+      expect(await revisionOf(storage.restore(selected, attributes, READ_COMPATIBILITY)))
+        .toBe(opaque("5"));
 
       // A cleared scope is terminal for this handle: it may not be swept either,
       // because sweeping would write a generation record back into it.
@@ -1019,6 +1216,12 @@ browserTest(
       const dumped = await dump(name);
       expect(dumped[NODES]).toEqual([]);
       expect(dumped[COMMITTED]).toEqual([]);
+      // And the clear took the scope's remaining sweep record with it, while
+      // the durable scope and database generations survive by design.
+      expect(await sweepGeneration(name, replicaPartitionKey(selected))).toBe(0);
+      expect(
+        (dumped[GENERATIONS] as { kind: string }[]).some((record) => record.kind === "partition"),
+      ).toBe(false);
     } finally {
       storage.close();
       await deleteDatabase(name);

@@ -6,6 +6,7 @@ import {
   ReplicaReachability,
   replicaQuotaRecovery,
   replicaSweepKey,
+  replicaSweepPrefix,
   stagingIsSweepable,
   unreachableNodeHashes,
 } from "../../../src/internal/replication/replica-gc.ts";
@@ -166,6 +167,15 @@ describe("keys", () => {
   test("the sweep generation is keyed by partition and storage version", () => {
     expect(replicaSweepKey("ramose-replica-v2:s:p:d:v:h"))
       .toBe("ramose-replica-sweep-v2:ramose-replica-v2:s:p:d:v:h");
+  });
+
+  test("one prefix covers every sweep record under a partition prefix", () => {
+    const prefix = replicaSweepPrefix("ramose-replica-v2:s:p:");
+    expect(prefix).toBe("ramose-replica-sweep-v2:ramose-replica-v2:s:p:");
+    // Exactly the records a clear or an eviction removes alongside those
+    // partitions, and nothing belonging to another principal.
+    expect(replicaSweepKey("ramose-replica-v2:s:p:d:v:h").startsWith(prefix)).toBe(true);
+    expect(replicaSweepKey("ramose-replica-v2:s:q:d:v:h").startsWith(prefix)).toBe(false);
   });
 
   test("a partition key names the scope that owns it", () => {

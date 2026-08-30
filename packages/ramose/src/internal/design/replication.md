@@ -586,12 +586,23 @@ and zero heads for any GC pass.
   than swept against a value nobody examined.
 - **Retention re-check.** The manifest CAS does not cover retention, because a
   restore that validated an *older* manifest publishes without moving the
-  manifest at all: the session retains those roots synchronously as it
-  publishes, and the pass may have computed its live set before that happened.
-  The same synchronous block that reads the materialization mark therefore
-  re-reads the retained roots, and skips the partition when one has appeared
-  that the live set does not already cover. A root that has gone since is
-  harmless — the live set was simply more generous than it needed to be.
+  manifest at all, and the pass may have computed its live set before that
+  happened. The same synchronous block that reads the materialization mark
+  therefore re-reads the retained roots, and skips the partition when one has
+  appeared that the live set does not already cover. A root that has gone since
+  is harmless — the live set was simply more generous than it needed to be.
+
+  This composes with the publish fence only because a restore retains *before*
+  its fence transaction exists, with no await in between, so exactly one of two
+  orders can hold. If the sweep's synchronous block ran first, its transaction
+  was created before the fence's, IndexedDB orders the generation bump ahead of
+  the fence's read, and the fence sees it and refuses. If it runs second, it
+  finds the retention covering the roots it was about to reclaim and skips. A
+  holder that retained *after* receiving its value would sit in neither order:
+  the sweep could plan while nothing was retained and still transact after a
+  fence that had already read a generation of zero. Every value the storage
+  hands out therefore arrives already retained, and its receiver owns exactly
+  one release.
 - **Only impossible staging.** Staging is swept only when its recorded base
   revision is no longer the committed one, which is exactly the condition under
   which its `SnapshotCommit` can never install again. A snapshot still streaming
@@ -640,10 +651,18 @@ withdrawal loses its manifest CAS: an install moved the record on, and a sweep
 of the roots it superseded is exactly how a healthy partition reaches that
 branch. Reporting an absence for either would strand an offline restore that has
 no other way to obtain the value, so both make the restore read the stored
-record again and walk it again, up to a small bounded number of attempts, and
-report nothing selected only if the partition keeps moving under every attempt.
-A clear or an eviction keeps surfacing the ordinary typed fence error,
-unchanged.
+record again and walk it again, up to a small bounded number of attempts. A
+partition that keeps moving under every attempt is reported as *contended* — a
+typed outcome distinct from an absence, because something is certainly stored
+and a caller must never read persistent contention as an empty partition worth
+re-snapshotting from scratch. A clear or an eviction keeps surfacing the
+ordinary typed fence error, unchanged.
+
+A scoped clear and a database eviction remove the sweep-generation records of
+the partitions they delete, in the same transaction and by the same prefix
+range: a record is named after its partition, so nothing else would ever remove
+it once that partition is gone. The scope and database generations they bump
+survive by design, exactly as before.
 
 The install paths observe it too, but only for the window between writing their
 nodes and committing the manifest that names them, and never through the

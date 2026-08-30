@@ -28,6 +28,18 @@ export const replicaSweepKey = (partition: string): string =>
   [`ramose-replica-sweep-v${REPLICA_STORAGE_VERSION}`, partition].join(":");
 
 /**
+ * The sweep-key prefix covering every partition under one partition prefix.
+ *
+ * A sweep record is named after the partition it guards, so a clear or an
+ * eviction can remove exactly the records belonging to the partitions it
+ * deletes, by the same prefix range it deletes those partitions with. Leaving
+ * them would be harmless but unbounded: nothing would ever remove the record
+ * for a partition that no longer exists.
+ */
+export const replicaSweepPrefix = (partitionPrefix: string): string =>
+  [`ramose-replica-sweep-v${REPLICA_STORAGE_VERSION}`, partitionPrefix].join(":");
+
+/**
  * A partial reachability walk over one partition's content-addressed nodes.
  *
  * The walk itself is ordinary graph mechanics and is kept separate from the

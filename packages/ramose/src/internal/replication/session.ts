@@ -313,12 +313,13 @@ export class ReplicationSession {
         await live?.close();
       },
     );
-    // Same synchronous block, for the same reason: a sweep beginning in the gap
-    // between reading this replica and constructing its session must already
-    // see the roots it depends on, or it could reclaim them as superseded.
-    const retention = restored === undefined
-      ? undefined
-      : options.storage.retainRoots(restored.identity, restored.db.roots);
+    // The storage already retained this value's roots — synchronously, before
+    // the transaction that cleared it to be handed back — so the session adopts
+    // that retention rather than taking a second one. Taking its own here would
+    // be strictly too late: a sweep that planned while nothing was retained can
+    // create its transaction after the publish fence's and still delete these
+    // nodes, and only a retention that exists before that fence closes it.
+    const retention = restored?.release;
     let candidate: ReplicaCacheCandidate | undefined;
     let lease: ReplicaLease;
     try {
@@ -474,9 +475,7 @@ export class ReplicationSession {
     // A closed session is no longer a live holder, so its last value stops
     // retaining nodes. The snapshot keeps carrying it for observers that are
     // mid-render; nothing rebuilds a query from it.
-    this.releaseRetention?.();
-    this.releaseRetention = undefined;
-    this.retainedDb = undefined;
+    this.release();
     const closed = Object.freeze({
       status: "closed" as const,
       ...(this.state.value === undefined ? {} : { value: this.state.value }),
@@ -491,27 +490,42 @@ export class ReplicationSession {
   }
 
   private publish(snapshot: ReplicationSessionSnapshot): void {
-    this.retain(snapshot.value);
+    // A snapshot carrying no value drops whatever this session was holding; one
+    // carrying the same `Db` (a stale flag flipping, a terminal keeping its
+    // last value) keeps the retention it already adopted. A snapshot carrying a
+    // *different* `Db` only ever arrives through `adopt` below, which has
+    // already moved the retention across.
+    if (snapshot.value === undefined) this.release();
     this.state = Object.freeze(snapshot);
     for (const observer of this.observers) this.notify(observer);
   }
 
   /**
-   * Move this session's root retention onto the value it is about to publish.
+   * Take over the retention the storage handed out with a value.
    *
-   * The new retention is taken before the old one is released, and both happen
-   * in one synchronous step, so there is no instant in which the value being
-   * published is unreachable. The value this replaces is deliberately let go:
-   * superseded roots are exactly what a sweep exists to reclaim.
+   * Every value the storage returns arrives already retained — taken
+   * synchronously, before the transaction that cleared it to be handed back —
+   * so the session never takes its own and never has to be fast enough. It
+   * owns exactly one release per value: adopting a new one releases the value
+   * it replaces, which is correct, because superseded roots are precisely what
+   * a sweep exists to reclaim. Adopting the same `Db` twice releases the
+   * duplicate rather than leaking it.
    */
-  private retain(value: ReplicationSessionValue | undefined): void {
-    if (value?.db === this.retainedDb) return;
-    const release = value === undefined
-      ? undefined
-      : this.storage.retainRoots(value.identity, value.db.roots);
+  private adopt(replica: RestoredReplica): void {
+    if (replica.db === this.retainedDb) {
+      replica.release();
+      return;
+    }
     this.releaseRetention?.();
-    this.releaseRetention = release;
-    this.retainedDb = value?.db;
+    this.releaseRetention = replica.release;
+    this.retainedDb = replica.db;
+  }
+
+  /** Drop this session's retention, if it still holds one. */
+  private release(): void {
+    this.releaseRetention?.();
+    this.releaseRetention = undefined;
+    this.retainedDb = undefined;
   }
 
   private notify(observer: ReplicationSessionObserver): void {
@@ -533,7 +547,11 @@ export class ReplicationSession {
     stale: boolean,
     generation: number,
   ): void {
-    if (!this.current(generation)) return;
+    if (!this.current(generation)) {
+      replica.release();
+      return;
+    }
+    this.adopt(replica);
     this.publish({ status: "open", value: valueFrom(identity, replica, stale) });
   }
 
@@ -542,7 +560,11 @@ export class ReplicationSession {
     replica: RestoredReplica,
     generation: number,
   ): void {
-    if (!this.current(generation)) return;
+    if (!this.current(generation)) {
+      replica.release();
+      return;
+    }
+    this.adopt(replica);
     this.publish({
       status: "connecting",
       value: valueFrom(identity, replica, true),
@@ -627,14 +649,16 @@ export class ReplicationSession {
         // validated at open. This path has not: a metadata-only candidate is
         // the first time this partition is touched, and the change is about to
         // be combined with a journal nothing has checked. Validate it first —
-        // the result is discarded, since the change supersedes it.
-        await this.confirmedCandidate(prior);
+        // the result is discarded, since the change supersedes it, so its
+        // retention is released rather than leaked.
+        (await this.confirmedCandidate(prior)).release();
         if (!this.current(generation)) return false;
         const installed = await this.storage.applyChange(frame, {
           signal: this.controller.signal,
           lease: this.lease,
         });
         if (installed === undefined || installed.revision !== frame.revision) {
+          installed?.release();
           throw new Error("authenticated change did not continue the cache candidate");
         }
         this.publishReplica(frame.identity, installed, false, generation);
@@ -664,9 +688,15 @@ export class ReplicationSession {
             this.readCompatibilityHash,
           ),
         );
-        if (!this.current(generation)) return false;
+        if (!this.current(generation)) {
+          restored?.release();
+          return false;
+        }
         const terminal = await this.accept(frame, generation);
-        if (terminal || !this.current(generation)) return terminal;
+        if (terminal || !this.current(generation)) {
+          restored?.release();
+          return terminal;
+        }
         // A quarantined partition simply publishes nothing here; the snapshot
         // this response is already sending replaces it.
         if (restored !== undefined) {
@@ -737,8 +767,13 @@ export class ReplicationSession {
           this.attributes,
           { signal: this.controller.signal, lease: this.lease },
         );
-        if (installed !== undefined && installed.revision === frame.revision) {
+        if (installed === undefined) return false;
+        if (installed.revision === frame.revision) {
           this.publishReplica(frame.identity, installed, false, generation);
+        } else {
+          // A lost CAS: the value is not the one this frame names, so it is
+          // never published and its retention is released rather than leaked.
+          installed.release();
         }
         return false;
       }
@@ -753,8 +788,13 @@ export class ReplicationSession {
           signal: this.controller.signal,
           lease: this.lease,
         });
-        if (installed !== undefined && installed.revision === frame.revision) {
+        if (installed === undefined) return false;
+        if (installed.revision === frame.revision) {
           this.publishReplica(frame.identity, installed, false, generation);
+        } else {
+          // A lost CAS: the value is not the one this frame names, so it is
+          // never published and its retention is released rather than leaked.
+          installed.release();
         }
         return false;
       }
