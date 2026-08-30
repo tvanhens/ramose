@@ -8,6 +8,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
 import { Catalog } from "../../src/Catalog.ts";
 import { Entity, Field, Schema, string } from "../../src/db/internal.ts";
@@ -84,6 +86,20 @@ describe("createClient", () => {
     // The portable language, unchanged: an inert value, not a client DSL.
     expect(typeof query.orderBy).toBe("function");
     expect(client.sync.getSnapshot().status).toBe("idle");
+  });
+});
+
+describe("the ramose/client barrel", () => {
+  test("bundles for browsers without the deploy engine", async () => {
+    const built = await Bun.build({
+      entrypoints: [resolve(dirname(fileURLToPath(import.meta.url)), "../../src/client/index.ts")],
+      target: "browser",
+      external: ["effect", "effect/*"],
+    });
+    expect(built.success).toBe(true);
+    // The client is a browser package: Alchemy, the peer Worker, and the
+    // Cloudflare bindings must not be reachable from it.
+    expect(await built.outputs[0]!.text()).not.toContain("alchemy");
   });
 });
 
