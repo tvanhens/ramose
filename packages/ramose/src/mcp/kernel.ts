@@ -268,9 +268,10 @@ export const runQueryDocument = async (
     options.maxCells === undefined ? {} : { maxCells: options.maxCells },
   );
   const pulled = Array.isArray(result) ? result : [];
-  const rows = pulled.map((row) => {
+  const rows: Record<string, unknown>[] = [];
+  for (const row of pulled) {
     const out: Record<string, unknown> = {};
-    if (row === null || typeof row !== "object") return out;
+    if (row === null || typeof row !== "object") continue;
     const record = row as Record<string, unknown>;
     for (const field of lowered.fields) {
       // An absent key is the sealed answer for both "no value" and "hidden".
@@ -282,8 +283,13 @@ export const runQueryDocument = async (
         out[field.name] = toJson(record[field.ident]);
       }
     }
-    return out;
-  });
+    // A row that projects no visible value is not reported at all. Emitting an
+    // empty object would make a policy-hidden field distinguishable from an
+    // unknown one — the hidden field yields one `{}` per readable row, and
+    // that count is itself the disclosure. Dropping the row gives hidden,
+    // never-set, ref-shaped, and unknown field names the one same answer.
+    if (Object.keys(out).length > 0) rows.push(out);
+  }
   return Object.freeze({
     rows: Object.freeze(rows),
     truncated: rows.length >= (document.limit ?? DEFAULT_QUERY_LIMIT),
@@ -313,40 +319,104 @@ export type MutateResultV1 = {
 export const REFERENCE_WITHHELD = Object.freeze({ withheld: "reference" });
 
 /**
+ * What stands in for a whole outcome whose reference slots cannot be located.
+ *
+ * The invocation committed — this is not a failure — but its result cannot be
+ * shown without risking a storage id on the wire, so none of it is.
+ */
+export const OUTCOME_WITHHELD = Object.freeze({ withheld: "outcome" });
+
+/**
+ * Whether a declared contract can reach an entity reference at all.
+ *
+ * `opaque` is exact here rather than a guess: `lowerOperationSchema` refuses
+ * to lower a schema that hides a Ramose ref inside a form it cannot describe,
+ * so a shape that lowered to `opaque` provably contains none. (A contract
+ * declared as plain `Unknown` still carries whatever the operation returns;
+ * nothing there is *declared* to be a reference, so nothing here — or in the
+ * receipt path — can identify one. That limit is the declared contract's, not
+ * this projection's.)
+ */
+const declaresReference = (shape: OperationInputShape): boolean => {
+  switch (shape._tag) {
+    case "ref":
+      return true;
+    case "array":
+      return declaresReference(shape.items);
+    case "struct":
+      return shape.fields.some((field) => declaresReference(field.shape));
+    case "scalar":
+    case "opaque":
+      return false;
+  }
+};
+
+/**
  * Replace every reference-shaped slot of one operation output with
  * {@link REFERENCE_WITHHELD}, guided by the operation's declared output shape.
+ * Returns `undefined` when the value cannot be proven to line up with that
+ * shape, so the caller withholds the whole outcome instead of guessing.
  *
- * The shape — not the value — decides: a plain number stays a number unless
- * the contract says that position holds a reference. An `opaque` contract
- * declares nothing about its interior, so nothing there can be identified as
- * a reference and the value passes through as the operation's own codec
- * produced it.
+ * ## Why alignment has to be proven
+ *
+ * The value reaching here is the operation's **encoded** output — the exact
+ * JSON its codec produced — while the declared shape is the **decoded**
+ * projection (`lowerOperationSchema` follows a transformation's `to` side by
+ * design, because operation bodies and the authoritative ref filter work on
+ * the decoded value). A codec that renames a key on the way out — Effect's
+ * `encodeKeys`, say — therefore publishes a reference under a name the shape
+ * never mentions, and masking by declared name alone would sail past it.
+ *
+ * So wherever the contract declares a struct that can reach a reference, every
+ * key actually present must be one the contract declared. A renamed or
+ * injected key fails that check and the outcome is withheld. Contracts that
+ * declare no reference at all are returned untouched: there is nothing there
+ * to leak, and refusing them would withhold results for no reason.
+ *
+ * The shape — not the value — decides what is a reference: a plain number
+ * stays a number unless the contract says that position holds one.
  */
 export const maskReferenceOutput = (
   shape: OperationInputShape,
   value: unknown,
-): unknown => {
+): { readonly value: unknown } | undefined => {
+  if (!declaresReference(shape)) return { value };
   switch (shape._tag) {
     case "ref":
-      return value === null || value === undefined ? value : REFERENCE_WITHHELD;
-    case "array":
-      return Array.isArray(value)
-        ? value.map((item) => maskReferenceOutput(shape.items, item))
-        : value;
+      return {
+        value: value === null || value === undefined ? value : REFERENCE_WITHHELD,
+      };
+    case "array": {
+      if (!Array.isArray(value)) return undefined;
+      const items: unknown[] = [];
+      for (const item of value) {
+        const masked = maskReferenceOutput(shape.items, item);
+        if (masked === undefined) return undefined;
+        items.push(masked.value);
+      }
+      return { value: items };
+    }
     case "struct": {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        return value;
+        return undefined;
       }
-      const out: Record<string, unknown> = { ...(value as Record<string, unknown>) };
-      for (const field of shape.fields) {
-        if (!Object.hasOwn(out, field.key)) continue;
-        out[field.key] = maskReferenceOutput(field.shape, out[field.key]);
+      const record = value as Record<string, unknown>;
+      const declared = new Map(shape.fields.map((field) => [field.key, field.shape]));
+      const out: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(record)) {
+        const field = declared.get(key);
+        // An undeclared key is a key the codec renamed or added: its meaning,
+        // and whether it holds a reference, cannot be established here.
+        if (field === undefined) return undefined;
+        const masked = maskReferenceOutput(field, entry);
+        if (masked === undefined) return undefined;
+        out[key] = masked.value;
       }
-      return out;
+      return { value: out };
     }
     case "scalar":
     case "opaque":
-      return value;
+      return { value };
   }
 };
 
@@ -360,12 +430,15 @@ export const publicMutateResult = (
   outputShape: OperationInputShape,
 ): MutateResultV1 | ErrorEnvelopeV1 => {
   switch (result._tag) {
-    case "Completed":
+    case "Completed": {
+      // The invocation committed either way; only the outcome can be withheld.
+      const masked = maskReferenceOutput(outputShape, result.output);
       return Object.freeze({
         invocationId: result.receipt.invocationId,
         status: "completed" as const,
-        outcome: maskReferenceOutput(outputShape, result.output),
+        outcome: masked === undefined ? OUTCOME_WITHHELD : masked.value,
       });
+    }
     case "Conflict":
       return toolFailure(
         "invocation_conflict",

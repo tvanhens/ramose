@@ -14,6 +14,7 @@ import {
   parseQueryDocument,
 } from "../../src/mcp/contract.ts";
 import {
+  OUTCOME_WITHHELD,
   REFERENCE_WITHHELD,
   maskReferenceOutput,
   publicMutateResult,
@@ -183,14 +184,16 @@ describe("mutate arguments", () => {
 describe("reference masking", () => {
   const ref: OperationInputShape = { _tag: "ref", refTarget: { _tag: "self" } };
   const scalar: OperationInputShape = { _tag: "scalar", valueType: "string" };
+  const field = (key: string, shape: OperationInputShape) =>
+    ({ key, optional: false, shape });
 
   test("withholds a reference-shaped slot wherever the contract declares one", () => {
     const shape: OperationInputShape = {
       _tag: "struct",
       fields: [
-        { key: "id", optional: false, shape: ref },
-        { key: "title", optional: false, shape: scalar },
-        { key: "related", optional: false, shape: { _tag: "array", items: ref } },
+        field("id", ref),
+        field("title", scalar),
+        field("related", { _tag: "array", items: ref }),
       ],
     };
     const masked = maskReferenceOutput(shape, {
@@ -198,7 +201,7 @@ describe("reference masking", () => {
       title: "kept",
       related: [17, 18],
     });
-    expect(masked).toEqual({
+    expect(masked?.value).toEqual({
       id: REFERENCE_WITHHELD,
       title: "kept",
       related: [REFERENCE_WITHHELD, REFERENCE_WITHHELD],
@@ -209,12 +212,42 @@ describe("reference masking", () => {
 
   test("the contract decides, not the value's shape", () => {
     // A declared long stays a long even though it looks like an entity id.
-    expect(maskReferenceOutput({ _tag: "scalar", valueType: "long" }, 4_099)).toBe(4_099);
+    expect(maskReferenceOutput({ _tag: "scalar", valueType: "long" }, 4_099))
+      .toEqual({ value: 4_099 });
     // An opaque contract declares nothing about its interior to identify.
     expect(maskReferenceOutput({ _tag: "opaque" }, { id: 4_099 }))
-      .toEqual({ id: 4_099 });
+      .toEqual({ value: { id: 4_099 } });
     // Absent stays absent rather than becoming a withheld value.
-    expect(maskReferenceOutput(ref, null)).toBeNull();
+    expect(maskReferenceOutput(ref, null)).toEqual({ value: null });
+  });
+
+  test("refuses a value whose keys the declared contract does not name", () => {
+    // What arrives is the codec's *encoded* output while the shape is the
+    // decoded projection, so a renamed key would hide a reference from a
+    // name-directed walk. `encodeKeys({ id: "wire_id" })` is exactly that.
+    const shape: OperationInputShape = { _tag: "struct", fields: [field("id", ref)] };
+    expect(maskReferenceOutput(shape, { wire_id: 4_099 })).toBeUndefined();
+    expect(maskReferenceOutput(shape, { id: 1, extra: 2 })).toBeUndefined();
+    // Nested renames are caught at the level they occur.
+    expect(maskReferenceOutput(
+      { _tag: "struct", fields: [field("inner", shape)] },
+      { inner: { wire_id: 4_099 } },
+    )).toBeUndefined();
+    // A struct where the value is not an object at all cannot be aligned.
+    expect(maskReferenceOutput(shape, 4_099)).toBeUndefined();
+    expect(maskReferenceOutput({ _tag: "array", items: ref }, { "0": 1 }))
+      .toBeUndefined();
+  });
+
+  test("a contract that declares no reference is never refused", () => {
+    // Renaming a key that cannot hold a reference has nothing to leak, so
+    // withholding the outcome there would cost results for no reason.
+    const shape: OperationInputShape = {
+      _tag: "struct",
+      fields: [field("title", scalar)],
+    };
+    expect(maskReferenceOutput(shape, { wire_title: "kept" }))
+      .toEqual({ value: { wire_title: "kept" } });
   });
 });
 
@@ -254,6 +287,29 @@ describe("invocation outcome projection", () => {
       }],
     });
     expect(result).toMatchObject({ outcome: { id: REFERENCE_WITHHELD } });
+    expect(JSON.stringify(result)).not.toContain("4099");
+  });
+
+  test("a completed outcome it cannot align is withheld whole, not guessed at", () => {
+    const result = project({
+      _tag: "Completed",
+      receipt: { ...receipt, status: "completed" },
+      committedT: 9,
+      output: { wire_id: 4_099 },
+    }, {
+      _tag: "struct",
+      fields: [{
+        key: "id",
+        optional: false,
+        shape: { _tag: "ref", refTarget: { _tag: "self" } },
+      }],
+    });
+    // The invocation committed, so the status stays truthful.
+    expect(result).toEqual({
+      invocationId: "01K",
+      status: "completed",
+      outcome: OUTCOME_WITHHELD,
+    });
     expect(JSON.stringify(result)).not.toContain("4099");
   });
 

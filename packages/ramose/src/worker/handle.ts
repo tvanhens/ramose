@@ -384,6 +384,7 @@ export const handle = (
         root,
         caller: callerFromVerified(verified),
         headers: cors,
+        ...(boundaries === undefined ? {} : { boundaries }),
       });
     }
     if (rest === "/op" && request.method === "POST") {

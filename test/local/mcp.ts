@@ -70,6 +70,23 @@ const install = async (base: string, database: string, tx: unknown[]): Promise<v
   expect(installed.status).toBe(200);
 };
 
+/** Block until the real Worker parks on an armed checkpoint. */
+const waitForCheckpoint = async (
+  base: string,
+  database: string,
+  name: string,
+): Promise<void> => {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const status = await testAdmin(base, database, "/checkpoint", {
+      scope: "worker",
+      action: "status",
+    });
+    if (status.body.checkpoints?.[name]?.pending === true) return;
+    await Bun.sleep(25);
+  }
+  throw new Error(`the request did not reach the worker ${name} checkpoint`);
+};
+
 /** The operation reference `describe` published, pinned to its own version. */
 const ref = (described: any, owner: string, name: string) => {
   const found = described.operations.find(
@@ -195,6 +212,8 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         from: { entity: "nativeEncoded" },
         where: { label: "encoded" },
       });
+      // `secret` is declared on this visible entity and denied to `member`,
+      // so the default projection omits it exactly as if it did not exist.
       expect(encoded.rows).toEqual([{
         label: "encoded",
         at: { $inst: 1_700_000_000_000 },
@@ -222,6 +241,27 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         from: { entity: "nativeItem" },
         select: ["noSuchField"],
       })).toEqual(hidden);
+      // A policy-hidden field on a *visible* entity with visible rows must
+      // read the same as an unknown one. Reporting an empty row per readable
+      // row would otherwise disclose both that the field exists and how many
+      // rows the caller can see. A ref-shaped field is excluded for the same
+      // reason and must land on the identical answer.
+      expect(await read({
+        version: 1,
+        from: { entity: "nativeEncoded" },
+        select: ["secret"],
+      })).toEqual(hidden);
+      expect(await read({
+        version: 1,
+        from: { entity: "nativeItem" },
+        select: ["invalidRef"],
+      })).toEqual(hidden);
+      // …while the same rows are plainly there through a visible field.
+      expect((await read({
+        version: 1,
+        from: { entity: "nativeEncoded" },
+        select: ["label"],
+      })).rows).toEqual([{ label: "encoded" }]);
 
       // The reader proves the hidden row was really there all along.
       const visible = await ok(base, database, reader, "query", {
@@ -288,6 +328,31 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         value: { code: "operation_changed", retryable: true },
       });
 
+      // The same reference-shaped output under a codec-renamed key. The
+      // declared contract says `id`, the wire says `wire_id`, so the slot
+      // cannot be located by name and the whole outcome is withheld rather
+      // than published with the storage id under a name the mask never saw.
+      const renamed = await ok(base, database, member, "mutate", {
+        operation: ref(discovered, "nativeEncoded", "createRenamed"),
+        input: { label: "renamed" },
+        invocationId: crypto.randomUUID(),
+      });
+      expect(renamed).toMatchObject({
+        status: "completed",
+        outcome: { withheld: "outcome" },
+      });
+      expect(JSON.stringify(renamed.outcome)).not.toMatch(/\d/);
+      expect(JSON.stringify(renamed)).not.toContain("wire_id");
+      // The write itself still committed.
+      expect((await ok(base, database, member, "query", {
+        query: {
+          version: 1,
+          from: { entity: "nativeEncoded" },
+          where: { label: "renamed" },
+          select: ["label"],
+        },
+      })).rows).toEqual([{ label: "renamed" }]);
+
       // The operation's own refusal surfaces as its message, not a 500.
       expect(await callTool(base, database, member, "mutate", {
         operation: ref(discovered, "nativeItem", "reject"),
@@ -309,6 +374,58 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         isError: true,
         value: { code: "inaccessible", retryable: false },
       });
+    });
+
+    test("a credential expiring mid-flight commits but discloses nothing", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-mcp-expiry";
+      await install(base, database, schemaTx(OperationSchema));
+      // Initialize the real Replica before arming module-isolate checkpoint
+      // state. DO constructors intentionally reset stale test hooks.
+      const warmed = await testAdmin(base, database, "/query", {
+        query: "[:find ?e :where [?e :nativeItem/title ?title]]",
+      });
+      expect(warmed.status).toBe(200);
+
+      const exp = Math.floor(Date.now() / 1_000) + 4;
+      const expiring = await signToken(database, "member", "user_ada", undefined, { exp });
+      const discovered = await ok(base, database, expiring, "describe", { at: [] });
+      const armed = await testAdmin(base, database, "/checkpoint", {
+        scope: "worker",
+        action: "arm-wait",
+        name: "operation.response",
+        // The delay starts once the real Worker boundary is reached, so this
+        // releases the parked response after the JWT is exact-expired.
+        releaseAfterMs: exp * 1_000 - Date.now() + 25,
+      });
+      expect(armed.status).toBe(200);
+
+      const title = "Committed before response expiry";
+      const pending = callTool(base, database, expiring, "mutate", {
+        operation: ref(discovered, "nativeItem", "create"),
+        input: { title },
+        invocationId: crypto.randomUUID(),
+      });
+      await waitForCheckpoint(base, database, "operation.response");
+
+      const expired = await pending;
+      expect(Date.now()).toBeGreaterThanOrEqual(exp * 1_000);
+      // Same fence `/op` applies after the awaited Transactor hop: the output
+      // may be derived from data this caller can no longer read, so none of
+      // it is disclosed and the refusal names nothing.
+      expect(expired).toMatchObject({
+        isError: true,
+        value: { code: "inaccessible", retryable: false },
+      });
+      expect(Object.hasOwn(expired.value, "outcome")).toBe(false);
+      expect(Object.hasOwn(expired.value, "invocationId")).toBe(false);
+
+      // As on `/op`, the write itself stayed committed.
+      const persisted = await testAdmin(base, database, "/query", {
+        query: `[:find ?e :where [?e :nativeItem/title ${JSON.stringify(title)}]]`,
+      });
+      expect(persisted.status).toBe(200);
+      expect(persisted.body.result).toEqual([[expect.any(Number)]]);
     });
 
     test("at traverses the authorized graph of graphs", async () => {

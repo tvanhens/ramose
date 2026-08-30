@@ -39,6 +39,7 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-mcp-describe",
   "operations-mcp-query",
   "operations-mcp-mutate",
+  "operations-mcp-expiry",
 ]);
 
 const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
@@ -219,6 +220,14 @@ export const Item = Entity("nativeItem", {
   }),
 });
 
+const encodedRow = (label: string) => ({
+  label,
+  at: new Date(1_700_000_000_000),
+  blob: new Uint8Array([1, 2, 3, 250]),
+  key: "8f14e45f-ceea-467a-9c8b-4e2f9b7c1a30",
+  secret: "policy-hidden",
+});
+
 /**
  * Field types JSON cannot represent natively, so a transport that forgets the
  * engine's canonical `$inst` / `$uuid` / `$bytes` encoding is caught rather
@@ -229,6 +238,8 @@ export const Encoded = Entity("nativeEncoded", {
   at: timestamp(),
   blob: bytes(),
   key: uuid(),
+  /** Declared on a readable entity but denied to `member` by policy. */
+  secret: string(),
 }, {
   operations: (Operation) => ({
     create: Operation({
@@ -236,14 +247,21 @@ export const Encoded = Entity("nativeEncoded", {
       input: EffectSchema.Struct({ label: EffectSchema.String }),
       output: EffectSchema.Struct({ id: OperationEntityId }),
       run(op, input) {
-        return {
-          id: op.create({
-            label: input.label,
-            at: new Date(1_700_000_000_000),
-            blob: new Uint8Array([1, 2, 3, 250]),
-            key: "8f14e45f-ceea-467a-9c8b-4e2f9b7c1a30",
-          }),
-        };
+        return { id: op.create(encodedRow(input.label)) };
+      },
+    }),
+    /**
+     * Same reference-shaped output, published under a codec-renamed key. The
+     * declared shape says `id`; the wire says `wire_id`.
+     */
+    createRenamed: Operation({
+      self: false,
+      input: EffectSchema.Struct({ label: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: OperationEntityId }).pipe(
+        EffectSchema.encodeKeys({ id: "wire_id" }),
+      ),
+      run(op, input) {
+        return { id: op.create(encodedRow(input.label)) };
       },
     }),
   }),
@@ -278,7 +296,9 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     Policy.invoke(Item[OwnedOperations].reject).when(Policy.hasClass("member")),
     Policy.invoke(Other[OwnedOperations].create).when(Policy.hasClass("member")),
     Policy.read(Encoded).when(Policy.hasClass("member")),
+    Policy.read(Encoded.secret).deny(Policy.hasClass("member")),
     Policy.invoke(Encoded[OwnedOperations].create).when(Policy.hasClass("member")),
+    Policy.invoke(Encoded[OwnedOperations].createRenamed).when(Policy.hasClass("member")),
   ],
 }));
 

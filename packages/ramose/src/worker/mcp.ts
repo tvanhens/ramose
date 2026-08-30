@@ -33,6 +33,7 @@ import {
 } from "../mcp/contract.ts";
 import { describeGraph, publicMutateResult, runQueryDocument } from "../mcp/kernel.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
+import type { RuntimeBoundaries } from "../internal/runtime-boundaries.ts";
 import { acquireCurrentDb, provisionResolvedDatabase, queryMaxCells } from "./authorized-read.ts";
 import { invokeAuthoritativeOperation } from "./authorized-operation.ts";
 import { Internal, OperationRejected, UpstreamError, Unauthorized } from "./errors.ts";
@@ -44,6 +45,7 @@ export type McpRouteInput = {
   readonly root: ResolvedDatabaseRoute;
   readonly caller: AuthenticatedCaller;
   readonly headers: Record<string, string>;
+  readonly boundaries?: RuntimeBoundaries;
 };
 
 /** Every path failure — hidden, absent, or unauthorized — reads the same. */
@@ -182,6 +184,19 @@ const mcpTools = (input: McpRouteInput) => ({
       input.caller,
       resolved.derivation,
     ).catch(mutateTransportFailure);
+    // The Transactor fences expiry before commit and acknowledgement; this is
+    // the same final Worker checkpoint `/op` takes after that awaited hop, so
+    // a credential that lapsed mid-flight cannot disclose output that may be
+    // derived from data the caller can no longer read. As on `/op` the write
+    // stays committed — only the response is suppressed — and the same
+    // invocationId replays it once the caller re-authenticates.
+    await input.boundaries?.checkpoint("operation.response");
+    if (
+      !Number.isSafeInteger(input.caller.exp) ||
+      input.caller.exp * 1_000 <= Date.now()
+    ) {
+      throw inaccessible();
+    }
     const projected = publicMutateResult(result, resolved.output);
     if ("code" in projected) throw toolFailure(projected.code, projected.message);
     return projected;
