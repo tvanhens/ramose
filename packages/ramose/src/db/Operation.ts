@@ -152,9 +152,13 @@ export type RunArg<C extends AnySchema, OC extends AnySchema, A> =
 /**
  * Schema for an entity id in operation input / output.
  *
- * The decoded type is `number`. A body may return a handle (or
- * `{ id: handle }`) in an `EntityId` slot; authoritative execution resolves
- * it after the writer assigns eids.
+ * The decoded type is `number`, which is the *private* eid the authoritative
+ * writer works in. A body may return a handle (or `{ id: handle }`) in an
+ * `EntityId` slot; authoritative execution resolves it after the writer assigns
+ * eids. What crosses the operation boundary is never that number: the public
+ * projection seals every `EntityId` position of the result into the opaque
+ * {@link EntityId} handle below, which is the same handle an allocation mapping
+ * and logical replication carry for that entity in that scope (#475).
  */
 export const EntityId: typeof untargetedRef = untargetedRef;
 

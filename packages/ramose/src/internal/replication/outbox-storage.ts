@@ -63,6 +63,7 @@ import {
   decodeOutboxRecord,
   decodeReceipt,
   decodeQueueCursor,
+  fencedByActivation,
   mappingKey,
   mutationPartitionKey,
   mutationScopePrefix,
@@ -72,6 +73,7 @@ import {
   planOutbox,
   sameOutboxIntent,
   sealingEpochOf,
+  unobservedReceiptOf,
   type ClientRefMappingRecord,
   type ClientRefRecord,
   type OutboxDecisionContext,
@@ -81,6 +83,7 @@ import {
   type QueuedMapping,
   type ReceiptRecord,
   type SealingEpoch,
+  type UnobservedReceipt,
   type UnreadableOutboxRow,
 } from "./outbox.ts";
 
@@ -250,6 +253,21 @@ export type EnqueueOptions = {
   readonly signal?: AbortSignal | undefined;
 };
 
+/**
+ * The durable post-commit observation state of one receiver database (#475
+ * slice 3). Everything #476 needs to decide what an optimistic layer is still
+ * waiting for, and nothing else: no output, no mappings, no transaction
+ * position, no observation token.
+ */
+export type ActivationObservationState = {
+  readonly partition: string;
+  readonly receiver: ReplicaDatabaseScope;
+  /** The activation currently in force; `0` before the first fresh one. */
+  readonly activation: number;
+  /** Committed receipts whose marker is still on, oldest activation first. */
+  readonly unobserved: readonly UnobservedReceipt[];
+};
+
 /** Rows the queue could not interpret, kept and reported, never submitted. */
 export type OutboxRestoration = {
   readonly records: readonly OutboxRecord[];
@@ -268,18 +286,57 @@ const epochsOf = (
   new Map([...mapped].map(([key, record]) => [key, record.sealing] as const));
 
 /**
+ * Deep structural equality over two durable JSON outputs.
+ *
+ * Order-insensitive over object keys, exactly as the canonical form is, and
+ * defined for every value the durable output deliberately admits — including
+ * the lone surrogates RFC 8785 canonicalization refuses.
+ */
+const sameJsonValue = (left: JsonValue, right: JsonValue): boolean => {
+  if (left === right) return true;
+  if (Array.isArray(left)) {
+    return Array.isArray(right) && left.length === right.length &&
+      left.every((item, index) => sameJsonValue(item, right[index]!));
+  }
+  if (
+    typeof left !== "object" || left === null || typeof right !== "object" ||
+    right === null || Array.isArray(right)
+  ) return false;
+  const fields = left as Readonly<Record<string, JsonValue>>;
+  const others = right as Readonly<Record<string, JsonValue>>;
+  const keys = Object.keys(fields);
+  if (keys.length !== Object.keys(others).length) return false;
+  return keys.every((key) =>
+    Object.hasOwn(others, key) && sameJsonValue(fields[key]!, others[key]!)
+  );
+};
+
+/**
  * Whether two terminal receipts carry the same authoritative output.
  *
  * Canonical, so a re-serialization that only reordered object keys is still
  * recognized as the same answer, while any actual difference is a conflict.
+ *
+ * A durable output is deliberately *not* held to RFC 8785's rules — it is
+ * application data the server already committed, and refusing to store it
+ * would wedge a queue for a string the operation was entitled to return — so
+ * canonicalization can throw here on a value that is perfectly storable. Both
+ * throwing and declaring such an output unequal would wedge the very head this
+ * comparison exists to release, so it falls back to comparing the two values
+ * structurally, which agrees with the canonical form everywhere the canonical
+ * form is defined.
  */
 const sameReceiptOutput = (
   left: JsonValue | null,
   right: JsonValue | null,
-): boolean =>
-  left === null || right === null
-    ? left === right
-    : canonicalizeJson(left) === canonicalizeJson(right);
+): boolean => {
+  if (left === null || right === null) return left === right;
+  try {
+    return canonicalizeJson(left) === canonicalizeJson(right);
+  } catch {
+    return sameJsonValue(left, right);
+  }
+};
 
 /** Order-insensitive, because two mappings of one ref cannot both exist. */
 const sameMappings = (
@@ -511,6 +568,9 @@ export class IndexedDbOutbox {
       // their own epoch and quarantine on their own terms; this only records
       // what the queue has most recently seen.
       sealing: record.sealing ?? current?.sealing ?? null,
+      // Carried forward untouched. Only a fresh activation moves it, and an
+      // enqueue is not one.
+      activation: current?.activation ?? 0,
       updatedAt: record.enqueuedAt,
     }));
     transaction.objectStore(MUTATION_RECEIPTS).add(buildReceipt({
@@ -519,6 +579,7 @@ export class IndexedDbOutbox {
       scope: scopeKey,
       state: "queued",
       observation: null,
+      activation: 0,
       output: null,
       mappings: [],
       failure: null,
@@ -852,6 +913,7 @@ export class IndexedDbOutbox {
     const transaction = this.database.transaction(
       [
         MUTATION_OUTBOX,
+        MUTATION_QUEUES,
         MUTATION_RECEIPTS,
         MUTATION_MAPPINGS,
         MUTATION_CLIENT_REFS,
@@ -888,7 +950,29 @@ export class IndexedDbOutbox {
   ): Promise<ReceiptRecord> {
     const receipts = transaction.objectStore(MUTATION_RECEIPTS);
     const key = [record.partition, record.invocation];
-    const stored = await requestResult<unknown>(receipts.get(key));
+    // The activation counter in force *inside this transaction*. Read here, so
+    // a `beginActivation` that commits between the response and this write
+    // cannot be observed as still-current: the counter it installed is a
+    // strictly larger number, and a marker stamped with it is correctly not
+    // fenced by that same activation.
+    const [stored, cursor] = await Promise.all([
+      requestResult<unknown>(receipts.get(key)),
+      requestResult<unknown>(
+        transaction.objectStore(MUTATION_QUEUES).get(record.partition),
+      ),
+    ]);
+    const decodedCursor = cursor === undefined ? undefined : decodeQueueCursor(cursor);
+    // An unreadable cursor is not "no activation has begun": stamping such a
+    // marker `0` would let the very activation already in flight fence it, and
+    // that is exactly the causally stale observation the fence exists to
+    // refuse. The enqueue refuses the same row for the same reason, so the
+    // queue is already held; being wrong here would be silent.
+    if (cursor !== undefined && decodedCursor === undefined) {
+      throw new OutboxRecordInvalid({
+        reason: "the durable queue cursor of this receiver is unreadable",
+      });
+    }
+    const activation = decodedCursor?.activation ?? 0;
     const current = stored === undefined ? undefined : decodeReceipt(stored);
     if (stored !== undefined && current === undefined) {
       throw new OutboxRecordInvalid({
@@ -910,8 +994,10 @@ export class IndexedDbOutbox {
         scope: current.scope,
         state: "committed",
         // The internal reconciliation marker #476 consumes. It is written in
-        // this transaction and cleared only by a causally fresh activation.
+        // this transaction and cleared only by a causally fresh activation —
+        // one whose counter is strictly greater than the stamp below.
         observation: "unobserved",
+        activation,
         output: acknowledgement.output,
         mappings: acknowledgement.mappings,
         failure: null,
@@ -922,8 +1008,10 @@ export class IndexedDbOutbox {
         invocation: record.invocation,
         scope: current.scope,
         state: "rejected",
-        // A rejection needs no observation fence: nothing was committed.
+        // A rejection needs no observation fence: nothing was committed, so
+        // there is no marker and no activation stamp either.
         observation: null,
+        activation: 0,
         output: null,
         mappings: [],
         failure: { code: acknowledgement.code },
@@ -1043,6 +1131,7 @@ export class IndexedDbOutbox {
         scope: next.scope,
         state: "rejected",
         observation: null,
+        activation: 0,
         output: null,
         mappings: [],
         // Typed, and distinct from the refusal that started the cut: this
@@ -1051,6 +1140,182 @@ export class IndexedDbOutbox {
         updatedAt: acknowledgedAt,
       }));
       outbox.delete([next.partition, next.sequence]);
+    }
+  }
+
+  /**
+   * The durable observation state of one receiver database.
+   *
+   * Read in one readonly transaction over the cursor and the receipts: the
+   * activation counter and the set it will be compared against must come from
+   * the same snapshot, or a fence that committed in between would be reported
+   * as an activation with receipts it has already cleared.
+   *
+   * This is also restart recovery. Nothing is reconstructed from memory: the
+   * unobserved set is exactly the durable rows that say `committed` with the
+   * marker still on, in stamp order.
+   */
+  async observationState(
+    receiver: ReplicaDatabaseScope,
+  ): Promise<ActivationObservationState> {
+    this.assertScopeLive(receiver);
+    const partition = mutationPartitionKey(receiver);
+    const transaction = this.database.transaction(
+      [MUTATION_QUEUES, MUTATION_RECEIPTS],
+      "readonly",
+    );
+    const [cursor, stored] = await Promise.all([
+      requestResult<unknown>(transaction.objectStore(MUTATION_QUEUES).get(partition)),
+      requestResult<unknown[]>(
+        transaction.objectStore(MUTATION_RECEIPTS).getAll(
+          compoundPrefixRange(partition),
+        ),
+      ),
+    ]);
+    await transactionDone(transaction);
+    const unobserved: UnobservedReceipt[] = [];
+    for (const value of stored) {
+      // Read through the same decoder that gates the write. A row this build
+      // cannot interpret is not reported as awaiting a fence — the fence
+      // transaction would not select it either, so reporting it would promise
+      // a transition that can never arrive.
+      const receipt = decodeReceipt(value);
+      if (receipt === undefined) continue;
+      const pending = unobservedReceiptOf(receipt);
+      if (pending !== undefined) unobserved.push(pending);
+    }
+    unobserved.sort((left, right) =>
+      left.activation - right.activation ||
+      (left.invocation < right.invocation ? -1 : left.invocation > right.invocation ? 1 : 0)
+    );
+    const decoded = cursor === undefined ? undefined : decodeQueueCursor(cursor);
+    // Reported the same way every writer decides it. A cursor this build
+    // cannot read is not "no activation has begun" — answering `0` would tell
+    // #476 that an activation already in flight covers markers it does not.
+    if (cursor !== undefined && decoded === undefined) {
+      throw new OutboxRecordInvalid({
+        reason: "the durable queue cursor of this receiver is unreadable",
+      });
+    }
+    return Object.freeze({
+      partition,
+      receiver,
+      activation: decoded?.activation ?? 0,
+      unobserved: Object.freeze(unobserved),
+    });
+  }
+
+  /**
+   * Claim the next post-commit activation for one receiver database.
+   *
+   * Durable and monotonic, and taken *before* the replication activation it
+   * identifies opens. That order is what makes every crash cut converge: a cut
+   * can only ever leave the client fencing with a larger number than it needed,
+   * never a smaller one, and an unused number costs nothing because the counter
+   * is an ordering rather than a resource.
+   *
+   * The cursor is created when this receiver has never queued anything, so a
+   * caller never has to special-case an empty queue; the FIFO position it
+   * carries is the same `1` an enqueue would have started from.
+   */
+  async beginActivation(receiver: ReplicaDatabaseScope): Promise<number> {
+    const scopeKey = replicaScopeKey(receiver);
+    const partition = mutationPartitionKey(receiver);
+    const observed = await this.preflightScope(receiver);
+    const transaction = this.database.transaction(
+      [MUTATION_QUEUES, REPLICA_GENERATIONS_STORE],
+      "readwrite",
+    );
+    try {
+      await this.fenceScope(transaction, scopeKey, observed, undefined);
+      const queues = transaction.objectStore(MUTATION_QUEUES);
+      const stored = await requestResult<unknown>(queues.get(partition));
+      const cursor = stored === undefined ? undefined : decodeQueueCursor(stored);
+      if (stored !== undefined && cursor === undefined) {
+        throw new OutboxRecordInvalid({
+          reason: "the durable queue cursor of this receiver is unreadable",
+        });
+      }
+      const activation = (cursor?.activation ?? 0) + 1;
+      queues.put(buildQueueCursor({
+        partition,
+        scope: scopeKey,
+        receiver: cursor?.receiver ?? receiver,
+        nextSequence: cursor?.nextSequence ?? 1,
+        sealing: cursor?.sealing ?? null,
+        activation,
+        updatedAt: Date.now(),
+      }));
+      // Inert in production; the testing assembly arms it to cut between the
+      // claim and the activation it identifies.
+      await this.boundaries.checkpoint("outbox.activation");
+      this.assertScopeLive(receiver);
+      await commitTransaction(transaction);
+      return activation;
+    } catch (error) {
+      await abortTransaction(transaction);
+      throw error;
+    }
+  }
+
+  /**
+   * Mark every receipt this activation covers as observed, in one transaction.
+   *
+   * Called with the number {@link IndexedDbOutbox.beginActivation} returned,
+   * once that activation has delivered its first matching authoritative
+   * outcome. Either every covered receipt flips or none does, so a cut here has
+   * no partial state to reconcile — the next activation simply reselects.
+   *
+   * Idempotent: a receipt already `observed` is not selected, and neither is
+   * one stamped at or above this activation.
+   */
+  async fenceActivation(
+    receiver: ReplicaDatabaseScope,
+    activation: number,
+    observedAt = Date.now(),
+  ): Promise<readonly InvocationId[]> {
+    if (!Number.isSafeInteger(activation) || activation < 1) {
+      throw new OutboxRecordInvalid({
+        reason: "an activation fence needs the durable activation it was begun with",
+      });
+    }
+    const scopeKey = replicaScopeKey(receiver);
+    const partition = mutationPartitionKey(receiver);
+    const observed = await this.preflightScope(receiver);
+    const transaction = this.database.transaction(
+      [MUTATION_RECEIPTS, REPLICA_GENERATIONS_STORE],
+      "readwrite",
+    );
+    try {
+      await this.fenceScope(transaction, scopeKey, observed, undefined);
+      const receipts = transaction.objectStore(MUTATION_RECEIPTS);
+      const stored = await requestResult<unknown[]>(
+        receipts.getAll(compoundPrefixRange(partition)),
+      );
+      const fenced: InvocationId[] = [];
+      for (const value of stored) {
+        const receipt = decodeReceipt(value);
+        if (receipt === undefined || !fencedByActivation(receipt, activation)) {
+          continue;
+        }
+        receipts.put(buildReceipt({
+          ...receipt,
+          observation: "observed",
+          // Deliberately not restamped. The stamp records when the marker
+          // became durable, so leaving it makes re-fencing select nothing.
+          updatedAt: observedAt,
+        }));
+        fenced.push(receipt.invocation);
+      }
+      // Inert in production; the testing assembly arms it to cut between the
+      // matching frame and the transaction that consumes it.
+      await this.boundaries.checkpoint("outbox.fence");
+      this.assertScopeLive(receiver);
+      await commitTransaction(transaction);
+      return Object.freeze(fenced);
+    } catch (error) {
+      await abortTransaction(transaction);
+      throw error;
     }
   }
 

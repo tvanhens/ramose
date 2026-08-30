@@ -14,6 +14,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { Query } from "ramose/db";
 import { lowerQueryObject, schemaTx } from "../../packages/ramose/src/db/internal.ts";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
+import { isEntityId } from "../../packages/ramose/src/db/refs.ts";
 import {
   applyLiveDiffs,
   readLiveNdjson,
@@ -30,7 +31,14 @@ import {
   conformanceProof,
   loadConformanceProof,
 } from "./conformance-proof.ts";
-import { json, fetchPastProxyBlip, testAdmin, type LocalUrls } from "./fixtures.ts";
+import {
+  entityHandle,
+  json,
+  fetchPastProxyBlip,
+  openEntityHandle,
+  testAdmin,
+  type LocalUrls,
+} from "./fixtures.ts";
 
 const TITLES =
   "[:find [?title ...] :where [?e :conformanceIssue/title ?title]]";
@@ -191,13 +199,18 @@ export const create = async (
     localName: "create",
   }, input);
   expect(response.status).toBe(200);
-  expect(typeof response.body.result.id).toBe("number");
+  // An opaque server-issued handle, never a raw eid (#475). It is the same
+  // handle an allocation mapping and logical replication carry for this entity
+  // in this scope.
+  const handle = response.body.result.id as unknown;
+  expect(typeof handle).toBe("string");
+  expect(isEntityId(handle)).toBe(true);
   expect(response.body.receipt).toEqual({
     version: 2,
     invocationId: expect.any(String),
     status: "completed",
   });
-  return response.body.result.id as number;
+  return openEntityHandle(base, database, token, handle as string);
 };
 
 export const currentBasis = async (base: string, database: string): Promise<number> => {
@@ -633,7 +646,13 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(completed.status).toBe(200);
       expect(completed.body).toEqual({
-        result: { id: issue, title: "Original invocation" },
+        // The opaque handle, not the eid: every entity-reference position of
+        // client-visible output is sealed (#475). A replay reproduces these
+        // exact bytes, which is asserted below.
+        result: {
+          id: await entityHandle(base, database, member, issue),
+          title: "Original invocation",
+        },
         receipt: { version: 2, invocationId, status: "completed" },
       });
 
@@ -844,7 +863,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(completed.status).toBe(200);
       expect(completed.body).toEqual({
-        result: { id: issue },
+        result: { id: await entityHandle(base, database, member, issue) },
         receipt: { version: 2, invocationId, status: "completed" },
       });
 
@@ -994,7 +1013,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(completed.status).toBe(200);
       expect(completed.body).toEqual({
-        result: { id: original },
+        result: { id: await entityHandle(base, database, member, original) },
         receipt: { version: 2, invocationId, status: "completed" },
       });
       expect((await entity(

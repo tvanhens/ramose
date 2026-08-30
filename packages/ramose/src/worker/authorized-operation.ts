@@ -8,6 +8,7 @@ import {
   OperationVersion,
   parseAuthoritativeInvocationResult,
   parseInvocationAllocations,
+  sealOutputEntityRefs,
   type AuthoritativeInvocationResult,
   type AuthoritativeOperationInvocation,
   type AuthenticatedCaller,
@@ -16,6 +17,7 @@ import {
 } from "../internal/authorization/index.ts";
 import { fromJson, toJson } from "../internal/core/json.ts";
 import type { EntityIdScope } from "../internal/replication/entity-id.ts";
+import type { ServerSealingKey } from "../internal/replication/server-identity.ts";
 import { makeEntityIdScope } from "../internal/replication/identity.ts";
 import { internalHeaders } from "../internal/transactor/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
@@ -240,23 +242,18 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
  * to, derived from the *authenticated* request and never from its body.
  *
  * It is exactly the scope logical replication derives, so a handle minted by
- * one and resolved by the other names the same entity. Derived only when this
- * invocation actually uses opaque handles: every other operation keeps its
- * previous cost, including the durable-root lookup it never performed.
+ * one and resolved by the other names the same entity. Its callers derive it
+ * only when this invocation actually uses opaque handles — as a target, as an
+ * allocation, or in an output that holds an entity reference — so every other
+ * operation keeps its previous cost, including the durable-root lookup it
+ * never performed.
  */
-const invocationEntityIdScope = async (
+const deriveEntityIdScope = async (
   env: RamoseEnv,
   database: string,
   origin: string,
-  parsed: RoutedOperationRequest,
   caller: AuthenticatedCaller,
-): Promise<
-  { readonly scope: EntityIdScope; readonly keyId: string } | undefined
-> => {
-  if (
-    parsed.sealedTarget === undefined &&
-    (parsed.allocations === undefined || parsed.allocations.length === 0)
-  ) return undefined;
+): Promise<EpochBoundSealing> => {
   let sealing;
   try {
     sealing = await serverSealingKey(env);
@@ -269,18 +266,90 @@ const invocationEntityIdScope = async (
     throw privateFailure(503, { "retry-after": "1" });
   }
   return {
-    // The key id this scope was derived under travels with it. Every component
-    // of the scope is a PRF of the root, so a handle sealed under a *different*
+    // The key the scope was derived under travels with it. Every component of
+    // the scope is a PRF of the root, so a handle sealed under a *different*
     // epoch but scoped by these strings could never be opened again — and the
     // client would already have stored the mapping durably. The writer refuses
     // that mismatch rather than minting one.
-    keyId: sealing.keyId,
+    sealing,
     scope: await makeEntityIdScope(sealing, {
       origin,
       caller,
       database: DatabaseId.make(database),
     }),
   };
+};
+
+/** The sealing root and the scope it produced, never one without the other. */
+type EpochBoundSealing = {
+  readonly sealing: ServerSealingKey;
+  readonly scope: EntityIdScope;
+};
+
+const invocationEntityIdScope = async (
+  env: RamoseEnv,
+  database: string,
+  origin: string,
+  parsed: RoutedOperationRequest,
+  caller: AuthenticatedCaller,
+): Promise<EpochBoundSealing | undefined> => {
+  if (
+    parsed.sealedTarget === undefined &&
+    (parsed.allocations === undefined || parsed.allocations.length === 0)
+  ) return undefined;
+  return deriveEntityIdScope(env, database, origin, caller);
+};
+
+/**
+ * Seal every entity reference in one completed result's output (#475).
+ *
+ * The durable receipt keeps the resolved eids and is never rewritten — it is
+ * the exact replay, and the invocation digest and replay comparison are over
+ * those bytes — so the frozen "no numeric eid crosses the operation boundary"
+ * rule is satisfied here instead, at the public projection. Sealing is
+ * deterministic in `(root, scope, eid)`, so a receipt written before this
+ * existed projects exactly the handles the commit that wrote it would have:
+ * nothing stored is migrated and nothing stored is touched.
+ *
+ * The root is derived only when the output actually holds a reference, so an
+ * operation that returns none keeps its previous cost — including the durable
+ * root lookup it never performed. When this invocation already derived a scope
+ * for its own handles, that *same* epoch is reused: a response whose mappings
+ * and whose output named one entity under two different epochs would hand a
+ * durable client two handles for one thing.
+ */
+const sealPublicEntityRefs = async (
+  env: RamoseEnv,
+  database: string,
+  origin: string,
+  caller: AuthenticatedCaller,
+  derived: EpochBoundSealing | undefined,
+  result: AuthoritativeInvocationResult,
+): Promise<AuthoritativeInvocationResult> => {
+  if (result._tag !== "Completed") return result;
+  const { outputRefPaths, ...projected } = result;
+  if (outputRefPaths === undefined || outputRefPaths.length === 0) {
+    return projected;
+  }
+  const bound = derived ??
+    await deriveEntityIdScope(env, database, origin, caller);
+  try {
+    return {
+      ...projected,
+      output: await sealOutputEntityRefs(
+        bound.sealing,
+        bound.scope,
+        result.output,
+        outputRefPaths,
+      ),
+    };
+  } catch {
+    // The invocation committed; only the projection failed. A private 500 is
+    // what a durable queue reads as "ask again", and the next attempt consumes
+    // the exact replay — so the answer is recovered rather than lost, and no
+    // raw eid is published in the meantime.
+    throw privateFailure();
+  }
 };
 
 export const invokeAuthoritativeOperation = async (
@@ -304,7 +373,7 @@ export const invokeAuthoritativeOperation = async (
     caller,
     ...(sealingScope === undefined ? {} : {
       entityIdScope: sealingScope.scope,
-      entityIdKeyId: sealingScope.keyId,
+      entityIdKeyId: sealingScope.sealing.keyId,
     }),
     ...(routeDerivation === undefined ? {} : { routeDerivation }),
   };
@@ -350,7 +419,7 @@ export const invokeAuthoritativeOperation = async (
     });
   }
   if (result._tag === "Completed") invalidateBasis(database);
-  return result;
+  return sealPublicEntityRefs(env, database, origin, caller, sealingScope, result);
 };
 
 export type PublicOperationResult = {

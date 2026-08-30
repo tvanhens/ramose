@@ -306,10 +306,15 @@ describe("classifyMutationResponse", () => {
     // The Worker answers a bare 403 when the caller's lease expires between
     // the authoritative commit and the response: the invocation *did* commit,
     // and deleting the row would lose the mappings the replay would return.
-    for (const status of [400, 401, 403, 409] as const) {
+    for (const status of [400, 401, 403] as const) {
       expect(classifyMutationResponse(plain, response(status, { error: "no" })))
         .toEqual({ _tag: "Retry", reason: "malformed" });
     }
+    // A receipt-free 409 is a refusal decided before the claim. Still
+    // non-terminal — nothing durable is removed — but reported as itself so
+    // the loop it produces is visible rather than silent.
+    expect(classifyMutationResponse(plain, response(409, { error: "no" })))
+      .toEqual({ _tag: "Refused", code: undefined });
     // A receipt for some *other* invocation is not this one's proof.
     expect(classifyMutationResponse(plain, response(403, {
       error: "unauthorized",
@@ -328,7 +333,7 @@ describe("classifyMutationResponse", () => {
     expect(classifyMutationResponse(
       plain,
       response(409, { error: "request rejected", code: "invocation_paused" }),
-    )).toEqual({ _tag: "Retry", reason: "malformed" });
+    )).toEqual({ _tag: "Refused", code: "invocation_paused" });
     // Unless the newer server also bound it to a terminal receipt.
     expect(classifyMutationResponse(plain, response(409, {
       code: "invocation_paused",

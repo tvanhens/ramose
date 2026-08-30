@@ -217,6 +217,20 @@ export type MutationAcknowledgement =
     readonly mappings: readonly QueuedMapping[];
   }
   | { readonly _tag: "Rejected"; readonly code: string }
+  /**
+   * The server refused this invocation with no durable receipt bound to it at
+   * all — a refusal decided before the claim, so nothing committed and nothing
+   * may be recorded as rejected.
+   *
+   * Deliberately non-terminal: an older client must never destroy durable work
+   * because a newer server named a 409 outcome it has not heard of, so the
+   * record stays queued and the next pass presents it again. Deliberately not
+   * `Retry` either — a pre-claim admission refusal answers the identical
+   * request identically, and reporting it as an ordinary retry makes that loop
+   * silent, with nothing naming what has to change: the invocation, the
+   * caller's authorization, or the deployed operation.
+   */
+  | { readonly _tag: "Refused"; readonly code: string | undefined }
   | {
     readonly _tag: "UpdateRequired";
     readonly reason: "operation-changed" | "invocation-update-required";
@@ -389,6 +403,16 @@ export const classifyMutationResponse = (
   if (hasReceipt(record, body, ["rejected", "failed"])) {
     return REJECTED(rejectionCode(status, body));
   }
+  // A 409 carrying no receipt at all is a refusal decided *before* the claim:
+  // the request never reached the one authoritative state machine, so it
+  // committed nothing and it will answer the identical request identically.
+  // Reported as itself rather than as `Retry`, which would loop forever
+  // without ever naming what has to change. A 409 that *does* carry a receipt
+  // this build will not act on is a different problem — an answer this client
+  // cannot interpret — and stays `Retry`.
+  if (status === 409 && body?.receipt === undefined) {
+    return Object.freeze({ _tag: "Refused", code });
+  }
   if (status === 429 || status >= 500) return RETRY("unavailable");
   // Including a receipt-free 400/401/403: the server may have decided nothing,
   // or may have committed and merely refused to say so.
@@ -416,6 +440,23 @@ export type QueueProgress = {
       readonly invocation: InvocationId;
       readonly code: string;
     }
+    /**
+     * Refused with no durable receipt. The record stays queued and holds its
+     * database; only a change to the invocation, the caller's authorization,
+     * or the deployed operation can clear it.
+     */
+    | {
+      readonly _tag: "Refused";
+      readonly invocation: InvocationId;
+      readonly code: string | undefined;
+    }
+    /**
+     * This database's pass did not complete. Nothing durable is claimed in
+     * either direction and the next pass decides the same head again; it is
+     * reported so one database's failure cannot silently erase what its
+     * siblings did in the same pass.
+     */
+    | { readonly _tag: "Interrupted" }
     | {
       readonly _tag: "Retry";
       readonly invocation: InvocationId;
@@ -479,7 +520,11 @@ export const runSubmissionPass = async (
     pass.scope,
     pass.keyId,
   );
-  return Object.freeze(await Promise.all(plans.map(async (plan) => {
+  // Settled, not `all`. Databases are decided independently, so one durable
+  // write that throws must not discard what every sibling database did in the
+  // same pass — that progress is the only report the caller gets, and the work
+  // behind it is already durable.
+  const settled = await Promise.allSettled(plans.map(async (plan) => {
     const { head, partition, receiver } = plan;
     switch (head.type) {
       case "empty":
@@ -503,7 +548,12 @@ export const runSubmissionPass = async (
       case "ready":
         return submitHead(pass, plan.receiver, head.record, handles);
     }
-  })));
+  }));
+  return Object.freeze(settled.map((outcome, index) => {
+    if (outcome.status === "fulfilled") return outcome.value;
+    const plan = plans[index]!;
+    return progress(plan.partition, plan.receiver, { _tag: "Interrupted" });
+  }));
 };
 
 const submitHead = async (
@@ -542,6 +592,12 @@ const submitHead = async (
       await pass.store.acknowledge(record, acknowledgement);
       return progress(record.partition, receiver, {
         _tag: "Rejected",
+        invocation: record.invocation,
+        code: acknowledgement.code,
+      });
+    case "Refused":
+      return progress(record.partition, receiver, {
+        _tag: "Refused",
         invocation: record.invocation,
         code: acknowledgement.code,
       });

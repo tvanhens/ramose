@@ -361,6 +361,141 @@ export const extractAllocations = (
   return Object.freeze({ _tag: "Allocated", slots: Object.freeze(slots) });
 };
 
+/* ── sealing entity references in client-visible output ───────────────────
+ *
+ * #417's output projection resolves every declared entity-reference position
+ * to the private numeric eid, and the durable receipt stores exactly that. It
+ * has to: the receipt is the replay, so its bytes are frozen at the commit and
+ * are never rewritten, and the invocation digest and the exact-replay
+ * comparison are over them.
+ *
+ * But the frozen contract is that no numeric eid crosses the operation
+ * boundary. Both are satisfied by sealing at the *public projection* rather
+ * than in the stored row: the receipt keeps the eids and stays byte-stable, and
+ * the response carries the same opaque handle for that entity that an
+ * allocation mapping and logical replication carry. Sealing is deterministic in
+ * `(root, scope, eid)`, so an exact replay of a receipt written before this
+ * existed projects the same handles as the commit that wrote it would have —
+ * nothing stored needs a migration, and nothing stored is touched.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Every entity-reference position the deployed output shape declares that the
+ * materialized output actually fills with a resolved eid, in a stable
+ * depth-first order.
+ *
+ * The *shape* decides, exactly as it does for an allocation slot: a resolved
+ * `Ramose.EntityId` and an ordinary integer are the same runtime value, so a
+ * walk over the value alone would seal counts and identifiers into handles.
+ */
+export const outputEntityRefPaths = (
+  shape: OperationInputShape,
+  output: unknown,
+): readonly (readonly AllocationPathSegment[])[] => {
+  const paths: (readonly AllocationPathSegment[])[] = [];
+  const walk = (
+    current: OperationInputShape,
+    value: unknown,
+    path: readonly AllocationPathSegment[],
+  ): void => {
+    switch (current._tag) {
+      case "ref":
+        // A ref position that does not hold a resolved eid never reached a
+        // commit — the authoritative validator refuses it — so this is a
+        // guard against a shape and a stored output that have drifted apart,
+        // not a case with a meaning of its own.
+        if (
+          typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+        ) {
+          paths.push(Object.freeze([...path]));
+        }
+        return;
+      case "array":
+        if (Array.isArray(value)) {
+          for (let index = 0; index < value.length; index++) {
+            walk(current.items, value[index], [...path, index]);
+          }
+        }
+        return;
+      case "struct":
+        if (
+          typeof value === "object" && value !== null && !Array.isArray(value)
+        ) {
+          for (const field of current.fields) {
+            if (!Object.hasOwn(value, field.key)) continue;
+            walk(
+              field.shape,
+              (value as Record<string, unknown>)[field.key],
+              [...path, field.key],
+            );
+          }
+        }
+        return;
+      case "scalar":
+      case "opaque":
+        return;
+    }
+  };
+  walk(shape, output, []);
+  return Object.freeze(paths);
+};
+
+const replaceAt = (
+  value: unknown,
+  path: readonly AllocationPathSegment[],
+  replacement: string,
+): unknown => {
+  const [head, ...rest] = path;
+  if (head === undefined) return replacement;
+  if (typeof head === "number") {
+    if (!Array.isArray(value) || head >= value.length) {
+      throw new Error("output entity-reference position is not an array index");
+    }
+    const copy = [...value];
+    copy[head] = replaceAt(value[head], rest, replacement);
+    return copy;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("output entity-reference position is not an object property");
+  }
+  const record = value as Record<string, unknown>;
+  if (!Object.hasOwn(record, head)) {
+    throw new Error("output entity-reference position is absent");
+  }
+  return { ...record, [head]: replaceAt(record[head], rest, replacement) };
+};
+
+/**
+ * Replace every entity-reference position of one output with its sealed
+ * handle, structurally.
+ *
+ * The paths come from {@link outputEntityRefPaths} over this same value, so
+ * each one exists; a path that does not is an engine defect and throws rather
+ * than inventing a position. The input is never mutated — the caller's copy is
+ * the durable one.
+ */
+export const sealOutputEntityRefs = async (
+  sealing: ServerSealingKey,
+  scope: EntityIdScope,
+  output: unknown,
+  paths: readonly (readonly AllocationPathSegment[])[],
+): Promise<unknown> => {
+  const sealed = await Promise.all(
+    paths.map(async (path) => {
+      const eid = readAllocationPath(output, path);
+      if (typeof eid !== "number" || !Number.isSafeInteger(eid) || eid < 0) {
+        throw new Error("output entity-reference position holds no resolved eid");
+      }
+      return { path, handle: await sealEntityId(sealing, scope, eid) };
+    }),
+  );
+  let projected = output;
+  for (const { path, handle } of sealed) {
+    projected = replaceAt(projected, path, handle);
+  }
+  return projected;
+};
+
 /** One durable `{ clientRef, entityId }` mapping, sealed. */
 export type SealedAllocationMapping = {
   readonly slot: string;

@@ -307,6 +307,17 @@ export type InvocationReceiptOutcome =
       readonly clientRef: string;
       readonly entityId: string;
     }[];
+    /**
+     * Every entity-reference position of `output`, read from the deployed
+     * output shape (#475).
+     *
+     * The stored receipt keeps the resolved eids — it is the replay, so its
+     * bytes are frozen — and this says where the public projection has to seal
+     * them, so no numeric eid crosses the operation boundary. It is internal to
+     * the Worker hop and never reaches a response. Absent when the output holds
+     * no entity reference at all.
+     */
+    readonly outputRefPaths?: readonly (readonly (string | number)[])[];
   }
   | {
     readonly _tag: "Rejected";
@@ -1034,6 +1045,20 @@ const isPublicMappings = (value: unknown): boolean => {
   return true;
 };
 
+/**
+ * Where the public projection must seal an eid. Every segment is an addressable
+ * JSON position, so a path this build cannot follow is refused rather than
+ * silently skipped — skipping one would publish the raw eid it names.
+ */
+const isOutputRefPaths = (value: unknown): boolean =>
+  Array.isArray(value) && value.length > 0 && value.every((path) =>
+    Array.isArray(path) && path.every((segment) =>
+      (typeof segment === "string" && segment.length > 0) ||
+      (typeof segment === "number" && Number.isSafeInteger(segment) &&
+        segment >= 0)
+    )
+  );
+
 /** Validate the private Transactor result without admitting extra metadata. */
 export const parseAuthoritativeInvocationResult = (
   value: unknown,
@@ -1058,12 +1083,15 @@ export const parseAuthoritativeInvocationResult = (
     Number.isSafeInteger(result.committedT) && (result.committedT as number) >= 0 &&
     Object.hasOwn(result, "output") &&
     (result.mappings === undefined || isPublicMappings(result.mappings)) &&
+    (result.outputRefPaths === undefined ||
+      isOutputRefPaths(result.outputRefPaths)) &&
     hasExactKeys(result, [
       "_tag",
       "receipt",
       "committedT",
       "output",
       ...(result.mappings === undefined ? [] : ["mappings"]),
+      ...(result.outputRefPaths === undefined ? [] : ["outputRefPaths"]),
     ])
   ) return result as AuthoritativeInvocationResult;
   if (

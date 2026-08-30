@@ -379,6 +379,19 @@ export const deployedOperationVersion = (
 ): OperationVersion | undefined =>
   bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.version;
 
+/**
+ * The deployed output shape, which is what decides where an operation's result
+ * holds entity references (#475). The shape is part of the pinned
+ * {@link OperationVersion}, so a receipt this build replays was written against
+ * exactly this shape.
+ */
+export const deployedOperationOutputShape = (
+  resolved: ResolvedOperationCatalog,
+  owner: OwnerRef,
+  localName: string,
+): OperationInputShape | undefined =>
+  bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.output;
+
 const fieldIdent = (field: FieldDescriptor): string =>
   `:${field.id.owner.name}/${field.id.localName}`;
 

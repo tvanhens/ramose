@@ -426,6 +426,46 @@ failure, not an engine defect and not a denial: 503 with `retry-after`, from
 whichever side observes it. A 500 would be indistinguishable, to a durable
 offline queue, from a permanent failure of an invocation that never ran.
 
+**WR-16.** Entity references in client-visible operation *output* are sealed at
+the public projection, never in the stored receipt.
+
+The receipt is the replay: its bytes are frozen at the commit, the canonical
+invocation digest and the exact-replay comparison are over them, and rewriting
+them would break both. So the durable row keeps #417's resolved eids, and the
+response carries handles instead. The transactor reports where — every
+entity-reference position of the *deployed output shape*, which is part of the
+pinned `OperationVersion`, so a replayed receipt is described by exactly the
+shape it was written against — and the Worker seals those positions on the way
+out. The shape is what decides: a resolved `Ramose.EntityId` and an ordinary
+integer are the same runtime value, so a walk over the value alone would seal
+counts and identifiers into handles.
+
+Three consequences follow from sealing being deterministic in
+`(root, scope, eid)`. A receipt written before this existed projects exactly the
+handles the commit that wrote it would have, so nothing stored is migrated and
+nothing stored is touched. The handle in an output is byte-identical to the one
+the same entity's allocation mapping and its logical replication carry. And a
+replay projects the same bytes as the original response.
+
+The root is derived only when the output actually holds a reference, so an
+operation that returns none keeps its previous cost — including the durable root
+lookup it never performed. When the invocation already derived a scope for its
+own handles, that same epoch is reused: a response whose mappings and whose
+output named one entity under two different epochs would hand a durable client
+two handles for one thing. A projection that cannot complete after the commit is
+the ordinary private 500, which a durable queue reads as "ask again" and
+recovers through the exact replay — never a raw eid published instead.
+
+Known gap, stated honestly, and not introduced here: entity-reference positions
+of operation *input* still accept only numeric eids. The deployed codec decodes
+an `EntityId` slot as a number and `validateAuthoritativeRefs` requires one, so
+a sealed handle is accepted as the invocation `target` and nowhere else. The
+offline queue already substitutes handles at declared input positions, so this
+blocks it independently of anything above; closing it needs the same treatment
+the target gets — open at the authoritative edge before admission, under a scope
+the Worker derives whenever the request body could carry a handle at all — and
+it is tracked as its own change rather than folded in here.
+
 ## 11. Live queries and session replication
 
 **LIVE-1.** Initial live results and every subsequent delta are built from

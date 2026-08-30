@@ -77,12 +77,14 @@ import {
   catalogProvisioningAttributes,
   decideEpoch,
   decideInvocationReceipt,
+  deployedOperationOutputShape,
   deployedOperationVersion,
   executeCatalogOperation,
   invocationReceiptOutcome,
   isLegacyInvocationReceiptRow,
   OperationRuntimeFault,
   opaqueOperationDenial,
+  outputEntityRefPaths,
   parseEntityIdScope,
   parseInvocationAllocations,
   parseStoredInvocationReceipt,
@@ -97,6 +99,7 @@ import {
   type ClaimedInvocationReceipt,
   type InstalledCatalogDefinition,
   type InvocationReceiptEvent,
+  type InvocationReceiptOutcome,
   type LegacyInvocationReceiptRow,
   type OperationRuntime,
   type PreparedInvocationReceipt,
@@ -899,6 +902,32 @@ export class Transactor {
                 p.operation.localName,
               );
               if (operationVersion === undefined) throw opaqueOperationDenial();
+              // Where the public projection has to seal (#475). Read from the
+              // *deployed* output shape, which is part of the pinned operation
+              // version, so a replayed receipt is described by exactly the
+              // shape it was written against. The durable row keeps its
+              // resolved eids and is never rewritten: it is the replay, and its
+              // bytes are what the exact-replay comparison is over.
+              const outputShape = deployedOperationOutputShape(
+                resolved,
+                p.operation.owner,
+                p.operation.localName,
+              );
+              const outcomeOf = (
+                receipt: TerminalInvocationReceipt,
+              ): InvocationReceiptOutcome => {
+                const outcome = invocationReceiptOutcome(receipt);
+                if (outcome._tag !== "Completed" || outputShape === undefined) {
+                  return outcome;
+                }
+                const outputRefPaths = outputEntityRefPaths(
+                  outputShape,
+                  outcome.output,
+                );
+                return outputRefPaths.length === 0
+                  ? outcome
+                  : { ...outcome, outputRefPaths };
+              };
               // Every effect-free compatibility answer is disclosed only to a
               // caller who may still invoke the operation as it stands now.
               // Grant-only admission deliberately stops before the target and
@@ -991,7 +1020,7 @@ export class Transactor {
                     await resolveCompatibility("UpdateRequired");
                     continue;
                   }
-                  p.resolve(invocationReceiptOutcome(recovered.receipt));
+                  p.resolve(outcomeOf(recovered.receipt));
                   continue;
                 }
                 // A missing row cannot normally race inside one serialized DO,
@@ -1020,7 +1049,7 @@ export class Transactor {
                     resolved,
                   );
                 }
-                p.resolve(invocationReceiptOutcome(inspected.receipt));
+                p.resolve(outcomeOf(inspected.receipt));
                 continue;
               }
 
@@ -1058,7 +1087,7 @@ export class Transactor {
                     resolved,
                   );
                 }
-                p.resolve(invocationReceiptOutcome(decision.receipt));
+                p.resolve(outcomeOf(decision.receipt));
                 continue;
               }
               claim = decision.receipt;
@@ -1099,7 +1128,7 @@ export class Transactor {
               entries.push({ t: rep.t, txInstant, datoms: rep.txData });
               acks.push({
                 p,
-                ack: invocationReceiptOutcome(terminal),
+                ack: outcomeOf(terminal),
                 assertFresh: executed.assertFresh,
                 receiptCompletion: { claim, event },
               });

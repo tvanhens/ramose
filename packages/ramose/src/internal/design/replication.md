@@ -396,6 +396,29 @@ and the client must not answer that by destroying durable work. An absent
 `result` on an otherwise valid 200 is malformed rather than `null`: recording
 it would corrupt the output and remove the only copy that could be replayed.
 
+A 409 carrying no receipt at all is a refusal decided *before* the claim — the
+request never reached the one authoritative state machine — so it commits
+nothing and answers the identical request identically. It stays non-terminal,
+because an older client must never destroy durable work over an outcome a newer
+server named and it has not heard of, but it is reported as `Refused` rather
+than as `Retry`: an ordinary retry state makes that loop silent, with nothing
+naming what has to change (the invocation, the caller's authorization, or the
+deployed operation). A 409 that *does* carry a receipt this build will not act
+on is a different problem — an answer this client cannot interpret — and stays
+`Retry`.
+
+One pass settles its databases rather than joining them. A durable write that
+throws for one database must not discard what every sibling database did in the
+same pass: that progress is the caller's only report, and the work behind it is
+already durable. The failing database reports `Interrupted`, which claims
+nothing in either direction — the next pass decides the same head again.
+
+Two durable outputs are compared canonically, and structurally when the
+canonical form is undefined for them. Durable output is deliberately not held
+to RFC 8785's rules, so a value the queue is required to store can be one the
+canonicalizer refuses; both throwing and calling such an output unequal would
+wedge the very head the comparison exists to release.
+
 ### Queue liveness
 
 The invariant every durable transition preserves: **after any transaction
@@ -413,7 +436,9 @@ names what must change — and no removed or terminal row strands ownership
 | cascade `dependency_rejected` | receipt + row removal | same cut, and confined to one database — a cross-database dependency cannot exist, because enqueue refuses one. |
 | re-acknowledge (converged) | row removal only | the terminal answer must match exactly — state, failure code, mappings, and the output, compared canonically — so two passes that disagree conflict instead of one silently keeping the other's result; the receipt and its `observation` are left untouched, so a fence that already advanced is not reset. |
 | `blocked` | nothing durable | the allocator is queued ahead of it, so a mapping is still producible. |
-| `update-required`, `unreadable` | nothing durable | deliberately holds its own database and is *reported*; never silently cleared, never re-executed. Client action is what clears it. |
+| `update-required`, `unreadable`, `refused` | nothing durable | deliberately holds its own database and is *reported*; never silently cleared, never re-executed. Client action is what clears it. |
+| `beginActivation` | bumps the receiver's activation counter | changes no row's terminality and no FIFO position; a strictly larger number can only ever fence more receipts, never fewer, and an unused number costs nothing. |
+| activation fence | flips `unobserved` to `observed` | touches no queue row at all: the receipt was already terminal and the marker is internal. Idempotent, so a repeat selects nothing. |
 | `clearScope` | removes all five families by prefix | everything in the scope goes together, so nothing survives to be stranded. |
 
 Global invocation ownership lives on the receipt store, not the outbox. The
@@ -446,6 +471,108 @@ be treated as already installed and skipped, while planning drops it — depende
 blocked forever, with the record that could have replayed already removed. The
 acknowledgement is the authoritative answer for exactly that ref, so it repairs
 such a row rather than refusing.
+
+### The post-commit activation fence (#475 slice 3)
+
+**The invariant.** A committed receipt is marked `observed` only when the
+authoritative replication stream has, on an activation that *began after that
+receipt was already durable*, delivered a matching outcome carrying the current
+committed state. Causal freshness is the whole point: output from a generation
+that was already open when the acknowledgement landed proves nothing about
+whether the server's stream has caught up to the commit, so it may not clear
+the marker.
+
+The client half is therefore three steps, in this order and no other:
+
+1. the acknowledgement transaction persists receipt, output, mappings, outbox
+   removal, and the `unobserved` marker — stamped with the activation counter
+   in force at that moment;
+2. the prior replication generation for that database is invalidated and
+   closed, and the counter is incremented durably: that increment *is* the
+   fresh activation's identity;
+3. a new activation opens from the client's current committed revision, and its
+   first matching outcome fences — in one client transaction — every receipt
+   stamped **strictly below** the new counter.
+
+Between steps 1 and 3 the marker is durable and the operation is visible as
+public `committed`. Nothing about the fence is public: no transaction position,
+no observation token, no server-visible acknowledgement.
+
+**One counter, not one fence record per receipt.** The counter is per receiver
+database — the same `{server, principal, database}` triple every mutation
+family is keyed by, and exactly the granularity one replication activation
+covers — and it lives on the durable queue cursor that already exists for that
+receiver. It is monotonic and never reused. A receipt stamped `c` is fenced by
+the first matching outcome of any activation `n > c`; a receipt acknowledged
+*after* activation `n` began is stamped `n`, is not `< n`, and therefore
+requires a later activation. That is the whole bookkeeping: coalescing (one
+`Change` clearing many receipts) and the "later commits need a later
+generation" rule both fall out of the single comparison, and no per-receipt
+fence row can drift from the receipts it claims to describe.
+
+A stored row written before the counter existed decodes as `0` — "durable
+before any activation this build began" — which is exactly what such a row
+means, so no migration is needed and no queue is orphaned.
+
+**What satisfies the fence.** Only an authoritative outcome on the fresh
+activation, and only the first one:
+
+| frame | fences? | why |
+|---|---|---|
+| `Change` that continues the committed revision and installs | yes | the server advanced this activation's stream past the commit |
+| `Change` the client already holds (`duplicate`) | yes | the same acknowledgement, for a revision already durable here |
+| `Change` whose local install lost its CAS | no | this session installed nothing; the next outcome fences |
+| `ResumeReady` matching the resumed identity and revision | yes | the authorized no-op / hidden-result answer |
+| `SnapshotCommit` that actually installs | yes | the completed reset staging |
+| `Reset`, `SnapshotStart`, `SnapshotChunk` | no | incomplete staging is not an outcome |
+| `KeepAlive` | no | liveness, not state |
+| `TerminalError` | no | the activation ended without an outcome |
+| identity or `readCompatibilityHash` mismatch | no | the session quarantines and fails before any outcome |
+| anything on a superseded generation | no | `current(generation)` refuses it |
+
+The frozen contract names the reset case as "`SnapshotCommit` following a
+matching `Reset`". A fresh activation that supplies no resume revision — its
+local replica was quarantined between the acknowledgement and the reconnect —
+receives `SnapshotStart` with no preceding `Reset`, because there was no
+revision to reset *from*. That commit fences on the same terms. Reading it any
+other way would leave such an activation permanently unable to fence, and it
+cannot fence early: the snapshot is taken after this activation's own
+authoritative basis fence. Nothing else about the reset case changes —
+incomplete staging never installs, so it never fences.
+
+**The crash-cut matrix.** Every cut converges because the durable state after
+it is the input the next start reads, and the next start always begins a *new*
+activation:
+
+| cut | durable state after the cut | recovery |
+|---|---|---|
+| during the acknowledgement transaction | invocation still queued, receipt still `queued` | the next pass resubmits and consumes #487's exact replay; identical answer, no second commit |
+| after the acknowledgement, before the counter increment | receipt `committed`/`unobserved` stamped `c`; counter `c` | restart reconstructs the unobserved set, increments to `c+1`, and `c < c+1` fences |
+| after the increment, before the activation opens | counter `n`; receipt stamped `c < n` | restart increments to `n+1`; the receipt is still `< n+1`. Skipping `n` costs nothing: the counter is an ordering, not a resource |
+| after the activation opens, before the first frame | counter `n`; nothing observed | same as above — a new activation, a strictly larger number |
+| after the first matching frame, before the fence transaction | receipt still `unobserved` | the fence transaction is all-or-nothing; the restart's activation fences it |
+| during the fence transaction | either every selected receipt is `observed` or none is | IndexedDB aborts the whole transaction; the next activation reselects |
+| after the fence transaction | receipt `observed` | a later activation selects nothing; re-fencing is idempotent |
+
+Two rules make the matrix collapse to "always converges". First, the counter is
+incremented *before* the activation opens, so a cut can only ever make the
+client fence with a **larger** number than it needed — never a smaller one.
+Second, the fence transaction is a single client transaction over the receipt
+family, so it has no partial state to reconcile.
+
+**Failure taxonomy.** A fence attempt that throws leaves the durable marker
+untouched and is retried by the next matching outcome on the same activation,
+and failing that by the next activation; it never fails the replication
+session, because observation is downstream of persistence. A fence that would
+land behind a completed `clearLocalData()` is refused by the same scope
+generation check every other durable mutation write makes. A rejection is not
+fenced at all — nothing committed, so the marker is `null` and stays `null`.
+
+**What #476 consumes.** `ActivationFence` exposes the durable transition as a
+queryable and subscribable snapshot: the activation in force, the receipts
+still awaiting a fence, and the invocations the last fence cleared. #475 owns
+persisting and exposing that transition; #476 owns atomically removing or
+replaying optimistic layers when it occurs.
 
 ## Integrity validation and corruption recovery
 

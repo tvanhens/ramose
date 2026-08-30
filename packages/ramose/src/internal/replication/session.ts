@@ -24,6 +24,7 @@ import {
   type ReplicaLease,
 } from "./replica-lifecycle.ts";
 import type { ReplicationFrame, ReplicationIdentity } from "./protocol.ts";
+import { satisfiesActivationFence } from "./activation-fence.ts";
 import {
   openReplicationResponse,
   readReplicationFrames,
@@ -71,6 +72,21 @@ export type ReplicationSessionOptions = {
   readonly attributes: readonly AttributeSpec[];
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly storage: IndexedDbReplicaStorage;
+  /**
+   * The post-commit activation fence (#475 slice 3).
+   *
+   * Invoked at most once per session, on the *first* frame this activation
+   * settles as an authoritative outcome: a `Change` that continued the
+   * committed revision (or that this replica already held), a matching
+   * `ResumeReady`, or a `SnapshotCommit` that installed. Keepalive, staging,
+   * terminals, quarantine, and anything on a superseded generation never
+   * invoke it.
+   *
+   * Observation is downstream of persistence: a hook that throws never fails
+   * the session, and the next settled frame on this activation invokes it
+   * again.
+   */
+  readonly onActivationOutcome?: (() => void | Promise<void>) | undefined;
 };
 
 type ChangeFrame = Extract<ReplicationFrame, { readonly type: "Change" }>;
@@ -208,11 +224,20 @@ export class ReplicationSession {
    */
   private releaseRetention: (() => void) | undefined;
   private retainedDb: Db | undefined;
+  /**
+   * Whether this activation has already invoked its fence hook. One activation
+   * fences once: every later outcome on it describes state the first one
+   * already proved was at or past the commit.
+   */
+  private fenced = false;
 
   private constructor(
     private readonly storage: IndexedDbReplicaStorage,
     private readonly attributes: readonly AttributeSpec[],
     private readonly readCompatibilityHash: ReadCompatibilityHash,
+    private readonly onActivationOutcome:
+      | (() => void | Promise<void>)
+      | undefined,
     initial: BoundRestoredReplica | undefined,
     lease: ReplicaLease,
     registration: SessionRegistration | undefined,
@@ -345,6 +370,7 @@ export class ReplicationSession {
       options.storage,
       options.attributes,
       options.readCompatibilityHash,
+      options.onActivationOutcome,
       restored,
       lease,
       registration,
@@ -536,6 +562,33 @@ export class ReplicationSession {
     }
   }
 
+  /**
+   * Report one settled authoritative outcome to the post-commit fence.
+   *
+   * Every caller has already established that this frame carried the current
+   * committed state — a change that continued or was already held, a matching
+   * resume, an installed snapshot commit — so the pure predicate is here only
+   * to keep a future call site from fencing on a frame the contract excludes.
+   *
+   * A hook that throws leaves this activation unfenced, so the next settled
+   * frame tries again; observation is downstream of persistence and never
+   * fails the session.
+   */
+  private async settled(
+    frame: ReplicationFrame,
+    generation: number,
+  ): Promise<void> {
+    const hook = this.onActivationOutcome;
+    if (hook === undefined || this.fenced || !this.current(generation)) return;
+    if (!satisfiesActivationFence({ frame: frame.type, settled: true })) return;
+    this.fenced = true;
+    try {
+      await hook();
+    } catch {
+      this.fenced = false;
+    }
+  }
+
   private quarantine(generation: number): void {
     if (!this.current(generation) || this.state.value === undefined) return;
     this.publish({ status: "connecting" });
@@ -638,6 +691,7 @@ export class ReplicationSession {
         }
         const restored = await this.confirmedCandidate(prior);
         this.publishReplica(restored.identity, restored, false, generation);
+        await this.settled(frame, generation);
         return false;
       }
       case "change": {
@@ -662,6 +716,7 @@ export class ReplicationSession {
           throw new Error("authenticated change did not continue the cache candidate");
         }
         this.publishReplica(frame.identity, installed, false, generation);
+        await this.settled(frame, generation);
         return false;
       }
       case "reset":
@@ -770,9 +825,12 @@ export class ReplicationSession {
         if (installed === undefined) return false;
         if (installed.revision === frame.revision) {
           this.publishReplica(frame.identity, installed, false, generation);
+          await this.settled(frame, generation);
         } else {
           // A lost CAS: the value is not the one this frame names, so it is
           // never published and its retention is released rather than leaked.
+          // It settles nothing either: this session installed no outcome, and
+          // the next one on this activation will fence.
           installed.release();
         }
         return false;
@@ -780,7 +838,13 @@ export class ReplicationSession {
       case "Change": {
         const prior = this.state.value;
         const disposition = classifyReplicationChange(prior, frame);
-        if (disposition === "duplicate") return false;
+        if (disposition === "duplicate") {
+          // The server acknowledged, on *this* activation, a revision this
+          // replica already holds. Nothing to install, but the causal fact the
+          // fence needs is exactly the same one an applied change carries.
+          await this.settled(frame, generation);
+          return false;
+        }
         if (disposition === "gap") {
           throw new Error("replication change does not continue the committed revision");
         }
@@ -791,9 +855,12 @@ export class ReplicationSession {
         if (installed === undefined) return false;
         if (installed.revision === frame.revision) {
           this.publishReplica(frame.identity, installed, false, generation);
+          await this.settled(frame, generation);
         } else {
           // A lost CAS: the value is not the one this frame names, so it is
           // never published and its retention is released rather than leaked.
+          // It settles nothing either; the next outcome on this activation
+          // will fence.
           installed.release();
         }
         return false;
@@ -811,6 +878,7 @@ export class ReplicationSession {
           status: "open",
           value: Object.freeze({ ...prior, stale: false }),
         });
+        await this.settled(frame, generation);
         return false;
       }
       case "KeepAlive":

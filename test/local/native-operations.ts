@@ -30,7 +30,12 @@ import {
   CatalogId,
   DigestHex,
 } from "../../packages/ramose/src/internal/authorization/identities.ts";
-import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
+import {
+  json,
+  openEntityHandle,
+  testAdmin,
+  type LocalUrls,
+} from "./fixtures.ts";
 import {
   OperationSchema,
 } from "./operation-catalog.ts";
@@ -221,7 +226,14 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { title: "Created" });
       expect(created.status).toBe(200);
-      expect(typeof created.body.result.id).toBe("number");
+      // The opaque server-issued handle, never the private eid (#475).
+      expect(isEntityId(created.body.result.id)).toBe(true);
+      const createdEid = await openEntityHandle(
+        base,
+        database,
+        token,
+        created.body.result.id as string,
+      );
       expect(created.body.receipt).toEqual({
         version: 2,
         invocationId: expect.any(String),
@@ -238,7 +250,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(basis.status).toBe(200);
       const committedT = basis.body.basis.t as number;
 
-      const readBack = await json(base, `/db/${database}/entity/${created.body.result.id}`, {
+      const readBack = await json(base, `/db/${database}/entity/${createdEid}`, {
         token,
         headers: {
           "x-ramose-catalog": operationProof.catalog,
@@ -326,7 +338,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       );
       expect(delivered.every((response) => response.status === 200)).toBe(true);
       const first = delivered[0]!.body;
-      expect(typeof first.result.id).toBe("number");
+      expect(isEntityId(first.result.id)).toBe(true);
       expect(first.receipt).toEqual({
         version: 2,
         invocationId,
@@ -339,7 +351,9 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       const beforeRestart = await testAdmin(base, database, "/query", {
         query: '[:find ?e :where [?e :nativeItem/title "Exactly once"]]',
       });
-      expect(beforeRestart.body.result).toEqual([[first.result.id]]);
+      expect(beforeRestart.body.result).toEqual([[
+        await openEntityHandle(base, database, token, first.result.id as string),
+      ]]);
 
       const aborted = await testAdmin(base, database, "/abort", {
         target: "transactor",
@@ -506,7 +520,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         invocationId,
       );
       expect(replayed.status).toBe(200);
-      expect(typeof replayed.body.result.id).toBe("number");
+      expect(isEntityId(replayed.body.result.id)).toBe(true);
       expect(replayed.body.receipt).toEqual({
         version: 2,
         invocationId,
@@ -515,7 +529,9 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       const committed = await testAdmin(base, database, "/query", {
         query: '[:find ?e :where [?e :nativeItem/title "Lost acknowledgement"]]',
       });
-      expect(committed.body.result).toEqual([[replayed.body.result.id]]);
+      expect(committed.body.result).toEqual([[
+        await openEntityHandle(base, database, token, replayed.body.result.id as string),
+      ]]);
     });
 
     test("authorization-scope changes conflict instead of replaying or executing", async () => {
@@ -583,11 +599,20 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         undefined,
         invocationId,
       );
+      // Byte-identical, including the sealed handle: an ordinary token
+      // refresh changes `iat`/`exp`, which the scope deliberately excludes.
       expect(replayed.body).toEqual(completed.body);
       const committed = await testAdmin(base, database, "/query", {
         query: '[:find ?e :where [?e :nativeItem/title "Scoped result"]]',
       });
-      expect(committed.body.result).toEqual([[completed.body.result.id]]);
+      expect(committed.body.result).toEqual([[
+        await openEntityHandle(
+          base,
+          database,
+          member,
+          completed.body.result.id as string,
+        ),
+      ]]);
     });
 
     test("the first exact retry lazily recovers an isolate-lost claim without execution", async () => {
@@ -854,7 +879,12 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { name: "Hidden" });
       expect(created.status).toBe(200);
-      const hiddenId = created.body.result.id as number;
+      const hiddenId = await openEntityHandle(
+        base,
+        database,
+        member,
+        created.body.result.id as string,
+      );
 
       const ordinaryRead = await json(base, `/db/${database}/entity/${hiddenId}`, {
         token: member,
@@ -1030,10 +1060,18 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         query: "[:find ?e :where [?e :nativeItem/title ?title]]",
       });
       expect(beforeRefCodec.status).toBe(200);
+      // An entity-reference *input* position still takes the private eid: only
+      // the invocation target and client-visible output are opaque today.
+      const firstUniqueEid = await openEntityHandle(
+        base,
+        database,
+        token,
+        firstUnique.body.result.id as string,
+      );
       const invalidRef = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "refFieldCodec",
-      }, { kind: "invalid", id: firstUnique.body.result.id }, item.body.result.id);
+      }, { kind: "invalid", id: firstUniqueEid }, item.body.result.id);
       expect(invalidRef.status).toBe(400);
       expect(invalidRef.body).toMatchObject({
         error: "invalid request",
@@ -1043,7 +1081,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       const refCrashed = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "refFieldCodec",
-      }, { kind: "crash", id: firstUnique.body.result.id }, item.body.result.id);
+      }, { kind: "crash", id: firstUniqueEid }, item.body.result.id);
       expect(refCrashed.status).toBe(500);
       expect(refCrashed.body).toMatchObject({
         error: "internal error",
@@ -1379,9 +1417,18 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         // A sealed handle, never a numeric eid, and never the slot name.
         expect(isEntityId(entityId)).toBe(true);
         expect(JSON.stringify(created.body.mappings)).not.toContain("item");
-        expect(JSON.stringify(created.body.mappings)).not.toContain(
-          String(created.body.result.id),
+        // One entity is one handle: the mapping and the sealed output position
+        // that named the same allocated entity are byte-identical (#475).
+        expect(created.body.result.id).toBe(entityId);
+        // And the frozen rule itself, checked against the private eid the real
+        // resolver hands back: no numeric eid crosses the operation boundary.
+        const allocatedEid = await openEntityHandle(
+          base,
+          database,
+          token,
+          entityId,
         );
+        expect(JSON.stringify(created.body)).not.toContain(String(allocatedEid));
 
         const receiptsBefore = await operationReceiptCount(base, database);
         // The lost-acknowledgement retry: #487's exact replay, extended with

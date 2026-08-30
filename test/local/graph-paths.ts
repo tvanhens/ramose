@@ -21,7 +21,14 @@ import {
   readReplicationNdjson,
 } from "../support/replication.ts";
 import { closeObservedStream } from "../support/stream.ts";
-import { json, fetchPastProxyBlip, testAdmin, type LocalUrls } from "./fixtures.ts";
+import {
+  entityHandle,
+  json,
+  fetchPastProxyBlip,
+  openEntityHandle,
+  testAdmin,
+  type LocalUrls,
+} from "./fixtures.ts";
 import {
   GateHidden,
   GateLink,
@@ -238,9 +245,14 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
       expect(visible.status).toBe(200);
       expect(empty.status).toBe(200);
       expect(plain.status).toBe(200);
-      const visibleId = visible.body.result.id as number;
-      const emptyId = empty.body.result.id as number;
-      const plainId = plain.body.result.id as number;
+      // Operation output carries the opaque handle now (#475); these
+      // filtered-read cases still need the private eid, and opening one
+      // through the real resolver is the only way to get it.
+      const open = (response: { body: { result: { id: unknown } } }) =>
+        openEntityHandle(base, root, member, response.body.result.id as string);
+      const visibleId = await open(visible);
+      const emptyId = await open(empty);
+      const plainId = await open(plain);
 
       const beforeHidden = await rootQuery<readonly { readonly id: number }[]>(
         base,
@@ -264,7 +276,12 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { title: "hidden diamond", label: "hidden label" });
       expect(hidden.status).toBe(200);
-      const hiddenId = hidden.body.result.id as number;
+      const hiddenId = await openEntityHandle(
+        base,
+        root,
+        admin,
+        hidden.body.result.id as string,
+      );
 
       // Adding a hidden composer cannot change the visible trait-root rows,
       // count, or wire metadata in the paired absent/hidden worlds.
@@ -322,7 +339,12 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         localName: "retag",
       }, { label: "retagged" }, { target: visibleId });
       expect(retagged.status).toBe(200);
-      expect(retagged.body.result).toEqual({ id: visibleId, label: "retagged" });
+      // Output carries the opaque handle for the same entity the numeric
+      // target named — one entity, one public identity (#475).
+      expect(retagged.body.result).toEqual({
+        id: await entityHandle(base, root, member, visibleId),
+        label: "retagged",
+      });
 
       const hiddenTarget = await invoke(base, member, {
         owner: { kind: "trait", name: GateTagged.ns },
@@ -362,9 +384,9 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
       expect(hiddenLink.status).toBe(200);
       expect(emptyLink.status).toBe(200);
 
-      const visibleLinkRead = await rootEntity(base, member, visibleLink.body.result.id);
-      const hiddenLinkRead = await rootEntity(base, member, hiddenLink.body.result.id);
-      const emptyLinkRead = await rootEntity(base, member, emptyLink.body.result.id);
+      const visibleLinkRead = await rootEntity(base, member, await open(visibleLink));
+      const hiddenLinkRead = await rootEntity(base, member, await open(hiddenLink));
+      const emptyLinkRead = await rootEntity(base, member, await open(emptyLink));
       expect(visibleLinkRead.body.result[":localGateLink/target"]).toBe(visibleId);
       expect(hiddenLinkRead.body.result[":localGateLink/target"]).toBeUndefined();
       expect(emptyLinkRead.body.result[":localGateLink/target"]).toBeUndefined();
@@ -412,14 +434,33 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { name: "acme" });
       expect(workspace.status).toBe(200);
-      const workspaceId = workspace.body.result.id as number;
+      // Each handle opens under the scope of the database its invocation ran
+      // in, which for a nested operation is the child's own DatabaseId — so
+      // the chain of derivations is also the chain of scopes.
+      const workspaceId = await openEntityHandle(
+        base,
+        root,
+        member,
+        workspace.body.result.id as string,
+      );
 
       const secondWorkspace = await invoke(base, member, {
         owner: { kind: "entity", name: Workspace.ns },
         localName: "create",
       }, { name: "beta" });
       expect(secondWorkspace.status).toBe(200);
-      const secondWorkspaceId = secondWorkspace.body.result.id as number;
+      const secondWorkspaceId = await openEntityHandle(
+        base,
+        root,
+        member,
+        secondWorkspace.body.result.id as string,
+      );
+      const childDatabase = await Effect.runPromise(
+        deriveDynamicChildDatabaseId(DatabaseId.make(root), workspaceId),
+      );
+      const secondChildDatabase = await Effect.runPromise(
+        deriveDynamicChildDatabaseId(DatabaseId.make(root), secondWorkspaceId),
+      );
 
       // Resolving `acme` authorizes its ordinary filtered Graph row, then the
       // internal provisioner creates the child storage/schema before this
@@ -429,21 +470,39 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { name: "design" }, { at: ["acme"] });
       expect(project.status).toBe(200);
-      const projectId = project.body.result.id as number;
+      const projectId = await openEntityHandle(
+        base,
+        childDatabase,
+        member,
+        project.body.result.id as string,
+      );
+      const leafDatabase = await Effect.runPromise(
+        deriveDynamicChildDatabaseId(childDatabase, projectId),
+      );
 
       const secondProject = await invoke(base, member, {
         owner: { kind: "entity", name: "localProject" },
         localName: "create",
       }, { name: "design" }, { at: ["beta"] });
       expect(secondProject.status).toBe(200);
-      const secondProjectId = secondProject.body.result.id as number;
+      const secondProjectId = await openEntityHandle(
+        base,
+        secondChildDatabase,
+        member,
+        secondProject.body.result.id as string,
+      );
 
       const note = await invoke(base, member, {
         owner: { kind: "entity", name: "localNestedNote" },
         localName: "create",
       }, { text: "two levels deep" }, { at: ["acme", "design"] });
       expect(note.status).toBe(200);
-      const noteId = note.body.result.id as number;
+      const noteId = await openEntityHandle(
+        base,
+        leafDatabase,
+        member,
+        note.body.result.id as string,
+      );
 
       const read = await nestedEntity(base, member, ["acme", "design"], noteId);
       expect(read.status).toBe(200);
@@ -452,15 +511,6 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         ":localNestedNote/text": "two levels deep",
       });
 
-      const childDatabase = await Effect.runPromise(
-        deriveDynamicChildDatabaseId(DatabaseId.make(root), workspaceId),
-      );
-      const secondChildDatabase = await Effect.runPromise(
-        deriveDynamicChildDatabaseId(DatabaseId.make(root), secondWorkspaceId),
-      );
-      const leafDatabase = await Effect.runPromise(
-        deriveDynamicChildDatabaseId(childDatabase, projectId),
-      );
       const childStored = await testAdmin(base, childDatabase, "/query", {
         entity: projectId,
       });
@@ -538,7 +588,12 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { name: workspaceName });
       expect(workspace.status).toBe(200);
-      const workspaceId = workspace.body.result.id as number;
+      const workspaceId = await openEntityHandle(
+        base,
+        GRAPH_PATH_ROOT_DATABASE,
+        member,
+        workspace.body.result.id as string,
+      );
 
       const project = await invoke(base, member, {
         owner: { kind: "entity", name: Project.ns },
@@ -607,7 +662,12 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { name: workspaceName });
       expect(workspace.status).toBe(200);
-      const workspaceId = workspace.body.result.id as number;
+      const workspaceId = await openEntityHandle(
+        base,
+        GRAPH_PATH_ROOT_DATABASE,
+        member,
+        workspace.body.result.id as string,
+      );
       const project = await invoke(base, member, {
         owner: { kind: "entity", name: Project.ns },
         localName: "create",

@@ -372,6 +372,45 @@ describe("authoritative invocation receipt serialization", () => {
     expect(publicText).not.toContain("receipts");
   });
 
+  test("output entity-reference positions round-trip, and an unaddressable one is refused", () => {
+    const claim = decideInvocationReceipt(undefined, preparedFixture());
+    if (claim._tag !== "Claim") throw new Error("expected claim");
+    const completed = transitionInvocationReceipt(claim.receipt, {
+      _tag: "Complete",
+      committedT: 42,
+      output: { id: 1001, rows: [1002] },
+      replayFence,
+    });
+    if (completed.status !== "completed") throw new Error("expected completion");
+    // Where the public projection must seal, carried over the internal hop and
+    // never onto a response. The durable output keeps its resolved eids.
+    const outcome = {
+      ...invocationReceiptOutcome(completed),
+      outputRefPaths: [["id"], ["rows", 0]],
+    };
+    const wire = JSON.parse(JSON.stringify(outcome));
+    expect(parseAuthoritativeInvocationResult(wire, "invocation-01"))
+      .toEqual(outcome);
+    // A path this build cannot follow is refused rather than skipped: skipping
+    // one would publish the raw eid it names.
+    // An empty path is addressable — it names the whole output — but an empty
+    // *list* is not: the field is omitted when nothing needs sealing.
+    expect(
+      parseAuthoritativeInvocationResult(
+        { ...wire, outputRefPaths: [[]] },
+        "invocation-01",
+      ),
+    ).toMatchObject({ outputRefPaths: [[]] });
+    for (const bad of [[], [[""]], [[-1]], [[1.5]], [[{}]], "id"]) {
+      expect(() =>
+        parseAuthoritativeInvocationResult(
+          { ...wire, outputRefPaths: bad },
+          "invocation-01",
+        )
+      ).toThrow(TypeError);
+    }
+  });
+
   test("the mapping extension round-trips, projects sealed handles, and never admits an eid", async () => {
     const claim = decideInvocationReceipt(undefined, preparedFixture());
     if (claim._tag !== "Claim") throw new Error("expected claim");

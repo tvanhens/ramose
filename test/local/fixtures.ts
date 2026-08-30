@@ -17,6 +17,8 @@ import * as Ramose from "ramose";
 import Stack from "./alchemy.run.ts";
 import { TEST_CAPABILITY } from "./test-hooks-env.ts";
 import { withRequestDeadline } from "../support/stream.ts";
+import { expect } from "bun:test";
+import type { EntityIdScope } from "../../packages/ramose/src/internal/replication/entity-id.ts";
 
 export const { deploy, destroy, beforeAll, afterAll } = Test.make({
   providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
@@ -308,4 +310,82 @@ export const seedTx = async (
     );
   }
   return body;
+};
+
+/* ── opaque entity handles at the operation boundary (#475) ──────────────── */
+
+/**
+ * The `{ server, principal, database }` scope this bearer's invocations seal
+ * under, derived by the Worker's own code from the really verified caller.
+ *
+ * Cached per bearer and database because it is a pure PRF of three stable
+ * inputs, and because deriving it is the one thing a test needs in order to
+ * read an opaque handle the same way the authoritative resolver does.
+ */
+const invocationScopes = new Map<string, Promise<EntityIdScope>>();
+
+const invocationScope = (
+  base: string,
+  database: string,
+  token: string,
+): Promise<EntityIdScope> => {
+  const key = `${base} ${database} ${token}`;
+  const cached = invocationScopes.get(key);
+  if (cached !== undefined) return cached;
+  const derived = (async () => {
+    const response = await testAdmin(base, database, "/server-identity", {
+      action: "invocation-entity-id-scope",
+      bearer: token,
+    });
+    expect(response.status).toBe(200);
+    return response.body.scope as EntityIdScope;
+  })();
+  invocationScopes.set(key, derived);
+  return derived;
+};
+
+/**
+ * Open one public entity handle, through the real sealed-EntityId resolver.
+ *
+ * The handle is what an operation result carries now: #475 seals every
+ * entity-reference position of client-visible output, so no numeric eid crosses
+ * the operation boundary. These noninterference cases still need the private
+ * eid to drive admin reads, and this is the only way to obtain one — which is
+ * itself the assertion: a wrong scope, a tampered handle, or an unsealed number
+ * simply fails to resolve.
+ */
+export const openEntityHandle = async (
+  base: string,
+  database: string,
+  token: string,
+  handle: string,
+): Promise<number> => {
+  const response = await testAdmin(base, database, "/server-identity", {
+    action: "open-entity-id",
+    scope: await invocationScope(base, database, token),
+    token: handle,
+  });
+  expect(response.status).toBe(200);
+  expect(response.body.resolution.type).toBe("resolved");
+  return response.body.resolution.eid as number;
+};
+
+/**
+ * The exact public handle this caller's output carries for one entity, minted
+ * by the same codec under the same derived scope. Sealing is deterministic in
+ * `(root, scope, eid)`, so this is the byte-for-byte value a result must hold.
+ */
+export const entityHandle = async (
+  base: string,
+  database: string,
+  token: string,
+  eid: number,
+): Promise<string> => {
+  const response = await testAdmin(base, database, "/server-identity", {
+    action: "seal-entity-id",
+    scope: await invocationScope(base, database, token),
+    eid,
+  });
+  expect(response.status).toBe(200);
+  return response.body.token as string;
 };

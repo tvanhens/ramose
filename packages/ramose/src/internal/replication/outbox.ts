@@ -174,6 +174,13 @@ export type QueueCursorRecord = {
   readonly receiver: ReplicaDatabaseScope;
   readonly nextSequence: number;
   readonly sealing: SealingEpoch | null;
+  /**
+   * The post-commit activation counter of this receiver database (#475 slice
+   * 3). Monotonic, never reused, and incremented exactly once per fresh
+   * replication activation — the increment *is* that activation's identity.
+   * `0` means no fresh activation has begun on this device yet.
+   */
+  readonly activation: number;
   readonly updatedAt: number;
 };
 
@@ -223,6 +230,17 @@ export type ReceiptRecord = {
    * causally fresh replication activation that observes it. Never public.
    */
   readonly observation: "unobserved" | "observed" | null;
+  /**
+   * The activation counter in force when this receipt's `unobserved` marker
+   * became durable (#475 slice 3). The fence on activation `n` marks every
+   * receipt stamped strictly below `n`, which is what makes "durable before
+   * that activation began" a single comparison rather than a per-receipt fence
+   * record. The fence does *not* rewrite it, so the predicate is stable and
+   * re-fencing an already observed row selects nothing. `0` when there is no
+   * marker at all, and for every row written before the counter existed —
+   * which is exactly what such a row means.
+   */
+  readonly activation: number;
   readonly output: JsonValue | null;
   readonly mappings: readonly QueuedMapping[];
   readonly failure: { readonly code: string } | null;
@@ -233,6 +251,49 @@ export type QueuedMapping = {
   readonly clientRef: ClientRef;
   readonly entityId: EntityId;
 };
+
+/**
+ * One committed receipt still waiting for the post-commit activation fence.
+ *
+ * The public shape carries no output, no mappings, and no observation token —
+ * it says only that this invocation committed and that the authoritative
+ * stream has not yet been seen to include it.
+ */
+export type UnobservedReceipt = {
+  readonly invocation: InvocationId;
+  /** The activation counter this marker became durable under. */
+  readonly activation: number;
+  readonly committedAt: number;
+};
+
+/**
+ * Whether the fence on `activation` covers this receipt.
+ *
+ * The entire post-commit fence bookkeeping is this comparison. A receipt is
+ * covered when its `unobserved` marker was already durable *before* that
+ * activation began — which, because the counter is incremented exactly once
+ * per fresh activation and before it opens, is exactly `stamp < activation`.
+ * A receipt acknowledged after the activation began carries that activation's
+ * own number, is not strictly below it, and waits for a later one.
+ */
+export const fencedByActivation = (
+  receipt: ReceiptRecord,
+  activation: number,
+): boolean =>
+  receipt.state === "committed" && receipt.observation === "unobserved" &&
+  receipt.activation < activation;
+
+/** The public view of one receipt that is still awaiting its fence. */
+export const unobservedReceiptOf = (
+  receipt: ReceiptRecord,
+): UnobservedReceipt | undefined =>
+  receipt.state === "committed" && receipt.observation === "unobserved"
+    ? Object.freeze({
+      invocation: receipt.invocation,
+      activation: receipt.activation,
+      committedAt: receipt.updatedAt,
+    })
+    : undefined;
 
 /**
  * A record refused before anything became durable — from any of the mutation
@@ -1141,6 +1202,22 @@ const isTimestamp = (value: unknown): value is number =>
 const isSequence = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
 
+/**
+ * An activation counter, read from a stored row.
+ *
+ * Absent means `0` — "durable before any activation this build began" — which
+ * is exactly what a row written before the counter existed means, so no
+ * migration is needed and no queue is orphaned. Every other unreadable value is
+ * still a refusal: a row claiming a fractional or negative activation would
+ * make the fence comparison meaningless.
+ */
+const decodeActivation = (value: unknown): number | undefined => {
+  if (value === undefined) return 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+};
+
 /** The envelope's version byte, which is exactly one byte. */
 const isCodecVersion = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
@@ -1167,6 +1244,7 @@ export const buildQueueCursor = (
       receiver,
       nextSequence: record.nextSequence,
       sealing: record.sealing === null ? null : Object.freeze({ ...record.sealing }),
+      activation: record.activation,
       updatedAt: record.updatedAt,
     }),
     decodeQueueCursor,
@@ -1187,6 +1265,8 @@ export const decodeQueueCursor = (
   if (!isSequence(value.nextSequence)) return undefined;
   const sealing = decodeSealing(value.sealing);
   if (sealing === undefined) return undefined;
+  const activation = decodeActivation(value.activation);
+  if (activation === undefined) return undefined;
   if (!isTimestamp(value.updatedAt)) return undefined;
   return Object.freeze({
     partition: value.partition,
@@ -1194,6 +1274,7 @@ export const decodeQueueCursor = (
     receiver,
     nextSequence: value.nextSequence,
     sealing,
+    activation,
     updatedAt: value.updatedAt,
   });
 };
@@ -1207,6 +1288,7 @@ export const buildReceipt = (record: ReceiptRecord): ReceiptRecord =>
       scope: record.scope,
       state: record.state,
       observation: record.observation,
+      activation: record.activation,
       output: record.output,
       mappings: Object.freeze(
         record.mappings.map((mapping) => Object.freeze({ ...mapping })),
@@ -1232,6 +1314,12 @@ export const decodeReceipt = (value: unknown): ReceiptRecord | undefined => {
     value.observation !== null && value.observation !== "unobserved" &&
     value.observation !== "observed"
   ) return undefined;
+  const activation = decodeActivation(value.activation);
+  if (activation === undefined) return undefined;
+  // A receipt with no marker has nothing to fence, so it can carry no stamp: a
+  // row that claimed one would be selected by a comparison that means nothing
+  // for it.
+  if (value.observation === null && activation !== 0) return undefined;
   if (!Array.isArray(value.mappings)) return undefined;
   const mappings: QueuedMapping[] = [];
   const mapped = new Set<string>();
@@ -1264,6 +1352,7 @@ export const decodeReceipt = (value: unknown): ReceiptRecord | undefined => {
     scope: value.scope,
     state: value.state,
     observation: value.observation,
+    activation,
     output,
     mappings: Object.freeze(mappings),
     failure: value.failure === null

@@ -4,11 +4,13 @@ import {
   decideEpoch,
   extractAllocations,
   isEntityRefPath,
+  outputEntityRefPaths,
   parseEntityIdScope,
   parseInvocationAllocations,
   resolveSealedTarget,
   sameEpochScope,
   sealAllocationMappings,
+  sealOutputEntityRefs,
   type InvocationAllocation,
 } from "../../../src/internal/authorization/entity-targets.ts";
 import type {
@@ -379,5 +381,84 @@ describe("sealAllocationMappings", () => {
     await expect(
       sealAllocationMappings(sealing, scope, [{ slot: "ghost", eid: 1 }], bound()),
     ).rejects.toThrow("allocated slot has no bound client ref");
+  });
+});
+
+describe("entity references in client-visible output", () => {
+  const output = { id: 4242, count: 7, rows: [11, 12] };
+
+  test("the deployed shape decides which positions hold a reference", () => {
+    // `count` is a number in exactly the same way `id` is. Only the shape can
+    // tell them apart, which is why a walk over the value alone would seal
+    // counts and identifiers into handles.
+    expect(outputEntityRefPaths(outputShape, output)).toEqual([
+      ["id"],
+      ["rows", 0],
+      ["rows", 1],
+    ]);
+    expect(outputEntityRefPaths(scalarShape, 7)).toEqual([]);
+    expect(outputEntityRefPaths(outputShape, { count: 7, rows: [] })).toEqual([]);
+  });
+
+  test("a position the shape declares but the value does not fill is not sealed", () => {
+    // Only reachable if a stored output and a deployed shape drifted apart; it
+    // is a guard, not a case with a meaning of its own.
+    expect(outputEntityRefPaths(outputShape, { id: "already-sealed", rows: [] }))
+      .toEqual([]);
+    expect(outputEntityRefPaths(outputShape, { id: null, rows: [null] })).toEqual([]);
+  });
+
+  test("every reference becomes the same handle its allocation mapping carries", async () => {
+    const paths = outputEntityRefPaths(outputShape, output);
+    const sealed = await sealOutputEntityRefs(sealing, scope, output, paths) as {
+      readonly id: string;
+      readonly count: number;
+      readonly rows: readonly string[];
+    };
+    expect(isEntityId(sealed.id)).toBe(true);
+    expect(sealed.id).toBe(await sealEntityId(sealing, scope, 4242));
+    // The same entity in the same scope is the same bytes, whether it arrives
+    // through an allocation mapping, through logical replication, or here.
+    expect(sealed.id).toBe(
+      (await sealAllocationMappings(sealing, scope, [{ slot: "item", eid: 4242 }], [
+        { slot: "item", clientRef: ref() },
+      ]))[0]!.entityId,
+    );
+    expect(sealed.rows.every(isEntityId)).toBe(true);
+    // Nothing that is not a reference is touched.
+    expect(sealed.count).toBe(7);
+    // And the caller's value — the one the durable receipt holds — is
+    // untouched, because the receipt is the replay.
+    expect(output).toEqual({ id: 4242, count: 7, rows: [11, 12] });
+    expect(JSON.stringify(sealed)).not.toContain("4242");
+    expect(JSON.stringify(sealed)).not.toContain("11");
+  });
+
+  test("a wrong scope produces a different handle, and a rotated key another", async () => {
+    const paths = outputEntityRefPaths(outputShape, output);
+    const here = await sealOutputEntityRefs(sealing, scope, output, paths) as {
+      readonly id: string;
+    };
+    const elsewhere = await sealOutputEntityRefs(sealing, otherScope, output, paths) as {
+      readonly id: string;
+    };
+    const rotated = await sealOutputEntityRefs(rotatedSealing, scope, output, paths) as {
+      readonly id: string;
+    };
+    expect(here.id).not.toBe(elsewhere.id);
+    expect(here.id).not.toBe(rotated.id);
+  });
+
+  test("a path the value cannot follow is a defect, never a silent skip", async () => {
+    // Skipping one would publish the raw eid it names.
+    await expect(
+      sealOutputEntityRefs(sealing, scope, output, [["absent"]]),
+    ).rejects.toThrow(/entity-reference position/);
+    await expect(
+      sealOutputEntityRefs(sealing, scope, output, [["rows", 9]]),
+    ).rejects.toThrow(/entity-reference position/);
+    await expect(
+      sealOutputEntityRefs(sealing, scope, output, [["count", "deeper"]]),
+    ).rejects.toThrow(/entity-reference position/);
   });
 });

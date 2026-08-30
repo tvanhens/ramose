@@ -20,7 +20,13 @@ import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/repl
 import type {
   OutboxDraft,
   QueuedMapping,
+  ReceiptRecord,
 } from "../../packages/ramose/src/internal/replication/outbox.ts";
+import {
+  ActivationFence,
+  type ActivationFenceSnapshot,
+} from "../../packages/ramose/src/internal/replication/activation-fence.ts";
+import { ReplicationSession } from "../../packages/ramose/src/internal/replication/session.ts";
 import type { ClientRef } from "../../packages/ramose/src/db/refs.ts";
 import {
   mappingKey,
@@ -30,6 +36,7 @@ import {
   replicaDatabaseScopeOf,
   replicaScopeOf,
   type ReplicaDatabaseScope,
+  type ReplicaScope,
 } from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
 import type { ReplicationIdentity } from "../../packages/ramose/src/internal/replication/protocol.ts";
 import {
@@ -228,6 +235,8 @@ browserTest("one enqueue is all-or-nothing across a crash cut", async ({ browser
       receiver: { ...receiver },
       nextSequence: 2,
       sealing: null,
+      // An enqueue is not a fresh activation, so the counter is untouched.
+      activation: 0,
       updatedAt: record.enqueuedAt,
     }]);
     expect(committed["mutation-receipts-v1"]).toEqual([{
@@ -236,6 +245,7 @@ browserTest("one enqueue is all-or-nothing across a crash cut", async ({ browser
       scope: record.scope,
       state: "queued",
       observation: null,
+      activation: 0,
       output: null,
       mappings: [],
       failure: null,
@@ -1299,9 +1309,11 @@ browserTest(
         invocation: record.invocation,
         scope: record.scope,
         state: "committed",
-        // The internal marker #476 consumes. Slice 3 builds the fence that
-        // clears it; this slice only has to write it in this transaction.
+        // The internal marker #476 consumes, stamped with the activation
+        // counter in force when it became durable — nothing has begun a fresh
+        // activation here, so that is zero.
         observation: "unobserved",
+        activation: 0,
         output: { id: "opaque" },
         mappings: [{ clientRef: allocation, entityId: mapped }],
         failure: null,
@@ -1486,8 +1498,10 @@ browserTest(
         invocation: record.invocation,
         scope: record.scope,
         state: "rejected",
-        // A rejection committed nothing, so it needs no observation fence.
+        // A rejection committed nothing, so it needs no observation fence
+        // and carries no activation stamp.
         observation: null,
+        activation: 0,
         output: null,
         mappings: [],
         failure: { code: "invocation_conflict" },
@@ -2021,3 +2035,325 @@ browserTest("every interleaving of accept and refuse drains the queues", async (
     "rejected:invocation_conflict",
   ]);
 });
+
+/* ── the post-commit activation fence (#475 slice 3) ─────────────────────── */
+
+/** Enqueue one invocation and acknowledge it as committed, with no mappings. */
+const commitOne = async (
+  outbox: ReturnType<IndexedDbReplicaStorage["outbox"]>,
+  receiver: ReplicaDatabaseScope,
+  scope: ReplicaScope,
+  at: number,
+): Promise<ReceiptRecord> => {
+  const record = await outbox.enqueue(draft(receiver, { enqueuedAt: at }), { scope });
+  return outbox.acknowledge(
+    record,
+    { _tag: "Committed", output: { id: record.invocation }, mappings: [] },
+    at,
+  );
+};
+
+browserTest(
+  "one fresh activation fences exactly the markers durable before it began",
+  async ({ browser }) => {
+    const name = `ramose-fence-window-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      const outbox = storage.outbox();
+      // Two commits before anything activates: both are stamped zero, and one
+      // activation coalesces them.
+      const first = await commitOne(outbox, receiver, scope, 1_700_000_000_001);
+      const second = await commitOne(outbox, receiver, scope, 1_700_000_000_002);
+      expect(await outbox.observationState(receiver)).toEqual({
+        partition: mutationPartitionKey(receiver),
+        receiver,
+        activation: 0,
+        unobserved: [
+          { invocation: first.invocation, activation: 0, committedAt: 1_700_000_000_001 },
+          { invocation: second.invocation, activation: 0, committedAt: 1_700_000_000_002 },
+        ].sort((left, right) => (left.invocation < right.invocation ? -1 : 1)),
+      });
+
+      expect(await outbox.beginActivation(receiver)).toBe(1);
+      // A commit that lands *after* activation 1 opened carries 1, so activation
+      // 1's own output can never prove the server's stream reached it.
+      const late = await commitOne(outbox, receiver, scope, 1_700_000_000_003);
+      expect((await outbox.receipt(receiver, late.invocation))?.activation).toBe(1);
+
+      const fenced = await outbox.fenceActivation(receiver, 1, 1_700_000_000_010);
+      expect([...fenced].sort()).toEqual(
+        [first.invocation, second.invocation].sort(),
+      );
+      const afterFirst = await outbox.observationState(receiver);
+      expect(afterFirst.activation).toBe(1);
+      expect(afterFirst.unobserved).toEqual([
+        { invocation: late.invocation, activation: 1, committedAt: 1_700_000_000_003 },
+      ]);
+      // The stamp is not rewritten, so re-fencing the same activation is a
+      // no-op rather than a second sweep.
+      expect(await outbox.fenceActivation(receiver, 1)).toEqual([]);
+
+      expect(await outbox.beginActivation(receiver)).toBe(2);
+      expect(await outbox.fenceActivation(receiver, 2, 1_700_000_000_020))
+        .toEqual([late.invocation]);
+      expect(await outbox.observationState(receiver)).toEqual({
+        partition: mutationPartitionKey(receiver),
+        receiver,
+        activation: 2,
+        unobserved: [],
+      });
+      expect(await outbox.receipt(receiver, first.invocation)).toMatchObject({
+        state: "committed",
+        observation: "observed",
+        activation: 0,
+        updatedAt: 1_700_000_000_010,
+      });
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a rejection is never fenced and needs no activation",
+  async ({ browser }) => {
+    const name = `ramose-fence-rejection-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      const outbox = storage.outbox();
+      const record = await outbox.enqueue(draft(receiver), { scope });
+      await outbox.acknowledge(
+        record,
+        { _tag: "Rejected", code: "operation_rejected" },
+        1_700_000_000_001,
+      );
+      expect(await outbox.beginActivation(receiver)).toBe(1);
+      expect(await outbox.fenceActivation(receiver, 1)).toEqual([]);
+      expect((await outbox.receipt(receiver, record.invocation))?.observation)
+        .toBeNull();
+      expect((await outbox.observationState(receiver)).unobserved).toEqual([]);
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "every crash cut between the commit and the fence converges",
+  async ({ browser }) => {
+    const name = `ramose-fence-crash-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    let storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    try {
+      await confirm(storage, left, "left");
+      const committed = await commitOne(
+        storage.outbox(),
+        receiver,
+        scope,
+        1_700_000_000_001,
+      );
+
+      // Cut 1: after the acknowledgement, before the counter increment.
+      armCheckpoint("outbox.activation", "throw", "cut before the activation committed");
+      try {
+        await expect(storage.outbox().beginActivation(receiver))
+          .rejects.toThrow(/cut before the activation/);
+      } finally {
+        resetTestHooks();
+      }
+      // A restart reads durable state and nothing else.
+      storage.close();
+      storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+      let state = await storage.outbox().observationState(receiver);
+      expect(state.activation).toBe(0);
+      expect(state.unobserved).toEqual([
+        { invocation: committed.invocation, activation: 0, committedAt: 1_700_000_000_001 },
+      ]);
+
+      // Cut 2: after the increment, before the activation delivers anything.
+      // A skipped number costs nothing — the counter is an ordering, not a
+      // resource — and a larger one can only ever fence more, never fewer.
+      expect(await storage.outbox().beginActivation(receiver)).toBe(1);
+      storage.close();
+      storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+      expect((await storage.outbox().observationState(receiver)).unobserved)
+        .toHaveLength(1);
+      expect(await storage.outbox().beginActivation(receiver)).toBe(2);
+
+      // Cut 3: after the matching frame, before the fence transaction.
+      armCheckpoint("outbox.fence", "throw", "cut before the fence committed");
+      try {
+        await expect(storage.outbox().fenceActivation(receiver, 2))
+          .rejects.toThrow(/cut before the fence/);
+      } finally {
+        resetTestHooks();
+      }
+      storage.close();
+      storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+      state = await storage.outbox().observationState(receiver);
+      expect(state.activation).toBe(2);
+      expect(state.unobserved).toHaveLength(1);
+
+      // The next activation fences it, with the number the cuts left behind.
+      expect(await storage.outbox().beginActivation(receiver)).toBe(3);
+      expect(await storage.outbox().fenceActivation(receiver, 3))
+        .toEqual([committed.invocation]);
+      expect((await storage.outbox().observationState(receiver)).unobserved)
+        .toEqual([]);
+    } finally {
+      resetTestHooks();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "one fence is one transaction over every receipt it covers",
+  async ({ browser }) => {
+    const name = `ramose-fence-atomic-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      const outbox = storage.outbox();
+      const committed = [
+        await commitOne(outbox, receiver, scope, 1_700_000_000_001),
+        await commitOne(outbox, receiver, scope, 1_700_000_000_002),
+        await commitOne(outbox, receiver, scope, 1_700_000_000_003),
+      ];
+      expect(await outbox.beginActivation(receiver)).toBe(1);
+
+      const writes: string[][] = [];
+      const databasePrototype = IDBDatabase.prototype;
+      const nativeTransaction = databasePrototype.transaction;
+      databasePrototype.transaction = function (
+        this: IDBDatabase,
+        storeNames: string | Iterable<string>,
+        mode?: IDBTransactionMode,
+        options?: IDBTransactionOptions,
+      ): IDBTransaction {
+        const named = typeof storeNames === "string" ? [storeNames] : [...storeNames];
+        if (this.name === name && mode === "readwrite") writes.push(named);
+        return nativeTransaction.call(this, storeNames, mode, options);
+      } as IDBDatabase["transaction"];
+      let fenced: readonly string[];
+      try {
+        fenced = await outbox.fenceActivation(receiver, 1);
+      } finally {
+        databasePrototype.transaction = nativeTransaction;
+      }
+      expect([...fenced].sort()).toEqual(
+        committed.map((receipt) => receipt.invocation).sort(),
+      );
+      // Coalescing is not three writes that happen to agree: one matching
+      // frame on one fresh activation clears every marker it covers, or none.
+      expect(writes).toEqual([["mutation-receipts-v1", "replica-generations-v1"]]);
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "an activation and its fence cannot land behind a scoped clear",
+  async ({ browser }) => {
+    const name = `ramose-fence-cleared-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      await commitOne(storage.outbox(), receiver, scope, 1_700_000_000_001);
+      const held = storage.outbox();
+      expect(await held.beginActivation(receiver)).toBe(1);
+      await storage.clearScope(scope);
+      expect(await rejectedTag(held.beginActivation(receiver)))
+        .toBe("ReplicaScopeClearedError");
+      expect(await rejectedTag(held.fenceActivation(receiver, 1)))
+        .toBe("ReplicaScopeClearedError");
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "the fence exposes its transition as durable, restartable state",
+  async ({ browser }) => {
+    const name = `ramose-fence-transition-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    let storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      const committed = await commitOne(
+        storage.outbox(),
+        receiver,
+        scope,
+        1_700_000_000_001,
+      );
+      // A restart reconstructs the pending set from durable rows alone — this
+      // fence has never seen the acknowledgement that produced it.
+      storage.close();
+      storage = await IndexedDbReplicaStorage.open(name);
+      const fence = new ActivationFence(storage.outbox(), receiver);
+      const seen: ActivationFenceSnapshot[] = [];
+      const stop = fence.observe((snapshot) => seen.push(snapshot));
+      expect(await fence.refresh()).toMatchObject({
+        activation: 0,
+        unobserved: [{ invocation: committed.invocation, activation: 0 }],
+        fenced: [],
+      });
+
+      // The prior generation is closed *before* the counter moves: a
+      // generation still open when it moves can deliver output that was
+      // already in flight before the acknowledgement was durable.
+      const prior = await ReplicationSession.open({
+        activation: { server: "http://127.0.0.1:1", root: "root", graphPath: [] },
+        credential: "queued-credential",
+        attributes: [{ ident: ":item/name", valueType: ":db.type/string", index: true }],
+        readCompatibilityHash: left.readCompatibilityHash,
+        storage,
+      });
+      const activation = await fence.restart(prior);
+      expect(prior.snapshot().status).toBe("closed");
+      expect(activation).toBe(1);
+      // Exactly what the replication session hands its first settled frame.
+      await fence.outcome(activation)();
+      expect(fence.snapshot()).toMatchObject({
+        activation: 1,
+        unobserved: [],
+        fenced: [committed.invocation],
+      });
+      // A second settled frame on the same activation is not a second fence.
+      const transitions = seen.length;
+      await fence.outcome(activation)();
+      expect(seen).toHaveLength(transitions);
+      stop();
+      expect((await storage.outbox().receipt(receiver, committed.invocation))
+        ?.observation).toBe("observed");
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
