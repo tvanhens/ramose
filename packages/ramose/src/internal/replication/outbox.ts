@@ -467,13 +467,13 @@ export const buildOutboxRecord = (
   if (!isInvocationId(draft.invocation)) {
     reject("the invocation id is not a durable client invocation id");
   }
-  if (!Number.isSafeInteger(sequence) || sequence < 1) {
+  if (!isSequence(sequence)) {
     reject("the queue sequence must be a positive safe integer");
   }
   // Checked here, exactly as the decoder checks it: a `NaN`, an infinity, or a
   // fractional stamp would commit and then make its own row unreadable on the
   // next restart, holding a partition that has done nothing wrong.
-  if (!Number.isSafeInteger(draft.enqueuedAt) || draft.enqueuedAt < 0) {
+  if (!isTimestamp(draft.enqueuedAt)) {
     reject("the enqueue timestamp must be a non-negative safe integer");
   }
   if (draft.operation.localName.length === 0) {
@@ -856,9 +856,7 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 const decodeSealing = (value: unknown): SealingEpoch | null | undefined => {
   if (value === null) return null;
   if (!isPlainObject(value)) return undefined;
-  if (typeof value.codecVersion !== "number" || !Number.isSafeInteger(value.codecVersion)) {
-    return undefined;
-  }
+  if (!isCodecVersion(value.codecVersion)) return undefined;
   if (typeof value.keyId !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(value.keyId)) {
     return undefined;
   }
@@ -896,9 +894,7 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
   if (typeof value.partition !== "string" || !value.partition.startsWith(`${PARTITION_DOMAIN}:`)) {
     return undefined;
   }
-  if (typeof value.sequence !== "number" || !Number.isSafeInteger(value.sequence) || value.sequence < 1) {
-    return undefined;
-  }
+  if (!isSequence(value.sequence)) return undefined;
   if (!isInvocationId(value.invocation)) return undefined;
   if (!isScopeKey(value.scope)) return undefined;
   if (
@@ -1095,6 +1091,15 @@ const isScopeKey = (value: unknown): value is string =>
 const isTimestamp = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
+/** A FIFO position. Positions start at one; zero is "no position". */
+const isSequence = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+
+/** The envelope's version byte, which is exactly one byte. */
+const isCodecVersion = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
+  value <= 255;
+
 /** The durable FIFO cursor of one receiver database. */
 export const buildQueueCursor = (
   record: QueueCursorRecord,
@@ -1122,10 +1127,7 @@ export const decodeQueueCursor = (
     mutationPartitionKey(receiver) !== value.partition
   ) return undefined;
   if (!isScopeKey(value.scope)) return undefined;
-  if (
-    typeof value.nextSequence !== "number" ||
-    !Number.isSafeInteger(value.nextSequence) || value.nextSequence < 1
-  ) return undefined;
+  if (!isSequence(value.nextSequence)) return undefined;
   const sealing = decodeSealing(value.sealing);
   if (sealing === undefined) return undefined;
   if (!isTimestamp(value.updatedAt)) return undefined;
