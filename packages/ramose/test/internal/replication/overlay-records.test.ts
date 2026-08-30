@@ -336,6 +336,27 @@ describe("restoring layers by native replay", () => {
       const restored = restore([withTarget(1)], catalogOf({}, "build-b"));
       expect(restored.type).toBe("layers");
     });
+
+    test("a sealing key epoch the server has replaced", async () => {
+      const sealing: ServerSealingKey = {
+        keyId: base64Url(Uint8Array.from({ length: 16 }, (_, index) => index)),
+        material: base64Url(Uint8Array.from({ length: 32 }, (_, index) => index * 5)),
+      };
+      const handle = (await sealEntityId(sealing, {
+        server: receiver.server,
+        principal: receiver.principal,
+        database: receiver.database,
+      }, 3)) as unknown as EntityId;
+      const row = layerRecord(queued({ target: { type: "entity", entityId: handle } }));
+      // An unconfirmed epoch is not evidence of a rotation, so offline — or
+      // before the first authenticated response — nothing quarantines.
+      expect(restore([row]).type).toBe("layers");
+      expect(reasons(restore([row], catalogOf({}), sealing.keyId))).toEqual([]);
+      // The server has since replaced the key: the layer is quarantined
+      // data-free rather than replayed against a replica it cannot address.
+      const rotated = base64Url(Uint8Array.from({ length: 16 }, () => 7));
+      expect(reasons(restore([row], catalogOf({}), rotated))).toEqual(["key-epoch"]);
+    });
   });
 
   test("the same rows restore to the same layers, every time", () => {
