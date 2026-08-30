@@ -231,24 +231,68 @@ describe("classifyMutationResponse", () => {
     )).toEqual({ _tag: "Retry", reason: "indeterminate" });
   });
 
-  test("sealed refusals are terminal rejections carrying the typed failure", () => {
+  const rejectedReceipt = (invocation: string) =>
+    ({ version: 2, invocationId: invocation, status: "rejected" }) as const;
+
+  test("a refusal the server bound to a durable receipt is terminal and typed", () => {
+    expect(classifyMutationResponse(plain, response(403, {
+      error: "unauthorized",
+      receipt: rejectedReceipt(plain.invocation),
+    }))).toEqual({ _tag: "Rejected", code: "unauthorized" });
+    expect(classifyMutationResponse(plain, response(400, {
+      error: "invalid request",
+      receipt: rejectedReceipt(plain.invocation),
+    }))).toEqual({ _tag: "Rejected", code: "invalid_request" });
+    expect(classifyMutationResponse(plain, response(409, {
+      tag: "OperationRejected",
+      message: "domain refused",
+      receipt: rejectedReceipt(plain.invocation),
+    }))).toEqual({ _tag: "Rejected", code: "operation_rejected" });
+    // A durable `failed` receipt replays the same answer forever.
+    expect(classifyMutationResponse(plain, response(500, {
+      code: "invocation_failed",
+      receipt: { version: 2, invocationId: plain.invocation, status: "failed" },
+    }))).toEqual({ _tag: "Rejected", code: "invocation_failed" });
+    // The one terminal refusal that legitimately carries no receipt: a
+    // *different* receipt already owns this invocation id.
     expect(classifyMutationResponse(
       plain,
       response(409, { code: "invocation_conflict" }),
     )).toEqual({ _tag: "Rejected", code: "invocation_conflict" });
-    expect(classifyMutationResponse(plain, response(403, { error: "unauthorized" })))
-      .toEqual({ _tag: "Rejected", code: "unauthorized" });
-    expect(classifyMutationResponse(plain, response(400, { error: "invalid request" })))
-      .toEqual({ _tag: "Rejected", code: "invalid_request" });
+  });
+
+  test("a refusal with no receipt of its own never removes durable work", () => {
+    // The Worker answers a bare 403 when the caller's lease expires between
+    // the authoritative commit and the response: the invocation *did* commit,
+    // and deleting the row would lose the mappings the replay would return.
+    for (const status of [400, 401, 403, 409] as const) {
+      expect(classifyMutationResponse(plain, response(status, { error: "no" })))
+        .toEqual({ _tag: "Retry", reason: "malformed" });
+    }
+    // A receipt for some *other* invocation is not this one's proof.
+    expect(classifyMutationResponse(plain, response(403, {
+      error: "unauthorized",
+      receipt: rejectedReceipt("iv1_00000000-0000-7000-8000-000000000000"),
+    }))).toEqual({ _tag: "Retry", reason: "malformed" });
+    // Nor is a non-terminal receipt status.
+    expect(classifyMutationResponse(plain, response(409, {
+      receipt: { version: 2, invocationId: plain.invocation, status: "completed" },
+    }))).toEqual({ _tag: "Retry", reason: "malformed" });
+  });
+
+  test("a 409 code this build does not know stays queued", () => {
+    // A newer server may name a compatibility or indeterminate outcome this
+    // client has never heard of; an older client must not answer that by
+    // destroying the user's durable work.
     expect(classifyMutationResponse(
       plain,
-      response(409, { tag: "OperationRejected", message: "domain refused" }),
-    )).toEqual({ _tag: "Rejected", code: "request_rejected" });
-    // A durable `failed` receipt replays the same answer forever.
-    expect(classifyMutationResponse(
-      plain,
-      response(500, { code: "invocation_failed" }),
-    )).toEqual({ _tag: "Rejected", code: "invocation_failed" });
+      response(409, { error: "request rejected", code: "invocation_paused" }),
+    )).toEqual({ _tag: "Retry", reason: "malformed" });
+    // Unless the newer server also bound it to a terminal receipt.
+    expect(classifyMutationResponse(plain, response(409, {
+      code: "invocation_paused",
+      receipt: rejectedReceipt(plain.invocation),
+    }))).toEqual({ _tag: "Rejected", code: "invocation_paused" });
   });
 
   test("a transport failure or an uninterpretable answer holds the head", () => {
@@ -257,6 +301,8 @@ describe("classifyMutationResponse", () => {
     expect(classifyMutationResponse(plain, response(503, undefined)))
       .toEqual({ _tag: "Retry", reason: "unavailable" });
     expect(classifyMutationResponse(plain, response(500, undefined)))
+      .toEqual({ _tag: "Retry", reason: "unavailable" });
+    expect(classifyMutationResponse(plain, response(429, {})))
       .toEqual({ _tag: "Retry", reason: "unavailable" });
     expect(classifyMutationResponse(plain, response(200, "not an object")))
       .toEqual({ _tag: "Retry", reason: "malformed" });

@@ -264,10 +264,60 @@ const readMappings = (
 };
 
 /**
+ * Whether this answer carries a durable *terminal* receipt for this exact
+ * invocation.
+ *
+ * It is the client's only proof that the server reached a decision it will
+ * keep. Without it, a refusal may have been decided before any receipt was
+ * written — and the queue must not discard the user's work on the strength of
+ * a status code alone.
+ */
+const hasTerminalReceipt = (
+  record: OutboxRecord,
+  body: Record<string, unknown> | undefined,
+): boolean => {
+  const receipt = body?.receipt;
+  if (!isRecord(receipt)) return false;
+  return receipt.invocationId === record.invocation &&
+    (receipt.status === "rejected" || receipt.status === "failed");
+};
+
+/** The typed failure a receipt-backed refusal is recorded under. */
+const rejectionCode = (
+  status: number,
+  body: Record<string, unknown> | undefined,
+): string => {
+  if (typeof body?.code === "string") return body.code;
+  if (body?.tag === "OperationRejected") return "operation_rejected";
+  if (status === 400) return "invalid_request";
+  if (status === 401 || status === 403) return "unauthorized";
+  return "request_rejected";
+};
+
+/**
  * Classify one `/op` answer into the queue's own vocabulary.
  *
  * Fail-open is not an option in either direction: an answer this build cannot
  * interpret is `Retry`, never a silent commit and never a silent drop.
+ *
+ * **A terminal rejection needs proof.** Removing a durable outbox row is
+ * irreversible, and for an allocating invocation it also throws away the only
+ * chance to recover the authoritative mappings — leaving every dependent
+ * record blocked on a ref nothing can ever resolve. So only two things are
+ * terminal: a refusal the server bound to a durable receipt for this exact
+ * invocation, and `invocation_conflict`, which says a *different* receipt
+ * already owns this id. A status code on its own is never enough.
+ *
+ * That matters most for a bare 403. The Worker deliberately answers one, with
+ * no receipt, when the caller's lease expires between the authoritative commit
+ * and the response — the invocation *did* commit. Treating it as terminal
+ * would delete the row and lose the mappings the exact replay would have
+ * returned.
+ *
+ * A 409 code this build does not know is non-terminal for the same reason: a
+ * newer server may name a compatibility or indeterminate outcome this client
+ * has never heard of, and an older client must not answer that by destroying
+ * durable work.
  */
 export const classifyMutationResponse = (
   record: OutboxRecord,
@@ -302,24 +352,20 @@ export const classifyMutationResponse = (
       // the one answer that must be asked again rather than decided.
       case "invocation_indeterminate":
         return RETRY("indeterminate");
-      // The same id was already used for a different intent. The durable
-      // receipt that exists is the authoritative one, and this record can
-      // never become it.
+      // The same id already belongs to a different intent. The durable receipt
+      // that exists is the authoritative one and this record can never become
+      // it, so no retry can change the answer — the one terminal refusal that
+      // legitimately carries no receipt of its own.
       case "invocation_conflict":
         return REJECTED("invocation_conflict");
-      default:
-        return REJECTED(code ?? "request_rejected");
     }
   }
-  if (status === 400) return REJECTED("invalid_request");
-  if (status === 401 || status === 403) return REJECTED("unauthorized");
-  // A durable `failed` receipt is terminal on the server: retrying replays the
-  // same answer forever, so it is terminal here too.
-  if (status === 500 && code === "invocation_failed") {
-    return REJECTED("invocation_failed");
+  if (hasTerminalReceipt(record, body)) {
+    return REJECTED(rejectionCode(status, body));
   }
-  if (status === 503 || status === 429) return RETRY("unavailable");
-  if (status >= 500) return RETRY("unavailable");
+  if (status === 429 || status >= 500) return RETRY("unavailable");
+  // Including a receipt-free 400/401/403: the server may have decided nothing,
+  // or may have committed and merely refused to say so.
   return RETRY("malformed");
 };
 

@@ -1836,12 +1836,35 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           reason: "invocation-update-required",
         });
 
-        // A caller the operation grant refuses is a terminal rejection: no
-        // amount of retrying turns a `reader` into a `member`.
-        expect(await submit(queued(version), {
+        // A refusal the server bound to a durable receipt is terminal: the
+        // operation body refused, after the claim, so replaying returns the
+        // same answer forever.
+        const refused = buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "reject",
+          },
+          operationVersion: versions.get("nativeItem/reject")! as never,
+          target: { type: "none" },
+          input: {},
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_004,
+        }, "scope", 4);
+        expect(await submit(refused, endpoint))
+          .toEqual({ _tag: "Rejected", code: "operation_rejected" });
+
+        // A refusal the server reached *before* writing any receipt carries
+        // none, and must never remove durable work — the same shape the Worker
+        // answers when a lease expires between the commit and the response.
+        const unproven = await submit(queued(version), {
           ...endpoint,
           credential: await signToken(database, "reader", "user_client_reader"),
-        })).toEqual({ _tag: "Rejected", code: "unauthorized" });
+        });
+        expect(unproven._tag).toBe("Retry");
 
         // And an unreachable peer is the one answer that must be asked again.
         expect(await submit(queued(version), {
