@@ -850,7 +850,7 @@ export class IndexedDbReplicaStorage {
       }
       // #475's mutation families. They are created empty and need no data
       // migration: version 6 and earlier could not queue an invocation.
-      createMutationStores(database);
+      if (request.transaction !== null) createMutationStores(database, request.transaction);
       const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
       if (oldVersion > 0 && oldVersion < STORAGE_V2_DATABASE_VERSION && request.transaction !== null) {
         // One atomic pre-public reset. Every stored record older than storage

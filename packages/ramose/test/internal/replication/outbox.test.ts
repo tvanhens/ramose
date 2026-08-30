@@ -35,6 +35,7 @@ import {
 import {
   buildOutboxRecord,
   decideOutboxEntry,
+  decodeClientRefMapping,
   decodeOutboxRecord,
   mappingKey,
   mutationPartitionKey,
@@ -319,6 +320,12 @@ describe("building one durable queue record", () => {
       )
     )).toMatch(/sealed entity handle/);
     expect(rejection(() => buildOutboxRecord(draft(), scopeKey, 0))).toMatch(/sequence/);
+    // A stamp the decoder would refuse must not be allowed to commit: the row
+    // would become unreadable on the next restart and hold its partition.
+    for (const enqueuedAt of [Number.NaN, Number.POSITIVE_INFINITY, 1.5, -1]) {
+      expect(rejection(() => buildOutboxRecord(draft({ enqueuedAt }), scopeKey, 1)))
+        .toMatch(/enqueue timestamp/);
+    }
   });
 
   test("one invocation may not mix two server sealing epochs", async () => {
@@ -674,12 +681,39 @@ describe("strict decoding of a stored record", () => {
         { ...base, input: undefined },
         // Filed under one database while naming another.
         { ...base, receiver: { ...(base.receiver as object), database: OTHER_DATABASE } },
+        { ...base, enqueuedAt: 1.5 },
         "not a record",
         null,
       ]
     ) {
       expect(decodeOutboxRecord(broken)).toBeUndefined();
     }
+    // A declared input reference must still be at its declared position: a row
+    // that drifted would be reported ready on a mapped ref while its input
+    // carried a different, unresolved one.
+    const ref = clientRef();
+    const withRef = JSON.parse(JSON.stringify(
+      buildOutboxRecord(
+        draft({ input: { author: ref }, inputRefs: [{ path: ["author"], ref }] }),
+        scopeKey,
+        1,
+      ),
+    )) as Record<string, unknown>;
+    expect(decodeOutboxRecord(withRef)).toBeDefined();
+    for (
+      const drifted of [
+        { ...withRef, input: { author: clientRef() } },
+        { ...withRef, inputRefs: [{ path: ["other"], ref }] },
+        { ...withRef, inputRefs: [{ path: ["author"], ref: clientRef() }] },
+        {
+          ...withRef,
+          inputRefs: [{ path: ["author"], ref }, { path: ["author"], ref }],
+        },
+      ]
+    ) {
+      expect(decodeOutboxRecord(drifted)).toBeUndefined();
+    }
+
     // A rewritten sealing epoch is not believed: the row's own handles decide.
     const sealedBase = JSON.parse(JSON.stringify(
       buildOutboxRecord(
@@ -719,6 +753,42 @@ describe("strict decoding of a stored record", () => {
       1,
     );
     expect(decodeOutboxRecord(stored(sealedRecord))).toEqual(sealedRecord);
+  });
+});
+
+describe("strict decoding of a stored mapping", () => {
+  const mapping = async (eid: number) => ({
+    partition: mutationPartitionKey(receiver),
+    clientRef: clientRef(),
+    entityId: (await sealEntityId(sealing, idScope, eid)) as EntityId,
+    sealing: { codecVersion: ENTITY_ID_CODEC_VERSION, keyId: root.keyId },
+    invocation: invocationId(),
+    mappedAt: 1_700_000_000_000,
+  });
+
+  test("accepts a mapping whose epoch is exactly its handle's", async () => {
+    const record = await mapping(51);
+    expect(decodeClientRefMapping(record)).toEqual(record);
+  });
+
+  test("refuses an epoch the handle does not declare", async () => {
+    const record = await mapping(52);
+    for (
+      const forged of [
+        // The classic bypass: an old handle relabelled with the current epoch.
+        { ...record, sealing: { codecVersion: 1, keyId: otherRoot.keyId } },
+        { ...record, sealing: { codecVersion: 2, keyId: root.keyId } },
+        { ...record, sealing: null },
+        { ...record, entityId: "a".repeat(55) },
+        { ...record, clientRef: "not-a-ref" },
+        { ...record, invocation: "not-an-invocation" },
+        { ...record, partition: "ramose-replica-v2:s:p:d:v:h" },
+        { ...record, mappedAt: 1.5 },
+        null,
+      ]
+    ) {
+      expect(decodeClientRefMapping(forged)).toBeUndefined();
+    }
   });
 });
 

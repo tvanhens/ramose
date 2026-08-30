@@ -49,6 +49,8 @@ import {
 } from "./replica-lifecycle.ts";
 import {
   buildOutboxRecord,
+  ClientRefConflict,
+  decodeClientRefMapping,
   decodeOutboxRecord,
   mappingKey,
   mutationPartitionKey,
@@ -105,6 +107,16 @@ export const MUTATION_STORE_FAMILIES = [
 const BY_INVOCATION = "by-invocation";
 
 /**
+ * Unique index over the client ref alone.
+ *
+ * A `ClientRef` is a *global* client identity, so exactly one allocating
+ * invocation may claim it. Without this, two invocations in sibling databases
+ * could each allocate the same ref and the partitioned mapping store would
+ * then bind one identity to two different authoritative entities.
+ */
+const BY_CLIENT_REF = "by-client-ref";
+
+/**
  * Exactly the stores one enqueue writes, plus the generation record that
  * fences it. The mapping store is deliberately absent: an enqueue never
  * installs a mapping, and naming it would lock out a concurrent
@@ -118,32 +130,38 @@ const ENQUEUE_STORES = [
   REPLICA_GENERATIONS_STORE,
 ] as const;
 
-/** Create the mutation families during an `upgradeneeded` transaction. */
-export const createMutationStores = (database: IDBDatabase): void => {
-  if (!database.objectStoreNames.contains(MUTATION_QUEUES)) {
-    database.createObjectStore(MUTATION_QUEUES, { keyPath: "partition" });
-  }
-  if (!database.objectStoreNames.contains(MUTATION_OUTBOX)) {
-    const outbox = database.createObjectStore(MUTATION_OUTBOX, {
-      keyPath: ["partition", "sequence"],
-    });
-    outbox.createIndex(BY_INVOCATION, "invocation", { unique: true });
-  }
-  if (!database.objectStoreNames.contains(MUTATION_RECEIPTS)) {
-    database.createObjectStore(MUTATION_RECEIPTS, {
-      keyPath: ["partition", "invocation"],
-    });
-  }
-  if (!database.objectStoreNames.contains(MUTATION_CLIENT_REFS)) {
-    database.createObjectStore(MUTATION_CLIENT_REFS, {
-      keyPath: ["partition", "clientRef"],
-    });
-  }
-  if (!database.objectStoreNames.contains(MUTATION_MAPPINGS)) {
-    database.createObjectStore(MUTATION_MAPPINGS, {
-      keyPath: ["partition", "clientRef"],
-    });
-  }
+/**
+ * Create the mutation families during an `upgradeneeded` transaction.
+ *
+ * Primary keys stay compound and partition-first so a scoped clear selects one
+ * realm by an ordinary prefix range; the global identities are enforced by
+ * unique indexes beside them. Indexes are reconciled rather than assumed, so a
+ * store created by an earlier build of this same unreleased version gains them.
+ */
+export const createMutationStores = (
+  database: IDBDatabase,
+  upgrade: IDBTransaction,
+): void => {
+  const ensure = (
+    name: string,
+    keyPath: string | string[],
+    indexes: readonly (readonly [string, string])[] = [],
+  ): void => {
+    const store = database.objectStoreNames.contains(name)
+      ? upgrade.objectStore(name)
+      : database.createObjectStore(name, { keyPath });
+    for (const [index, path] of indexes) {
+      if (store.indexNames.contains(index)) continue;
+      store.createIndex(index, path, { unique: true });
+    }
+  };
+  ensure(MUTATION_QUEUES, "partition");
+  ensure(MUTATION_OUTBOX, ["partition", "sequence"], [[BY_INVOCATION, "invocation"]]);
+  ensure(MUTATION_RECEIPTS, ["partition", "invocation"]);
+  ensure(MUTATION_CLIENT_REFS, ["partition", "clientRef"], [
+    [BY_CLIENT_REF, "clientRef"],
+  ]);
+  ensure(MUTATION_MAPPINGS, ["partition", "clientRef"], [[BY_CLIENT_REF, "clientRef"]]);
 };
 
 /** What a scoped clear removed from the mutation families. */
@@ -349,6 +367,23 @@ export class IndexedDbOutbox {
       updatedAt: record.enqueuedAt,
     } satisfies ReceiptRecord);
     const refs = transaction.objectStore(MUTATION_CLIENT_REFS);
+    // A client ref is global, so a claim anywhere else in this database is a
+    // conflict, not a retry. Checked explicitly so the caller sees the reason
+    // rather than a bare index constraint failure.
+    const claims = await Promise.all(
+      record.allocations.map((allocation) =>
+        requestResult<ClientRefRecord | undefined>(
+          refs.index(BY_CLIENT_REF).get(allocation.clientRef),
+        )
+      ),
+    );
+    for (const [index, claim] of claims.entries()) {
+      if (claim === undefined) continue;
+      throw new ClientRefConflict({
+        clientRef: record.allocations[index]!.clientRef,
+        partition: claim.partition,
+      });
+    }
     for (const allocation of record.allocations) {
       refs.add({
         partition,
@@ -416,18 +451,22 @@ export class IndexedDbOutbox {
   async mappedRefs(scope: ReplicaScope): Promise<ReadonlyMap<string, SealingEpoch>> {
     this.assertScopeLive(scope);
     const transaction = this.database.transaction(MUTATION_MAPPINGS, "readonly");
-    const stored = await requestResult<ClientRefMappingRecord[]>(
+    const stored = await requestResult<unknown[]>(
       transaction.objectStore(MUTATION_MAPPINGS).getAll(
         compoundPrefixRange(mutationScopePrefix(scope)),
       ),
     );
     await transactionDone(transaction);
-    return new Map(
-      stored.map((record) => [
-        mappingKey(record.partition, record.clientRef),
-        record.sealing,
-      ]),
-    );
+    const mapped = new Map<string, SealingEpoch>();
+    for (const value of stored) {
+      // A mapping whose persisted epoch disagrees with its own handle is
+      // dropped, so its dependents stay blocked instead of being released
+      // against a handle this build may not be able to resolve at all.
+      const record = decodeClientRefMapping(value);
+      if (record === undefined) continue;
+      mapped.set(mappingKey(record.partition, record.clientRef), record.sealing);
+    }
+    return mapped;
   }
 
   /**

@@ -655,6 +655,112 @@ browserTest("one invocation id names one queued invocation across every database
   }
 });
 
+browserTest("one client ref is claimed by exactly one allocating invocation", async ({ browser }) => {
+  const name = `ramose-outbox-refclaim-${browser.uniqueId}`;
+  const left = identity();
+  const other = identity({ database: OTHER_DATABASE });
+  const scope = replicaScopeOf(left);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    await confirm(storage, other, "left-other");
+    const outbox = storage.outbox();
+    const allocation = clientRef();
+    await outbox.enqueue(
+      draft(replicaDatabaseScopeOf(left), {
+        allocations: [{ slot: "issue", clientRef: allocation }],
+      }),
+      { scope },
+    );
+
+    // Retrying the creation under a fresh invocation and a re-resolved
+    // receiver would otherwise let one global client identity be bound to two
+    // different authoritative entities.
+    expect(
+      await rejectedTag(
+        outbox.enqueue(
+          draft(replicaDatabaseScopeOf(other), {
+            allocations: [{ slot: "issue", clientRef: allocation }],
+          }),
+          { scope },
+        ),
+      ),
+    ).toBe("ClientRefConflict");
+    // The same ref in the same database under a new invocation is refused too.
+    expect(
+      await rejectedTag(
+        outbox.enqueue(
+          draft(replicaDatabaseScopeOf(left), {
+            allocations: [{ slot: "issue", clientRef: allocation }],
+          }),
+          { scope },
+        ),
+      ),
+    ).toBe("ClientRefConflict");
+    const stored = await dumpMutations(name);
+    expect(stored["mutation-client-refs-v1"]).toHaveLength(1);
+    expect(stored["mutation-outbox-v1"]).toHaveLength(1);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a mapping whose epoch was rewritten does not release its queue", async ({ browser }) => {
+  const name = `ramose-outbox-forged-${browser.uniqueId}`;
+  const left = identity();
+  const receiver = replicaDatabaseScopeOf(left);
+  const scope = replicaScopeOf(left);
+  let storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    await confirm(storage, left, "left");
+    const outbox = storage.outbox();
+    const allocation = clientRef();
+    const create = await outbox.enqueue(
+      draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+      { scope },
+    );
+    await outbox.enqueue(
+      draft(receiver, { target: { type: "client-ref", clientRef: allocation } }),
+      { scope },
+    );
+    // A handle sealed under the *previous* server key epoch.
+    const stale = (await sealEntityId(
+      sealingKeyOf(rotated),
+      idScope(receiver),
+      9,
+    )) as EntityId;
+    await outbox.recordMappings(receiver, create.invocation, [
+      { clientRef: allocation, entityId: stale },
+    ]);
+    storage.close();
+
+    // Relabel the stored mapping with the currently confirmed epoch, exactly
+    // as a corrupted or foreign-build row would look.
+    const raw = await openNative(name);
+    const forge = raw.transaction("mutation-client-ref-mappings-v1", "readwrite");
+    const store = forge.objectStore("mutation-client-ref-mappings-v1");
+    const stored = await requestResult<Record<string, unknown>>(
+      store.get([mutationPartitionKey(receiver), allocation]) as IDBRequest<
+        Record<string, unknown>
+      >,
+    );
+    store.put({ ...stored, sealing: { codecVersion: 1, keyId: root.keyId } });
+    await transactionDone(forge);
+    raw.close();
+
+    storage = await IndexedDbReplicaStorage.open(name);
+    const plans = await storage.outbox().plan(scope, root.keyId);
+    const mine = plans.find((plan) => plan.receiver.database === ROOT_DATABASE)!;
+    // The relabelled mapping is dropped, so the dependent stays blocked
+    // instead of being released against a handle under the replaced epoch.
+    expect(mine.entries[1]!.state).toEqual({ type: "blocked", missing: [allocation] });
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
 browserTest("an undecodable stored row holds its queue instead of promoting the next", async ({ browser }) => {
   const name = `ramose-outbox-unreadable-${browser.uniqueId}`;
   const left = identity();

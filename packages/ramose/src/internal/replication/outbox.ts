@@ -233,6 +233,15 @@ export class OutboxRecordInvalid extends Data.TaggedError(
 )<{ readonly reason: string }> {}
 
 /**
+ * One client ref claimed by two allocating invocations. A client ref is a
+ * *global* identity, so a second claim — in this database or a sibling — is
+ * refused rather than resolved to two different authoritative entities.
+ */
+export class ClientRefConflict extends Data.TaggedError(
+  "ClientRefConflict",
+)<{ readonly clientRef: string; readonly partition: string }> {}
+
+/**
  * One invocation id reused for a different intent. Never a silent overwrite:
  * the durable record that already exists is the one that will be submitted.
  */
@@ -337,6 +346,26 @@ const embeddedSealingEpoch = (
   return epoch;
 };
 
+/**
+ * Whether every declared entity-reference position still holds exactly the
+ * reference it declares. Checked when a draft is built *and* when a stored row
+ * is decoded: if the two could drift, a row could be reported ready on a
+ * mapped ref while its input carried a different, unresolved one.
+ */
+const inputRefsAgree = (
+  input: JsonValue,
+  inputRefs: readonly QueuedInputRef[],
+): boolean => {
+  const positions = new Set<string>();
+  for (const use of inputRefs) {
+    const position = JSON.stringify(use.path);
+    if (positions.has(position)) return false;
+    positions.add(position);
+    if (readPath(input, use.path) !== use.ref) return false;
+  }
+  return true;
+};
+
 const readPath = (
   input: JsonValue,
   path: readonly AllocationPathSegment[],
@@ -383,6 +412,12 @@ export const buildOutboxRecord = (
   }
   if (!Number.isSafeInteger(sequence) || sequence < 1) {
     reject("the queue sequence must be a positive safe integer");
+  }
+  // Checked here, exactly as the decoder checks it: a `NaN`, an infinity, or a
+  // fractional stamp would commit and then make its own row unreadable on the
+  // next restart, holding a partition that has done nothing wrong.
+  if (!Number.isSafeInteger(draft.enqueuedAt) || draft.enqueuedAt < 0) {
+    reject("the enqueue timestamp must be a non-negative safe integer");
   }
   if (draft.operation.localName.length === 0) {
     reject("the operation local name is empty");
@@ -831,6 +866,9 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
   // The persisted epoch is not believed on its own: it must be exactly what
   // this row's own handles say. A row whose `sealing` was rewritten — by a
   // partial write, a foreign build, or tampering — is unreadable, not ready.
+  // The same invariant the builder enforced. A row whose declared reference
+  // no longer matches its own input is not interpretable, so it quarantines.
+  if (!inputRefsAgree(value.input as JsonValue, inputRefs)) return undefined;
   const embedded = embeddedSealingEpoch(target, inputRefs);
   if (embedded === "unreadable" || embedded === "mixed") return undefined;
   if (embedded === null) {
@@ -859,5 +897,42 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
     inputRefs: Object.freeze(inputRefs),
     sealing,
     enqueuedAt: value.enqueuedAt,
+  });
+};
+
+/**
+ * Strict decode of one stored mapping.
+ *
+ * The persisted epoch is not believed on its own: it must be exactly the epoch
+ * the mapped handle's own preamble declares. Otherwise an old handle whose
+ * `sealing` field was rewritten to the currently confirmed epoch would report
+ * every dependent invocation ready after a key rotation — the same quarantine
+ * bypass the outbox-row decoder refuses. A row that fails here is dropped, so
+ * its dependents stay blocked rather than becoming submittable.
+ */
+export const decodeClientRefMapping = (
+  value: unknown,
+): ClientRefMappingRecord | undefined => {
+  if (!isPlainObject(value)) return undefined;
+  if (
+    typeof value.partition !== "string" ||
+    parseMutationPartitionKey(value.partition) === undefined
+  ) return undefined;
+  if (!isClientRef(value.clientRef) || !isEntityId(value.entityId)) return undefined;
+  if (!isInvocationId(value.invocation)) return undefined;
+  if (typeof value.mappedAt !== "number" || !Number.isSafeInteger(value.mappedAt)) {
+    return undefined;
+  }
+  const sealing = decodeSealing(value.sealing);
+  if (sealing === undefined || sealing === null) return undefined;
+  const embedded = sealingEpochOf(value.entityId);
+  if (embedded === undefined || !sameSealingEpoch(sealing, embedded)) return undefined;
+  return Object.freeze({
+    partition: value.partition,
+    clientRef: value.clientRef,
+    entityId: value.entityId,
+    sealing: embedded,
+    invocation: value.invocation,
+    mappedAt: value.mappedAt,
   });
 };
