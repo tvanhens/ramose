@@ -20,7 +20,9 @@ import { closeObservedStream, type CancellableStream } from "../support/stream.t
 import {
   CONFORMANCE_DATABASES,
   ConformanceIssue,
+  conformanceInertReadCompatibilityHash,
   conformanceReadCompatibilityHash,
+  conformanceRotatedReadCompatibilityHash,
 } from "./conformance-catalog.ts";
 import {
   loadConformanceProof,
@@ -45,6 +47,11 @@ const WATCH_FAILURE_DATABASE = CONFORMANCE_DATABASES[16]!;
 const RESUME_READY_DATABASE = CONFORMANCE_DATABASES[17]!;
 const COMPATIBILITY_DATABASE = CONFORMANCE_DATABASES[18]!;
 const ENTITY_HANDLE_DATABASE = CONFORMANCE_DATABASES[20]!;
+const INERT_CHANGE_DATABASE = CONFORMANCE_DATABASES[21]!;
+const HIDDEN_SCALE_DATABASE = CONFORMANCE_DATABASES[22]!;
+const COLD_ISOLATE_DATABASE = CONFORMANCE_DATABASES[23]!;
+
+const HIDDEN_SCALE_COMMITS = 1_000;
 
 const withTimeout = async <A>(
   promise: Promise<A>,
@@ -358,6 +365,23 @@ const observeUnchangedResume = async (
   }
 };
 
+const commitHidden = async (
+  base: string,
+  world: World,
+  index: number,
+): Promise<void> => {
+  const response = await invoke(base, world.database, world.admin, {
+    owner: { kind: "entity", name: ConformanceIssue.ns },
+    localName: "create",
+  }, {
+    key: `parked-hidden-${index}`,
+    title: `Parked hidden ${index}`,
+    owner: world.ids.bob,
+    org: "other",
+  });
+  expect(response.status).toBe(200);
+};
+
 const observeBackpressuredBurst = async (
   base: string,
   world: World,
@@ -379,12 +403,7 @@ const observeBackpressuredBurst = async (
     checkpoints.push("cycle");
 
     for (let index = 0; index < hiddenCount; index++) {
-      await create(base, world.database, world.admin, ConformanceIssue.ns, {
-        key: `parked-hidden-${index}`,
-        title: `Parked hidden ${index}`,
-        owner: world.ids.bob,
-        org: "other",
-      });
+      await commitHidden(base, world, index);
     }
     if (hiddenCount > 0) await currentBasis(base, world.database);
     await armCheckpoint(base, world.database, "replication.silent");
@@ -1120,6 +1139,164 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(hidden.snapshot).toEqual(zero.snapshot);
       expect(hidden.visible).toBe(zero.visible);
       expect(hidden.visible).not.toMatch(/Parked hidden/);
+    });
+
+    test("a documentation-only client build resumes without a reset or snapshot", async () => {
+      const base = ctx.urls().conformanceUrl;
+      expect(conformanceInertReadCompatibilityHash)
+        .toBe(conformanceReadCompatibilityHash);
+      expect(conformanceRotatedReadCompatibilityHash)
+        .not.toBe(conformanceReadCompatibilityHash);
+
+      const world = await seedWorld(base, INERT_CHANGE_DATABASE, false);
+      const initial = await openReplication(base, world.database, world.member);
+      expect(initial.status).toBe(200);
+      const initialIterator = readReplicationNdjson(initial)[Symbol.asyncIterator]();
+      const snapshot = await collectCommittedSnapshot(initialIterator);
+      await closeIterator(initialIterator);
+      const identity = snapshot.state.identity!;
+      const revision = snapshot.state.committed!.revision;
+
+      const controller = new AbortController();
+      const resumedResponse = await openReplication(
+        base,
+        world.database,
+        world.member,
+        revision,
+        1,
+        controller.signal,
+        conformanceInertReadCompatibilityHash,
+      );
+      expect(resumedResponse.status).toBe(200);
+      const resumed = readReplicationNdjson(resumedResponse)[Symbol.asyncIterator]();
+      const pending = resumed.next();
+      try {
+        const ready = await withTimeout(pending, 7_000, "inert-change resume");
+        expect(ready.done).toBe(false);
+        expect(ready.value?.frame).toEqual({
+          type: "ResumeReady",
+          protocol: 1,
+          identity,
+          revision,
+        });
+        const following = resumed.next();
+        const quiet = await Promise.race([
+          following.then(() => "frame" as const),
+          Bun.sleep(200).then(() => "pending" as const),
+        ]);
+        expect(quiet).toBe("pending");
+        void following.catch(() => undefined);
+      } finally {
+        controller.abort();
+        await pending.catch(() => undefined);
+        await closeIterator(resumed);
+      }
+
+      const rotated = await openReplication(
+        base,
+        world.database,
+        world.member,
+        revision,
+        1,
+        undefined,
+        conformanceRotatedReadCompatibilityHash,
+      );
+      expect(rotated.status).toBe(409);
+      expect(await rotated.text()).toBe(
+        `${JSON.stringify({
+          type: "TerminalError",
+          protocol: 1,
+          code: "update-required",
+        })}\n`,
+      );
+    });
+
+    test(
+      "a thousand hidden-only commits stay byte- and checkpoint-identical",
+      async () => {
+        const base = ctx.urls().conformanceUrl;
+        const world = await seedWorld(base, HIDDEN_SCALE_DATABASE, false);
+        const zero = await observeBackpressuredBurst(base, world, 0);
+        const restored = await rename(
+          base,
+          world.database,
+          world.member,
+          world.ids.parent,
+          "Beta",
+        );
+        expect(restored.status).toBe(200);
+        await currentBasis(base, world.database);
+
+        const hidden = await observeBackpressuredBurst(
+          base,
+          world,
+          HIDDEN_SCALE_COMMITS,
+        );
+        expect(zero.checkpoints).toEqual(["cycle", "silent", "cycle", "change"]);
+        expect(hidden.checkpoints).toEqual(zero.checkpoints);
+        expect(hidden.snapshot).toEqual(zero.snapshot);
+        expect(hidden.visible).toBe(zero.visible);
+        expect(hidden.visible).not.toMatch(/Parked hidden/);
+
+        const after = await openReplication(base, world.database, world.member);
+        const afterIterator = readReplicationNdjson(after)[Symbol.asyncIterator]();
+        try {
+          const complete = await collectCommittedSnapshot(afterIterator);
+          expect(titlesOf(complete.state)).toEqual([
+            "Backpressure visible",
+            "Gamma",
+            "Omega",
+          ]);
+        } finally {
+          await closeIterator(afterIterator);
+        }
+      },
+      600_000,
+    );
+
+    test("a cold isolate keeps the identity, revision, and reusable replica", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, COLD_ISOLATE_DATABASE, false);
+      const initial = await openReplication(base, world.database, world.member);
+      expect(initial.status).toBe(200);
+      const initialIterator = readReplicationNdjson(initial)[Symbol.asyncIterator]();
+      const snapshot = await collectCommittedSnapshot(initialIterator);
+      await closeIterator(initialIterator);
+      const identity = snapshot.state.identity!;
+      const revision = snapshot.state.committed!.revision;
+
+      for (const target of ["transactor", "replica"] as const) {
+        const aborted = await testAdmin(base, world.database, "/abort", { target });
+        expect(aborted.status).toBe(200);
+        expect(aborted.body.aborted).toBe(true);
+      }
+
+      const controller = new AbortController();
+      const resumedResponse = await openReplication(
+        base,
+        world.database,
+        world.member,
+        revision,
+        1,
+        controller.signal,
+      );
+      expect(resumedResponse.status).toBe(200);
+      const resumed = readReplicationNdjson(resumedResponse)[Symbol.asyncIterator]();
+      const pending = resumed.next();
+      try {
+        const ready = await withTimeout(pending, 7_000, "cold isolate resume");
+        expect(ready.done).toBe(false);
+        expect(ready.value?.frame).toEqual({
+          type: "ResumeReady",
+          protocol: 1,
+          identity,
+          revision,
+        });
+      } finally {
+        controller.abort();
+        await pending.catch(() => undefined);
+        await closeIterator(resumed);
+      }
     });
 
     test("another binding's capacity pressure cannot deny a first-seen resume", async () => {

@@ -3,6 +3,7 @@ import * as EffectSchema from "effect/Schema";
 import * as Result from "effect/Result";
 import { Catalog, Policy } from "ramose";
 import {
+  bytes,
   Entity,
   EntityId,
   Field,
@@ -182,6 +183,14 @@ export const Workspace = Entity("localWorkspace", {}, {
         return {};
       },
     }),
+    remove: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({}),
+      run(op) {
+        op.self.delete();
+        return {};
+      },
+    }),
   }),
 });
 
@@ -226,6 +235,34 @@ export const NestedNote = Entity("localNestedNote", { text: string() }, {
   }),
 });
 
+export const BulkValue = Entity("localBulkValue", {
+  label: Field.unique(string(), "strict"),
+  body: string(),
+  blob: bytes(),
+}, {
+  operations: (Operation) => ({
+    create: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        label: EffectSchema.String,
+        body: EffectSchema.String,
+        blob: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        const binary = atob(input.blob);
+        const blob = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index++) {
+          blob[index] = binary.charCodeAt(index);
+        }
+        return {
+          id: op.create({ label: input.label, body: input.body, blob }),
+        };
+      },
+    }),
+  }),
+});
+
 export const GraphPathRootSchema = Schema({
   localWorkspace: Workspace,
   localPrivateWorkspace: PrivateWorkspace,
@@ -235,7 +272,10 @@ export const GraphPathRootSchema = Schema({
   localGateLink: GateLink,
 });
 export const GraphPathChildSchema = Schema({ localProject: Project });
-export const GraphPathLeafSchema = Schema({ localNestedNote: NestedNote });
+export const GraphPathLeafSchema = Schema({
+  localNestedNote: NestedNote,
+  localBulkValue: BulkValue,
+});
 
 const member = Policy.hasClass("member");
 const rootReader = Policy.hasClass("root-reader");
@@ -250,7 +290,9 @@ leafCatalog = Catalog("local-graph-leaf", {
     classes: ["member", "root-reader"],
     rules: [
       Policy.read(NestedNote).when(member),
+      Policy.read(BulkValue).when(member),
       Policy.invoke(NestedNote[OwnedOperations].create).when(member),
+      Policy.invoke(BulkValue[OwnedOperations].create).when(member),
     ],
   })),
 });
@@ -282,6 +324,7 @@ export const graphPathCatalog = Catalog("local-graph-root", {
       Policy.invoke(Workspace[OwnedOperations].create).when(member),
       Policy.invoke(Workspace[OwnedOperations].rename).when(member),
       Policy.invoke(Workspace[OwnedOperations].recatalog).when(member),
+      Policy.invoke(Workspace[OwnedOperations].remove).when(member),
       Policy.invoke(PrivateWorkspace[OwnedOperations].create).when(admin),
       Policy.read(GateVisible).when(Policy.any(member, rowOnly, fieldOnly)),
       Policy.read(GateHidden).when(admin),

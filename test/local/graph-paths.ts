@@ -43,6 +43,11 @@ import {
   type LocalUrls,
 } from "./fixtures.ts";
 import {
+  base64ToBytes,
+  bytesToBase64,
+} from "../../packages/ramose/src/internal/core/log.ts";
+import {
+  BulkValue,
   GateHidden,
   GateLink,
   GatePlain,
@@ -82,6 +87,27 @@ const withTimeout = async <A>(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+};
+
+const HALF_MEGABYTE = 512 * 1024;
+
+const utf8Length = (value: string): number =>
+  new TextEncoder().encode(value).byteLength;
+
+const largeUtf8Text = (bytes: number): string => {
+  const unit = "aé☃";
+  const repeated = unit.repeat(Math.floor(bytes / utf8Length(unit)));
+  return repeated + "x".repeat(bytes - utf8Length(repeated));
+};
+
+const largeBytes = (length: number): Uint8Array => {
+  const value = new Uint8Array(length);
+  let state = 0x9e3779b9;
+  for (let index = 0; index < length; index++) {
+    state = (Math.imul(state ^ (state >>> 15), 0x85ebca6b) + index) >>> 0;
+    value[index] = state & 0xff;
+  }
+  return value;
 };
 
 const gateTraitCount = Query.q(function* () {
@@ -780,6 +806,290 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         );
       } finally {
         await closeObservedStream(resumed);
+      }
+    });
+
+    test("a fully online rename resumes the same child replica without a snapshot", async () => {
+      const base = ctx.urls().graphPathsUrl;
+      await installRoot(base);
+      const member = await signToken(GRAPH_PATH_ROOT_DATABASE, "member");
+      const suffix = crypto.randomUUID().slice(0, 8);
+      const before = `move-${suffix}`;
+      const after = `moved-${suffix}`;
+      const projectName = `project-${suffix}`;
+
+      const workspace = await invoke(base, member, {
+        owner: { kind: "entity", name: Workspace.ns },
+        localName: "create",
+      }, { name: before });
+      expect(workspace.status).toBe(200);
+      const workspaceId = await openEntityHandle(
+        base,
+        GRAPH_PATH_ROOT_DATABASE,
+        member,
+        workspace.body.result.id as string,
+      );
+      const project = await invoke(base, member, {
+        owner: { kind: "entity", name: Project.ns },
+        localName: "create",
+      }, { name: projectName }, { at: [before] });
+      expect(project.status).toBe(200);
+      const note = await invoke(base, member, {
+        owner: { kind: "entity", name: "localNestedNote" },
+        localName: "create",
+      }, { text: `before-${suffix}` }, { at: [before, projectName] });
+      expect(note.status).toBe(200);
+
+      const activated = await nestedReplication(
+        base,
+        member,
+        [before, projectName],
+      );
+      expect(activated.status).toBe(200);
+      const activation = readReplicationNdjson(activated)[Symbol.asyncIterator]();
+      const snapshot = await collectCommittedSnapshot(activation);
+      await closeObservedStream(activation);
+      const identity = snapshot.state.identity;
+      if (identity === undefined) {
+        throw new Error("the nested activation had no authenticated identity");
+      }
+      const revision = snapshot.state.committed!.revision;
+
+      const renamed = await invoke(base, member, {
+        owner: { kind: "entity", name: Workspace.ns },
+        localName: "rename",
+      }, { name: after }, { target: workspaceId });
+      expect(renamed.status).toBe(200);
+
+      const stale = await nestedReplication(
+        base,
+        member,
+        [before, projectName],
+        revision,
+      );
+      expect(stale.status).toBe(403);
+      await stale.text();
+
+      const resumedResponse = await nestedReplication(
+        base,
+        member,
+        [after, projectName],
+        revision,
+      );
+      expect(resumedResponse.status).toBe(200);
+      const resumed = readReplicationNdjson(resumedResponse)[Symbol.asyncIterator]();
+      try {
+        const ready = await withTimeout(
+          resumed.next(),
+          7_000,
+          "renamed-path resume",
+        );
+        expect(ready.done).toBe(false);
+        expect(ready.value?.frame).toEqual({
+          type: "ResumeReady",
+          protocol: 1,
+          identity,
+          revision,
+        });
+
+        const following = resumed.next();
+        const second = await invoke(base, member, {
+          owner: { kind: "entity", name: "localNestedNote" },
+          localName: "create",
+        }, { text: `after-${suffix}` }, { at: [after, projectName] });
+        expect(second.status).toBe(200);
+        const change = await withTimeout(
+          following,
+          7_000,
+          "renamed-path change",
+        );
+        expect(change.done).toBe(false);
+        expect(change.value?.frame.type).toBe("Change");
+        if (change.value?.frame.type === "Change") {
+          expect(change.value.frame.from).toBe(revision);
+          expect(change.value.frame.identity).toEqual(identity);
+        }
+      } finally {
+        await closeObservedStream(resumed);
+      }
+    });
+
+    test("a recreated same-named Graph never reads its predecessor's replica", async () => {
+      const base = ctx.urls().graphPathsUrl;
+      await installRoot(base);
+      const member = await signToken(GRAPH_PATH_ROOT_DATABASE, "member");
+      const suffix = crypto.randomUUID().slice(0, 8);
+      const workspaceName = `reused-${suffix}`;
+      const projectName = `project-${suffix}`;
+      const predecessorText = `predecessor-${suffix}`;
+
+      const workspace = await invoke(base, member, {
+        owner: { kind: "entity", name: Workspace.ns },
+        localName: "create",
+      }, { name: workspaceName });
+      expect(workspace.status).toBe(200);
+      const workspaceId = await openEntityHandle(
+        base,
+        GRAPH_PATH_ROOT_DATABASE,
+        member,
+        workspace.body.result.id as string,
+      );
+      expect((await invoke(base, member, {
+        owner: { kind: "entity", name: Project.ns },
+        localName: "create",
+      }, { name: projectName }, { at: [workspaceName] })).status).toBe(200);
+      expect((await invoke(base, member, {
+        owner: { kind: "entity", name: "localNestedNote" },
+        localName: "create",
+      }, { text: predecessorText }, { at: [workspaceName, projectName] })).status)
+        .toBe(200);
+
+      const activated = await nestedReplication(
+        base,
+        member,
+        [workspaceName, projectName],
+      );
+      expect(activated.status).toBe(200);
+      const activation = readReplicationNdjson(activated)[Symbol.asyncIterator]();
+      const predecessor = await collectCommittedSnapshot(activation);
+      await closeObservedStream(activation);
+      const predecessorIdentity = predecessor.state.identity!;
+      const predecessorRevision = predecessor.state.committed!.revision;
+      expect(predecessor.state.committed?.datoms.some((datom) =>
+        datom.value.type === "string" && datom.value.value === predecessorText
+      )).toBe(true);
+
+      const removed = await invoke(base, member, {
+        owner: { kind: "entity", name: Workspace.ns },
+        localName: "remove",
+      }, {}, { target: workspaceId });
+      expect(removed.status).toBe(200);
+
+      const gone = await nestedReplication(
+        base,
+        member,
+        [workspaceName, projectName],
+        predecessorRevision,
+      );
+      expect(gone.status).toBe(403);
+      await gone.text();
+
+      const recreated = await invoke(base, member, {
+        owner: { kind: "entity", name: Workspace.ns },
+        localName: "create",
+      }, { name: workspaceName });
+      expect(recreated.status).toBe(200);
+      const recreatedId = await openEntityHandle(
+        base,
+        GRAPH_PATH_ROOT_DATABASE,
+        member,
+        recreated.body.result.id as string,
+      );
+      expect(recreatedId).not.toBe(workspaceId);
+      expect((await invoke(base, member, {
+        owner: { kind: "entity", name: Project.ns },
+        localName: "create",
+      }, { name: projectName }, { at: [workspaceName] })).status).toBe(200);
+
+      const successorResponse = await nestedReplication(
+        base,
+        member,
+        [workspaceName, projectName],
+        predecessorRevision,
+      );
+      expect(successorResponse.status).toBe(200);
+      const successorFrames = readReplicationNdjson(
+        successorResponse,
+      )[Symbol.asyncIterator]();
+      try {
+        const successor = await collectCommittedSnapshot(successorFrames);
+        expect(successor.frames.some((observed) =>
+          observed.frame.type === "ResumeReady"
+        )).toBe(false);
+        const successorIdentity = successor.state.identity!;
+        expect(successorIdentity.database).not.toBe(predecessorIdentity.database);
+        expect(successorIdentity.readView).not.toBe(predecessorIdentity.readView);
+        expect(successorIdentity.graphLineage)
+          .not.toEqual(predecessorIdentity.graphLineage);
+        expect(successorIdentity.authenticator)
+          .not.toBe(predecessorIdentity.authenticator);
+        expect(successorIdentity.readCompatibilityHash)
+          .toBe(predecessorIdentity.readCompatibilityHash);
+        expect(successor.frames.map((observed) => observed.wire).join("\n"))
+          .not.toMatch(new RegExp(predecessorText));
+      } finally {
+        await closeObservedStream(successorFrames);
+      }
+    });
+
+    test("half-megabyte string and byte values arrive whole over the real snapshot path", async () => {
+      const base = ctx.urls().graphPathsUrl;
+      await installRoot(base);
+      const member = await signToken(GRAPH_PATH_ROOT_DATABASE, "member");
+      const suffix = crypto.randomUUID().slice(0, 8);
+      const workspaceName = `bulk-${suffix}`;
+      const projectName = `project-${suffix}`;
+
+      const workspace = await invoke(base, member, {
+        owner: { kind: "entity", name: Workspace.ns },
+        localName: "create",
+      }, { name: workspaceName });
+      expect(workspace.status).toBe(200);
+      const project = await invoke(base, member, {
+        owner: { kind: "entity", name: Project.ns },
+        localName: "create",
+      }, { name: projectName }, { at: [workspaceName] });
+      expect(project.status).toBe(200);
+
+      const body = largeUtf8Text(HALF_MEGABYTE);
+      const blob = largeBytes(HALF_MEGABYTE);
+      expect(new TextEncoder().encode(body).byteLength).toBe(HALF_MEGABYTE);
+      expect(blob.byteLength).toBe(HALF_MEGABYTE);
+
+      const written = await invoke(base, member, {
+        owner: { kind: "entity", name: BulkValue.ns },
+        localName: "create",
+      }, {
+        label: `bulk-${suffix}`,
+        body,
+        blob: bytesToBase64(blob),
+      }, { at: [workspaceName, projectName] });
+      expect(written.status).toBe(200);
+
+      const response = await nestedReplication(
+        base,
+        member,
+        [workspaceName, projectName],
+      );
+      expect(response.status).toBe(200);
+      const frames = readReplicationNdjson(response)[Symbol.asyncIterator]();
+      try {
+        const snapshot = await collectCommittedSnapshot(frames);
+        const parts = snapshot.frames.flatMap((observed) =>
+          observed.frame.type === "SnapshotChunk"
+            ? observed.frame.datoms.map((datom) => datom.value.type)
+            : []
+        );
+        expect(parts.filter((type) => type === "string-part").length)
+          .toBeGreaterThan(1);
+        expect(parts.filter((type) => type === "bytes-part").length)
+          .toBeGreaterThan(1);
+
+        const datoms = snapshot.state.committed?.datoms ?? [];
+        const restoredBody = datoms.find((datom) =>
+          datom.field === ":localBulkValue/body"
+        );
+        const restoredBlob = datoms.find((datom) =>
+          datom.field === ":localBulkValue/blob"
+        );
+        expect(restoredBody?.value.type).toBe("string");
+        expect(restoredBlob?.value.type).toBe("bytes");
+        if (restoredBody?.value.type !== "string") throw new Error("no body");
+        if (restoredBlob?.value.type !== "bytes") throw new Error("no blob");
+        expect(restoredBody.value.value).toBe(body);
+        expect([...base64ToBytes(restoredBlob.value.value)]).toEqual([...blob]);
+      } finally {
+        await closeObservedStream(frames);
       }
     });
 

@@ -39,6 +39,9 @@ export const CONFORMANCE_DATABASES = Object.freeze([
   "conformance-replication-compatibility",
   "conformance-replication-identity-root",
   "conformance-replication-entity-handles",
+  "conformance-replication-inert-change",
+  "conformance-replication-hidden-scale",
+  "conformance-replication-cold-isolate",
 ]);
 
 export const ConformanceUser = Entity("conformanceUser", {
@@ -239,4 +242,37 @@ const compatibilityUnit = Result.getOrThrow(
 );
 export const conformanceReadCompatibilityHash = await Effect.runPromise(
   hashReadCompatibility(compatibilityUnit.unit.catalog),
+);
+
+const deployedCatalog = compatibilityUnit.unit.catalog;
+
+/** What a client build that changed only documentation computes. */
+export const conformanceInertReadCompatibilityHash = await Effect.runPromise(
+  hashReadCompatibility({
+    entities: deployedCatalog.entities.map((entity) => ({
+      ...entity,
+      doc: `documented ${entity.id.name}`,
+    })),
+    traits: deployedCatalog.traits.map((trait) => ({
+      ...trait,
+      doc: `documented ${trait.id.name}`,
+    })),
+    fields: deployedCatalog.fields.map((field) => ({
+      ...field,
+      doc: `documented ${field.id.localName}`,
+    })),
+    traitComposition: deployedCatalog.traitComposition,
+  }),
+);
+
+/** What a client build that changed one stored field's schema computes. */
+export const conformanceRotatedReadCompatibilityHash = await Effect.runPromise(
+  hashReadCompatibility({
+    entities: deployedCatalog.entities,
+    traits: deployedCatalog.traits,
+    fields: deployedCatalog.fields.map((field, position) =>
+      position === 0 ? { ...field, index: !field.index } : field
+    ),
+    traitComposition: deployedCatalog.traitComposition,
+  }),
 );
