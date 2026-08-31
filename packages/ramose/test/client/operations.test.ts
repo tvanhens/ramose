@@ -11,7 +11,9 @@ import {
   string,
 } from "../../src/db/internal.ts";
 import { compositionFromSchema } from "../../src/db/composition.ts";
+import { EntityId } from "../../src/db/Operation.ts";
 import { compileReadAuthorization } from "../../src/internal/authorization/index.ts";
+import { inputEntityRefHandles } from "../../src/internal/authorization/entity-targets.ts";
 import { lowerOwnedOperations } from "../../src/internal/authorization/authoring/index.ts";
 import {
   CatalogId,
@@ -58,6 +60,33 @@ const Issue = Entity("issue", { title: string() }, {
 
 const Note = Entity("note", { body: Field(string()) });
 
+const Board = Entity("board", { name: string() }, {
+  operations: (Operation) => ({
+    createCard: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        title: EffectSchema.String,
+        rank: EffectSchema.Finite,
+        author: EntityId,
+        watchers: EffectSchema.Array(EntityId),
+        parent: EffectSchema.optionalKey(EntityId),
+        origin: EffectSchema.Struct({ board: EntityId }),
+      }),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
+});
+
+const BoardSchema = Schema({ board: Board });
+
+const BoardCatalog = Catalog("boards", {
+  schema: BoardSchema,
+  policy: compileReadAuthorization({ schema: BoardSchema, rules: [] }),
+});
+
 const AppSchema = Schema({ issue: Issue, note: Note });
 
 const AppCatalog = Catalog("app", {
@@ -67,6 +96,10 @@ const AppCatalog = Catalog("app", {
 
 const installed = () =>
   installClientOperations(AppCatalog, completeSchema(AppCatalog));
+
+const createCard = () =>
+  installClientOperations(BoardCatalog, completeSchema(BoardCatalog))
+    .database.get("createCard")!;
 
 describe("the installed client mutation surface", () => {
   test("pins the version the deployment lowered, from the authored catalog alone", async () => {
@@ -126,6 +159,64 @@ describe("the installed client mutation surface", () => {
     expect(create.input._tag).toBe("struct");
     expect(create.encode({ title: "Offline" })).toEqual({ title: "Offline" });
     expect(Object.keys(create)).not.toContain("run");
+  });
+
+  test("encodes an opaque handle at every declared reference position", () => {
+    const create = createCard();
+    const author = "e".repeat(55);
+    const watcher = "f".repeat(55);
+    const parent = "cr1_parent";
+    const board = "cr1_board";
+
+    expect(
+      create.encode({
+        title: "Offline",
+        rank: 3,
+        author,
+        watchers: [watcher],
+        parent,
+        origin: { board },
+      }),
+    ).toEqual({
+      title: "Offline",
+      rank: 3,
+      author,
+      watchers: [watcher],
+      parent,
+      origin: { board },
+    });
+
+    expect(inputEntityRefHandles(
+      create.input,
+      create.encode({
+        title: "Offline",
+        rank: 3,
+        author,
+        watchers: [watcher],
+        origin: { board },
+      }),
+    )).toEqual([["author"], ["origin", "board"], ["watchers", 0]]);
+  });
+
+  test("still refuses an input the declared schema rejects", () => {
+    const create = createCard();
+    expect(() =>
+      create.encode({
+        title: "Offline",
+        rank: "three",
+        author: "e".repeat(55),
+        watchers: [],
+        origin: { board: "cr1_board" },
+      })
+    ).toThrow();
+    expect(() =>
+      create.encode({
+        rank: 3,
+        author: "e".repeat(55),
+        watchers: [],
+        origin: { board: "cr1_board" },
+      })
+    ).toThrow();
   });
 
   test("installs one projection entry per operation, whether or not it declares one", async () => {

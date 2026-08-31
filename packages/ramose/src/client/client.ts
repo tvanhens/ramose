@@ -20,6 +20,7 @@ import {
 } from "../internal/replication/leadership.ts";
 import type { MutationEndpoint } from "../internal/replication/submission.ts";
 import { replicationActivationAddress } from "../internal/replication/transport.ts";
+import type { AnySchema } from "../db/Schema.ts";
 import { completeSchema } from "../internal/authorization/read-tables.ts";
 import { compositionFromSchema } from "../db/composition.ts";
 import type { CompositionIndex } from "../internal/core/composition.ts";
@@ -30,6 +31,10 @@ import {
   type ClientOperations,
 } from "./operations.ts";
 import type { MutationContext } from "./mutation.ts";
+import type {
+  DatabaseMutations,
+  MutationNamespace,
+} from "./mutation-schema.ts";
 import { SubmissionLoop } from "./submission.ts";
 import {
   ClientClosedError,
@@ -63,20 +68,20 @@ export type AuthCredential = {
 /** Called once per activation. May be synchronous or asynchronous. */
 export type AuthProvider = () => AuthCredential | Promise<AuthCredential>;
 
-export type ClientOptions = {
+export type ClientOptions<S extends AnySchema = AnySchema> = {
   readonly url: string;
   readonly root: string;
-  readonly catalog: CatalogDefinition;
+  readonly catalog: CatalogDefinition<string, S>;
   readonly auth: AuthProvider;
   readonly storageName?: string;
 };
 
-export interface Client {
-  readonly open: () => ClientDatabase;
+export type Client<Mutations = MutationNamespace> = {
+  readonly open: () => ClientDatabase<Mutations>;
   readonly sync: Subscription<SyncState>;
   readonly close: () => Promise<void>;
   readonly clearLocalData: () => Promise<void>;
-}
+};
 
 const nonEmpty = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
@@ -591,7 +596,9 @@ class RamoseClient implements Client {
  * @throws ClientConfigurationError when any of them cannot be bound. None of
  * these become valid later, so they fail here rather than at the first query.
  */
-export const createClient = (options: ClientOptions): Client => {
+export const createClient = <const S extends AnySchema>(
+  options: ClientOptions<S>,
+): Client<DatabaseMutations<S>> => {
   if (!nonEmpty(options?.root)) {
     throw new ClientConfigurationError({
       message: "createClient needs a configured root route",
@@ -619,5 +626,5 @@ export const createClient = (options: ClientOptions): Client => {
       message: cause instanceof Error ? cause.message : String(cause),
     });
   }
-  return new RamoseClient(options, server);
+  return new RamoseClient(options, server) as unknown as Client<DatabaseMutations<S>>;
 };

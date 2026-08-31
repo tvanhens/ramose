@@ -39,11 +39,11 @@ import {
   type QuerySubscription,
 } from "./database.ts";
 import { GraphPathError, GraphReceiverError } from "./errors.ts";
-import {
-  mutationNamespace,
-  type MutationContext,
-  type MutationNamespace,
-} from "./mutation.ts";
+import { mutationNamespace, type MutationContext } from "./mutation.ts";
+import type {
+  EntityMutations,
+  MutationNamespace,
+} from "./mutation-schema.ts";
 import { Store, type Subscription } from "./subscription.ts";
 import { syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -98,12 +98,17 @@ export type EntityFocused<N extends AnyComposer, Row, Out> =
  * carries the two things a plain row cannot: this client's own pending state,
  * and the operations the deployed catalog declares for the entity's type.
  */
-export type EntityResult<Row, Out> = [Out] extends [readonly unknown[]]
-  ? readonly EntityHandle<ClientValue<Row>>[]
+export type EntityResult<N extends AnyComposer, Row, Out> = EntityResultOf<
+  EntityHandle<ClientValue<Row>, EntityMutations<N>>,
+  Out
+>;
+
+type EntityResultOf<Handle, Out> = [Out] extends [readonly unknown[]]
+  ? readonly Handle[]
   : [Out] extends [{ readonly rows: readonly unknown[] }]
-    ? Omit<Out, "rows"> & { readonly rows: readonly EntityHandle<ClientValue<Row>>[] }
-    : null extends Out ? EntityHandle<ClientValue<Row>> | null
-      : EntityHandle<ClientValue<Row>>;
+    ? Omit<Out, "rows"> & { readonly rows: readonly Handle[] }
+  : null extends Out ? Handle | null
+  : Handle;
 
 /** A `.one()` / `.oneOrFail()` terminal, with `.db()` only where it belongs. */
 export type GraphFocus<
@@ -510,7 +515,7 @@ export class GraphDatabaseHandle implements ClientDatabase, GraphAncestor {
 
   observe<N extends AnyComposer, Row, Out>(
     query: EntityFocused<N, Row, Out>,
-  ): QuerySubscription<EntityResult<Row, Out>>;
+  ): QuerySubscription<EntityResult<N, Row, Out>>;
   observe<Row, Out>(query: QueryObject<Row, Out>): QuerySubscription<ClientValue<Out>>;
   observe<Row, Out>(
     query: QueryObject<Row, Out>,

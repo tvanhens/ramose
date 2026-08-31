@@ -10,6 +10,7 @@ import type { ClientCatalog } from "./catalog.ts";
 import { resolveGraphReceiver } from "./graph.ts";
 import type { ClientDatabase } from "./database.ts";
 import type { ClientOperation } from "./operations.ts";
+import type { MutationMethod, MutationNamespace } from "./mutation-schema.ts";
 import { ReceiptDriver, type Receipt } from "./receipt.ts";
 
 /** Everything one mutation call needs from the client that owns it. */
@@ -28,11 +29,13 @@ export type MutationContext = {
   ) => void;
 };
 
-/** One callable mutation method, as an application sees it. */
-export type MutationMethod = (input?: unknown) => Receipt;
-
-/** A catalog-derived namespace: one method per operation the surface reaches. */
-export type MutationNamespace = Readonly<Record<string, MutationMethod>>;
+export type {
+  DatabaseMutations,
+  EntityMutations,
+  MutationInput,
+  MutationMethod,
+  MutationNamespace,
+} from "./mutation-schema.ts";
 
 const queuedTarget = (target: MutationRef | undefined): QueuedTarget => {
   if (target === undefined) return { type: "none" };

@@ -4,12 +4,8 @@ import type { AnyComposer } from "../db/Composer.ts";
 import { isClientRef, type ClientRef, type MutationRef } from "../db/refs.ts";
 import type { OptimisticPending } from "../internal/replication/reconciliation.ts";
 import type { ClientDatabase } from "./database.ts";
-import {
-  mutationNamespace,
-  type MutationContext,
-  type MutationMethod,
-  type MutationNamespace,
-} from "./mutation.ts";
+import { mutationNamespace, type MutationContext } from "./mutation.ts";
+import type { MutationMethod, MutationNamespace } from "./mutation-schema.ts";
 import type { ClientOperation } from "./operations.ts";
 
 /**
@@ -41,11 +37,11 @@ export class EntityWithdrawnError extends Data.TaggedError(
 )<{ readonly operation: string }> {}
 
 /** One entity, as an application holds it. */
-export interface EntityHandle<Data = unknown> {
+export interface EntityHandle<Data = unknown, Mutations = MutationNamespace> {
   readonly id: MutationRef;
   readonly data: Data;
   readonly local: EntityLocal;
-  readonly mutate: MutationNamespace;
+  readonly mutate: Mutations;
 }
 
 /** Every handle one database has handed out, interned by opaque identity. */

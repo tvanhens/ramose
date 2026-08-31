@@ -40,7 +40,8 @@ import {
   type GraphAncestor,
   type GraphRegistry,
 } from "./graph.ts";
-import { mutationNamespace, type MutationContext, type MutationNamespace } from "./mutation.ts";
+import { mutationNamespace, type MutationContext } from "./mutation.ts";
+import type { MutationNamespace } from "./mutation-schema.ts";
 import {
   EntityRegistry,
   rowIdentity,
@@ -259,19 +260,22 @@ class QueryObserver {
  * query DSL, and a query value built here is the same inert value the deployed
  * code builds.
  */
-export interface ClientDatabase {
+export interface ClientDatabaseReads {
   readonly query: {
     readonly from: <N extends AnyComposer>(entity: N) => ClientQuery<N>;
   };
   readonly observe: {
     <N extends AnyComposer, Row, Out>(
       query: EntityFocused<N, Row, Out>,
-    ): QuerySubscription<EntityResult<Row, Out>>;
+    ): QuerySubscription<EntityResult<N, Row, Out>>;
     <Row, Out>(query: QueryObject<Row, Out>): QuerySubscription<ClientValue<Out>>;
   };
-  readonly mutate: MutationNamespace;
   readonly sync: Subscription<SyncState>;
 }
+
+export type ClientDatabase<Mutations = MutationNamespace> =
+  & ClientDatabaseReads
+  & { readonly mutate: Mutations };
 
 /**
  * An activation failure whose cause decides a terminal state rather than
@@ -363,7 +367,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
 
   observe<N extends AnyComposer, Row, Out>(
     query: EntityFocused<N, Row, Out>,
-  ): QuerySubscription<EntityResult<Row, Out>>;
+  ): QuerySubscription<EntityResult<N, Row, Out>>;
   observe<Row, Out>(query: QueryObject<Row, Out>): QuerySubscription<ClientValue<Out>>;
   observe<Row, Out>(
     query: QueryObject<Row, Out>,

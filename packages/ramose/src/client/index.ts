@@ -35,9 +35,12 @@ export {
   type EntityLocal,
 } from "./entity.ts";
 export type {
+  DatabaseMutations,
+  EntityMutations,
+  MutationInput,
   MutationMethod,
   MutationNamespace,
-} from "./mutation.ts";
+} from "./mutation-schema.ts";
 export {
   MutationRejectedError,
   type Receipt,

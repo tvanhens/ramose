@@ -6,12 +6,15 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import type { AnyComposer } from "../db/Composer.ts";
 import type { QueryObject } from "../db/query/index.ts";
 import { queryObservationKey } from "../client/database.ts";
 import type {
   Client,
   ClientDatabase,
   ClientValue,
+  EntityFocused,
+  EntityResult,
   Receipt,
   Subscription,
   SyncState,
@@ -91,10 +94,18 @@ const pendingOnServer = (): QueryState<never> => PENDING;
  * local browser state, so there is nothing to serialize and nothing to hydrate;
  * the first client render after hydration reads the real one.
  */
-export const useQuery = <Row, Out>(
+export function useQuery<N extends AnyComposer, Row, Out>(
+  query: EntityFocused<N, Row, Out>,
+  database?: ClientDatabase,
+): QueryState<EntityResult<N, Row, Out>>;
+export function useQuery<Row, Out>(
   query: QueryObject<Row, Out>,
   database?: ClientDatabase,
-): QueryState<ClientValue<Out>> => {
+): QueryState<ClientValue<Out>>;
+export function useQuery<Row, Out>(
+  query: QueryObject<Row, Out>,
+  database?: ClientDatabase,
+): QueryState<ClientValue<Out>> {
   const provided = useContext(ClientContext);
   const db = database ?? provided?.open();
   if (db === undefined) {
@@ -105,7 +116,7 @@ export const useQuery = <Row, Out>(
   const key = queryObservationKey(query);
   const store = queryStore<ClientValue<Out>>(db, key, () => db.observe(query));
   return useSyncExternalStore(store.subscribe, store.getSnapshot, pendingOnServer);
-};
+}
 
 const stopNothing = (): void => undefined;
 const observeNothing = (): (() => void) => stopNothing;

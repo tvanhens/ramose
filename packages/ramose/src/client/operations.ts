@@ -2,7 +2,10 @@
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type { CatalogDefinition } from "../Catalog.ts";
-import type { AllocationSlots } from "../db/allocations.ts";
+import type {
+  AllocationPathSegment,
+  AllocationSlots,
+} from "../db/allocations.ts";
 import { reachableTraits, type ComposerLike } from "../db/compose.ts";
 import {
   isOwnedOperation,
@@ -19,6 +22,7 @@ import {
   type OwnedOperationSnapshot,
 } from "../internal/authorization/authoring/operations.ts";
 import type { OperationInputShape } from "../internal/authorization/catalog.ts";
+import { inputEntityRefHandles } from "../internal/authorization/entity-targets.ts";
 import {
   CatalogId,
   DigestHex,
@@ -84,6 +88,64 @@ const authoredOperations = (
   return authored;
 };
 
+const MASKED_REF = 0;
+
+const readPath = (
+  value: unknown,
+  path: readonly AllocationPathSegment[],
+): unknown =>
+  path.reduce<unknown>(
+    (cursor, segment) =>
+      cursor === null || typeof cursor !== "object"
+        ? undefined
+        : (cursor as Record<AllocationPathSegment, unknown>)[segment],
+    value,
+  );
+
+const writePath = (
+  value: unknown,
+  path: readonly AllocationPathSegment[],
+  replacement: unknown,
+): unknown => {
+  const [segment, ...rest] = path;
+  if (segment === undefined) return replacement;
+  const child = writePath(
+    readPath(value, [segment]),
+    rest,
+    replacement,
+  );
+  if (typeof segment === "number") {
+    return (value as readonly unknown[]).map((item, index) =>
+      index === segment ? child : item
+    );
+  }
+  return { ...(value as Record<string, unknown>), [segment]: child };
+};
+
+/**
+ * Encode one operation input, preserving the opaque handles it carries.
+ *
+ * A declared entity-reference position is a number in the deployed operation
+ * body and an `EntityId` or `ClientRef` here, because a client is never handed
+ * a numeric eid. The declared schema decides every other position, so the
+ * handles stand aside while it does and return to the positions they came from.
+ */
+const encodeInput = (
+  snapshot: OwnedOperationSnapshot,
+  input: unknown,
+): unknown => {
+  const handles = inputEntityRefHandles(snapshot.inputShape, input);
+  if (handles.length === 0) return snapshot.inputCodec.encode(input);
+  const masked = handles.reduce<unknown>(
+    (value, path) => writePath(value, path, MASKED_REF),
+    input,
+  );
+  return handles.reduce<unknown>(
+    (value, path) => writePath(value, path, readPath(input, path)),
+    snapshot.inputCodec.encode(masked),
+  );
+};
+
 const clientOperation = (
   snapshot: OwnedOperationSnapshot,
   authored: ReadonlyMap<string, AnyOwnedOperation>,
@@ -106,7 +168,7 @@ const clientOperation = (
     allocations: snapshot.versionDescriptor.allocations,
     composers: snapshot.composers.map((entity) => entity.name),
     input: snapshot.inputShape,
-    encode: (input) => snapshot.inputCodec.encode(input),
+    encode: (input) => encodeInput(snapshot, input),
     optimistic: projection === undefined ? undefined : {
       revision: normalizeProjectionRevision(declaration?.optimisticRevision),
       run: projection,
