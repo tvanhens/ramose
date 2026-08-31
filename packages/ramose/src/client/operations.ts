@@ -88,7 +88,14 @@ const authoredOperations = (
   return authored;
 };
 
-const MASKED_REF = 0;
+/**
+ * What one handle stands as while the declared schema encodes around it.
+ *
+ * Distinct per position, and negative so it cannot be confused with an eid,
+ * because finding it again in the encoded value is what proves the handle is
+ * going back where the schema put it.
+ */
+const maskedRef = (index: number): number => -(index + 1);
 
 const readPath = (
   value: unknown,
@@ -129,6 +136,10 @@ const writePath = (
  * body and an `EntityId` or `ClientRef` here, because a client is never handed
  * a numeric eid. The declared schema decides every other position, so the
  * handles stand aside while it does and return to the positions they came from.
+ *
+ * @throws when a handle's position cannot be found again after encoding. A
+ * codec that moves it has left an invocation that would name the wrong entity,
+ * and this refuses before anything is queued rather than submitting one.
  */
 const encodeInput = (
   snapshot: OwnedOperationSnapshot,
@@ -137,13 +148,18 @@ const encodeInput = (
   const handles = inputEntityRefHandles(snapshot.inputShape, input);
   if (handles.length === 0) return snapshot.inputCodec.encode(input);
   const masked = handles.reduce<unknown>(
-    (value, path) => writePath(value, path, MASKED_REF),
+    (value, path, index) => writePath(value, path, maskedRef(index)),
     input,
   );
-  return handles.reduce<unknown>(
-    (value, path) => writePath(value, path, readPath(input, path)),
-    snapshot.inputCodec.encode(masked),
-  );
+  return handles.reduce<unknown>((value, path, index) => {
+    if (readPath(value, path) !== maskedRef(index)) {
+      invalid(
+        `${snapshot.owner.name}.${snapshot.localName} moved the entity ` +
+          `reference at '${path.join(".")}' while encoding`,
+      );
+    }
+    return writePath(value, path, readPath(input, path));
+  }, snapshot.inputCodec.encode(masked));
 };
 
 const clientOperation = (

@@ -26,6 +26,9 @@ import { useDb, useQuery } from "../../src/react/index.ts";
 
 const Child = { key: "child", schema: Schema({}) } satisfies CodeDefinition;
 
+/** Not a literal, so which namespace installs the operation is decided later. */
+declare const computedPlacement: boolean;
+
 const Archivable = Trait("archivable", { archivedAt: string({ optional: true }) }, {
   operations: (Operation) => ({
     archive: Operation({
@@ -74,6 +77,29 @@ const Issue = Entity("issue", {
         return {};
       },
     }),
+    touch: Operation({
+      self: computedPlacement,
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
+});
+
+const Note = Entity("note", {
+  body: string(),
+}, {
+  traits: [Archivable],
+  operations: (Operation) => ({
+    pin: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
   }),
 });
 
@@ -84,6 +110,7 @@ const Organization = Entity("organization", {
 const AppSchema = Schema({
   person: Person,
   issue: Issue,
+  note: Note,
   organization: Organization,
 });
 
@@ -101,9 +128,12 @@ const client = createClient({
 
 const db = client.open();
 
-/** `db.mutate` carries exactly the targetless operations the catalog declares. */
+/**
+ * `db.mutate` carries exactly the targetless operations the catalog declares,
+ * plus any whose placement is computed and so could be installed here.
+ */
 export type _databaseNames = Expect<
-  Equal<keyof typeof db.mutate, "createIssue">
+  Equal<keyof typeof db.mutate, "createIssue" | "touch">
 >;
 
 declare const author: MutationRef<typeof Person>;
@@ -158,7 +188,7 @@ const issue = db.observe(db.query.from(Issue)).getSnapshot().data![0]!;
 
 /** `entity.mutate` carries the entity's own operations and its traits'. */
 export type _entityNames = Expect<
-  Equal<keyof typeof issue.mutate, "setStatus" | "close" | "archive">
+  Equal<keyof typeof issue.mutate, "setStatus" | "close" | "touch" | "archive">
 >;
 
 export const _setStatus: Receipt = issue.mutate.setStatus({ status: "closed" });
@@ -229,6 +259,29 @@ export const _typedRootCall: Receipt = typedRoot.mutate.createIssue({
 
 // @ts-expect-error — an operation the catalog does not declare
 typedRoot.mutate.misspelled({});
+
+/**
+ * A focus chosen at runtime is several alternatives, and each handle carries
+ * only the one that was chosen: what stays callable is what both answer.
+ */
+declare const chooseIssue: boolean;
+const either = db
+  .observe(db.query.from(chooseIssue ? Issue : Note))
+  .getSnapshot().data![0]!;
+export const _sharedAcrossFocuses: Receipt = either.mutate.archive();
+
+// @ts-expect-error — only one of the two alternatives declares this
+either.mutate.setStatus({ status: "closed" });
+
+// @ts-expect-error — and only the other one declares this
+either.mutate.pin({});
+
+/**
+ * An operation whose placement is computed is reachable from both namespaces
+ * rather than from neither, under the method type of an unknown input.
+ */
+export const _computedPlacementOnDatabase: Receipt = db.mutate.touch({});
+export const _computedPlacementOnEntity: Receipt = issue.mutate.touch({});
 
 /** A provider-backed database with no named catalog stays the runtime namespace. */
 const looseRoot = useDb();

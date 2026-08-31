@@ -57,11 +57,26 @@ type MethodFor<Op> = Op extends { readonly input: infer In }
 type OperationsOf<Owner> = Owner extends
   { readonly [OwnedOperations]: infer Ops extends object } ? Ops : never;
 
+type SelfFlag<Op> = Op extends { readonly self: infer Flag } ? Flag : never;
+
+/**
+ * Whether an operation's placement is decided when it is authored.
+ *
+ * An operation whose `self` is computed carries `boolean`, and which namespace
+ * the deployment installs it under is not knowable here. It appears under both
+ * rather than under neither, and takes the method type of an operation whose
+ * input is not statically known.
+ */
+type PlacementKnown<Op> = boolean extends SelfFlag<Op> ? false : true;
+
 type MethodsWhereSelf<Owner, Self extends boolean> = {
   readonly [
-    K in keyof OperationsOf<Owner> as OperationsOf<Owner>[K] extends
-      { readonly self: Self } ? K : never
-  ]: MethodFor<OperationsOf<Owner>[K]>;
+    K in keyof OperationsOf<Owner> as
+      PlacementKnown<OperationsOf<Owner>[K]> extends false ? K
+        : OperationsOf<Owner>[K] extends { readonly self: Self } ? K
+        : never
+  ]: PlacementKnown<OperationsOf<Owner>[K]> extends false ? MutationMethod
+    : MethodFor<OperationsOf<Owner>[K]>;
 };
 
 type TraitsOf<Owner> = Owner extends
@@ -101,10 +116,15 @@ export type DatabaseMutations<S extends AnySchema> = NamesEntities<S> extends
  * An entity reaches the operations its composed traits declare, transitively.
  * A trait focus reaches only its own: a polymorphic read over a trait is not a
  * claim about which composers answer it.
+ *
+ * A focus chosen at runtime is several alternatives, and each handle is built
+ * for the one that was chosen — so this distributes, and what stays callable
+ * across the alternatives is what all of them answer.
  */
-export type EntityMutations<N extends AnyComposer> = NamesFields<N> extends true
-  ? Namespace<N | ComposedTraits<N>, true>
-  : MutationNamespace;
+export type EntityMutations<N extends AnyComposer> = N extends AnyComposer
+  ? NamesFields<N> extends true ? Namespace<N | ComposedTraits<N>, true>
+  : MutationNamespace
+  : never;
 
 type ComposedTraits<N> = N extends { readonly _tag: "Entity" }
   ? TraitClosure<TraitsOf<N>>

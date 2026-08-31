@@ -80,6 +80,30 @@ const Board = Entity("board", { name: string() }, {
   }),
 });
 
+/** An operation whose codec renames the position a reference was declared at. */
+const Relocated = Entity("relocated", { name: string() }, {
+  operations: (Operation) => ({
+    createRelocated: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        title: EffectSchema.String,
+        author: EntityId,
+      }).pipe(EffectSchema.encodeKeys({ author: "wireAuthor" })),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
+});
+
+const RelocatingSchema = Schema({ relocated: Relocated });
+
+const RelocatingCatalog = Catalog("relocating", {
+  schema: RelocatingSchema,
+  policy: compileReadAuthorization({ schema: RelocatingSchema, rules: [] }),
+});
+
 const BoardSchema = Schema({ board: Board });
 
 const BoardCatalog = Catalog("boards", {
@@ -196,6 +220,16 @@ describe("the installed client mutation surface", () => {
         origin: { board },
       }),
     )).toEqual([["author"], ["origin", "board"], ["watchers", 0]]);
+  });
+
+  test("refuses to encode a reference the codec would move", () => {
+    const relocating = installClientOperations(
+      RelocatingCatalog,
+      completeSchema(RelocatingCatalog),
+    ).database.get("createRelocated")!;
+    expect(() =>
+      relocating.encode({ author: "e".repeat(55), title: "Offline" })
+    ).toThrow(/moved the entity reference/);
   });
 
   test("still refuses an input the declared schema rejects", () => {
