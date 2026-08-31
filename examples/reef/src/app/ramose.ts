@@ -18,6 +18,6 @@ export const openReef = (userId: string): ReefClient =>
     url: peerOrigin(),
     root: ROOT_DATABASE,
     catalog: Reef,
-    auth: async () => ({ token: await mintToken(), cacheKey: userId }),
+    auth: async () => ({ token: await mintToken(userId), cacheKey: userId }),
   });
 // enddocs:reef-client

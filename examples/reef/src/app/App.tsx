@@ -1,6 +1,13 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { RamoseProvider, useSyncState } from "ramose/react";
-import { authClient, dropToken } from "./auth.ts";
+import {
+  authClient,
+  clearCachedUser,
+  dropToken,
+  readCachedUser,
+  writeCachedUser,
+  type CachedUser,
+} from "./auth.ts";
 import { openReef, type ReefClient } from "./ramose.ts";
 import { AuthScreen } from "./screens/AuthScreen.tsx";
 import { BoardScreen } from "./screens/BoardScreen.tsx";
@@ -83,7 +90,27 @@ const Shell = (props: {
 
 export const App = () => {
   const session = authClient.useSession();
-  const userId = session.data?.user.id;
+  const [cached] = useState(readCachedUser);
+
+  const settledOut = !session.isPending && session.data == null &&
+    session.error == null;
+  const user: CachedUser | undefined = session.data?.user ??
+    (settledOut ? undefined : cached);
+  const userId = user?.id;
+
+  useEffect(() => {
+    if (session.data?.user !== undefined) {
+      const { id, name, email } = session.data.user;
+      writeCachedUser({
+        id,
+        ...(name ? { name } : {}),
+        ...(email ? { email } : {}),
+      });
+    } else if (settledOut) {
+      clearCachedUser();
+    }
+  }, [session.data?.user, settledOut]);
+
   const client = useMemo(
     () => (userId === undefined ? undefined : openReef(userId)),
     [userId],
@@ -95,14 +122,18 @@ export const App = () => {
     };
   }, [client]);
 
-  if (session.isPending) return <div className="loading">Loading…</div>;
-  if (client === undefined || session.data == null) return <AuthScreen />;
+  if (client === undefined || userId === undefined) {
+    return session.isPending
+      ? <div className="loading">Loading…</div>
+      : <AuthScreen />;
+  }
   return (
     <Shell
       client={client}
-      userName={session.data.user.name || session.data.user.email || "Signed in"}
+      userName={user?.name || user?.email || "Signed in"}
       onSignOut={() => {
-        dropToken();
+        dropToken(userId);
+        clearCachedUser();
         void authClient.signOut().finally(() => {
           location.hash = "";
           location.reload();
