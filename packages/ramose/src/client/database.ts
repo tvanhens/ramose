@@ -725,14 +725,11 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     const value = snapshot.value;
     const identity = value?.identity;
     if (identity !== undefined) {
-      if (
-        this.identity !== undefined &&
-        !sameReplicationIdentity(this.identity, identity)
-      ) {
-        this.transition();
-      }
+      const adopted = this.identity === undefined ||
+        !sameReplicationIdentity(this.identity, identity);
+      if (this.identity !== undefined && adopted) this.transition();
       this.identity = identity;
-      this.confirmation = ++confirmations;
+      if (adopted) this.confirmation = ++confirmations;
       this.context.onConfirmed(identity);
       this.context.mutations.submit(replicaDatabaseScopeOf(identity));
       this.spawn(this.bindReconciler(identity));
