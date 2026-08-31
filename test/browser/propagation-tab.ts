@@ -519,6 +519,16 @@ export const serve = (id: string): void =>
       });
     },
 
+    /** The graph path this receiver database was last confirmed at. */
+    receiverPath: async (
+      { storageName, database: id }: StartInput,
+    ): Promise<readonly string[]> => {
+      const store = await heldStorage(storageName);
+      const identity = await identityFor(id, CHILD_LINEAGE);
+      const record = await store.graphReceiver(replicaDatabaseScopeOf(identity));
+      return record?.graphPath ?? [];
+    },
+
     /** How much of one database a restore found, or `-1` when it found none. */
     restoreOnce: async (
       { storageName, database: id, lineage }: StartInput & {

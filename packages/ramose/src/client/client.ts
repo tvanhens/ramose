@@ -140,7 +140,7 @@ class RamoseClient implements Client {
       live: () => this.terminal === undefined,
       onSyncChange: () => this.refreshSync(),
       onConfirmed: (identity) => {
-        this.confirmed = identity;
+        this.confirm(identity);
         this.elect(identity);
       },
       onFenced: () => {
@@ -241,6 +241,28 @@ class RamoseClient implements Client {
   /** Re-read the durable generations every handle of this client adopted. */
   private async revalidate(): Promise<void> {
     await Promise.all(this.handles().map((handle) => handle.revalidate()));
+  }
+
+  /**
+   * Take the identity a handle of this client has confirmed.
+   *
+   * A confirmation that names another scope has replaced the one this client
+   * was holding, and the tabs that were holding it are told by the durable
+   * generation the replacement bumped. This tab is one of them: it does not
+   * receive its own broadcast, so a sibling handle still publishing the
+   * previous principal would keep publishing it — and keep answering as a
+   * submission endpoint — until some later wake-up. Reading the generations
+   * again here is what withdraws it.
+   */
+  private confirm(identity: ReplicationIdentity, held = true): void {
+    const previous = this.confirmed;
+    if (held || previous === undefined) this.confirmed = identity;
+    if (
+      previous === undefined ||
+      replicaScopeKey(replicaScopeOf(previous)) ===
+        replicaScopeKey(replicaScopeOf(identity))
+    ) return;
+    void this.revalidate();
   }
 
   private composition(): CompositionIndex {
@@ -409,7 +431,7 @@ class RamoseClient implements Client {
           graphLineage,
           onConfirmed: (identity) => {
             onConfirmed(identity);
-            this.confirmed ??= identity;
+            this.confirm(identity, false);
           },
         }),
       () => this.refreshSync(),

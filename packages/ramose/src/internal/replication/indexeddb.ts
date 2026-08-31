@@ -244,6 +244,11 @@ export const REPLICA_GRAPH_RECEIVER_VERSION = 1 as const;
  * same database becomes an endpoint. A path renamed since it was recorded
  * therefore surfaces as that activation's own outcome — a database this
  * receiver's queue is not submitted to — rather than as a misroute.
+ *
+ * Evicting a database keeps its record. Eviction frees a cached replica and
+ * never the durable work queued for it, and the path is what a leader needs to
+ * reach that database again once the replica is gone. Only clearing the scope
+ * removes it, with the queue it belongs to.
  */
 export type ReplicaGraphReceiver = {
   readonly key: string;
@@ -1276,7 +1281,6 @@ export class IndexedDbReplicaStorage {
       ...PARTITION_KEYED_FAMILIES,
       ...PARTITION_PREFIXED_FAMILIES,
       ...IDENTITY_KEYED_FAMILIES,
-      GRAPH_RECEIVERS,
       GENERATIONS,
     ], "readwrite");
     let outcome: ReplicaEvictOutcome;
@@ -1341,7 +1345,6 @@ export class IndexedDbReplicaStorage {
       candidateStore.delete([candidate.selector, candidate.routeSlot]);
       candidates++;
     }
-    transaction.objectStore(GRAPH_RECEIVERS).delete(databaseKey);
     const generation = (current?.generation ?? 0) + 1;
     generations.put({
       key: databaseKey,

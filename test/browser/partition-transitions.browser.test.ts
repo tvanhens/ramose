@@ -1,12 +1,16 @@
 import { expect } from "vitest";
 import { replicaLeaderKey } from "../../packages/ramose/src/internal/replication/leadership.ts";
 import { replicaDatabaseScopeOf } from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
+import { createClient } from "../../packages/ramose/src/client/index.ts";
 import { browserTest } from "./fixtures.ts";
 import { openTab, type TabHandle } from "./tab-harness.ts";
 import {
+  CACHE_KEY,
   CHILD_LINEAGE,
   CHILD_PATH,
   identityFor,
+  Note,
+  NotesCatalog,
   noteDatoms,
   observeChildRoute,
   opaque,
@@ -372,6 +376,54 @@ browserTest(
 );
 
 browserTest(
+  "a credential the server refuses is presented again once it is refreshed",
+  async ({ browser }) => {
+    const name = `ramose-partition-refused-${browser.uniqueId}`;
+    let bearer = "expired";
+    let presented = 0;
+    const client = createClient({
+      url: globalThis.location.origin,
+      root: "refuses-credentials",
+      catalog: NotesCatalog,
+      auth: () => {
+        presented++;
+        return { token: bearer, cacheKey: CACHE_KEY };
+      },
+      storageName: name,
+    });
+    try {
+      const db = client.open();
+      const notes = db.observe(db.query.from(Note).orderBy(Note.rank));
+      const release = notes.subscribe(() => undefined);
+      try {
+        await until(
+          () => Promise.resolve(client.sync.getSnapshot().status),
+          (status) => status === "authentication-required",
+          "the server to refuse the credential",
+        );
+        expect(presented).toBe(1);
+
+        // The application signs in again, and returning to the tab is what
+        // presents the refreshed bearer. This client is not terminal.
+        bearer = "refreshed";
+        globalThis.dispatchEvent(new Event("focus"));
+
+        await until(
+          () => Promise.resolve(presented),
+          (calls) => calls > 1,
+          "the refreshed credential to be presented",
+        );
+      } finally {
+        release();
+      }
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a read view another tab rotated is what a durable re-read publishes",
   async ({ browser }) => {
     const name = `ramose-partition-rotation-${browser.uniqueId}`;
@@ -446,6 +498,14 @@ browserTest(
       };
       expect(await reading.call<number>("restoreOnce", restoring)).toBe(2);
 
+      // Work queued for the database about to be evicted.
+      await reading.call("enqueue", {
+        storageName: name,
+        database,
+        child,
+        title: "queued",
+      });
+
       const probing = reading.call<readonly number[]>("probeRestores", restoring);
       expect(await evicting.call<string>("evict", {
         storageName: name,
@@ -457,6 +517,14 @@ browserTest(
       for (const found of await probing) expect(found).toBe(2);
       expect(await reading.call<number>("restoreOnce", restoring)).toBe(-1);
       expect(await evicting.call<number>("restoreOnce", restoring)).toBe(-1);
+
+      // Eviction frees a cached replica and never the durable work queued for
+      // it, so the path a leader reaches that database by outlives the cache.
+      expect((await dumpStore(name, "mutation-outbox-v1")).length).toBe(1);
+      expect(await evicting.call<readonly string[]>("receiverPath", {
+        storageName: name,
+        database: child,
+      })).toEqual([...CHILD_PATH]);
     } finally {
       await evicting.close();
       await reading.close();

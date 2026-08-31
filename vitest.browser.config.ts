@@ -11,6 +11,13 @@ const replicationFrameFixtures = (root: string): Plugin => ({
 
       const match = /^\/db\/([A-Za-z0-9_-]+)\/replicate$/.exec(path);
       if (match === null) return next();
+      // The status an expired bearer is answered with, so the browser lane can
+      // reach the client's own refusal path over a real response.
+      if (match[1] === "refuses-credentials") {
+        response.statusCode = 401;
+        response.end();
+        return;
+      }
       const file = join(root, "test/browser/frames", `${match[1]!}.ndjson`);
       if (!existsSync(file)) return next();
       response.statusCode = 200;

@@ -522,18 +522,26 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
 
   /**
-   * Activate again after an activation the client refused for its credential
-   * or its build.
+   * Activate again after a credential this client or the server refused.
    *
    * `auth()` runs once per activation, so a refreshed bearer is presented by
    * the next one. This is what makes a refused client recoverable without
    * constructing another: the application signs in again and the next
-   * activation wake-up — a focused tab, a page shown from bfcache, a
-   * broadcast selector notice — carries the new credential.
+   * activation wake-up — a focused tab, a page shown from bfcache, a broadcast
+   * selector notice — carries the new credential. The refusal may have come
+   * from `auth()` itself, which leaves no session behind, or from the server
+   * answering the activation, which leaves one holding the refusal; either way
+   * the next activation starts from nothing.
    */
   reactivateRefused(): void {
-    if (!this.live() || !this.refused || this.activation !== undefined) return;
+    if (!this.live() || !this.refused) return;
     this.refused = false;
+    this.releaseSession?.();
+    this.releaseSession = undefined;
+    const session = this.session;
+    this.session = undefined;
+    this.activation = undefined;
+    if (session !== undefined) this.spawn(session.close());
     void this.activate();
   }
 
@@ -685,6 +693,9 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
     this.lastSession = snapshot;
     const disposition = readSessionSnapshot(snapshot);
+    // The server answering the activation with a refusal is the other way a
+    // credential is refused, and the one a refreshed bearer recovers from.
+    if (disposition.status === "authentication-required") this.refused = true;
     this.stale = value === undefined ? true : value.stale;
     const catalog = this.catalog;
     if (!disposition.publishes || value === undefined || catalog === undefined) {
