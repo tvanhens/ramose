@@ -79,14 +79,19 @@ class QueryStore<A> {
     };
   };
 
+  /**
+   * Observe on behalf of a mounted component, and claim this entry.
+   *
+   * A hold is told React has taken over only after React's own subscription is
+   * wired: a hold that released first would take the observation to zero
+   * listeners and retire it between the two.
+   */
   readonly subscribe = (onChange: () => void): (() => void) => {
     const stop = this.retain(onChange);
     const stores = STORES.get(this.database);
     if (stores?.stores.get(this.key) === this.erased()) {
       stores.unclaimed.delete(this.key);
     }
-    // After React's own subscription, never before: a hold that released first
-    // would take the observation to zero and retire it between the two.
     this.hold?.onClaimed();
     return stop;
   };
