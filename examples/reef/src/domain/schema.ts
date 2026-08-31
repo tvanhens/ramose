@@ -6,6 +6,7 @@ import {
   Enum,
   Field,
   Graph,
+  OperationRejected,
   Ref,
   Schema,
   float,
@@ -14,6 +15,7 @@ import {
   type ValueOf,
 } from "ramose/db";
 import { RANK_GAP } from "./rank.ts";
+import { isWorkspaceSlug } from "./shared.ts";
 
 export const ROOT_DATABASE = "reef";
 
@@ -44,6 +46,7 @@ export const callerAttrs = (principal: {
 // docs:workspace-entity
 export const Workspace = Entity("workspace", {
   slug: Field.unique(string(), "strict"),
+  label: string({ optional: true }),
   members: Field.many(Ref(Person)),
 }, {
   traits: [Graph(() => reefSchema)],
@@ -67,10 +70,17 @@ export const Workspace = Entity("workspace", {
       output: EffectSchema.Struct({ id: EntityId }),
       allocates: { workspace: ["id"] },
       run(op, input) {
+        if (!isWorkspaceSlug(input.slug)) {
+          throw new OperationRejected({
+            message: `"${input.slug}" is not a routable workspace slug`,
+            operation: "createWorkspace",
+          });
+        }
         const creator = op.put(Person, callerAttrs(op.principal));
         const workspace = op.create({
           slug: input.slug,
-          name: input.name,
+          name: input.slug,
+          label: input.name,
           members: [creator],
         });
         return { id: workspace };
@@ -80,7 +90,7 @@ export const Workspace = Entity("workspace", {
       input: EffectSchema.Struct({ name: EffectSchema.String }),
       output: EffectSchema.Struct({ id: EntityId }),
       run(op, input) {
-        op.self.set(Graph.name, input.name);
+        op.self.set(Workspace.label, input.name);
         return { id: op.self };
       },
     }),
@@ -95,7 +105,16 @@ export const Workspace = Entity("workspace", {
     removeMember: Operation({
       input: EffectSchema.Struct({ person: EntityId }),
       output: EffectSchema.Struct({ id: EntityId }),
-      run(op, input) {
+      async run(op, input) {
+        const row = await op.pull(op.self.eid, [
+          { ":workspace/members": [":person/sub"] },
+        ]) as { readonly ":workspace/members"?: readonly unknown[] };
+        if ((row[":workspace/members"] ?? []).length <= 1) {
+          throw new OperationRejected({
+            message: "a workspace keeps its last member",
+            operation: "removeMember",
+          });
+        }
         op.self.remove(Workspace.members, input.person);
         return { id: op.self };
       },
@@ -227,13 +246,22 @@ export const Issue = Entity("issue", {
       },
     }),
     setAssignee: Operation({
+      writes: [Person],
       input: EffectSchema.Struct({
-        assignee: EffectSchema.optionalKey(EntityId),
+        sub: EffectSchema.optionalKey(EffectSchema.String),
+        name: EffectSchema.optionalKey(EffectSchema.String),
       }),
       output: EffectSchema.Struct({ id: EntityId }),
       run(op, input) {
-        if (input.assignee === undefined) op.self.remove(Issue.assignee);
-        else op.self.set(Issue.assignee, input.assignee);
+        if (input.sub === undefined) {
+          op.self.remove(Issue.assignee);
+        } else {
+          const assignee = op.put(Person, {
+            sub: input.sub,
+            ...(input.name === undefined ? {} : { name: input.name }),
+          });
+          op.self.set(Issue.assignee, assignee);
+        }
         return { id: op.self };
       },
     }),
@@ -256,7 +284,18 @@ export const Issue = Entity("issue", {
     setPrivateNote: Operation({
       input: EffectSchema.Struct({ note: EffectSchema.String }),
       output: EffectSchema.Struct({ id: EntityId }),
-      run(op, input) {
+      async run(op, input) {
+        const row = await op.pull(op.self.eid, [
+          { ":issue/creator": [":person/sub"] },
+        ]) as {
+          readonly ":issue/creator"?: { readonly ":person/sub"?: unknown };
+        };
+        if (row[":issue/creator"]?.[":person/sub"] !== op.principal.sub) {
+          throw new OperationRejected({
+            message: "only the issue creator writes its private note",
+            operation: "setPrivateNote",
+          });
+        }
         if (input.note === "") op.self.remove(Issue.privateNote);
         else op.self.set(Issue.privateNote, input.note);
         return { id: op.self };
@@ -346,6 +385,7 @@ Reef.applyPolicy(
     const signedIn = session.hasRole("user");
 
     policy.person.read.where(signedIn);
+    policy.person.fields.email.read.where((person) => person.eq(actor));
 
     policy.workspace.read.where((workspace) =>
       workspace.members.contains(actor)

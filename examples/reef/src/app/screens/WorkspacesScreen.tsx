@@ -19,8 +19,19 @@ export const WorkspacesScreen = () => {
     }
     setError(undefined);
     setName("");
-    db.mutate.createWorkspace({ slug, name: name.trim() });
-    location.hash = `#/w/${slug}`;
+    const receipt = db.mutate.createWorkspace({ slug, name: name.trim() });
+    receipt.queued.then(() => {
+      location.hash = `#/w/${slug}`;
+    }).catch(() => undefined);
+    receipt.committed.catch((cause) => {
+      location.hash = "";
+      setError(
+        `Could not create "${slug}" — the name is likely taken by another ` +
+          `workspace (names route globally). ${String(
+            (cause as { message?: string })?.message ?? "",
+          )}`,
+      );
+    });
   };
 
   return (
@@ -38,7 +49,10 @@ export const WorkspacesScreen = () => {
               href={`#/w/${workspace.data.slug}`}
             >
               <span className="workspace-name">
-                {String(workspace.data.name ?? workspace.data.slug)}
+                {String(
+                  (workspace.data as { label?: string }).label ??
+                    workspace.data.slug,
+                )}
               </span>
               <span className="workspace-slug">/{workspace.data.slug}</span>
             </a>

@@ -10,7 +10,7 @@ type WorkspaceRow = {
   readonly id: unknown;
   readonly data: {
     readonly slug: string;
-    readonly name?: string | undefined;
+    readonly label?: string | undefined;
     readonly members?: readonly { readonly id: string }[] | undefined;
   };
   readonly mutate: {
@@ -42,7 +42,7 @@ export const MembersPanel = (props: {
     <div className="overlay" onClick={props.onClose}>
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
         <header className="detail-head">
-          <h3>Members of {String(workspace.data.name ?? workspace.data.slug)}</h3>
+          <h3>Members of {String(workspace.data.label ?? workspace.data.slug)}</h3>
           <button className="ghost" onClick={props.onClose}>
             ✕
           </button>

@@ -44,6 +44,11 @@ export type PersonRow = {
   };
 };
 
+export type Member = {
+  readonly sub: string;
+  readonly label: string;
+};
+
 export const personLabel = (person: PersonRow | undefined): string =>
   person?.data.name ?? person?.data.email ?? "Someone";
 
@@ -150,7 +155,7 @@ export const BoardScreen = (props: { readonly slug: string }) => {
   const folk = useQuery(people(board), board);
   const rootWorkspaces = useQuery(workspaces(root), root);
   const [selected, setSelected] = useState<string | undefined>(undefined);
-  const [members, setMembers] = useState(false);
+  const [membersOpen, setMembersOpen] = useState(false);
 
   const issues = rows.status === "ready" || rows.status === "stale"
     ? (rows.data as unknown as readonly IssueRow[])
@@ -176,14 +181,27 @@ export const BoardScreen = (props: { readonly slug: string }) => {
     ? rootWorkspaces.data.find((row) => row.data.slug === props.slug)
     : undefined;
 
+  const directory = useQuery(people(root), root);
+  const rootPersons = directory.status === "ready" || directory.status === "stale"
+    ? (directory.data as unknown as readonly PersonRow[])
+    : [];
+  const memberIds = new Set(
+    ((workspace?.data as { members?: readonly { id: string }[] } | undefined)
+      ?.members ?? []).map((member) => member.id),
+  );
+  const members: readonly Member[] = rootPersons
+    .filter((person) => memberIds.has(String(person.id)))
+    .map((person) => ({ sub: person.data.sub, label: personLabel(person) }));
+
   const dropIssue = (issueId: string, status: Status, beforeIndex: number) => {
     const issue = issues.find((row) => String(row.id) === issueId);
     if (issue === undefined) return;
     const column = (byStatus.get(status) ?? []).filter(
       (row) => String(row.id) !== issueId,
     );
-    const before = column[beforeIndex - 1]?.data.rank;
-    const after = column[beforeIndex]?.data.rank;
+    const at = Math.min(beforeIndex, column.length);
+    const before = column[at - 1]?.data.rank;
+    const after = column[at]?.data.rank;
     issue.mutate.moveIssue({ status, rank: rankBetween(before, after) });
   };
 
@@ -205,10 +223,14 @@ export const BoardScreen = (props: { readonly slug: string }) => {
     <main className="board">
       <header className="board-head">
         <h2>
-          {workspace ? String(workspace.data.name ?? props.slug) : props.slug}
+          {workspace
+            ? String(
+              (workspace.data as { label?: string }).label ?? props.slug,
+            )
+            : props.slug}
         </h2>
         {rows.status === "stale" && <span className="stale-tag">offline copy</span>}
-        <button className="ghost" onClick={() => setMembers(true)}>
+        <button className="ghost" onClick={() => setMembersOpen(true)}>
           Members
         </button>
       </header>
@@ -232,15 +254,15 @@ export const BoardScreen = (props: { readonly slug: string }) => {
           board={board}
           issue={selectedIssue}
           peopleById={peopleById}
-          persons={persons}
+          members={members}
           onClose={() => setSelected(undefined)}
         />
       )}
-      {members && workspace !== undefined && (
+      {membersOpen && workspace !== undefined && (
         <MembersPanel
           root={root}
           workspace={workspace}
-          onClose={() => setMembers(false)}
+          onClose={() => setMembersOpen(false)}
         />
       )}
     </main>

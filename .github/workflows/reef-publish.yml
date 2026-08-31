@@ -10,7 +10,11 @@
 #
 # State: `ALCHEMY_STATE=local` with `.alchemy/` carried between runs via the
 # Actions cache, like docs-publish.yml — the CI token deliberately lacks the
-# scopes `Cloudflare.state()` needs (see CONTRIBUTING.md). This stack owns a
+# scopes `Cloudflare.state()` needs (see CONTRIBUTING.md). Actions caches are
+# readable across branches — including by pull_request workflows from forks —
+# so the state (which holds the state-only `BetterAuthSecret`) is encrypted
+# with the `REEF_STATE_KEY` environment secret before it is cached; fork runs
+# can fetch the blob but cannot read it. This stack owns a
 # D1 database (accounts, JWKS keys) and an R2 bucket (every workspace's
 # datoms), and Alchemy's generated names carry a random suffix — so a cache
 # eviction would mint empty replacements and orphan the live data.
@@ -51,10 +55,22 @@ jobs:
       - name: Restore stack state
         uses: actions/cache/restore@v4
         with:
-          path: .alchemy
+          path: .alchemy-state.enc
           key: reef-prod-state-${{ github.run_id }}
           restore-keys: |
             reef-prod-state-
+      - name: Decrypt stack state
+        env:
+          REEF_STATE_KEY: ${{ secrets.REEF_STATE_KEY }}
+        run: |
+          if [ -z "$REEF_STATE_KEY" ]; then
+            echo "::error::Need REEF_STATE_KEY (secret) on the Development environment — it encrypts the cached Alchemy state (openssl aes-256-cbc passphrase; any long random string)."
+            exit 1
+          fi
+          if [ -f .alchemy-state.enc ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:REEF_STATE_KEY \
+              -in .alchemy-state.enc | tar -x
+          fi
       - name: Deploy prod stage
         id: deploy
         env:
@@ -98,9 +114,18 @@ jobs:
             *) echo "::error::/db/* served '$ct' — the peer route is not winning over the asset fallback"; fail=1 ;;
           esac
           exit $fail
+      - name: Encrypt stack state
+        if: always()
+        env:
+          REEF_STATE_KEY: ${{ secrets.REEF_STATE_KEY }}
+        run: |
+          if [ -d .alchemy ] && [ -n "$REEF_STATE_KEY" ]; then
+            tar -c .alchemy | openssl enc -aes-256-cbc -pbkdf2 \
+              -pass env:REEF_STATE_KEY -out .alchemy-state.enc
+          fi
       - name: Save stack state
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: .alchemy
+          path: .alchemy-state.enc
           key: reef-prod-state-${{ github.run_id }}-${{ github.run_attempt }}

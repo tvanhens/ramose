@@ -8,7 +8,12 @@ import {
   type Priority,
 } from "../../domain/schema.ts";
 import type { ReefMutations } from "../ramose.ts";
-import { personLabel, type IssueRow, type PersonRow } from "../screens/BoardScreen.tsx";
+import {
+  personLabel,
+  type IssueRow,
+  type Member,
+  type PersonRow,
+} from "../screens/BoardScreen.tsx";
 
 type ReefDb = ClientDatabase<ReefMutations>;
 
@@ -24,7 +29,7 @@ type DetailIssue = IssueRow & {
       description?: string;
     }) => unknown;
     readonly setPriority: (input: { priority: Priority }) => unknown;
-    readonly setAssignee: (input: { assignee?: string }) => unknown;
+    readonly setAssignee: (input: { sub?: string; name?: string }) => unknown;
     readonly addLabel: (input: { label: string }) => unknown;
     readonly removeLabel: (input: { label: string }) => unknown;
     readonly setPrivateNote: (input: { note: string }) => unknown;
@@ -52,7 +57,7 @@ export const IssueDetail = (props: {
   readonly board: ReefDb;
   readonly issue: IssueRow;
   readonly peopleById: ReadonlyMap<string, PersonRow>;
-  readonly persons: readonly PersonRow[];
+  readonly members: readonly Member[];
   readonly onClose: () => void;
 }) => {
   const issue = props.issue as DetailIssue;
@@ -61,13 +66,24 @@ export const IssueDetail = (props: {
   const [title, setTitle] = useState(issue.data.title);
   const [description, setDescription] = useState(issue.data.description ?? "");
   const [note, setNote] = useState(issue.data.privateNote ?? "");
+  const [dirty, setDirty] = useState<{
+    title?: boolean;
+    description?: boolean;
+    note?: boolean;
+  }>({});
   const [comment, setComment] = useState("");
   const [labelName, setLabelName] = useState("");
   useEffect(() => {
     setTitle(issue.data.title);
     setDescription(issue.data.description ?? "");
     setNote(issue.data.privateNote ?? "");
+    setDirty({});
   }, [issueId]);
+  useEffect(() => {
+    if (!dirty.title) setTitle(issue.data.title);
+    if (!dirty.description) setDescription(issue.data.description ?? "");
+    if (!dirty.note) setNote(issue.data.privateNote ?? "");
+  }, [issue.data.title, issue.data.description, issue.data.privateNote]);
 
   const comments = useQuery(issueComments(props.board, issueId), props.board);
   const labels = useQuery(boardLabels(props.board), props.board);
@@ -86,11 +102,15 @@ export const IssueDetail = (props: {
         <input
           className="detail-title"
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => {
+            setTitle(e.target.value);
+            setDirty((d) => ({ ...d, title: true }));
+          }}
           onBlur={() => {
-            if (title.trim() !== "" && title !== issue.data.title) {
+            if (dirty.title && title.trim() !== "" && title !== issue.data.title) {
               issue.mutate.editIssue({ title: title.trim() });
             }
+            setDirty((d) => ({ ...d, title: false }));
           }}
         />
         <button className="ghost" onClick={props.onClose}>
@@ -116,16 +136,21 @@ export const IssueDetail = (props: {
       <label className="field">
         <span>Assignee</span>
         <select
-          value={issue.data.assignee?.id ?? ""}
-          onChange={(e) =>
+          value={(issue.data.assignee
+            ? props.peopleById.get(issue.data.assignee.id)?.data.sub
+            : undefined) ?? ""}
+          onChange={(e) => {
+            const sub = e.target.value;
+            const member = props.members.find((m) => m.sub === sub);
             issue.mutate.setAssignee(
-              e.target.value === "" ? {} : { assignee: e.target.value },
-            )}
+              sub === "" ? {} : { sub, ...(member ? { name: member.label } : {}) },
+            );
+          }}
         >
           <option value="">Unassigned</option>
-          {props.persons.map((person) => (
-            <option key={String(person.id)} value={String(person.id)}>
-              {personLabel(person)}
+          {props.members.map((member) => (
+            <option key={member.sub} value={member.sub}>
+              {member.label}
             </option>
           ))}
         </select>
@@ -137,11 +162,15 @@ export const IssueDetail = (props: {
           rows={4}
           value={description}
           placeholder="Add a description…"
-          onChange={(e) => setDescription(e.target.value)}
+          onChange={(e) => {
+            setDescription(e.target.value);
+            setDirty((d) => ({ ...d, description: true }));
+          }}
           onBlur={() => {
-            if (description !== (issue.data.description ?? "")) {
+            if (dirty.description && description !== (issue.data.description ?? "")) {
               issue.mutate.editIssue({ description });
             }
+            setDirty((d) => ({ ...d, description: false }));
           }}
         />
       </label>
@@ -196,11 +225,15 @@ export const IssueDetail = (props: {
           rows={2}
           value={note}
           placeholder="Visible to the issue creator only — a field-level policy rule"
-          onChange={(e) => setNote(e.target.value)}
+          onChange={(e) => {
+            setNote(e.target.value);
+            setDirty((d) => ({ ...d, note: true }));
+          }}
           onBlur={() => {
-            if (note !== (issue.data.privateNote ?? "")) {
+            if (dirty.note && note !== (issue.data.privateNote ?? "")) {
               issue.mutate.setPrivateNote({ note });
             }
+            setDirty((d) => ({ ...d, note: false }));
           }}
         />
       </label>
