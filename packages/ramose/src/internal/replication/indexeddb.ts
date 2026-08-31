@@ -1388,6 +1388,9 @@ export class IndexedDbReplicaStorage {
       nodes += outcome.nodes;
       staging += outcome.staging;
       if (outcome.nodes > 0 || outcome.staging > 0 || outcome.discarded) swept++;
+      if (!outcome.discarded) continue;
+      const discarded = replicaManifestIdentity(stored.record);
+      if (discarded !== undefined) this.announce(identityNotice("reset", discarded));
     }
     return Object.freeze({ partitions, swept, skipped, nodes, retained, staging });
   }

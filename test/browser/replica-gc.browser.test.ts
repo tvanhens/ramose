@@ -14,6 +14,13 @@ import type {
   ReplicationIdentity,
   SnapshotDatom,
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
+import type { ReplicaNotice } from "../../packages/ramose/src/internal/replication/notices.ts";
+import {
+  replicaDatabaseKey,
+  replicaDatabaseScopeOf,
+  replicaScopeKey,
+  replicaScopeOf,
+} from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
 import { ReplicationSession } from "../../packages/ramose/src/internal/replication/session.ts";
 import {
   replicationActivationAddress,
@@ -1043,6 +1050,13 @@ browserTest(
     const partition = replicaPartitionKey(original);
     const siblingPartition = replicaPartitionKey(sibling);
     const storage = await IndexedDbReplicaStorage.open(name);
+    const observer = await IndexedDbReplicaStorage.open(name);
+    const announced = new Promise<ReplicaNotice | undefined>((resolve) => {
+      observer.notices((notice) => {
+        if (notice.kind === "reset") resolve(notice);
+      });
+      setTimeout(() => resolve(undefined), 2000);
+    });
     try {
       await installSnapshot(storage, original, opaque("1"), wideDatoms(60, "before"));
       await installSnapshot(storage, sibling, opaque("3"), wideDatoms(20, "child"));
@@ -1074,7 +1088,14 @@ browserTest(
       expect(await revisionOf(storage.restore(sibling, attributes, READ_COMPATIBILITY)))
         .toBe(opaque("3"));
       expect(await nodeHashes(name, siblingPartition)).toEqual(siblingBefore);
+
+      expect(await announced).toEqual({
+        kind: "reset",
+        scope: replicaScopeKey(replicaScopeOf(original)),
+        database: replicaDatabaseKey(replicaDatabaseScopeOf(original)),
+      });
     } finally {
+      observer.close();
       storage.close();
       await deleteDatabase(name);
     }
