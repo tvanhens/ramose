@@ -14,10 +14,6 @@ export const MAX_JSON_NODES = 4_096;
 
 export const MAX_JSON_ENCODED_BYTES = 65_536;
 
-export const MAX_CATALOG_DOCUMENT_NODES = 32_768;
-
-export const MAX_CATALOG_DOCUMENT_BYTES = 524_288;
-
 export type AuthorizationBudget = {
   readonly limit: number;
   readonly spent: number;

@@ -1,16 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import {
-  MAX_CATALOG_DOCUMENT_BYTES,
-  MAX_CATALOG_DOCUMENT_NODES,
-  MAX_COLLECTION_SIZE,
-  MAX_JSON_DEPTH,
-  MAX_JSON_ENCODED_BYTES,
-  MAX_JSON_NODES,
-  MAX_STRING_LENGTH,
-} from "./bounds.ts";
-import { canonicalizeJson, hasLoneSurrogate } from "./canonical-json.ts";
+import { canonicalizeJson } from "./canonical-json.ts";
 import {
   EntityDescriptor,
   FieldDescriptor,
@@ -78,7 +69,6 @@ export const decodePolicyTemplateResult = (
     Schema.decodeUnknownResult(PolicyTemplateIR, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(RelativeAuthorizationRule)(rule)),
     input,
-    CATALOG_DOCUMENT_BUDGET,
   );
 
 export const decodeInstalledAuthorizationResult = (
@@ -88,7 +78,6 @@ export const decodeInstalledAuthorizationResult = (
     Schema.decodeUnknownResult(InstalledAuthorizationIR, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
     input,
-    CATALOG_DOCUMENT_BUDGET,
   );
 
 export const decodeLegacyInstalledCatalogUnitV1Result = (
@@ -98,7 +87,6 @@ export const decodeLegacyInstalledCatalogUnitV1Result = (
     Schema.decodeUnknownResult(LegacyInstalledCatalogUnitV1, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
     input,
-    CATALOG_DOCUMENT_BUDGET,
   );
 
 export const decodeInstalledCatalogUnitResult = (
@@ -108,7 +96,6 @@ export const decodeInstalledCatalogUnitResult = (
     Schema.decodeUnknownResult(InstalledCatalogUnit, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
     input,
-    CATALOG_DOCUMENT_BUDGET,
   );
   if (Result.isSuccess(current)) return current;
   const legacy = decodeLegacyInstalledCatalogUnitV1Result(input);
@@ -316,13 +303,8 @@ const decodeDocument = <A>(
   decode: (input: unknown) => Result.Result<A, Schema.SchemaError>,
   encodeRule: (rule: unknown) => JsonValue,
   input: unknown,
-  budget: DocumentBudget = WIRE_DOCUMENT_BUDGET,
 ): Result.Result<A, InvalidIR> =>
   Result.gen(function* () {
-    const hostile = inspectRawJson(input, budget);
-    if (hostile !== undefined) {
-      return yield* Result.fail(new InvalidIR({ message: hostile }));
-    }
     const json = yield* Result.mapError(
       Schema.decodeUnknownResult(Schema.Json)(input),
       (failure) => new InvalidIR({ message: failure.message }),
@@ -331,7 +313,10 @@ const decodeDocument = <A>(
       decode(json),
       (failure) => new InvalidIR({ message: failure.message }),
     );
-    const collision = identityCollision(decoded, encodeRule);
+    const collision = yield* Result.try({
+      try: () => identityCollision(decoded, encodeRule),
+      catch: digestFailure,
+    });
     if (collision !== undefined) {
       return yield* Result.fail(collision);
     }
@@ -555,191 +540,6 @@ const ownJsonField = (encoded: JsonValue, key: string): JsonValue => {
   }
   return descriptor.value as JsonValue;
 };
-
-type DocumentBudget = {
-  readonly maxNodes: number;
-  readonly maxBytes: number;
-};
-
-const WIRE_DOCUMENT_BUDGET: DocumentBudget = Object.freeze({
-  maxNodes: MAX_JSON_NODES,
-  maxBytes: MAX_JSON_ENCODED_BYTES,
-});
-
-/**
- * Catalog units and policy templates are assembled in-process from deployed
- * code and never arrive over a wire, so they carry a code-sized budget; the
- * wire budget stays the ceiling for every externally supplied document.
- */
-const CATALOG_DOCUMENT_BUDGET: DocumentBudget = Object.freeze({
-  maxNodes: MAX_CATALOG_DOCUMENT_NODES,
-  maxBytes: MAX_CATALOG_DOCUMENT_BYTES,
-});
-
-type Work = {
-  nodes: number;
-  bytes: number;
-  readonly budget: DocumentBudget;
-};
-
-type WalkFrame = {
-  readonly value: object;
-  readonly keys: ReadonlyArray<string> | number;
-  index: number;
-  readonly depth: number;
-};
-
-const inspectRawJson = (
-  input: unknown,
-  budget: DocumentBudget,
-): string | undefined => {
-  const work: Work = { nodes: 0, bytes: 0, budget };
-  const root = jsonLeafViolation(input, work);
-  if (root !== undefined) return root;
-  if (typeof input !== "object" || input === null) return undefined;
-
-  const seen = new WeakMap<object, boolean>();
-  const stack: WalkFrame[] = [];
-  const opened = enterObject(input, 0, seen, stack, work);
-  if (opened !== undefined) return opened;
-
-  while (stack.length > 0) {
-    const frame = stack[stack.length - 1]!;
-    const next = nextChild(frame);
-    if (next === undefined) {
-      seen.set(frame.value, true);
-      stack.pop();
-      continue;
-    }
-    if (next.violation !== undefined) return next.violation;
-    const leaf = jsonLeafViolation(next.value, work);
-    if (leaf !== undefined) return leaf;
-    if (typeof next.value === "object" && next.value !== null) {
-      const reason = enterObject(next.value, frame.depth + 1, seen, stack, work);
-      if (reason !== undefined) return reason;
-    }
-  }
-  return undefined;
-};
-
-const charge = (work: Work, nodes: number, bytes: number): string | undefined => {
-  work.nodes += nodes;
-  work.bytes += bytes;
-  if (work.nodes > work.budget.maxNodes || work.bytes > work.budget.maxBytes) {
-    return "rejected oversized document";
-  }
-  return undefined;
-};
-
-const enterObject = (
-  value: object,
-  depth: number,
-  seen: WeakMap<object, boolean>,
-  stack: WalkFrame[],
-  work: Work,
-): string | undefined => {
-  const cached = seen.get(value);
-  if (cached === false) return "rejected cycle";
-  if (cached === true) return "rejected alias";
-  if (depth > MAX_JSON_DEPTH) return "rejected oversized depth";
-  const shape = objectShapeViolation(value, work);
-  if (shape !== undefined) return shape;
-  seen.set(value, false);
-  if (Array.isArray(value)) {
-    stack.push({ value, keys: value.length, index: 0, depth });
-  } else {
-    stack.push({
-      value,
-      keys: Object.getOwnPropertyNames(value),
-      index: 0,
-      depth,
-    });
-  }
-  return undefined;
-};
-
-const nextChild = (
-  frame: WalkFrame,
-): { readonly value: unknown; readonly violation?: undefined } | { readonly violation: string } | undefined => {
-  if (typeof frame.keys === "number") {
-    if (frame.index >= frame.keys) return undefined;
-    const name = String(frame.index++);
-    return childFromDescriptor(frame.value, name, true);
-  }
-  if (frame.index >= frame.keys.length) return undefined;
-  return childFromDescriptor(frame.value, frame.keys[frame.index++]!, false);
-};
-
-const childFromDescriptor = (
-  value: object,
-  name: string,
-  arrayIndex: boolean,
-): { readonly value: unknown; readonly violation?: undefined } | { readonly violation: string } => {
-  const descriptor = Object.getOwnPropertyDescriptor(value, name);
-  if (descriptor === undefined) {
-    return { violation: arrayIndex ? "rejected undefined" : "rejected prototype" };
-  }
-  if (descriptor.get !== undefined || descriptor.set !== undefined) {
-    return { violation: "rejected prototype" };
-  }
-  return { value: descriptor.value };
-};
-
-const objectShapeViolation = (value: object, work: Work): string | undefined => {
-  if (Array.isArray(value)) {
-    if (value.length > MAX_COLLECTION_SIZE) return "rejected oversized collection";
-    if (Object.getPrototypeOf(value) !== Array.prototype) return "rejected prototype";
-    if (Object.getOwnPropertySymbols(value).length > 0) return "rejected symbol";
-    for (const name of Object.getOwnPropertyNames(value)) {
-      if (name === "length") continue;
-      if (!/^(0|[1-9]\d*)$/.test(name)) return "rejected non-JSON array";
-      const index = Number(name);
-      if (!Number.isInteger(index) || index < 0 || index >= value.length) {
-        return "rejected non-JSON array";
-      }
-    }
-    return charge(work, 1, 0);
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== null && prototype !== Object.prototype) {
-    return "rejected prototype";
-  }
-  const names = Object.getOwnPropertyNames(value);
-  if (names.length > MAX_COLLECTION_SIZE) return "rejected oversized collection";
-  if (Object.getOwnPropertySymbols(value).length > 0) return "rejected symbol";
-  const objectCharge = charge(work, 1, 0);
-  if (objectCharge !== undefined) return objectCharge;
-  for (const name of names) {
-    if (name.length > MAX_STRING_LENGTH) return "rejected oversized string";
-    if (hasLoneSurrogate(name)) return "rejected unicode";
-    const keyCharge = charge(work, 1, UTF8.encode(name).byteLength);
-    if (keyCharge !== undefined) return keyCharge;
-  }
-  return undefined;
-};
-
-const jsonLeafViolation = (value: unknown, work: Work): string | undefined => {
-  if (value === undefined) return "rejected undefined";
-  if (typeof value === "function") return "rejected function";
-  if (typeof value === "symbol") return "rejected symbol";
-  if (typeof value === "bigint") return "rejected bigint";
-  if (typeof value === "number") {
-    if (Number.isNaN(value)) return "rejected NaN";
-    if (!Number.isFinite(value)) return "rejected Infinity";
-    return charge(work, 1, stringLengthOfNumber(value));
-  }
-  if (typeof value === "string") {
-    if (value.length > MAX_STRING_LENGTH) return "rejected oversized string";
-    if (hasLoneSurrogate(value)) return "rejected unicode";
-    return charge(work, 1, UTF8.encode(value).byteLength);
-  }
-  if (value === null) return charge(work, 1, 4);
-  if (typeof value === "boolean") return charge(work, 1, value ? 4 : 5);
-  return undefined;
-};
-
-const stringLengthOfNumber = (value: number): number =>
-  Object.is(value, -0) || value === 0 ? 1 : String(value).length;
 
 const freezePlain = <T>(value: T): T => {
   if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
