@@ -6,6 +6,7 @@ import { Schema } from "../../src/db/Schema.ts";
 import { CatalogId, DatabaseId } from "../../src/internal/authorization/identities.ts";
 import {
   deployedDatabaseCatalogBindings,
+  deployedOperationCatalogs,
   deployOperationCatalogsForVersion,
   OperationCatalogDeploymentError,
 } from "../../src/worker/operation-catalogs.ts";
@@ -46,10 +47,6 @@ describe("public operation catalog startup", () => {
       root,
       deployments: [{ database: "alpha" }],
     }, undefined))).rejects.toBeInstanceOf(OperationCatalogDeploymentError);
-    await expect(Effect.runPromise(deployOperationCatalogsForVersion({
-      root,
-      deployments: [{ database: "alpha" }],
-    }, { id: "" }))).rejects.toBeInstanceOf(OperationCatalogDeploymentError);
 
     await expect(Effect.runPromise(deployOperationCatalogsForVersion({
       root,
@@ -57,6 +54,26 @@ describe("public operation catalog startup", () => {
     }, { id: "deployment-alpha" }))).rejects.toBeInstanceOf(
       OperationCatalogDeploymentError,
     );
+  });
+
+  test("an instance without a deployment version starts but refuses every use", async () => {
+    const validation = await Effect.runPromise(deployOperationCatalogsForVersion({
+      root,
+      deployments: [{ database: "alpha" }],
+    }, { id: "" }));
+
+    expect(() => validation.proof("alpha")).toThrow(
+      OperationCatalogDeploymentError,
+    );
+    const bindings = deployedDatabaseCatalogBindings(validation);
+    expect(() => bindings.root(DatabaseId.make("alpha"))).toThrow(
+      OperationCatalogDeploymentError,
+    );
+    const deployed = deployedOperationCatalogs(validation);
+    expect(() => deployed.databases()).toThrow(OperationCatalogDeploymentError);
+    expect(() =>
+      deployed.requireDatabase(DatabaseId.make("alpha"))
+    ).toThrow(OperationCatalogDeploymentError);
   });
 
   test("retains reachable dynamic definitions without exposing child proofs", async () => {

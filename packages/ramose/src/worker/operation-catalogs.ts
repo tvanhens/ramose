@@ -9,8 +9,10 @@ import {
 } from "../internal/authorization/definitions.ts";
 import {
   deployDatabaseCatalogBindings,
+  unavailableDatabaseCatalogBindings,
   type DatabaseCatalogBindings,
 } from "../internal/authorization/database-bindings.ts";
+import type { DeployedCatalogs } from "../internal/authorization/deployed.ts";
 import {
   CatalogId,
   DatabaseId,
@@ -59,6 +61,36 @@ const deploymentError = (cause: unknown): OperationCatalogDeploymentError =>
 
 const DEPLOYMENT_ID_DOMAIN = "ramose:worker-deployment:v1\0";
 const textEncoder = new TextEncoder();
+
+const UNAVAILABLE_MESSAGE =
+  "ramose: this Worker instance started without a deployment version " +
+  "(CF_VERSION_METADATA.id was empty — Cloudflare's upload-validation " +
+  "instance); it cannot serve catalog-bound requests";
+
+const startedWithoutDeploymentVersion = (metadata: unknown): boolean => {
+  if (typeof metadata !== "object" || metadata === null) return false;
+  const id = (metadata as { readonly id?: unknown }).id;
+  return id === "" || id === undefined;
+};
+
+const unavailable = (): never => {
+  throw new OperationCatalogDeploymentError({ message: UNAVAILABLE_MESSAGE });
+};
+
+const unavailableState = (): OperationCatalogState => {
+  const catalogs: DeployedCatalogs = Object.freeze({
+    requireDatabase: unavailable,
+    databases: unavailable,
+  });
+  return {
+    deployed: Object.freeze({
+      catalogs,
+      requireDatabase: unavailable,
+      databases: unavailable,
+    }),
+    bindings: unavailableDatabaseCatalogBindings(unavailable),
+  };
+};
 
 const artifactHashForDeployment = (
   metadata: unknown,
@@ -144,6 +176,10 @@ export const deployOperationCatalogsForVersion = Effect.fn(
   input: DeployOperationCatalogsInput,
   versionMetadata: unknown,
 ) {
+  if (startedWithoutDeploymentVersion(versionMetadata)) {
+    const state = unavailableState();
+    return wrapOperationCatalogs(state.deployed, state.bindings);
+  }
   const artifactHash = yield* artifactHashForDeployment(versionMetadata);
   const definitions = yield* assembleCatalogDefinitions({
     root: input.root,
