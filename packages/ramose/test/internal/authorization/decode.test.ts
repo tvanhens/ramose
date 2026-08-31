@@ -12,8 +12,8 @@ import {
   InvalidIR,
   MAX_COLLECTION_SIZE,
   MAX_JSON_DEPTH,
-  MAX_JSON_ENCODED_BYTES,
-  MAX_JSON_NODES,
+  MAX_CATALOG_DOCUMENT_BYTES,
+  MAX_CATALOG_DOCUMENT_NODES,
   MAX_STRING_LENGTH,
   POLICY_TEMPLATE_IR_VERSION,
   canonicalizeInstalledAuthorization,
@@ -288,9 +288,9 @@ describe("JSON-only rejections", () => {
   test("rejects a broad tree that stays inside depth and collection limits", () => {
     const bushy = (depth: number): unknown =>
       depth === 0 ? 0 : { l: bushy(depth - 1), r: bushy(depth - 1) };
-    expect(MAX_JSON_NODES).toBeLessThan(2 ** 13);
+    expect(MAX_CATALOG_DOCUMENT_NODES).toBeLessThan(2 ** 16);
     expectInvalid(
-      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: bushy(12) }),
+      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: bushy(15) }),
       /oversized document/,
     );
   });
@@ -298,7 +298,7 @@ describe("JSON-only rejections", () => {
   test("rejects a document whose encoded strings exceed the byte budget", () => {
     const fields: Record<string, string> = {};
     const perString = MAX_STRING_LENGTH;
-    const count = Math.floor(MAX_JSON_ENCODED_BYTES / perString) + 2;
+    const count = Math.floor(MAX_CATALOG_DOCUMENT_BYTES / perString) + 2;
     for (let i = 0; i < count; i++) fields[`k${i}`] = "x".repeat(perString);
     expectInvalid(
       decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: fields }),
@@ -344,9 +344,9 @@ describe("JSON-only rejections", () => {
     "charges a broad array of %s leaves at the exact node limit and one over",
     (leaf) => {
 
-      const exact = leafRows(leaf, 4091);
+      const exact = leafRows(leaf, 32735);
       expectInvalid(decodePolicyTemplateResult(exact), /PolicyTemplateIR|_tag|Expected|JSON/);
-      const over = leafRows(leaf, 4092);
+      const over = leafRows(leaf, 32736);
       expectInvalid(decodePolicyTemplateResult(over), /oversized document/);
     },
   );
@@ -355,7 +355,7 @@ describe("JSON-only rejections", () => {
     "charges a broad object of %s leaves at the exact node limit and one over",
     (leaf) => {
 
-      const exact = leafObjects(leaf, 5, 409);
+      const exact = leafObjects(leaf, 151, 108);
       expectInvalid(decodePolicyTemplateResult(exact), /PolicyTemplateIR|_tag|Expected|JSON/);
       exact.push(leaf);
       expectInvalid(decodePolicyTemplateResult(exact), /oversized document/);

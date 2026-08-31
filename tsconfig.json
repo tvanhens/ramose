@@ -101,13 +101,12 @@
     "bench/**/*.ts",
     "test/**/*.ts",
     "test/**/*.tsx",
-    "examples/**/*.ts"
+    "examples/**/*.ts",
+    "examples/**/*.tsx"
   ],
   "exclude": [
     "node_modules",
     ".alchemy",
-    "dist",
-
-    "examples/reef"
+    "dist"
   ]
 }

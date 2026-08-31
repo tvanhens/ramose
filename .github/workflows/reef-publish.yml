@@ -1,0 +1,91 @@
+# Production publish of the Reef demo (examples/reef/): deploy the Alchemy
+# `prod` stage on every push to master / main.
+#
+# The demo serves at https://reef.ramose.ai on one hostname:
+#   /db/*   → the Ramose peer   (a Worker route, examples/reef/src/infra/resources.ts)
+#   /*      → the auth Worker   (a custom domain, examples/reef/src/infra/api.ts)
+#            which also serves the built SPA as its assets
+# Same-origin means the SPA reaches both Workers at location.origin, and the
+# peer's workers.dev hostname stays up for the `Ramose.Server` health check.
+#
+# State: Alchemy's Cloudflare state store — a Durable-Object-backed Worker on
+# this account (`Cloudflare.state()` in examples/reef/alchemy.run.ts, deployed
+# once by `bun alchemy bootstrap cloudflare`). State is durable and account
+# private: no `.alchemy/` in the Actions cache, so nothing to evict (a cache
+# eviction would have minted empty D1/R2 and orphaned live data) and no auth
+# material in a cross-branch-readable store. In CI the deploy resolves the
+# state-store bearer from the account's Secrets Store, so the token needs
+# **Secrets Store: Read** and **Workers edge-preview** on top of the scopes
+# below.
+#
+# Credentials come from the GitHub Environment "Development". The token needs
+# **Account / D1 / Edit** (Better Auth's database) and zone access for the
+# hostname, on top of the CONTRIBUTING.md minimum and the two state-store
+# scopes above.
+name: Reef publish
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reef-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish-prod
+    runs-on: ubuntu-latest
+    environment: Development
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Deploy prod stage
+        id: deploy
+        env:
+          CI: "1"
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Unset it and this is an ordinary personal deploy: no custom domain,
+          # no route, no pinned names. Production is exactly this variable.
+          REEF_DOMAIN: ${{ vars.REEF_DOMAIN || 'reef.ramose.ai' }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Need CLOUDFLARE_API_TOKEN (secret) and CLOUDFLARE_ACCOUNT_ID (variable or secret) on the Development environment. See CONTRIBUTING.md."
+            exit 1
+          fi
+          # `ramose`'s exports resolve `bun` → src but `default` → dist;
+          # build-packages keeps every resolver on the same sources.
+          bun run scripts/build-packages.ts
+          # The SPA talks to both Workers at its own origin, so the deployed
+          # bundle needs no baked URL — production is the same-origin route.
+          bun build examples/reef/index.html --outdir examples/reef/dist --minify
+          bun alchemy deploy examples/reef/alchemy.run.ts --stage prod --yes --adopt
+          echo "### Reef demo published" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://$REEF_DOMAIN" >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke-test the deploy
+        env:
+          REEF_DOMAIN: ${{ vars.REEF_DOMAIN || 'reef.ramose.ai' }}
+        run: |
+          fail=0
+          # The SPA, from the auth Worker's assets.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "https://$REEF_DOMAIN/")
+          [ "$code" = "200" ] || { echo "::error::SPA returned $code"; fail=1; }
+          # Better Auth's key set — what the peer verifies tokens against.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "https://$REEF_DOMAIN/api/auth/jwks")
+          [ "$code" = "200" ] || { echo "::error::JWKS returned $code"; fail=1; }
+          # /db/* must reach the peer, not the SPA's catch-all. An unauthenticated
+          # probe is JSON from the peer; the asset fallback would be text/html.
+          ct=$(curl -sS -o /dev/null -w '%{content_type}' --max-time 30 "https://$REEF_DOMAIN/db/probe/info")
+          case "$ct" in
+            application/json*) ;;
+            *) echo "::error::/db/* served '$ct' — the peer route is not winning over the asset fallback"; fail=1 ;;
+          esac
+          exit $fail

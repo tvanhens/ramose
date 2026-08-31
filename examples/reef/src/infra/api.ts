@@ -1,15 +1,12 @@
 import { BetterAuth } from "@alchemy.run/better-auth";
 import { CloudflareD1 } from "@alchemy.run/better-auth/CloudflareD1";
-import { orgClassOf, ramoseToken } from "ramose/better-auth";
+import { ramoseToken } from "ramose/better-auth";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { jwt } from "better-auth/plugins/jwt";
-import { organization } from "better-auth/plugins/organization";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import { compiledPolicy } from "../domain/policy.ts";
 import { REEF_DOMAIN, REEF_ORIGIN, pinned } from "./domain.ts";
-import { ac, roles } from "../domain/roles.ts";
 import {
   AUTH_BASE_PATH,
   DEV_API_PORT,
@@ -32,6 +29,11 @@ export const Api = Cloudflare.Worker(
 
     ...pinned("api"),
     ...(REEF_DOMAIN ? { domain: REEF_DOMAIN } : {}),
+    assets: {
+      directory: "./examples/reef/dist",
+      notFoundHandling: "single-page-application",
+      runWorkerFirst: ["/api/*"],
+    },
   },
   Effect.gen(function* () {
     const auth = yield* BetterAuth({
@@ -48,15 +50,8 @@ export const Api = Cloudflare.Worker(
         },
       },
       plugins: [
-        organization({
-          ac,
-          roles,
-
-          async sendInvitationEmail() {},
-        }),
         // docs:jwt-plugin
         jwt({
-
           disableSettingJwtHeader: true,
           jwt: {
             issuer: REEF_AUTH.issuer,
@@ -66,11 +61,19 @@ export const Api = Cloudflare.Worker(
         }),
         // enddocs:jwt-plugin
 
+        // docs:mint-plugin
         ramoseToken({
           auth: REEF_AUTH,
-          policy: compiledPolicy(),
-          classOf: orgClassOf(),
+          policy: { classes: ["user"] },
+          classOf: ({ session }) => ({
+            class: "user",
+            attrs: {
+              ...(session.user.name ? { name: session.user.name } : {}),
+              ...(session.user.email ? { email: session.user.email } : {}),
+            },
+          }),
         }),
+        // enddocs:mint-plugin
       ],
     });
 

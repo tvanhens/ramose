@@ -1,184 +1,73 @@
 import { describe, expect, test } from "bun:test";
-import { parsePolicy } from "../../../packages/ramose/src/internal/core/policy/ast.ts";
-import { allowsOperation, operationClassAllows } from "../../../packages/ramose/src/internal/core/policy/eval.ts";
-import { checkTx } from "../../../packages/ramose/src/internal/core/policy/check.ts";
-import { Connection } from "../../../packages/ramose/src/internal/core/conn.ts";
-import { PolicyMemo, type Principal } from "../../../packages/ramose/src/internal/core/index.ts";
-import { schemaTx } from "../../../packages/ramose/src/db/ensure.ts";
-import * as Ramose from "ramose";
-import { classOfRole } from "ramose/better-auth";
-import { operations } from "../src/domain/operations.ts";
-import { compiledPolicy, policy } from "../src/domain/policy.ts";
-import { allShapes, boardShape } from "../src/domain/queries.ts";
-import { Issue, Reef } from "../src/domain/schema.ts";
+import { OwnedOperations } from "ramose/db";
+import {
+  Comment,
+  Issue,
+  Label,
+  Person,
+  ROOT_DATABASE,
+  Reef,
+  Workspace,
+  deployment,
+} from "../src/domain/schema.ts";
+import { isWorkspaceSlug, slugify } from "../src/domain/shared.ts";
 
-const who = (cls: "owner" | "member" | "viewer", sub: string, eid?: number): Principal => ({
-  kind: "user",
-  class: cls,
-  sub,
-  ...(eid !== undefined ? { eid } : {}),
-  claims: { sub },
-  db: "reef",
-});
-
-describe("reef policy", () => {
-  test("compiles to wire JSON that core accepts", () => {
-    const json = compiledPolicy();
-    const parsed = parsePolicy(JSON.parse(json));
-    expect(parsed.principal).toBe(":user/sub");
-    expect(parsed.classes).toEqual([...policy.classes]);
-    expect(parsed.schemaClasses).toEqual(["owner"]);
-    expect(parsed.superuser).toBeUndefined();
+describe("the reef deployment", () => {
+  test("applies its policy and configures the root database", () => {
+    expect(deployment.root).toBe(Reef);
+    expect(deployment.deployments).toEqual([{ database: ROOT_DATABASE }]);
   });
 
-  test("user has no write surface — the peer owns the row", () => {
-    const parsed = parsePolicy(JSON.parse(compiledPolicy()));
-    expect(parsed.ns?.user?.read).toEqual([{ _tag: "allow", rule: true }]);
-    expect(Object.keys(parsed.ns?.user ?? {})).toEqual(["read"]);
-  });
-
-  test("privateNote read is narrowed to the owner class", () => {
-    const parsed = parsePolicy(JSON.parse(compiledPolicy()));
-    const arms = parsed.attrs[":issue/privateNote"]?.read;
-    expect(arms).toBeDefined();
-    expect(arms).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
-    expect(Object.keys(parsed.attrs)).toEqual([":issue/privateNote"]);
-    expect(parsed.ns?.issue?.read).toEqual([{ _tag: "allow", rule: true }]);
-  });
-
-  test("one arm per operation, keyed by wire name", () => {
-    const parsed = parsePolicy(JSON.parse(compiledPolicy()));
-    const ops = parsed.operations!;
-    expect(ops["workspace/provision"]).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
-    expect(ops["issue/create"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
-
-    expect(ops["issue/add-comment"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
-    expect(ops["workspace/seed-sample"]).toEqual([{ _tag: "allow", class: ["owner", "member"], rule: true }]);
-    expect(ops["issue/set-private-note"]).toEqual([{ _tag: "allow", class: ["owner"], rule: true }]);
-    expect(ops["issue/set-title"]).toEqual([
-      { _tag: "allow", class: ["owner", "member"], rule: expect.any(String) },
-    ]);
-    expect(ops["comment/delete"]).toEqual([
-      { _tag: "allow", class: ["owner", "member"], rule: expect.any(String) },
-    ]);
-    expect(policy.unarmedOperations).toEqual([]);
-  });
-
-  test("own-issue / own-comment fragments compile to named rules on the ops", () => {
-    const parsed = parsePolicy(JSON.parse(compiledPolicy()));
-    const set = parsed.operations?.["issue/set-title"];
-    expect(set).toHaveLength(1);
-    expect(set![0]).toEqual({
-      _tag: "allow",
-      class: ["owner", "member"],
-      rule: expect.any(String),
-    });
-    const name = (set![0] as { rule: string }).rule;
-    expect(parsed.operations?.["issue/move"]![0]).toEqual(set![0]);
-    expect(parsed.rules).toBeDefined();
-    const def = (parsed.rules as unknown[][]).find((r) => (r[0] as unknown[])[0] === name);
-    expect(def).toBeDefined();
-    expect(JSON.stringify(def)).toContain(":issue/creator");
-    const del = parsed.operations?.["comment/delete"]![0] as { rule: string };
-    const commentDef = (parsed.rules as unknown[][]).find((r) => (r[0] as unknown[])[0] === del.rule);
-    expect(JSON.stringify(commentDef)).toContain(":comment/author");
-  });
-
-  test("an owner may run issue-editing ops on their own issue; another owner may not", async () => {
-    const compiled = parsePolicy(JSON.parse(compiledPolicy()));
-    const conn = await Connection.create();
-    await conn.transact(schemaTx(Reef) as never);
-    const seeded = await conn.transact([
-      { ":db/id": "ada", ":user/sub": "user_ada", ":user/role": "owner" },
-      { ":db/id": "bea", ":user/sub": "user_bea", ":user/role": "owner" },
-      {
-        ":db/id": "iss",
-        ":issue/title": "Mine",
-        ":issue/status": "todo",
-        ":issue/priority": "none",
-        ":issue/rank": 1,
-        ":issue/createdAt": 1,
-        ":issue/creator": "ada",
-      },
-    ]);
-    const ada = who("owner", "user_ada", seeded.tempids.ada);
-    const bea = who("owner", "user_bea", seeded.tempids.bea);
-    const db = conn.db();
-    expect(operationClassAllows(compiled, "issue/set-title", ada)).toBe(true);
-    expect(operationClassAllows(compiled, "issue/set-title", who("viewer", "user_ada", seeded.tempids.ada))).toBe(
-      false,
-    );
-    expect(operationClassAllows(compiled, "issue/set-private-note", ada)).toBe(true);
-    expect(operationClassAllows(compiled, "issue/set-private-note", who("member", "user_ada", seeded.tempids.ada))).toBe(
-      false,
-    );
-    const ctx = (p: Principal) => ({
-      db,
-      principal: p,
-      e: seeded.tempids.iss,
-      memo: new PolicyMemo(),
-    });
-    expect(await allowsOperation(compiled, "issue/set-title", ctx(ada))).toBe(true);
-    expect(await allowsOperation(compiled, "issue/set-title", ctx(bea))).toBe(false);
-    expect((await checkTx([{ ":label/name": "Bug", ":label/color": "#f00" }], db, compiled, ada)).ok).toBe(false);
-  });
-
-  test("compiles small enough to bind on Cloudflare", () => {
-    const bytes = new TextEncoder().encode(compiledPolicy()).length;
-    expect(bytes).toBeLessThan(5 * 1024);
-  });
-
-  test("viewers have no operation arms anywhere", () => {
-    const parsed = parsePolicy(JSON.parse(compiledPolicy()));
-    for (const arms of Object.values(parsed.operations ?? {})) {
-      for (const arm of arms) {
-        expect(JSON.stringify(arm)).not.toContain('"viewer"');
-      }
-    }
-  });
-
-  test("compile checks the registry: every armed name is registered", () => {
-    expect(() =>
-      Ramose.Policy.compile(policy, { pulls: allShapes, operations }),
-    ).not.toThrow();
-  });
-
-  // docs:masked-required
-  test("a masked attribute pulled as required is a compile error", () => {
-    const badShape = { note: Issue.privateNote };
-    expect(() =>
-      Ramose.Policy.compile(policy, { pulls: [...allShapes, badShape] }),
-    ).toThrow(/privateNote/);
-  });
-  // enddocs:masked-required
-
-  test("the app's own shapes pass the masked-read check", () => {
-    expect(() =>
-      Ramose.Policy.compile(policy, { pulls: [boardShape, ...allShapes] }),
-    ).not.toThrow();
-  });
-});
-
-describe("role → class mapping", () => {
-  test("owner and admin mint the owner class", () => {
-    expect(classOfRole("owner")).toBe("owner");
-    expect(classOfRole("admin")).toBe("owner");
-    expect(classOfRole("owner,member")).toBe("owner");
-  });
-  test("member mints member; anything else is a viewer", () => {
-    expect(classOfRole("member")).toBe("member");
-    expect(classOfRole("viewer")).toBe("viewer");
-    expect(classOfRole("mystery-role")).toBe("viewer");
-  });
-});
-
-describe("catalog", () => {
-  test("declares the four namespaces the app writes", () => {
+  test("declares every entity and its operations", () => {
     expect(Object.keys(Reef.entities).sort()).toEqual([
       "comment",
       "issue",
       "label",
-      "user",
+      "person",
+      "workspace",
     ]);
+    expect(Object.keys(Workspace[OwnedOperations]).sort()).toEqual([
+      "addMember",
+      "createWorkspace",
+      "ensureMe",
+      "removeMember",
+      "renameWorkspace",
+    ]);
+    expect(Object.keys(Issue[OwnedOperations]).sort()).toEqual([
+      "addLabel",
+      "createIssue",
+      "deleteIssue",
+      "editIssue",
+      "moveIssue",
+      "removeLabel",
+      "setAssignee",
+      "setPriority",
+      "setPrivateNote",
+    ]);
+    expect(Object.keys(Comment[OwnedOperations]).sort()).toEqual([
+      "createComment",
+      "deleteComment",
+    ]);
+    expect(Object.keys(Label[OwnedOperations])).toEqual(["createLabel"]);
+    expect(Object.keys(Person[OwnedOperations as keyof typeof Person] ?? {})).toEqual([]);
+  });
+});
+
+describe("workspace slugs", () => {
+  test("accepts ordinary slugs and rejects reserved or invalid ones", () => {
+    expect(isWorkspaceSlug("acme")).toBe(true);
+    expect(isWorkspaceSlug("my-team-2")).toBe(true);
+    expect(isWorkspaceSlug("api")).toBe(false);
+    expect(isWorkspaceSlug("db")).toBe(false);
+    expect(isWorkspaceSlug("reef")).toBe(false);
+    expect(isWorkspaceSlug("A Team")).toBe(false);
+    expect(isWorkspaceSlug("")).toBe(false);
+    expect(isWorkspaceSlug("-leading")).toBe(false);
+  });
+
+  test("slugify produces valid slugs from display names", () => {
+    expect(isWorkspaceSlug(slugify("Acme Corp"))).toBe(true);
+    expect(slugify("Acme Corp")).toBe("acme-corp");
+    expect(slugify("  Rocket 🚀 Team  ")).toBe("rocket-team");
   });
 });

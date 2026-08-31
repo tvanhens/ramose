@@ -89,6 +89,22 @@ export interface DatabaseCatalogBindings {
   ) => Effect.Effect<ResolvedDatabaseRoute, DynamicDatabaseBindingFailure>;
 }
 
+/**
+ * Bindings for a Worker instance that started without a deployment version —
+ * Cloudflare's upload-validation instance. Every use fails with the supplied
+ * error; the instance never serves traffic.
+ */
+export const unavailableDatabaseCatalogBindings = (
+  fail: () => never,
+): DatabaseCatalogBindings => {
+  const bindings: DatabaseCatalogBindings = {
+    [DatabaseCatalogBindingsTypeId]: DatabaseCatalogBindingsTypeId,
+    root: fail,
+    child: fail,
+  };
+  return Object.freeze(bindings);
+};
+
 type RootSource = { readonly _tag: "root" };
 type GraphSource = {
   readonly _tag: "graph";
