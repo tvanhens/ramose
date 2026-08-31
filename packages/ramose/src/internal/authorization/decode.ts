@@ -313,7 +313,10 @@ const decodeDocument = <A>(
       decode(json),
       (failure) => new InvalidIR({ message: failure.message }),
     );
-    const collision = identityCollision(decoded, encodeRule);
+    const collision = yield* Result.try({
+      try: () => identityCollision(decoded, encodeRule),
+      catch: digestFailure,
+    });
     if (collision !== undefined) {
       return yield* Result.fail(collision);
     }

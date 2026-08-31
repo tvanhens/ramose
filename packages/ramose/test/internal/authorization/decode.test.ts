@@ -558,6 +558,15 @@ describe("schema shape rejections", () => {
 });
 
 describe("rule identity collisions", () => {
+  test("returns InvalidIR when a rule body cannot be canonicalized", () => {
+    const input = clone(templateEncoded) as unknown as {
+      rules: Array<{ expr: unknown }>;
+    };
+    input.rules[1]!.expr = { _tag: "hasClass", class: "member\uD800" };
+
+    expectInvalid(decodePolicyTemplateResult(input), /canonical hash failed|lone surrogate/);
+  });
+
   test("fails closed when one rule id maps to different canonical bodies", () => {
     const colliding = {
       ...clone(emptyTemplateEncoded),
