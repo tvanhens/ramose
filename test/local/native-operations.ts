@@ -1332,6 +1332,52 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(rows.body.result.length).toBe(1);
     });
 
+    test("a malformed invocation is answered the same for every database", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const served = "operations-seal-order";
+      await install(base, served);
+      const unserved = "operations-seal-order-not-deployed";
+      const create = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "createAllocating",
+      };
+
+      const answers = await Promise.all(
+        [served, unserved].map(async (database) => {
+          const token = await signToken(database, "member", "user_seal_order");
+          const malformed = await json(base, `/db/${database}/op`, {
+            method: "POST",
+            token,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ notAnInvocation: true }),
+          });
+          const shaped = await invokeWith(base, database, token, {
+            invocationId: `seal-order-${database}`,
+            operation: create,
+            input: { title: "Seal order" },
+            allocations: [{ slot: "item", clientRef: clientRef() }],
+          });
+          return { database, malformed, shaped };
+        }),
+      );
+      const [servedAnswer, unservedAnswer] = answers as [
+        (typeof answers)[number],
+        (typeof answers)[number],
+      ];
+
+      // The body-shape refusal precedes the deployed-catalog presence refusal,
+      // and answers identically whether or not this deployment serves the
+      // database, so what it precedes it cannot disclose.
+      expect(servedAnswer.malformed.status).toBe(400);
+      expect([unservedAnswer.malformed.status, unservedAnswer.malformed.body])
+        .toEqual([servedAnswer.malformed.status, servedAnswer.malformed.body]);
+
+      // Presence is decided on the request that carries an invocation.
+      expect(servedAnswer.shaped.status).toBe(200);
+      expect(unservedAnswer.shaped.status).toBe(403);
+      expect(unservedAnswer.shaped.body).toEqual({ error: "unauthorized" });
+    });
+
     describe("opaque targets and exact allocation mappings", () => {
       const createItem = {
         owner: { kind: "entity" as const, name: "nativeItem" },
@@ -2002,6 +2048,48 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           renamed.seen,
           { _tag: "Committed", output: { title: "Renamed through the queue" } },
         ]);
+      });
+
+      test("a storm of submitters carries one queued invocation to one receipt", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-client-storm";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_client_storm");
+        const endpoint = endpointFor(base, database, token);
+        const version = (await otherDeploymentVersions())
+          .get("nativeItem/createAllocating")!;
+        const ref = clientRef();
+        // One durable record, submitted by every client that shares it: the
+        // tabs of a browser with no Web Locks to elect one of them, and the
+        // successor of a leader lost mid-submission.
+        const record = queued(version, {
+          input: { title: "Stormed offline" },
+          allocations: [{ slot: "item", clientRef: ref }],
+        });
+
+        const receiptsBefore = await operationReceiptCount(base, database);
+        const storm = await Promise.all(
+          Array.from({ length: 8 }, () => submitUntilTerminal(record, endpoint)),
+        );
+        const first = storm[0]!;
+        expect([first.seen, first.acknowledgement._tag])
+          .toEqual([first.seen, "Committed"]);
+        for (const answer of storm) {
+          expect([answer.seen, answer.acknowledgement])
+            .toEqual([answer.seen, first.acknowledgement]);
+        }
+        if (first.acknowledgement._tag !== "Committed") {
+          throw new Error("expected a commit");
+        }
+        expect(first.acknowledgement.mappings).toHaveLength(1);
+        expect(first.acknowledgement.mappings[0]!.clientRef).toBe(ref);
+
+        expect(await operationReceiptCount(base, database))
+          .toBe(receiptsBefore + 1);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Stormed offline"]]',
+        });
+        expect(rows.body.result.length).toBe(1);
       });
 
       test("a dependent invocation resolves its ClientRef into a sealed input handle", async () => {

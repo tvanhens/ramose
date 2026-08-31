@@ -2,7 +2,8 @@ import { expect } from "vitest";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import type { OperationVersion } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
-import { invocationId } from "../../packages/ramose/src/db/refs.ts";
+import { clientRef, invocationId } from "../../packages/ramose/src/db/refs.ts";
+import type { EntityId } from "../../packages/ramose/src/db/refs.ts";
 import { SubmissionLoop } from "../../packages/ramose/src/client/submission.ts";
 import {
   IndexedDbReplicaStorage,
@@ -22,7 +23,7 @@ import {
   type ReplicaDatabaseScope,
 } from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
 import { browserTest } from "./fixtures.ts";
-import type { TabReport } from "./leadership-tab.ts";
+import type { Settlement, TabReport } from "./leadership-tab.ts";
 import { openTab, type TabHandle } from "./tab-harness.ts";
 import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
@@ -53,7 +54,10 @@ const identity = (
   ...overrides,
 });
 
-const draft = (receiver: ReplicaDatabaseScope): OutboxDraft => ({
+const draft = (
+  receiver: ReplicaDatabaseScope,
+  overrides: Partial<OutboxDraft> = {},
+): OutboxDraft => ({
   invocation: invocationId(),
   receiver,
   operation: {
@@ -67,6 +71,7 @@ const draft = (receiver: ReplicaDatabaseScope): OutboxDraft => ({
   allocations: [],
   inputRefs: [],
   enqueuedAt: Date.now(),
+  ...overrides,
 });
 
 const COMMITTED = {
@@ -74,6 +79,9 @@ const COMMITTED = {
   output: { id: "opaque" },
   mappings: [],
 } as const;
+
+/** A sealed handle of the shape an authoritative mapping carries. */
+const MAPPED = `${"e".repeat(54)}A` as EntityId;
 
 const requestResult = <T>(request: IDBRequest<T>): Promise<T> =>
   new Promise((resolve, reject) => {
@@ -130,6 +138,10 @@ const dumpStore = async (name: string, store: string): Promise<unknown[]> => {
   database.close();
   return records;
 };
+
+const unobservedIds = (
+  state: { readonly unobserved: readonly { readonly invocation: string }[] },
+): readonly string[] => state.unobserved.map((marker) => marker.invocation);
 
 const receiptStates = async (name: string): Promise<readonly string[]> =>
   (await dumpStore(name, "mutation-receipts-v1") as readonly {
@@ -572,6 +584,69 @@ browserTest(
 );
 
 browserTest(
+  "a storm of unelected clients still commits one invocation once",
+  async ({ browser }) => {
+    const name = `ramose-leadership-degraded-storm-${browser.uniqueId}`;
+    const left = identity({ database: databaseOf(browser.uniqueId) });
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const key = replicaLeaderKey(receiver, name);
+    const clients = await Promise.all(
+      Array.from({ length: 8 }, () => IndexedDbReplicaStorage.open(name)),
+    );
+    // Without Web Locks there is no election, so every one of them submits.
+    const unelected = clients.map((storage) =>
+      SyncLeadership.begin({
+        name: key,
+        locks: undefined,
+        claim: () => storage.claimLeadership(key, scope),
+        onLeading: () => undefined,
+      })
+    );
+    try {
+      await confirm(clients[0]!, left, "left");
+      for (const leadership of unelected) {
+        expect([leadership.status(), leadership.submits(), leadership.fence()])
+          .toEqual(["unelected", true, undefined]);
+      }
+      const outboxes = clients.map((storage, index) =>
+        storage.outbox(() => unelected[index]!.fence())
+      );
+
+      const allocation = clientRef();
+      const intent = draft(receiver, {
+        allocations: [{ slot: "issue", clientRef: allocation }],
+      });
+      const queued = await Promise.all(
+        outboxes.map((outbox) => outbox.enqueue(intent, { scope })),
+      );
+      for (const record of queued) expect(record).toEqual(queued[0]!);
+      expect(await dumpStore(name, "mutation-outbox-v1")).toHaveLength(1);
+      expect(await dumpStore(name, "mutation-client-refs-v1")).toHaveLength(1);
+
+      const settled = await Promise.all(
+        outboxes.map((outbox) =>
+          outbox.acknowledge(queued[0]!, {
+            ...COMMITTED,
+            mappings: [{ clientRef: allocation, entityId: MAPPED }],
+          }, 1_700_000_000_001)
+        ),
+      );
+      for (const receipt of settled) expect(receipt).toEqual(settled[0]!);
+      expect(settled[0]!.state).toBe("committed");
+      expect(await dumpStore(name, "mutation-receipts-v1")).toEqual([settled[0]]);
+      expect(await dumpStore(name, "mutation-client-ref-mappings-v1"))
+        .toHaveLength(1);
+      expect(await dumpStore(name, "mutation-outbox-v1")).toEqual([]);
+    } finally {
+      for (const leadership of unelected) await leadership.release();
+      for (const storage of clients) storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a leader whose epoch no longer fences stands down and the queued tab leads",
   async ({ browser }) => {
     const name = `ramose-leadership-stand-down-${browser.uniqueId}`;
@@ -782,6 +857,284 @@ browserTest(
       } finally {
         settling.close();
       }
+    } finally {
+      await successor.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a settlement storm across a leader handoff commits each invocation once",
+  async ({ browser }) => {
+    const name = `ramose-leadership-storm-${browser.uniqueId}`;
+    const left = identity({ database: databaseOf(browser.uniqueId) });
+    const receiver = replicaDatabaseScopeOf(left);
+    const seeding = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(seeding, left, "left");
+    } finally {
+      seeding.close();
+    }
+    const crashing = await openTab(tabModule);
+    const successor = await openTab(tabModule);
+    const follower = await openTab(tabModule);
+    try {
+      await stand(crashing, name, receiver);
+      expect((await leading(crashing)).epoch).toBe(1);
+      const queued = draft(receiver);
+      expect(await crashing.call<number>("enqueue", {
+        scope: receiver,
+        drafts: [queued],
+      })).toBe(1);
+
+      // The leader is submitting the head when the tab goes away.
+      expect(await crashing.call<string>("planHead", { scope: receiver }))
+        .toBe(queued.invocation);
+      crashing.crash();
+
+      await stand(successor, name, receiver);
+      expect((await leading(successor)).epoch).toBe(2);
+      const standing = await stand(follower, name, receiver);
+      expect([standing.status, standing.submits]).toEqual(["waiting", false]);
+
+      // Both tabs settle the same queue at once — the tab that took the
+      // epoch, and the tab that never had one.
+      const storm = (): Promise<readonly Settlement[]> =>
+        Promise.all(
+          [successor, follower].flatMap((tab) =>
+            Array.from(
+              { length: 6 },
+              () => tab.call<Settlement>("acknowledgeHead", { scope: receiver }),
+            )
+          ),
+        );
+
+      const answered = await storm();
+      const settled = answered.filter((entry) => entry.outcome === "settled");
+      expect(settled).toHaveLength(answered.length);
+      for (const entry of answered) {
+        expect(["settled", "empty"]).toContain(entry.outcome);
+      }
+
+      // One invocation is one commit, however many tabs answered for it: a
+      // repeated settlement replays the receipt already written.
+      for (const entry of settled) {
+        expect(entry).toEqual(settled[0]);
+        expect(entry).toMatchObject({
+          invocation: queued.invocation,
+          state: "committed",
+        });
+      }
+
+      // The drained queue has nothing left for a storm to commit twice.
+      for (const entry of await storm()) expect(entry.outcome).toBe("empty");
+
+      expect(await receiptStates(name)).toEqual(["committed"]);
+      expect(await dumpStore(name, "mutation-outbox-v1")).toEqual([]);
+    } finally {
+      await follower.close();
+      await successor.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a leader crashed inside its enqueue leaves no partial invocation",
+  async ({ browser }) => {
+    const name = `ramose-leadership-crash-enqueue-${browser.uniqueId}`;
+    const left = identity({ database: databaseOf(browser.uniqueId) });
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const key = replicaLeaderKey(receiver, name);
+    const seeding = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(seeding, left, "left");
+    } finally {
+      seeding.close();
+    }
+    const crashing = await openTab(tabModule);
+    const successor = await openTab(tabModule);
+    try {
+      await stand(crashing, name, receiver);
+      expect((await leading(crashing)).epoch).toBe(1);
+
+      const allocation = clientRef();
+      const queueing = draft(receiver, {
+        allocations: [{ slot: "issue", clientRef: allocation }],
+      });
+      expect(await crashing.call<string>("stallEnqueue", {
+        scope: receiver,
+        draft: queueing,
+      })).toBe(queueing.invocation);
+      crashing.crash();
+
+      await stand(successor, name, receiver);
+      expect((await leading(successor)).epoch).toBe(2);
+
+      // The enqueue is one transaction across every mutation store, so the
+      // invocation's row and the client ref it claims land together or not at
+      // all.
+      const queued = await dumpStore(name, "mutation-outbox-v1");
+      expect(queued.length).toBeLessThan(2);
+      expect((await dumpStore(name, "mutation-client-refs-v1")).length)
+        .toBe(queued.length);
+      expect((await dumpStore(name, "mutation-queues-v1")).length)
+        .toBe(queued.length);
+      expect(await dumpStore(name, "mutation-receipts-v1")).toHaveLength(
+        queued.length,
+      );
+
+      // Either landing converges: the successor carries a row that did land,
+      // and queues the same invocation itself when none did.
+      const settling = await IndexedDbReplicaStorage.open(name);
+      try {
+        const submitting = settling.outbox(() => ({ key, epoch: 2 }));
+        if (queued.length === 0) await submitting.enqueue(queueing, { scope });
+        const head = (await submitting.submissionPlan(scope)).plans[0]!.head;
+        if (head.type !== "ready") throw new Error(`the queue head is ${head.type}`);
+        expect(head.record.invocation).toBe(queueing.invocation);
+        expect(head.record.allocations).toEqual(queueing.allocations);
+        expect(
+          (await submitting.acknowledge(head.record, {
+            ...COMMITTED,
+            mappings: [{ clientRef: allocation, entityId: MAPPED }],
+          }, 1_700_000_000_002)).state,
+        ).toBe("committed");
+        expect((await dumpStore(name, "mutation-client-ref-mappings-v1")).length)
+          .toBe(1);
+      } finally {
+        settling.close();
+      }
+      expect(await receiptStates(name)).toEqual(["committed"]);
+      expect(await dumpStore(name, "mutation-outbox-v1")).toEqual([]);
+    } finally {
+      await successor.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a leader crashed inside the activation it began still fences its receipt",
+  async ({ browser }) => {
+    const name = `ramose-leadership-crash-activation-${browser.uniqueId}`;
+    const left = identity({ database: databaseOf(browser.uniqueId) });
+    const receiver = replicaDatabaseScopeOf(left);
+    const key = replicaLeaderKey(receiver, name);
+    const seeding = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(seeding, left, "left");
+    } finally {
+      seeding.close();
+    }
+    const crashing = await openTab(tabModule);
+    const successor = await openTab(tabModule);
+    try {
+      await stand(crashing, name, receiver);
+      expect((await leading(crashing)).epoch).toBe(1);
+      expect(await crashing.call<number>("enqueue", {
+        scope: receiver,
+        drafts: [draft(receiver)],
+      })).toBe(1);
+
+      // The leader settled the invocation and is inside the transaction that
+      // begins the activation its receipt will be fenced against.
+      const invocation = await crashing.call<string>("stallActivation", {
+        scope: receiver,
+      });
+      crashing.crash();
+
+      await stand(successor, name, receiver);
+      expect((await leading(successor)).epoch).toBe(2);
+
+      const settling = await IndexedDbReplicaStorage.open(name);
+      try {
+        const outbox = settling.outbox(() => ({ key, epoch: 2 }));
+        // The activation counter either advanced or it did not, and the
+        // committed receipt is unobserved under both.
+        const before = await outbox.observationState(receiver);
+        expect([0, 1]).toContain(before.activation);
+        expect(unobservedIds(before)).toEqual([invocation]);
+
+        const activation = await outbox.beginActivation(receiver);
+        expect(activation).toBe(before.activation + 1);
+        const outcome = await outbox.fenceActivation(receiver, activation);
+        expect(outcome.fenced).toEqual([invocation]);
+        expect(unobservedIds(await outbox.observationState(receiver))).toEqual([]);
+        expect((await outbox.receipt(receiver, invocation as never))?.observation)
+          .toBe("observed");
+      } finally {
+        settling.close();
+      }
+      expect(await receiptStates(name)).toEqual(["committed"]);
+      expect(await dumpStore(name, "mutation-outbox-v1")).toEqual([]);
+    } finally {
+      await successor.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a leader crashed inside the observation fence converges on the next one",
+  async ({ browser }) => {
+    const name = `ramose-leadership-crash-fence-${browser.uniqueId}`;
+    const left = identity({ database: databaseOf(browser.uniqueId) });
+    const receiver = replicaDatabaseScopeOf(left);
+    const key = replicaLeaderKey(receiver, name);
+    const seeding = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(seeding, left, "left");
+    } finally {
+      seeding.close();
+    }
+    const crashing = await openTab(tabModule);
+    const successor = await openTab(tabModule);
+    try {
+      await stand(crashing, name, receiver);
+      expect((await leading(crashing)).epoch).toBe(1);
+      expect(await crashing.call<number>("enqueue", {
+        scope: receiver,
+        drafts: [draft(receiver)],
+      })).toBe(1);
+
+      // The leader is inside the transaction that marks its committed receipt
+      // observed by the activation it began.
+      const stalled = await crashing.call<{
+        readonly invocation: string;
+        readonly activation: number;
+      }>("stallObservationFence", { scope: receiver });
+      expect(stalled.activation).toBe(1);
+      crashing.crash();
+
+      await stand(successor, name, receiver);
+      expect((await leading(successor)).epoch).toBe(2);
+
+      const settling = await IndexedDbReplicaStorage.open(name);
+      try {
+        const outbox = settling.outbox(() => ({ key, epoch: 2 }));
+        // Either the fence landed whole or the receipt is still unobserved,
+        // and no landing loses the commit itself.
+        const before = unobservedIds(await outbox.observationState(receiver));
+        expect([[], [stalled.invocation]]).toContainEqual(before);
+        expect((await outbox.receipt(receiver, stalled.invocation as never))?.state)
+          .toBe("committed");
+
+        const activation = await outbox.beginActivation(receiver);
+        expect(activation).toBe(2);
+        const outcome = await outbox.fenceActivation(receiver, activation);
+        expect(outcome.fenced).toEqual(before);
+        expect(unobservedIds(await outbox.observationState(receiver))).toEqual([]);
+        expect(
+          (await outbox.receipt(receiver, stalled.invocation as never))?.observation,
+        ).toBe("observed");
+      } finally {
+        settling.close();
+      }
+      expect(await receiptStates(name)).toEqual(["committed"]);
+      expect(await dumpStore(name, "mutation-outbox-v1")).toEqual([]);
     } finally {
       await successor.close();
       await deleteDatabase(name);

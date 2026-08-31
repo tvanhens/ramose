@@ -30,6 +30,16 @@ type Staging = {
   readonly datoms: readonly unknown[];
 };
 
+export type Settlement =
+  | {
+    readonly outcome: "settled";
+    readonly invocation: string;
+    readonly state: string;
+    readonly updatedAt: number;
+  }
+  | { readonly outcome: "refused"; readonly error: string }
+  | { readonly outcome: string };
+
 export type TabReport = {
   readonly status: string;
   readonly submits: boolean;
@@ -120,6 +130,104 @@ export const serve = (id: string): void =>
       const head = plans[0]!.head;
       if (head.type !== "ready") throw new Error(`the queue head is ${head.type}`);
       return head.record.invocation;
+    },
+
+    /** Settle the head of the queue the way a submitting tab settles it. */
+    acknowledgeHead: async (
+      { scope }: { readonly scope: ReplicaDatabaseScope },
+    ): Promise<Settlement> => {
+      const submitting = storage!.outbox(() => leadership?.fence());
+      try {
+        const { plans } = await submitting.submissionPlan(scopeOf(scope));
+        const head = plans[0]?.head ?? { type: "empty" as const };
+        if (head.type !== "ready") return { outcome: head.type };
+        const receipt = await submitting.acknowledge(head.record, {
+          _tag: "Committed",
+          output: {},
+          mappings: [],
+        }, 1_700_000_000_001);
+        return {
+          outcome: "settled",
+          invocation: receipt.invocation,
+          state: receipt.state,
+          updatedAt: receipt.updatedAt,
+        };
+      } catch (error: unknown) {
+        return { outcome: "refused", error: String(error) };
+      }
+    },
+
+    /**
+     * Stall this leader inside the transaction that queues one invocation, and
+     * stay there until the tab is destroyed.
+     */
+    stallEnqueue: async (
+      { scope, draft }: {
+        readonly scope: ReplicaDatabaseScope;
+        readonly draft: OutboxDraft;
+      },
+    ): Promise<string> => {
+      const outbox = storage!.outbox();
+      armCheckpoint("outbox.enqueue", "wait");
+      let failure: string | undefined;
+      void outbox.enqueue(draft, { scope: scopeOf(scope) })
+        .catch((error: unknown) => {
+          failure = String(error);
+        });
+      await stalled("outbox.enqueue", () => failure);
+      return draft.invocation;
+    },
+
+    /**
+     * Acknowledge the head of the queue, then stall inside the transaction
+     * that begins the activation its receipt is fenced against.
+     */
+    stallActivation: async (
+      { scope }: { readonly scope: ReplicaDatabaseScope },
+    ): Promise<string> => {
+      const submitting = storage!.outbox(() => leadership?.fence());
+      const { plans } = await submitting.submissionPlan(scopeOf(scope));
+      const head = plans[0]!.head;
+      if (head.type !== "ready") throw new Error(`the queue head is ${head.type}`);
+      await submitting.acknowledge(head.record, {
+        _tag: "Committed",
+        output: {},
+        mappings: [],
+      }, 1_700_000_000_001);
+      armCheckpoint("outbox.activation", "wait");
+      let failure: string | undefined;
+      void submitting.beginActivation(scope).catch((error: unknown) => {
+        failure = String(error);
+      });
+      await stalled("outbox.activation", () => failure);
+      return head.record.invocation;
+    },
+
+    /**
+     * Acknowledge the head of the queue and begin an activation, then stall
+     * inside the transaction that fences its committed-unobserved receipt.
+     */
+    stallObservationFence: async (
+      { scope }: { readonly scope: ReplicaDatabaseScope },
+    ): Promise<{ readonly invocation: string; readonly activation: number }> => {
+      const submitting = storage!.outbox(() => leadership?.fence());
+      const { plans } = await submitting.submissionPlan(scopeOf(scope));
+      const head = plans[0]!.head;
+      if (head.type !== "ready") throw new Error(`the queue head is ${head.type}`);
+      await submitting.acknowledge(head.record, {
+        _tag: "Committed",
+        output: {},
+        mappings: [],
+      }, 1_700_000_000_001);
+      const activation = await submitting.beginActivation(scope);
+      armCheckpoint("outbox.fence", "wait");
+      let failure: string | undefined;
+      void submitting.fenceActivation(scope, activation, 1_700_000_000_002)
+        .catch((error: unknown) => {
+          failure = String(error);
+        });
+      await stalled("outbox.fence", () => failure);
+      return { invocation: head.record.invocation, activation };
     },
 
     /**

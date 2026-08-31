@@ -549,6 +549,93 @@ browserTest(
 );
 
 browserTest(
+  "a route notice dropped while a child was opening is answered once it settles",
+  async ({ browser }) => {
+    const name = `ramose-partition-awaited-route-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(name);
+    const catalog = await installClientCatalog(NotesCatalog);
+    const registry = new GraphRegistry(() => {
+      throw new Error("this child resolves no children of its own");
+    }, () => undefined);
+    const child = (presented: () => void): ClientDatabaseHandle =>
+      new ClientDatabaseHandle({
+        server: globalThis.location.origin,
+        root: "refuses-children",
+        graphPath: CHILD_PATH,
+        graph: () => registry,
+        catalog: () => Promise.resolve(catalog),
+        storage: () => Promise.resolve(storage),
+        credential: () => {
+          presented();
+          return Promise.resolve({ token: "bearer-a", cacheKey: CACHE_KEY });
+        },
+        mutations: {
+          databaseOperations: () => new Map(),
+          selfOperations: () => new Map(),
+          catalog: () => Promise.resolve(catalog),
+          storage: () => Promise.resolve(storage),
+          assertLive: () => undefined,
+          submit: () => undefined,
+          track: () => undefined,
+        },
+        assertLive: () => undefined,
+        live: () => true,
+        onSyncChange: () => undefined,
+        onConfirmed: () => undefined,
+        onFenced: () => undefined,
+      });
+
+    let quiet = 0;
+    const undisturbed = child(() => {
+      quiet++;
+    });
+    let woken = 0;
+    const notified = child(() => {
+      woken++;
+    });
+    try {
+      // A selector notice another tab broadcast arrives while this child's own
+      // activation is still opening, so the open reads the route slot before
+      // that tab writes it and the notice is dropped.
+      void notified.activate();
+      notified.reactivateUnconfirmed();
+
+      // Nothing else wakes this handle: the retry that settles the dropped
+      // notice is the second activation.
+      await until(
+        () => Promise.resolve(woken),
+        (calls) => calls > 1,
+        "the dropped notice to be answered",
+      );
+      await steady(
+        () => Promise.resolve(woken),
+        (calls) => calls === 2,
+        "the activations one dropped notice starts",
+      );
+      expect(notified.syncStatus()).toBe("authentication-required");
+
+      // The same child with no notice to answer activates exactly once.
+      void undisturbed.activate();
+      await until(
+        () => Promise.resolve(undisturbed.syncStatus()),
+        (status) => status === "authentication-required",
+        "the server to refuse the undisturbed child",
+      );
+      await steady(
+        () => Promise.resolve(quiet),
+        (calls) => calls === 1,
+        "the activations no notice starts",
+      );
+    } finally {
+      await notified.close();
+      await undisturbed.close();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a read view another tab rotated is what a durable re-read publishes",
   async ({ browser }) => {
     const name = `ramose-partition-rotation-${browser.uniqueId}`;

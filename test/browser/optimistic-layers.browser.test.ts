@@ -5,7 +5,11 @@ import type { OperationVersion } from "../../packages/ramose/src/internal/author
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
 import { Index } from "../../packages/ramose/src/internal/core/datom.ts";
 import { clientRef, invocationId } from "../../packages/ramose/src/db/refs.ts";
-import type { ClientRef, EntityId } from "../../packages/ramose/src/db/refs.ts";
+import type {
+  ClientRef,
+  EntityId,
+  InvocationId,
+} from "../../packages/ramose/src/db/refs.ts";
 import type { ProjectionTx } from "../../packages/ramose/src/db/Projection.ts";
 import {
   sealEntityId,
@@ -28,6 +32,11 @@ import {
   decodeReplicationFrame,
   type ReplicationIdentity,
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
+import { rootReplicaRouteSlot } from "../../packages/ramose/src/internal/replication/route-slot.ts";
+import {
+  replicationActivationAddress,
+  replicationCredentialFingerprint,
+} from "../../packages/ramose/src/internal/replication/transport.ts";
 import {
   generateServerIdentityRoot,
   sealingKeyOf,
@@ -259,6 +268,50 @@ browserTest(
     }
   },
 );
+
+const CREDENTIAL = "session-credential";
+
+const recordedFrames = async (root: string) => {
+  const response = await fetch(`/db/${root}/replicate`, { method: "POST" });
+  expect(response.status).toBe(200);
+  return (await response.text()).split("\n").filter((line) => line !== "").map(
+    (line) => {
+      const decoded = decodeReplicationFrame(line);
+      if (Result.isFailure(decoded)) throw decoded.failure;
+      return decoded.success;
+    },
+  );
+};
+
+/**
+ * Install the recorded activation's own snapshot and bind it to the credential
+ * a session opened at `root` presents, so that session resumes this replica
+ * instead of taking a fresh snapshot.
+ */
+const installRecorded = async (
+  storage: IndexedDbReplicaStorage,
+  root: string,
+): Promise<void> => {
+  for (const frame of await recordedFrames("optimistic-fence")) {
+    if (frame.type === "SnapshotStart") await storage.startSnapshot(frame);
+    else if (frame.type === "SnapshotChunk") await storage.stageSnapshotChunk(frame);
+    else if (frame.type === "SnapshotCommit") {
+      dropped(await storage.commitSnapshot(frame, ATTRIBUTES));
+    } else throw new Error(`the recorded snapshot carries a ${frame.type}`);
+  }
+  await storage.bindAuthenticated({
+    fingerprint: await replicationCredentialFingerprint(
+      CREDENTIAL,
+      replicationActivationAddress({
+        server: globalThis.location.origin,
+        root,
+        graphPath: [],
+      }),
+      await rootReplicaRouteSlot(),
+    ),
+    identity: identity(),
+  });
+};
 
 const committedNames = async (
   storage: IndexedDbReplicaStorage,
@@ -815,6 +868,181 @@ browserTest(
       expect(authoritative.length).toBeGreaterThan(0);
       expect(authoritative).not.toContain("committed-unobserved");
       expect(await names(reconciler, storage, selected)).toEqual(authoritative);
+    } finally {
+      await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+type PendingFence = {
+  readonly storage: IndexedDbReplicaStorage;
+  readonly reconciler: OptimisticReconciler;
+  readonly invocation: InvocationId;
+  readonly receiver: ReplicaDatabaseScope;
+  readonly activation: number;
+};
+
+/**
+ * A replica restored from the recorded activation, carrying one committed
+ * receipt no activation has observed yet.
+ */
+const pendingFence = async (
+  database: string,
+  root: string,
+): Promise<PendingFence> => {
+  const selected = identity();
+  const receiver = replicaDatabaseScopeOf(selected);
+  const scope = replicaScopeOf(selected);
+  const storage = await IndexedDbReplicaStorage.open(database);
+  await installRecorded(storage, root);
+  const outbox = storage.outbox();
+  const allocation = clientRef();
+  const record = await enqueueProjected(storage, receiver, scope, {
+    input: { name: "committed-unobserved" },
+    allocations: [{ slot: "issue", clientRef: allocation }],
+  });
+  await outbox.acknowledge(record, {
+    _tag: "Committed",
+    output: null,
+    mappings: [{ clientRef: allocation, entityId: await handleFor(receiver, 12) }],
+  });
+  const reconciler = new OptimisticReconciler(outbox, receiver, catalog());
+  const activation = await reconciler.restart();
+  expect(reconciler.snapshot().layers).toMatchObject([
+    { state: "committed-unobserved", activation: 0 },
+  ]);
+  return { storage, reconciler, invocation: record.invocation, receiver, activation };
+};
+
+const fenced = (
+  reconciler: OptimisticReconciler,
+  session: ReplicationSession,
+): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
+    const stop = reconciler.observe((state) => {
+      if (state.layers.length === 0) {
+        stop();
+        resolve();
+      }
+    });
+    session.observe((snapshot) => {
+      if (snapshot.status === "failed" || snapshot.status === "terminal") {
+        stop();
+        reject(new Error(`session ${snapshot.status}`));
+      }
+    });
+  });
+
+browserTest(
+  "the resume acknowledgement of a restored replica fences its receipt",
+  async ({ browser }) => {
+    const database = `ramose-layer-resume-fence-${browser.uniqueId}`;
+    const root = "optimistic-fence-resume";
+    const pending = await pendingFence(database, root);
+    const { storage, reconciler, invocation, receiver } = pending;
+    let session: ReplicationSession | undefined;
+    let refused: ReplicationSession | undefined;
+    try {
+      // An activation that never reaches the server observes nothing, so the
+      // layer and its unobserved receipt stay exactly where they are.
+      refused = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "refuses-credentials",
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+        onActivationOutcome: reconciler.outcome(pending.activation),
+      });
+      await new Promise<void>((resolve) => {
+        refused!.observe((snapshot) => {
+          if (snapshot.status === "failed") resolve();
+        });
+      });
+      await reconciler.refresh();
+      expect(reconciler.snapshot().layers).toMatchObject([
+        { state: "committed-unobserved" },
+      ]);
+      expect((await storage.outbox().receipt(receiver, invocation))?.observation)
+        .toBe("unobserved");
+
+      const activation = await reconciler.restart();
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root,
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+        onActivationOutcome: reconciler.outcome(activation),
+      });
+      await fenced(reconciler, session);
+
+      // The resume published the replica it restored, at the revision the
+      // recorded acknowledgement names.
+      expect(session.snapshot()).toMatchObject({
+        status: "open",
+        value: { revision: recorded.revision, stale: false },
+      });
+      expect((await storage.outbox().receipt(receiver, invocation))?.observation)
+        .toBe("observed");
+      expect(await rawLayers(database)).toEqual([]);
+    } finally {
+      await refused?.close();
+      await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+browserTest(
+  "a change frame continuing the restored revision fences its receipt",
+  async ({ browser }) => {
+    const database = `ramose-layer-change-fence-${browser.uniqueId}`;
+    const root = "optimistic-fence-change";
+    const { storage, reconciler, invocation, receiver, activation } =
+      await pendingFence(database, root);
+    let session: ReplicationSession | undefined;
+    try {
+      expect(await committedNames(storage, identity()))
+        .not.toContain("Recorded change");
+
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root,
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+        onActivationOutcome: reconciler.outcome(activation),
+      });
+      await fenced(reconciler, session);
+
+      // The change was applied, not resumed: the replica advanced to the
+      // revision the recorded frame committed, and carries its value.
+      expect(session.snapshot()).toMatchObject({
+        status: "open",
+        value: { revision: recorded.change.revision, stale: false },
+      });
+      const authoritative = await committedNames(storage, identity());
+      expect(authoritative).toContain("Recorded change");
+      expect(authoritative).not.toContain("committed-unobserved");
+      expect((await storage.outbox().receipt(receiver, invocation))?.observation)
+        .toBe("observed");
+      expect(await rawLayers(database)).toEqual([]);
+      expect(await names(reconciler, storage, identity())).toEqual(authoritative);
     } finally {
       await session?.close();
       storage.close();

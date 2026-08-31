@@ -86,6 +86,55 @@ const deleteDatabase = (name: string): Promise<void> =>
     request.addEventListener("error", () => reject(request.error), { once: true });
   });
 
+const MUTATION_STORES = [
+  "mutation-outbox-v1",
+  "mutation-queues-v1",
+  "mutation-receipts-v1",
+  "mutation-client-refs-v1",
+  "mutation-client-ref-mappings-v1",
+  "mutation-layers-v1",
+] as const;
+
+/**
+ * Every row in every mutation store of one storage namespace, counted with no
+ * scope prefix, so a durable trace under any scope is visible.
+ */
+const mutationCensus = async (
+  name: string,
+): Promise<Record<string, number>> => {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  try {
+    const present = MUTATION_STORES.filter((store) =>
+      database.objectStoreNames.contains(store)
+    );
+    const census: Record<string, number> = {};
+    for (const store of MUTATION_STORES) census[store] = 0;
+    if (present.length === 0) return census;
+    const transaction = database.transaction(present, "readonly");
+    await Promise.all(present.map((store) =>
+      new Promise<void>((resolve, reject) => {
+        const request = transaction.objectStore(store).count();
+        request.addEventListener("success", () => {
+          census[store] = request.result;
+          resolve();
+        }, { once: true });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+      })
+    ));
+    return census;
+  } finally {
+    database.close();
+  }
+};
+
+const NO_MUTATION_TRACE: Record<string, number> = Object.fromEntries(
+  MUTATION_STORES.map((store) => [store, 0]),
+);
+
 const waitFor = <A>(
   subscription: { subscribe: (f: () => void) => () => void; getSnapshot: () => A },
   accept: (value: A) => boolean,
@@ -209,16 +258,8 @@ browserTest(
       expect(db.sync.getSnapshot().status).toBe("authentication-required");
 
       // And nothing durable was written for an invocation that never had a
-      // receiver: no outbox row, and no client ref claimed by one.
-      const storage = await IndexedDbReplicaStorage.open(name);
-      try {
-        expect(await storage.outbox().restore({
-          server: opaque("s"),
-          principal: opaque("p"),
-        }).then((restored) => restored.records)).toHaveLength(0);
-      } finally {
-        storage.close();
-      }
+      // receiver, in any mutation store and under any scope.
+      expect(await mutationCensus(name)).toEqual(NO_MUTATION_TRACE);
     } finally {
       await app.close();
       await deleteDatabase(name);
@@ -262,6 +303,13 @@ browserTest("a targetless mutation queues durably and reports it", async ({ brow
     expect(JSON.stringify(record)).not.toContain("unitHash");
 
     expect(receipt.getSnapshot().status).toBe("queued");
+    // The census the refusal tests read as zero counts these rows.
+    expect(await mutationCensus(name)).toEqual({
+      ...NO_MUTATION_TRACE,
+      "mutation-outbox-v1": 1,
+      "mutation-queues-v1": 1,
+      "mutation-receipts-v1": 1,
+    });
   } finally {
     await app.close();
     await deleteDatabase(name);
@@ -360,13 +408,7 @@ browserTest(
       expect(state.status).toBe("failed");
 
       expect(await queued(name, identity)).toHaveLength(0);
-      const storage = await IndexedDbReplicaStorage.open(name);
-      try {
-        expect(await storage.outbox().mappedRefs(replicaScopeOf(identity)))
-          .toEqual(new Map());
-      } finally {
-        storage.close();
-      }
+      expect(await mutationCensus(name)).toEqual(NO_MUTATION_TRACE);
     } finally {
       await app.close();
       await deleteDatabase(name);
@@ -500,6 +542,7 @@ browserTest(
       });
       expect(receipt.getSnapshot().status).toBe("failed");
       expect(await queued(name, identity)).toHaveLength(0);
+      expect(await mutationCensus(name)).toEqual(NO_MUTATION_TRACE);
     } finally {
       await deleteDatabase(name);
     }
@@ -547,6 +590,7 @@ browserTest(
 
       expect(db.sync.getSnapshot().status).toBe("closed");
       expect(await queued(name, identity)).toHaveLength(0);
+      expect(await mutationCensus(name)).toEqual(NO_MUTATION_TRACE);
     } finally {
       await deleteDatabase(name);
     }

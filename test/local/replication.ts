@@ -50,6 +50,7 @@ const ENTITY_HANDLE_DATABASE = CONFORMANCE_DATABASES[20]!;
 const INERT_CHANGE_DATABASE = CONFORMANCE_DATABASES[21]!;
 const HIDDEN_SCALE_DATABASE = CONFORMANCE_DATABASES[22]!;
 const COLD_ISOLATE_DATABASE = CONFORMANCE_DATABASES[23]!;
+const MULTI_DEVICE_DATABASE = CONFORMANCE_DATABASES[24]!;
 
 const HIDDEN_SCALE_COMMITS = 1_000;
 
@@ -632,6 +633,88 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect([...theirs.handles.values()].length).toBeGreaterThan(0);
       for (const handle of theirs.handles.values()) {
         expect(handles).not.toContain(handle);
+      }
+    });
+
+    test("one device's minted handle is what another device replicates and targets", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, MULTI_DEVICE_DATABASE, false);
+      const eid = String(world.ids.parent);
+
+      // The first device mutates through the public operation surface and is
+      // answered with the entity's sealed handle.
+      const first = await rename(
+        base,
+        world.database,
+        world.member,
+        world.ids.parent,
+        "Device one",
+      );
+      expect(first.status).toBe(200);
+      const handle = first.body.result.id as string;
+      expect(isEntityId(handle)).toBe(true);
+      expect(JSON.stringify(first.body)).not.toContain(eid);
+
+      // The second device replicates the same principal and finds that exact
+      // handle, with no numeric identity anywhere in the stream.
+      const replicated = async () => {
+        const response = await openReplication(base, world.database, world.member);
+        expect(response.status).toBe(200);
+        const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+        try {
+          const snapshot = await collectCommittedSnapshot(iterator);
+          return {
+            handles: snapshot.state.committed!.handles,
+            titles: titlesOf(snapshot.state),
+            wire: snapshot.frames.map((observed) => observed.wire).join("\n"),
+          };
+        } finally {
+          await closeIterator(iterator);
+        }
+      };
+
+      const second = await replicated();
+      expect([...second.handles.values()]).toContain(handle);
+      expect(second.titles).toContain("Device one");
+      expect(second.wire).not.toContain(`"${eid}"`);
+      expect(second.wire).not.toContain(`:${eid}`);
+
+      // And mutates through the handle it replicated, which the server
+      // answers with the identical handle.
+      const again = await json(base, `/db/${world.database}/op`, {
+        method: "POST",
+        token: world.member,
+        headers: { "content-type": "application/json", ...originHeaders },
+        body: JSON.stringify({
+          invocationId: crypto.randomUUID(),
+          operation: {
+            owner: { kind: "entity", name: ConformanceIssue.ns },
+            localName: "rename",
+          },
+          target: handle,
+          input: { title: "Device two" },
+        }),
+      });
+      expect(again.status).toBe(200);
+      expect(again.body.result.id).toBe(handle);
+      expect(JSON.stringify(again.body)).not.toContain(eid);
+
+      // Both devices converge on one entity under one identity.
+      const converged = await replicated();
+      expect(converged.titles).toContain("Device two");
+      expect(converged.titles).not.toContain("Device one");
+      expect([...converged.handles.values()]).toContain(handle);
+
+      // A handle stays the answer to one principal: another principal's
+      // replication of the same entity never carries it.
+      const theirs = await openReplication(base, world.database, world.admin);
+      const iterator = readReplicationNdjson(theirs)[Symbol.asyncIterator]();
+      try {
+        const snapshot = await collectCommittedSnapshot(iterator);
+        expect([...snapshot.state.committed!.handles.values()])
+          .not.toContain(handle);
+      } finally {
+        await closeIterator(iterator);
       }
     });
 

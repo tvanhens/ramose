@@ -54,6 +54,8 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-sealed-input-taxonomy",
   "operations-sealed-input-consumed",
   "operations-client-input-refs",
+  "operations-client-storm",
+  "operations-seal-order",
 ]);
 
 const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(

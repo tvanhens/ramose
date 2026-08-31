@@ -680,6 +680,89 @@ browserTest("an authoritative mapping is immutable and belongs to its allocation
   }
 });
 
+browserTest(
+  "a compatible read view keeps the mappings and the targets they release",
+  async ({ browser }) => {
+    const name = `ramose-outbox-read-view-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const allocation = clientRef();
+    const mapped = (await sealEntityId(
+      sealingKeyOf(root),
+      idScope(receiver),
+      11,
+    )) as EntityId;
+    const first = await IndexedDbReplicaStorage.open(name);
+    let dependent: string;
+    try {
+      await confirm(first, left, "left");
+      const outbox = first.outbox();
+      const create = await outbox.enqueue(
+        draft(receiver, { allocations: [{ slot: "issue", clientRef: allocation }] }),
+        { scope },
+      );
+      const queued = await outbox.enqueue(
+        draft(receiver, {
+          target: { type: "client-ref", clientRef: allocation },
+          input: { assignee: allocation },
+          inputRefs: [{ path: ["assignee"], ref: allocation }],
+        }),
+        { scope },
+      );
+      dependent = queued.invocation;
+      await outbox.acknowledge(create, {
+        _tag: "Committed",
+        output: null,
+        mappings: [{ clientRef: allocation, entityId: mapped }],
+      });
+    } finally {
+      first.close();
+    }
+
+    // The same database under a compatible read view: a new read view and a
+    // new read-compatibility hash, and every identity the queue is addressed
+    // by unchanged.
+    const drifted = identity({
+      readView: opaque("w"),
+      readCompatibilityHash: ReadCompatibilityHash.make(opaque("m")),
+    });
+    const second = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(second, drifted, "drifted");
+      const outbox = second.outbox();
+      expect(await outbox.mappedHandles(receiver))
+        .toEqual(new Map([[allocation, mapped]]));
+      const { plans, handles } = await outbox.submissionPlan(scope);
+      expect(handles).toEqual(
+        new Map([[mappingKey(mutationPartitionKey(receiver), allocation), mapped]]),
+      );
+      const head = plans[0]!.head;
+      if (head.type !== "ready") throw new Error(`the queue head is ${head.type}`);
+      expect(head.record.invocation).toBe(dependent);
+      expect(head.record.target).toEqual({
+        type: "client-ref",
+        clientRef: allocation,
+      });
+      expect(substituteMutationRefs(head.record, handles))
+        .toEqual({ target: mapped, input: { assignee: mapped } });
+
+      // The identities the partition key does read still separate: the same
+      // principal's other database sees neither the queue nor the mapping.
+      const sibling = identity({ database: OTHER_DATABASE });
+      await confirm(second, sibling, "sibling");
+      expect(await outbox.mappedHandles(replicaDatabaseScopeOf(sibling)))
+        .toEqual(new Map());
+      expect(
+        (await outbox.submissionPlan(scope)).plans.map((plan) => plan.partition),
+      ).toEqual([mutationPartitionKey(receiver)]);
+    } finally {
+      second.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
 browserTest("an unconfirmed scope cannot hold durable work", async ({ browser }) => {
   const name = `ramose-outbox-unconfirmed-${browser.uniqueId}`;
   const left = identity();

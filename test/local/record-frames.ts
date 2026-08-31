@@ -11,7 +11,11 @@ import {
 } from "../support/replication.ts";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { CONFORMANCE_DATABASES } from "./conformance-catalog.ts";
-import { install, seedWorld } from "./conformance.ts";
+import {
+  ConformanceIssue,
+  ConformanceUser,
+} from "./conformance-catalog.ts";
+import { create, install, invoke, seedWorld } from "./conformance.ts";
 import { loadConformanceProof } from "./conformance-proof.ts";
 import type { LocalUrls } from "./fixtures.ts";
 import { closeIterator, openReplication } from "./replication.ts";
@@ -44,7 +48,7 @@ export const registerFrameRecorder = (
   options: { readonly urls: () => LocalUrls },
 ): void => {
   describe("browser frame fixture recording", () => {
-    test("records one real activation's snapshot frames", async () => {
+    test("records one real activation's snapshot, resume, and change frames", async () => {
 
       if (process.env[RECORD_FRAMES_ENV] !== "1") return;
       const base = options.urls().conformanceUrl;
@@ -52,8 +56,7 @@ export const registerFrameRecorder = (
       await loadConformanceProof(base);
       await install(base, RECORDING_DATABASE);
 
-      const seeded = await seedWorld(base, RECORDING_DATABASE, false)
-        .then((world) => world.member)
+      await seedWorld(base, RECORDING_DATABASE, false)
         .catch((cause: unknown) => {
           console.warn(
             `[record:frames] reusing the existing world in ${RECORDING_DATABASE}: ${
@@ -63,15 +66,31 @@ export const registerFrameRecorder = (
           return undefined;
         });
 
-      const token = seeded ??
-        await signToken(RECORDING_DATABASE, "admin", "admin-sub", {
-          org: "admin-org",
-        });
+      const admin = await signToken(RECORDING_DATABASE, "admin", "admin-sub", {
+        org: "admin-org",
+      });
+      const token = await signToken(RECORDING_DATABASE, "member", "alice-sub", {
+        org: "acme",
+      });
+
+      const run = Date.now().toString(36);
+      const owner = await create(base, RECORDING_DATABASE, admin, ConformanceUser.ns, {
+        sub: `recorder-${run}`,
+      });
+      const subject = await create(
+        base,
+        RECORDING_DATABASE,
+        admin,
+        ConformanceIssue.ns,
+        { key: `recorder-${run}`, title: "Recorded", owner, org: "acme" },
+      );
+
       const response = await openReplication(base, RECORDING_DATABASE, token);
       expect(response.status).toBe(200);
       const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
       let wire: readonly string[];
       let identity: ReplicationIdentity;
+      let revision: string;
       let datoms: readonly LogicalDatom[];
       try {
         const snapshot = await collectCommittedSnapshot(iterator);
@@ -84,19 +103,87 @@ export const registerFrameRecorder = (
           throw new Error("the recorded activation carries no identity");
         }
         identity = first.identity;
+        revision = snapshot.state.committed!.revision;
         datoms = snapshot.state.committed?.datoms ?? [];
         expect(datoms.length).toBeGreaterThan(0);
       } finally {
         await closeIterator(iterator);
       }
+
+      // The acknowledgement a client resuming that exact revision is answered
+      // with, recorded before anything commits over it.
+      const resumeResponse = await openReplication(
+        base,
+        RECORDING_DATABASE,
+        token,
+        revision,
+      );
+      expect(resumeResponse.status).toBe(200);
+      const resuming = readReplicationNdjson(resumeResponse)[Symbol.asyncIterator]();
+      let resumeWire: string;
+      try {
+        const ready = await resuming.next();
+        if (ready.done || ready.value.frame.type !== "ResumeReady") {
+          throw new Error(`the resume was answered ${JSON.stringify(ready)}`);
+        }
+        expect(ready.value.frame.revision).toBe(revision);
+        expect(ready.value.frame.identity).toEqual(identity);
+        resumeWire = ready.value.wire;
+      } finally {
+        await closeIterator(resuming);
+      }
+
+      // The change that continues that same revision, recorded from a live
+      // session over one real commit.
+      const changeResponse = await openReplication(base, RECORDING_DATABASE, token);
+      expect(changeResponse.status).toBe(200);
+      const changing = readReplicationNdjson(changeResponse)[Symbol.asyncIterator]();
+      let changeWire: string;
+      let changeRevision: string;
+      try {
+        const before = await collectCommittedSnapshot(changing);
+        expect(before.state.committed!.revision).toBe(revision);
+        const pending = changing.next();
+        const renamed = await invoke(base, RECORDING_DATABASE, token, {
+          owner: { kind: "entity", name: ConformanceIssue.ns },
+          localName: "rename",
+        }, { title: "Recorded change" }, subject);
+        expect(renamed.status).toBe(200);
+        const next = await pending;
+        if (next.done || next.value.frame.type !== "Change") {
+          throw new Error(`the commit was answered ${JSON.stringify(next)}`);
+        }
+        expect(next.value.frame.from).toBe(revision);
+        expect(next.value.frame.identity).toEqual(identity);
+        changeWire = next.value.wire;
+        changeRevision = next.value.frame.revision;
+      } finally {
+        await closeIterator(changing);
+      }
+
       await Bun.write(
         join(FIXTURE_DIRECTORY, `${FIXTURE_NAME}.ndjson`),
         `${wire.join("\n")}\n`,
       );
+      await Bun.write(
+        join(FIXTURE_DIRECTORY, `${FIXTURE_NAME}-resume.ndjson`),
+        `${resumeWire}\n`,
+      );
+      await Bun.write(
+        join(FIXTURE_DIRECTORY, `${FIXTURE_NAME}-change.ndjson`),
+        `${changeWire}\n`,
+      );
 
       await Bun.write(
         join(FIXTURE_DIRECTORY, `${FIXTURE_NAME}.client.json`),
-        `${JSON.stringify({ identity, attributes: attributesOf(datoms) }, null, 2)}\n`,
+        `${
+          JSON.stringify({
+            identity,
+            attributes: attributesOf(datoms),
+            revision,
+            change: { from: revision, revision: changeRevision },
+          }, null, 2)
+        }\n`,
       );
     });
   });
