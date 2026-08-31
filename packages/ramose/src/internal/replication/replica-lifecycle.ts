@@ -79,6 +79,20 @@ export const replicaDatabasePartitionPrefix = (
     "",
   ].join(":");
 
+export const replicaPartitionDatabasePrefix = (
+  partition: string,
+): string | undefined => {
+  const parts = partition.split(":");
+  if (parts.length !== 6 || parts[0] !== `ramose-replica-v${REPLICA_STORAGE_VERSION}`) {
+    return undefined;
+  }
+  return replicaDatabasePartitionPrefix({
+    server: parts[1],
+    principal: parts[2],
+    database: parts[3],
+  });
+};
+
 export const identityInScope = (
   identity: ReplicationIdentity,
   scope: ReplicaScope,

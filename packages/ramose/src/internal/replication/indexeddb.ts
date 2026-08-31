@@ -60,6 +60,7 @@ import {
   ReplicaQuotaExhaustedError,
   ReplicaReachability,
   stagingIsSweepable,
+  supersededPartitions,
   unreachableNodeHashes,
   type ReplicaGcOutcome,
 } from "./replica-gc.ts";
@@ -845,6 +846,30 @@ type SurveyedPartition = {
   readonly record: unknown;
 };
 
+const referencedPartitions = (
+  families: readonly (readonly { readonly identity: ReplicationIdentity }[])[],
+): ReadonlySet<string> => {
+  const referenced = new Set<string>();
+  for (const family of families) {
+    for (const record of family) referenced.add(replicaPartitionKey(record.identity));
+  }
+  return referenced;
+};
+
+const readReferences = async (
+  transaction: IDBTransaction,
+): Promise<ReadonlySet<string>> => {
+  const [bindings, candidates] = await Promise.all([
+    requestResult<CredentialBindingRecord[]>(
+      transaction.objectStore(CREDENTIAL_BINDINGS).getAll(),
+    ),
+    requestResult<CacheCandidateRecord[]>(
+      transaction.objectStore(CACHE_CANDIDATES).getAll(),
+    ),
+  ]);
+  return referencedPartitions([bindings, candidates]);
+};
+
 let retentionToken = 0;
 
 const RECORD_MOVED = Symbol("replica.record-moved");
@@ -1331,6 +1356,10 @@ export class IndexedDbReplicaStorage {
       prefix = replicaScopePartitionPrefix(options.scope);
     }
     const survey = await this.surveyPartitions(prefix);
+    const superseded = supersededPartitions(
+      survey.keys(),
+      await this.surveyReferences(),
+    );
     let partitions = 0;
     let swept = 0;
     let skipped = 0;
@@ -1341,15 +1370,16 @@ export class IndexedDbReplicaStorage {
       const scopeKey = replicaPartitionScopeKey(partition);
       if (scopeKey !== undefined && this.clearedScopes.has(scopeKey)) continue;
       partitions++;
+      const discard = superseded.has(partition);
       const stored = await this.surveyManifest(partition, hashes);
-      const live = await this.liveNodeHashes(partition, stored);
+      const live = await this.liveNodeHashes(partition, stored, discard);
       if (live === undefined) {
         skipped++;
         continue;
       }
       const garbage = unreachableNodeHashes(stored.hashes, live);
       await this.boundaries.checkpoint("replica.gc.planned");
-      const outcome = await this.sweepPartition(partition, stored, garbage, live);
+      const outcome = await this.sweepPartition(partition, stored, garbage, live, discard);
       if (outcome === undefined) {
         skipped++;
         continue;
@@ -1357,7 +1387,10 @@ export class IndexedDbReplicaStorage {
       retained += stored.hashes.length - outcome.nodes;
       nodes += outcome.nodes;
       staging += outcome.staging;
-      if (outcome.nodes > 0 || outcome.staging > 0) swept++;
+      if (outcome.nodes > 0 || outcome.staging > 0 || outcome.discarded) swept++;
+      if (!outcome.discarded) continue;
+      const discarded = replicaManifestIdentity(stored.record);
+      if (discarded !== undefined) this.announce(identityNotice("reset", discarded));
     }
     return Object.freeze({ partitions, swept, skipped, nodes, retained, staging });
   }
@@ -1400,6 +1433,16 @@ export class IndexedDbReplicaStorage {
     return survey;
   }
 
+  private async surveyReferences(): Promise<ReadonlySet<string>> {
+    const transaction = this.database.transaction(
+      [...IDENTITY_KEYED_FAMILIES],
+      "readonly",
+    );
+    const referenced = await readReferences(transaction);
+    await transactionDone(transaction);
+    return referenced;
+  }
+
   private async surveyManifest(
     partition: string,
     hashes: string[],
@@ -1415,9 +1458,10 @@ export class IndexedDbReplicaStorage {
   private async liveNodeHashes(
     partition: string,
     stored: SurveyedPartition,
+    discard: boolean,
   ): Promise<ReadonlySet<string> | undefined> {
     const live = new Set<string>();
-    if (stored.record !== undefined) {
+    if (!discard && stored.record !== undefined) {
       const expected = storedReadCompatibilityHash(stored.record);
       if (expected === undefined) return undefined;
       const manifest = validateReplicaManifest(stored.record, {
@@ -1451,11 +1495,26 @@ export class IndexedDbReplicaStorage {
     stored: SurveyedPartition,
     garbage: readonly string[],
     live: ReadonlySet<string>,
-  ): Promise<{ readonly nodes: number; readonly staging: number } | undefined> {
+    discard: boolean,
+  ): Promise<
+    { readonly nodes: number; readonly staging: number; readonly discarded: boolean }
+      | undefined
+  > {
     if (this.registry.materializing.has(partition)) return undefined;
     if (this.retainedRoots(partition).some((hash) => !live.has(hash))) return undefined;
+    if (discard && this.retainedRoots(partition).length > 0) return undefined;
     const transaction = this.database.transaction(
-      [COMMITTED, NODES, STAGING, STAGING_CHUNKS, GENERATIONS],
+      discard
+        ? [
+          COMMITTED,
+          COMMITTED_HEADS,
+          NODES,
+          STAGING,
+          STAGING_CHUNKS,
+          GENERATIONS,
+          ...IDENTITY_KEYED_FAMILIES,
+        ]
+        : [COMMITTED, NODES, STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
     let sweptStaging = false;
@@ -1474,10 +1533,18 @@ export class IndexedDbReplicaStorage {
         await abortTransaction(transaction);
         return undefined;
       }
-      sweptStaging = stagingIsSweepable(staged, storedRevision(current));
-      if (garbage.length === 0 && !sweptStaging) {
+      if (
+        discard &&
+        !supersededPartitions([partition], await readReferences(transaction)).has(partition)
+      ) {
+        await abortTransaction(transaction);
+        return undefined;
+      }
+      sweptStaging = staged !== undefined &&
+        (discard || stagingIsSweepable(staged, storedRevision(current)));
+      if (garbage.length === 0 && !sweptStaging && !discard) {
         await transactionDone(transaction);
-        return { nodes: 0, staging: 0 };
+        return { nodes: 0, staging: 0, discarded: false };
       }
       const nodes = transaction.objectStore(NODES);
       for (const hash of garbage) nodes.delete([partition, hash]);
@@ -1485,7 +1552,11 @@ export class IndexedDbReplicaStorage {
         transaction.objectStore(STAGING).delete(partition);
         transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
       }
-      if (garbage.length > 0) {
+      if (discard) {
+        transaction.objectStore(COMMITTED).delete(partition);
+        transaction.objectStore(COMMITTED_HEADS).delete(partition);
+      }
+      if (garbage.length > 0 || discard) {
         transaction.objectStore(GENERATIONS).put({
           key: sweepKey,
           kind: "partition",
@@ -1501,7 +1572,7 @@ export class IndexedDbReplicaStorage {
       throw error;
     }
     await commitTransaction(transaction);
-    return { nodes: garbage.length, staging: sweptStaging ? 1 : 0 };
+    return { nodes: garbage.length, staging: sweptStaging ? 1 : 0, discarded: discard };
   }
 
   private async committed(identity: ReplicationIdentity): Promise<unknown> {
@@ -1947,15 +2018,15 @@ export class IndexedDbReplicaStorage {
     selector: string | undefined,
   ): Promise<readonly ReplicaScope[]> {
     if (selector === undefined) return [];
+    const candidates = transaction.objectStore(CACHE_CANDIDATES);
     const held = await requestResult<CacheCandidateRecord[]>(
-      transaction.objectStore(CACHE_CANDIDATES).getAll(
-        compoundPrefixRange(selector),
-      ),
+      candidates.getAll(compoundPrefixRange(selector)),
     );
     const replaced = new Map<string, ReplicaScope>();
     for (const candidate of held) {
       const previous = replicaScopeOf(candidate.identity);
       if (identityInScope(confirmed, previous)) continue;
+      candidates.delete([candidate.selector, candidate.routeSlot]);
       replaced.set(replicaScopeKey(previous), previous);
     }
     if (replaced.size === 0) return [];

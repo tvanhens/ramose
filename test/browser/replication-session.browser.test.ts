@@ -29,6 +29,7 @@ import {
   stableReplicaRouteSlot,
 } from "../../packages/ramose/src/internal/replication/route-slot.ts";
 import {
+  REPLICA_CLEAR_BARRIER_KEY,
   REPLICA_GENERATIONS_STORE,
   replicaDatabaseKey,
   replicaDatabaseScopeOf,
@@ -476,6 +477,81 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     expect(persisted).not.toContain(rawCacheKey);
     expect(persisted).not.toContain("renamed");
     expect(persisted).not.toContain("token");
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a replaced principal leaves no candidate slot to re-fence", async ({ browser }) => {
+  const name = `ramose-session-replaced-slots-${browser.uniqueId}`;
+  const storage = await IndexedDbReplicaStorage.open(name);
+  const address = replicationActivationAddress(activation);
+  const rootSlot = await rootReplicaRouteSlot();
+  const childSlot = await provisionalReplicaRouteSlot(["child"]);
+  const selector = await replicationCacheSelector("shared-local-user", address);
+  const other: ReplicationIdentity = {
+    ...selected,
+    principal: opaque("o"),
+    authenticator: opaque("z"),
+  };
+  const replaced = replicaScopeKey(replicaScopeOf(selected));
+  const generationOf = async (key: string): Promise<number> => {
+    const database = await openNative(name);
+    const inspect = database.transaction(REPLICA_GENERATIONS_STORE, "readonly");
+    const record = await requestResult<{ readonly generation: number } | undefined>(
+      inspect.objectStore(REPLICA_GENERATIONS_STORE).get(key),
+    );
+    await transactionDone(inspect);
+    database.close();
+    return record?.generation ?? 0;
+  };
+  const held = await replicationCredentialFingerprint("held-token", address, rootSlot);
+  try {
+    await install(storage);
+    await install(storage, opaque("u"), opaque("2"), other, "other-principal");
+    for (const routeSlot of [rootSlot, childSlot]) {
+      await storage.bindAuthenticated({
+        fingerprint: routeSlot === rootSlot
+          ? held
+          : await replicationCredentialFingerprint("held-token", address, routeSlot),
+        identity: selected,
+        candidateKey: { selector, routeSlot },
+      });
+    }
+
+    await storage.bindAuthenticated({
+      fingerprint: await replicationCredentialFingerprint("other-token", address, childSlot),
+      identity: other,
+      candidateKey: { selector, routeSlot: childSlot },
+    });
+    const fenced = await generationOf(replaced);
+    const barrier = await generationOf(REPLICA_CLEAR_BARRIER_KEY);
+    expect(fenced).toBe(2);
+    expect(barrier).toBe(1);
+
+    expect(await storage.selectCacheCandidate(
+      { selector, routeSlot: rootSlot },
+      selected.readCompatibilityHash,
+    )).toBeUndefined();
+    expect((await storage.selectCacheCandidate(
+      { selector, routeSlot: childSlot },
+      selected.readCompatibilityHash,
+    ))?.identity).toEqual(other);
+
+    await storage.bindAuthenticated({
+      fingerprint: await replicationCredentialFingerprint("other-token", address, rootSlot),
+      identity: other,
+      candidateKey: { selector, routeSlot: rootSlot },
+    });
+    expect(await generationOf(replaced)).toBe(fenced);
+    expect(await generationOf(REPLICA_CLEAR_BARRIER_KEY)).toBe(barrier);
+
+    expect((await storage.restoreBound(
+      held,
+      attributes,
+      selected.readCompatibilityHash,
+    ))?.revision).toBe(opaque("r"));
   } finally {
     storage.close();
     await deleteDatabase(name);
