@@ -246,7 +246,6 @@ export const conformanceReadCompatibilityHash = await Effect.runPromise(
 
 const deployedCatalog = compatibilityUnit.unit.catalog;
 
-/** What a client build that changed only documentation computes. */
 export const conformanceInertReadCompatibilityHash = await Effect.runPromise(
   hashReadCompatibility({
     entities: deployedCatalog.entities.map((entity) => ({
@@ -265,7 +264,6 @@ export const conformanceInertReadCompatibilityHash = await Effect.runPromise(
   }),
 );
 
-/** What a client build that changed one stored field's schema computes. */
 export const conformanceRotatedReadCompatibilityHash = await Effect.runPromise(
   hashReadCompatibility({
     entities: deployedCatalog.entities,

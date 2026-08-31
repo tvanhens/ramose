@@ -130,8 +130,9 @@ const waitForCheckpoint = async (
   database: string,
   name: string,
   scope: "worker" | "replica" | "transactor" = "worker",
+  attempts = 320,
 ): Promise<void> => {
-  for (let attempt = 0; attempt < 320; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const status = await testAdmin(base, database, "/checkpoint", {
       scope,
       action: "status",
@@ -301,6 +302,7 @@ const observeUnchangedResume = async (
   base: string,
   world: World,
   revision: string,
+  attempts = 320,
 ): Promise<ResumeObservation> => {
   const checkpoints: string[] = [];
   const controller = new AbortController();
@@ -320,6 +322,8 @@ const observeUnchangedResume = async (
       base,
       world.database,
       "replication.resume.reconstruct",
+      "worker",
+      attempts,
     );
     checkpoints.push("resume.reconstruct");
     await armCheckpoint(base, world.database, "replication.resume.ready");
@@ -328,7 +332,13 @@ const observeUnchangedResume = async (
       world.database,
       "replication.resume.reconstruct",
     );
-    await waitForCheckpoint(base, world.database, "replication.resume.ready");
+    await waitForCheckpoint(
+      base,
+      world.database,
+      "replication.resume.ready",
+      "worker",
+      attempts,
+    );
     checkpoints.push("resume.ready");
     await releaseCheckpoint(base, world.database, "replication.resume.ready");
 
@@ -1229,12 +1239,23 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         const revision = initial.state.committed!.revision;
         const initialWire = initial.frames.map((item) => item.wire);
 
-        const zero = await observeUnchangedResume(base, world, revision);
+        const scaleAttempts = 320 + HIDDEN_SCALE_COMMITS * 4;
+        const zero = await observeUnchangedResume(
+          base,
+          world,
+          revision,
+          scaleAttempts,
+        );
         for (let index = 0; index < HIDDEN_SCALE_COMMITS; index++) {
           await commitHidden(base, world, index);
         }
         await currentBasis(base, world.database);
-        const hidden = await observeUnchangedResume(base, world, revision);
+        const hidden = await observeUnchangedResume(
+          base,
+          world,
+          revision,
+          scaleAttempts,
+        );
 
         expect(hidden.checkpoints).toEqual(zero.checkpoints);
         expect(hidden.frames).toEqual(zero.frames);

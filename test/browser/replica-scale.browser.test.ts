@@ -31,7 +31,11 @@ import {
   testRuntimeBoundaries,
 } from "../../packages/ramose/src/internal/test-hooks.ts";
 import { browserTest } from "./fixtures.ts";
-import { snapshotChunk, changeFrame } from "../../packages/ramose/test/replication-fixtures.ts";
+import {
+  changeFrame,
+  sealedHandle,
+  snapshotChunk,
+} from "../../packages/ramose/test/replication-fixtures.ts";
 
 const BUDGET_10K_COLD_MS = 15_000;
 
@@ -359,17 +363,29 @@ const writtenNodes = async (
   return storage.writeCounts().nodes;
 };
 
+type ExposedValue = {
+  readonly revision: string;
+  readonly entity: string;
+  readonly name: string;
+};
+
 const completeAt = async (
-  name: string,
+  storageName: string,
   selected: ReplicationIdentity,
-  accepted: readonly string[],
-): Promise<string> =>
-  await withStorage(name, async (storage) => {
+  exposed: ExposedValue,
+): Promise<void> =>
+  await withStorage(storageName, async (storage) => {
     const restored = await storage.restore(selected, attributes, READ_COMPATIBILITY);
     expect(restored).toBeDefined();
-    expect(accepted).toContain(restored!.revision);
+    expect(restored!.revision).toBe(exposed.revision);
+    const subject = restored!.handles.get(sealedHandle(exposed.entity));
+    expect(subject).toBeDefined();
+    const facts = await restored!.db.datomsArray(Index.EAVT, { e: subject! });
+    expect(facts).toHaveLength(FIELDS_PER_ENTITY);
+    const nameAttribute = restored!.db.requireAttr(":item/name");
+    expect(facts.find((fact) => fact.a === nameAttribute.id)?.v)
+      .toBe(exposed.name);
     await representativeQuery(restored!.db);
-    return restored!.revision;
   });
 
 browserTest(
@@ -704,18 +720,37 @@ for (const scale of CRASH_SCALES) {
       const name = `ramose-scale-crash-${scale.label}-${browser.uniqueId}`;
       const selected = identity();
       const base = scaleDatoms(scale.count);
+      const subject = base[0]!;
+      expect(subject.field).toBe(":item/name");
+      expect(subject.value.type).toBe("string");
+      const originalName = (subject.value as { readonly value: string }).value;
       const replacement = [
-        { ...base[0]!, value: { type: "string" as const, value: "replaced" } },
+        { ...subject, value: { type: "string" as const, value: "replaced" } },
         ...base.slice(1),
       ];
       const first = opaque("1");
       const second = opaque("2");
       const third = opaque("3");
+      const atFirst: ExposedValue = {
+        revision: first,
+        entity: subject.entity,
+        name: originalName,
+      };
+      const atSecond: ExposedValue = {
+        revision: second,
+        entity: subject.entity,
+        name: "replaced",
+      };
+      const atThird: ExposedValue = {
+        revision: third,
+        entity: subject.entity,
+        name: "changed once",
+      };
       try {
         await withStorage(name, async (storage) => {
           await installSnapshot(storage, selected, first, base);
         });
-        expect(await completeAt(name, selected, [first])).toBe(first);
+        await completeAt(name, selected, atFirst);
 
         const chunks = await withStorage(
           name,
@@ -745,7 +780,7 @@ for (const scale of CRASH_SCALES) {
           return written;
         });
         expect(partialNodes).toBeGreaterThan(0);
-        expect(await completeAt(name, selected, [first])).toBe(first);
+        await completeAt(name, selected, atFirst);
 
         for (const checkpoint of ["replica.installing", "replica.install"]) {
           try {
@@ -756,7 +791,7 @@ for (const scale of CRASH_SCALES) {
           } finally {
             resetTestHooks();
           }
-          expect(await completeAt(name, selected, [first])).toBe(first);
+          await completeAt(name, selected, atFirst);
         }
 
         const completeNodes = await withStorage(name, async (storage) => {
@@ -765,7 +800,7 @@ for (const scale of CRASH_SCALES) {
           return storage.writeCounts().nodes;
         });
         expect(partialNodes).toBeLessThan(completeNodes);
-        expect(await completeAt(name, selected, [second])).toBe(second);
+        await completeAt(name, selected, atSecond);
 
         const change = changeFrame({
           type: "Change",
@@ -774,12 +809,30 @@ for (const scale of CRASH_SCALES) {
           from: second,
           revision: third,
           datoms: [{
-            entity: base[0]!.entity,
+            entity: subject.entity,
+            field: ":item/name",
+            value: { type: "string", value: "replaced" },
+            op: "retract",
+          }, {
+            entity: subject.entity,
             field: ":item/name",
             value: { type: "string", value: "changed once" },
             op: "add",
           }],
         });
+
+        const partialChangeNodes = await withStorage(name, async (storage) => {
+          storage.resetWriteCounts();
+          const controller = new AbortController();
+          const cut = storage.applyChange(change, { signal: controller.signal });
+          const written = await writtenNodes(storage);
+          controller.abort();
+          await expect(cut).rejects.toBeDefined();
+          return written;
+        });
+        expect(partialChangeNodes).toBeGreaterThan(0);
+        await completeAt(name, selected, atSecond);
+
         for (const checkpoint of ["replica.installing", "replica.install"]) {
           try {
             armCheckpointThrow(checkpoint, { error: `cut at ${checkpoint}` });
@@ -789,13 +842,16 @@ for (const scale of CRASH_SCALES) {
           } finally {
             resetTestHooks();
           }
-          expect(await completeAt(name, selected, [second])).toBe(second);
+          await completeAt(name, selected, atSecond);
         }
 
-        await withStorage(name, async (storage) => {
+        const completeChangeNodes = await withStorage(name, async (storage) => {
+          storage.resetWriteCounts();
           expect((await storage.applyChange(change))?.revision).toBe(third);
+          return storage.writeCounts().nodes;
         });
-        expect(await completeAt(name, selected, [third])).toBe(third);
+        expect(partialChangeNodes).toBeLessThan(completeChangeNodes);
+        await completeAt(name, selected, atThird);
       } finally {
         resetTestHooks();
         await deleteDatabase(name);
