@@ -22,23 +22,38 @@ export ALCHEMY_STAGE="$STAGE"
 export CI=1
 
 cleanup() {
+  local cleanup_status=0
   if [ "${KEEP_STAGE:-0}" = "1" ]; then
     echo ">> KEEP_STAGE=1 set; leaving stage '$STAGE' deployed. Destroy later with:" >&2
     echo "   ALCHEMY_STATE=local CI=1 bun alchemy destroy --stage $STAGE --yes" >&2
   else
 
     echo ">> Destroying stage '$STAGE' ..." >&2
-    ok=""
+    local ok=""
     for attempt in $(seq 1 5); do
       if bun alchemy destroy --stage "$STAGE" --yes; then ok=1; break; fi
       echo ">> destroy attempt ${attempt} failed; retrying..." >&2
       sleep 5
     done
-    [ -n "$ok" ] || echo "warning: destroy failed for stage '$STAGE'; check the Cloudflare dashboard." >&2
+    if [ -z "$ok" ]; then
+      echo "error: destroy failed for stage '$STAGE'; check the Cloudflare dashboard." >&2
+      cleanup_status=1
+    fi
   fi
   rm -f "$DEPLOY_LOG"
+  return "$cleanup_status"
 }
-trap cleanup EXIT
+
+on_exit() {
+  local status="$1"
+  trap - EXIT
+  if cleanup; then
+    exit "$status"
+  fi
+  [ "$status" -ne 0 ] && exit "$status"
+  exit 1
+}
+trap 'on_exit "$?"' EXIT
 
 echo ">> Deploying stage '$STAGE' to Cloudflare ..."
 bun alchemy deploy --stage "$STAGE" --yes 2>&1 | tee "$DEPLOY_LOG"
