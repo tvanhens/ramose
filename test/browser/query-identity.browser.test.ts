@@ -1,7 +1,5 @@
 import { expect } from "vitest";
 import * as EffectSchema from "effect/Schema";
-import { compileReadAuthorization } from "../../packages/ramose/src/internal/authorization/index.ts";
-import { Catalog } from "../../packages/ramose/src/Catalog.ts";
 import {
   Entity,
   EntityId,
@@ -67,11 +65,11 @@ const Issue = Entity("issue", {
   }),
 });
 
-const AppSchema = Schema({ person: Person, issue: Issue });
-const AppCatalog = Catalog("query-identity", {
-  schema: AppSchema,
-  policy: compileReadAuthorization({ schema: AppSchema, rules: [] }),
+const AppSchema = Schema("query-identity", {
+  person: Person,
+  issue: Issue,
 });
+AppSchema.applyPolicy(() => {});
 
 const OFFLINE = "http://127.0.0.1:1";
 const ROOT = "app";
@@ -119,7 +117,7 @@ const waitFor = <A>(
   });
 
 const seed = async (name: string): Promise<ReplicationIdentity> => {
-  const installed = await installClientCatalog(AppCatalog);
+  const installed = await installClientCatalog(AppSchema);
   const identity: ReplicationIdentity = {
     version: 1,
     server: opaque("s"),
@@ -180,7 +178,7 @@ const offlineClient = (name: string): Client =>
   createClient({
     url: OFFLINE,
     root: ROOT,
-    catalog: AppCatalog,
+    catalog: AppSchema,
     auth: () => ({ token: TOKEN, cacheKey: CACHE_KEY }),
     storageName: name,
   });
