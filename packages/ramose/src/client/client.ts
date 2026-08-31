@@ -225,6 +225,11 @@ class RamoseClient implements Client {
    * until the generations every handle adopted have been read again: a pass
    * begun before that answer arrives would still find this tab's handles
    * confirmed and could submit the withdrawn principal's queued work.
+   *
+   * A handle left `offline` by a connection that died is reopened here too. It
+   * missed nothing durable — its own stream simply ended — so what it needs is
+   * not another read but another activation, and this is the moment a device
+   * that regained its connection reaches one.
    */
   private wake(): void {
     if (this.terminal !== undefined) return;
@@ -233,6 +238,7 @@ class RamoseClient implements Client {
       void handle.refreshOptimistic();
       handle.reactivateUnconfirmed();
       handle.reactivateRefused();
+      handle.reactivateOffline();
     }
     void revalidated.then(() => {
       if (this.terminal !== undefined) return;

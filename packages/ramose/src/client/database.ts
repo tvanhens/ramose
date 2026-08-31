@@ -322,6 +322,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private readonly observers = new Map<string, QueryObserver>();
   private readonly retired = new Map<string, RetiredObservation>();
   private activation: Promise<void> | undefined;
+  private opening: Promise<void> | undefined;
   private readonly settling = new Set<Promise<void>>();
   private catalog: ClientCatalog | undefined;
   private session: ReplicationSession | undefined;
@@ -510,7 +511,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
 
   activate(): Promise<void> {
     if (this.activation !== undefined) return this.activation;
-    this.activation = this.open().catch((cause: unknown) => {
+    const opening = this.open().catch((cause: unknown) => {
       // A scope withdrawn while this activation was opening leaves no session
       // to publish the fence, so this is where that activation is put back to
       // nothing: the next wake-up starts a new one, admitted where the scope
@@ -533,7 +534,31 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.refused = true;
       this.publishStatus(terminal);
     });
+    this.activation = opening;
+    // What "in flight" means for this handle, and the only thing that means
+    // it. An activation that failed leaves its memo behind — settled, holding
+    // nothing, and indistinguishable from one still opening by the memo alone
+    // — so the retry paths ask this instead and never start a second open
+    // beside a first.
+    this.opening = opening;
+    void opening.then(() => {
+      if (this.opening === opening) this.opening = undefined;
+    });
     return this.activation;
+  }
+
+  /**
+   * Start one activation in place of a settled one.
+   *
+   * Every path that reopens a handle goes through here, so "one activation in
+   * flight per handle" is one condition in one place: an open already running
+   * is returned rather than joined by a second, which is what keeps a retry
+   * from leaving the first holding a session nothing closes.
+   */
+  private restart(): Promise<void> {
+    if (this.opening !== undefined) return this.opening;
+    this.activation = undefined;
+    return this.activate();
   }
 
   /**
@@ -564,6 +589,40 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.activation = undefined;
     if (session !== undefined) this.spawn(session.close());
     void this.activate();
+  }
+
+  /**
+   * Activate again after an activation that could not reach the server.
+   *
+   * A connection that dies is not a refusal and not a fence. It publishes
+   * `offline`, leaves whatever was already confirmed readable, and leaves the
+   * memoized activation settled behind it — and nothing else starts another
+   * one. `reactivateRefused()` answers a credential this client or the server
+   * refused; `reactivateUnconfirmed()` answers a route another tab confirmed,
+   * for a child that has none of its own. Neither describes a device that just
+   * came back, so this is the path it comes back on.
+   *
+   * `offline` is the whole admission test, and deliberately so: every fenced
+   * disposition publishes some other status — a build that is behind publishes
+   * `update-required`, a refused credential `authentication-required`, a closed
+   * handle `closed` — so the statuses that must stay fenced are excluded by
+   * what they publish rather than by a list here that could fall behind them.
+   * A refusal is excluded twice over, because it is the other path's to answer.
+   *
+   * The session this was holding is closed before another opens: a transport
+   * failure has already ended its stream, and leaving it attached would leave
+   * two observers publishing into one handle.
+   */
+  reactivateOffline(): void {
+    if (!this.live() || this.refused) return;
+    if (this.opening !== undefined) return;
+    if (this.syncStatus() !== "offline") return;
+    const session = this.session;
+    this.releaseSession?.();
+    this.releaseSession = undefined;
+    this.session = undefined;
+    if (session !== undefined) this.spawn(session.close());
+    void this.restart();
   }
 
   private async open(): Promise<void> {
@@ -680,7 +739,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
         },
       },
     );
-    if (this.session === undefined && this.live()) await this.open();
+    if (this.session === undefined && this.live()) await this.restart();
   }
 
   private live(): boolean {

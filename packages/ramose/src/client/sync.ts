@@ -6,7 +6,9 @@
  * - `stale` — a local value is readable but the current session has not
  *   confirmed it: a restored offline replica, or a reconnect in progress.
  * - `offline` — the activation could not reach the server. Whatever local value
- *   was already confirmed stays readable; nothing new is.
+ *   was already confirmed stays readable; nothing new is. Not a terminal state:
+ *   the next time the tab is activated — focused, shown, restored from the
+ *   back/forward cache, or told the device is online — it activates again.
  * - `update-required` — this client build is behind, and no retry helps; ship a
  *   new build. Two causes, and they differ in what stays readable. The server
  *   rotated the authorized view (a schema, trait, read-policy, or graph-read
