@@ -53,9 +53,9 @@ Sign-out is therefore explicit: **call `clearLocalData()` before dropping the cl
 
 **Local ids are never public.** Every id an application sees is an `EntityId` the server issued or a `ClientRef` this device minted. The numeric id inside the local store is meaningless off the device and is reassigned by a delete and recreate, so it is never handed out.
 
-**Filtering by an entity identity is not expressible yet.** `where({ author })` does not accept an `EntityId`. Mutation targets and operation inputs do; query filters will, additively, without moving any stored format.
+**A nested filter cannot name an entity.** `where({ author })` takes an `EntityId`, but the `where` inside a `select(…)` collection compiles into the query value before any binding exists, so one there is refused.
 
-**No Suspense.** The React adapter reports `pending` as a state to render, not by suspending. A Suspense mode is additive and is tracked separately.
+**Suspense waits for loading, never for connectivity.** `useQuery` reports `pending` as a state to render. `useSuspenseQuery` waits under a boundary instead, but only while a first local answer could still arrive: a restored replica renders `stale` without suspending, and an offline scope with nothing cached reads `pending` rather than holding a fallback with no end.
 
 **Without a lock manager, every tab synchronizes for itself.** Where the browser offers no lock manager, correctness is unchanged — concurrent writers converge on the same durable records and one invocation still commits once — but the network work is duplicated per tab.
 

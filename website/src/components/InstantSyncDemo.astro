@@ -1,11 +1,809 @@
 ---
 import AnimationDemo from "./AnimationDemo.astro";
+
+const steps = [
+  ["01", "You drop the card", "input"],
+  ["02", "Local store commits", "0.4 ms · no spinner"],
+  ["03", "Sync fans out", "38 ms, in the background"],
+  ["04", "Every client converges", "no refetch, no cache keys"],
+];
 ---
 
 <AnimationDemo
   variant="instant"
-  src="/demos/instant-by-default.html?v=shared-narrative-10"
   title="Instant local writes syncing across devices"
+  cycleMs={10000}
   initialTitle="You drop the card"
   initialMeta="input"
-/>
+>
+  <div class="instant-demo">
+    <div class="instant-stage">
+      <div class="rg-demo-window instant-board">
+        <div class="rg-demo-titlebar">
+          <span class="rg-demo-dots"><i></i><i></i><i></i></span>
+          <span>app.acme.dev<span class="muted">/board/launch</span></span>
+          <span class="rg-demo-live"><i></i>Live</span>
+        </div>
+        <div class="instant-board__body">
+          <header class="instant-product-header">
+            <span><small>Product</small><strong>Launch board</strong></span>
+            <span class="instant-presence"><i>A</i><i>J</i><i>M</i><small>3 online</small></span>
+          </header>
+          <div class="instant-columns">
+            <section class="instant-column">
+              <header><span>Backlog</span><b>2</b></header>
+              <div class="instant-task">
+                <i class="instant-checkbox"></i>
+                <span><strong>Write migration guide</strong><small>RAM-214</small></span>
+                <b class="instant-avatar">A</b>
+              </div>
+              <div class="instant-task is-muted">
+                <i class="instant-checkbox"></i>
+                <span><strong>Billing states</strong><small>RAM-219</small></span>
+                <b class="instant-avatar is-teal">M</b>
+              </div>
+            </section>
+            <section class="instant-column">
+              <header><span>In progress</span><b data-instant-doing-count>1</b></header>
+              <div class="instant-slot instant-slot--source">
+                <div class="instant-drag-card">
+                  <i class="instant-checkbox"></i>
+                  <span><strong>Polish onboarding</strong><small>RAM-221</small></span>
+                  <b class="instant-avatar is-bright">A</b>
+                  <svg viewBox="0 0 12 18" aria-hidden="true">
+                    <path d="M1 1 L1 13.6 L4.4 10.4 L6.9 16 L9.4 14.9 L6.9 9.4 L11 8.9 Z"></path>
+                  </svg>
+                </div>
+              </div>
+            </section>
+            <section class="instant-column">
+              <header><span>Done</span><b data-instant-done-count>1</b></header>
+              <div class="instant-task is-complete">
+                <i class="instant-checkbox">✓</i>
+                <span><strong>Connect auth</strong><small>RAM-208</small></span>
+                <b class="instant-avatar is-orange">J</b>
+              </div>
+              <div class="instant-slot instant-slot--target"></div>
+            </section>
+            <span class="instant-local"><i></i>committed locally · 0.4 ms</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="instant-wire">
+        <span><i></i></span>
+        <small>sync<span> · 38 ms</span></small>
+      </div>
+
+      <div class="instant-phone">
+        <div class="instant-phone__screen">
+          <span class="instant-phone__island"></span>
+          <div class="instant-phone__status"><b>9:41</b><span>● ◒ ▰</span></div>
+          <div class="instant-phone__body">
+            <header><span><small>Product</small><strong>Launch board</strong></span><b>A</b></header>
+            <nav><span>My work</span><span>All</span></nav>
+            <div class="instant-phone__task">
+              <i></i><span><strong>Write migration guide</strong><small>Backlog</small></span>
+            </div>
+            <div class="instant-phone__task instant-phone__task--sync">
+              <i data-instant-phone-check></i>
+              <span><strong>Polish onboarding</strong><small data-instant-phone-state>In progress</small></span>
+            </div>
+            <div class="instant-phone__task is-complete">
+              <i>✓</i><span><strong>Connect auth</strong><small>Done</small></span>
+            </div>
+            <p class="instant-phone__sync"><i></i><span data-instant-phone-status>Up to date</span></p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rg-demo-steps">
+      {steps.map(([number, title, meta]) => (
+        <div class="rg-demo-step" data-demo-step data-title={title} data-meta={meta}>
+          <span class="rg-demo-step__number">{number}</span>
+          <strong>{title}</strong>
+          <small>{meta}</small>
+        </div>
+      ))}
+    </div>
+  </div>
+</AnimationDemo>
+
+<style>
+  .instant-demo {
+    min-width: 0;
+  }
+
+  .instant-stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 5rem minmax(10.5rem, 12.5rem);
+    align-items: stretch;
+    gap: 0;
+    padding: clamp(1rem, 2.5vw, 1.75rem);
+  }
+
+  .muted {
+    color: #5c534d;
+  }
+
+  .instant-board__body {
+    padding: clamp(0.9rem, 2vw, 1.35rem) clamp(0.8rem, 2vw, 1.35rem) 2.75rem;
+  }
+
+  .instant-product-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1.2rem;
+  }
+
+  .instant-product-header > span:first-child,
+  .instant-phone header > span {
+    display: grid;
+    gap: 0.25rem;
+  }
+
+  .instant-product-header small,
+  .instant-phone header small {
+    color: #6f635c;
+    font-family: var(--sl-font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .instant-product-header strong {
+    color: #f2ece7;
+    font-size: 1.15rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .instant-presence {
+    display: flex;
+    align-items: center;
+  }
+
+  .instant-presence i,
+  .instant-avatar {
+    display: grid;
+    place-items: center;
+    width: 1.35rem;
+    height: 1.35rem;
+    margin-right: -0.35rem;
+    color: #cfc6bf;
+    border: 2px solid #0e0c0b;
+    border-radius: 50%;
+    background: #3b332e;
+    font-family: var(--sl-font-mono);
+    font-size: 0.55rem;
+    font-style: normal;
+  }
+
+  .instant-presence i:nth-child(2),
+  .instant-avatar.is-orange {
+    color: #f6d9c8;
+    background: #7e3c20;
+  }
+
+  .instant-presence i:nth-child(3),
+  .instant-avatar.is-teal {
+    color: #cfe0da;
+    background: #3c4c47;
+  }
+
+  .instant-presence small {
+    margin-left: 0.7rem;
+    color: #6f635c;
+    font-family: var(--sl-font-mono);
+    font-size: 0.625rem;
+    white-space: nowrap;
+  }
+
+  .instant-columns {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 0.55rem;
+  }
+
+  .instant-column {
+    box-sizing: border-box;
+    min-width: 0;
+    height: 100%;
+    margin: 0;
+    padding: 0.6rem;
+    border: 1px solid #241f1c;
+    border-radius: 0.6rem;
+    background: #100e0d;
+  }
+
+  .instant-column > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 1.4rem;
+    color: #877a72;
+    font-family: var(--sl-font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .instant-column > header b {
+    display: grid;
+    place-items: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    color: #6b5f58;
+    border-radius: 0.35rem;
+    background: #1a1613;
+    font-size: 0.6rem;
+    font-weight: 500;
+  }
+
+  .instant-task,
+  .instant-drag-card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.55rem;
+    box-sizing: border-box;
+    height: 3.4rem;
+    margin-top: 0.6rem;
+    padding: 0 0.6rem;
+    border: 1px solid #2b2521;
+    border-radius: 0.5rem;
+    background: #161311;
+  }
+
+  .instant-task + .instant-task {
+    margin-top: 0.4rem;
+  }
+
+  .instant-task > span,
+  .instant-drag-card > span {
+    display: grid;
+    min-width: 0;
+    gap: 0.2rem;
+  }
+
+  .instant-task strong,
+  .instant-drag-card strong {
+    overflow: hidden;
+    color: #d6cdc6;
+    font-size: 0.75rem;
+    font-weight: 500;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .instant-task small,
+  .instant-drag-card small {
+    color: #6b5f58;
+    font-family: var(--sl-font-mono);
+    font-size: 0.52rem;
+    letter-spacing: 0.04em;
+  }
+
+  .instant-task.is-muted {
+    opacity: 0.58;
+  }
+
+  .instant-task.is-complete strong {
+    color: #a89f99;
+    text-decoration: line-through;
+    text-decoration-color: #4a423d;
+  }
+
+  .instant-checkbox {
+    display: grid;
+    place-items: center;
+    width: 0.85rem;
+    height: 0.85rem;
+    color: #0f1512;
+    border: 1.5px solid #4a413b;
+    border-radius: 0.25rem;
+    font-size: 0.55rem;
+    font-style: normal;
+  }
+
+  .is-complete .instant-checkbox {
+    border-color: #4f7d70;
+    background: #4f7d70;
+  }
+
+  .instant-avatar {
+    width: 1.2rem;
+    height: 1.2rem;
+    margin: 0;
+    border: 0;
+    font-size: 0.5rem;
+  }
+
+  .instant-avatar.is-bright {
+    color: #1b0c05;
+    background: #ff6500;
+  }
+
+  .instant-slot {
+    box-sizing: border-box;
+    height: 3.4rem;
+    margin-top: 0.6rem;
+    border: 1px dashed #2a221e;
+    border-radius: 0.5rem;
+    transition: border-color 350ms ease, background-color 350ms ease;
+  }
+
+  .instant-slot--target {
+    margin-top: 0.4rem;
+  }
+
+  .instant-slot--source {
+    position: relative;
+  }
+
+  .instant-drag-card {
+    position: absolute;
+    z-index: 3;
+    inset: -1px;
+    width: auto;
+    height: auto;
+    margin: 0;
+    border-color: #4a3529;
+    background: #1c1512;
+    box-shadow: 0 0.7rem 1.6rem -1.3rem #000;
+    transition: transform 780ms cubic-bezier(.2, .85, .25, 1), opacity 320ms ease,
+      border-color 380ms ease, box-shadow 480ms ease;
+  }
+
+  .instant-drag-card svg {
+    position: absolute;
+    right: 1.15rem;
+    bottom: -0.55rem;
+    width: 0.75rem;
+    height: 1.15rem;
+    overflow: visible;
+    transition: opacity 260ms ease;
+  }
+
+  .instant-drag-card path {
+    fill: #f8f6f3;
+    stroke: #0b0a09;
+    stroke-width: 1.1;
+    stroke-linejoin: round;
+  }
+
+  .instant-local {
+    position: absolute;
+    z-index: 4;
+    top: calc(100% + 0.7rem);
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.32rem 0.55rem;
+    color: #ffb284;
+    border: 1px solid rgba(255, 91, 10, 0.32);
+    border-radius: 999px;
+    background: #1b100b;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5625rem;
+    white-space: nowrap;
+    opacity: 0;
+    transform: translateY(0.3rem);
+    transition: opacity 300ms ease, transform 300ms ease;
+  }
+
+  .instant-local i {
+    width: 0.3rem;
+    height: 0.3rem;
+    border-radius: 50%;
+    background: #ff6500;
+  }
+
+  .instant-wire {
+    display: grid;
+    align-content: center;
+    justify-items: center;
+    gap: 0.5rem;
+    padding: 0 0.7rem;
+  }
+
+  .instant-wire > span {
+    position: relative;
+    display: block;
+    width: 100%;
+    height: 1px;
+    background: linear-gradient(90deg, #2c211b, #5c2f1c, #2c211b);
+  }
+
+  .instant-wire > span i {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 50%;
+    background: #ff5b0a;
+    box-shadow: 0 0 0.6rem #ff3d00, 0 0 1.25rem rgba(255, 61, 0, 0.7);
+    opacity: 0;
+    transform: translate(-50%, -50%);
+  }
+
+  .instant-wire small {
+    color: #5f534c;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5625rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .instant-wire small span {
+    display: none;
+  }
+
+  .instant-phone {
+    display: flex;
+    flex-direction: column;
+    padding: 0.28rem;
+    border-radius: 2.15rem;
+    background: linear-gradient(158deg, #5a504a, #241f1c 24%, #121010 78%, #0b0a09);
+    box-shadow: 0 1.8rem 3.5rem -2rem #000;
+    transition: box-shadow 400ms ease;
+  }
+
+  .instant-phone__screen {
+    position: relative;
+    flex: 1;
+    min-height: 22rem;
+    overflow: hidden;
+    border: 1px solid #3f3833;
+    border-radius: 1.92rem;
+    background: #0a0908;
+    transition: border-color 400ms ease;
+  }
+
+  .instant-phone__island {
+    position: absolute;
+    z-index: 3;
+    top: 0.42rem;
+    left: 50%;
+    width: 3.1rem;
+    height: 0.82rem;
+    border-radius: 999px;
+    background: #000;
+    transform: translateX(-50%);
+  }
+
+  .instant-phone__status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 1.72rem;
+    padding: 0 0.72rem 0 0.85rem;
+    color: #f2ece7;
+    font-size: 0.48rem;
+  }
+
+  .instant-phone__body {
+    padding: 0.75rem;
+  }
+
+  .instant-phone header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+  }
+
+  .instant-phone header small {
+    font-size: 0.5rem;
+  }
+
+  .instant-phone header strong {
+    color: #eee8e3;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+
+  .instant-phone header > b {
+    display: grid;
+    place-items: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    color: #1b0c05;
+    border-radius: 50%;
+    background: #ff6500;
+    font-family: var(--sl-font-mono);
+    font-size: 0.6rem;
+  }
+
+  .instant-phone nav {
+    display: flex;
+    gap: 0.35rem;
+    margin-bottom: 0.7rem;
+    color: #6d615a;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5rem;
+  }
+
+  .instant-phone nav span {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid #2d2723;
+    border-radius: 999px;
+  }
+
+  .instant-phone nav span:last-child {
+    color: #ff9a61;
+    border-color: #6e351d;
+    background: #1a100b;
+  }
+
+  .instant-phone__task {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.5rem;
+    height: 2.9rem;
+    margin-top: 0.3rem;
+    padding: 0 0.55rem;
+    border: 1px solid #2b2521;
+    border-radius: 0.55rem;
+    background: #12100e;
+    transition: border-color 350ms ease, background-color 350ms ease, box-shadow 350ms ease;
+  }
+
+  .instant-phone__task > i {
+    display: grid;
+    place-items: center;
+    width: 0.75rem;
+    height: 0.75rem;
+    color: #0f1512;
+    border: 1.5px solid #4a413b;
+    border-radius: 0.22rem;
+    font-size: 0.5rem;
+    font-style: normal;
+  }
+
+  .instant-phone__task > span {
+    display: grid;
+    min-width: 0;
+    gap: 0.15rem;
+  }
+
+  .instant-phone__task strong {
+    overflow: hidden;
+    color: #c9bfb8;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .instant-phone__task small {
+    color: #665a53;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5rem;
+  }
+
+  .instant-phone__task.is-complete > i {
+    border-color: #4f7d70;
+    background: #4f7d70;
+  }
+
+  .instant-phone__sync {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    margin: 1rem 0 0;
+    color: #665a53;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5rem;
+  }
+
+  .instant-phone__sync i {
+    width: 0.35rem;
+    height: 0.35rem;
+    border-radius: 50%;
+    background: #ff5b0a;
+  }
+
+  :global([data-animation-phase="drag"]) .instant-drag-card {
+    border-color: #a8542c;
+    box-shadow: 0 1.4rem 2.4rem -1rem rgba(0, 0, 0, 0.95);
+    transform: translate3d(0.35rem, -0.45rem, 0) scale(1.02) rotate(-0.6deg);
+  }
+
+  :global([data-animation-phase="drag"]) .instant-slot--source {
+    border-color: #5b4034;
+  }
+
+  :global([data-animation-phase="drag"]) .instant-slot--target {
+    border-color: #9a4b27;
+    background: rgba(255, 80, 8, 0.055);
+  }
+
+  :global([data-animation-phase="commit"]) .instant-local {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  :global([data-animation-phase="commit"]),
+  :global([data-animation-phase="sync"]),
+  :global([data-animation-phase="converge"]),
+  :global([data-animation-phase="settle"]) {
+    .instant-drag-card {
+      border-color: #6d3f27;
+      box-shadow: 0 0 1.6rem -0.7rem rgba(255, 77, 8, 0.45);
+      transform: translate3d(var(--instant-drop-x), var(--instant-drop-y), 0);
+    }
+
+    .instant-drag-card .instant-checkbox {
+      background: #ff6500;
+    }
+  }
+
+  :global([data-animation-phase="sync"]) .instant-wire > span i {
+    opacity: 1;
+    animation: instant-packet 1.35s cubic-bezier(.4, 0, .6, 1) infinite;
+  }
+
+  :global([data-animation-phase="sync"]) .instant-wire small {
+    color: #ffb080;
+  }
+
+  :global([data-animation-phase="sync"]) .instant-wire small span {
+    display: inline;
+  }
+
+  :global([data-animation-phase="converge"]),
+  :global([data-animation-phase="settle"]) {
+    .instant-phone {
+      box-shadow: 0 1.8rem 3.5rem -2rem #000, 0 0 2.4rem -0.8rem rgba(255, 76, 0, 0.4);
+    }
+
+    .instant-phone__screen {
+      border-color: #9b4b29;
+    }
+
+    .instant-phone__task--sync {
+      border-color: #33291f;
+      background: #191310;
+    }
+
+    .instant-phone__task--sync > i {
+      border-color: #4f7d70;
+      background: #4f7d70;
+    }
+  }
+
+  :global([data-animation-phase="converge"]) .instant-phone__task--sync {
+    border-color: #8f4726;
+    box-shadow: 0 0 1.4rem -0.7rem rgba(255, 77, 8, 0.7);
+  }
+
+  :global([data-animation-phase="converge"]) .instant-phone__sync {
+    color: #bc8b70;
+  }
+
+  :global([data-animation-phase="reset"]) .instant-drag-card {
+    opacity: 0;
+  }
+
+  @container (max-width: 56rem) {
+    .instant-stage {
+      grid-template-columns: minmax(0, 1fr) 4rem 10.5rem;
+      padding: 1rem;
+    }
+
+    .instant-presence small,
+    .instant-task.is-muted {
+      display: none;
+    }
+
+    .instant-column:first-child .instant-task:first-of-type {
+      height: 3.4rem;
+    }
+  }
+
+  @container (max-width: 44rem) {
+    .instant-stage {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 1rem;
+    }
+
+    .instant-wire {
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      padding: 0 20%;
+    }
+
+    .instant-wire::before,
+    .instant-wire::after {
+      content: "";
+      height: 1px;
+      background: #3c2920;
+    }
+
+    .instant-wire > span {
+      display: none;
+    }
+
+    .instant-phone {
+      width: min(15rem, 70%);
+      min-height: 22rem;
+      justify-self: center;
+    }
+  }
+
+  @container (max-width: 31rem) {
+    .instant-stage {
+      padding: 0.65rem;
+    }
+
+    .instant-board__body {
+      padding-inline: 0.65rem;
+    }
+
+    .instant-product-header {
+      align-items: center;
+    }
+
+    .instant-presence i:not(:first-child) {
+      display: none;
+    }
+
+    .instant-columns {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.3rem;
+    }
+
+    .instant-column {
+      padding: 0.35rem;
+    }
+
+    .instant-column > header span {
+      overflow: hidden;
+      max-width: 4.2rem;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .instant-task,
+    .instant-drag-card {
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 0.35rem;
+      padding: 0 0.35rem;
+    }
+
+    .instant-avatar {
+      display: none;
+    }
+
+    .instant-local {
+      right: -0.2rem;
+      font-size: 0.5rem;
+    }
+  }
+
+  @keyframes instant-packet {
+    from { left: 0; }
+    to { left: 100%; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .instant-drag-card,
+    .instant-slot,
+    .instant-local,
+    .instant-phone,
+    .instant-phone__screen,
+    .instant-phone__task {
+      transition: none;
+    }
+  }
+</style>

@@ -4,6 +4,7 @@ import {
   isCursor,
   isPipeline,
   lowerQueryObject,
+  symbolicIdentityLowering,
   type AnyQueryObject,
   type Cursor,
   type Pipeline,
@@ -63,7 +64,10 @@ const pagedQuery = (q: AnyQueryObject): AnyQueryObject =>
   q.seek !== undefined ? q : q.after(null);
 
 const cursorKeyCount = (q: AnyQueryObject): number => {
-  const order = lowerQueryObject(pagedQuery(q)).query.order as unknown[] | undefined;
+  const order = lowerQueryObject(
+    pagedQuery(q),
+    symbolicIdentityLowering().lowering,
+  ).query.order as unknown[] | undefined;
   if (order === undefined || order.length === 0) {
     throw new Error(
       "ramose/query: encodeCursor / decodeCursor pages a sorted query — add an orderBy for the cursor to be a position in",

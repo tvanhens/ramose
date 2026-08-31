@@ -2,6 +2,7 @@ import type { AnyComposer } from "../db/Composer.ts";
 import { NotOne } from "../db/Errors.ts";
 import {
   lowerQueryObject,
+  symbolicIdentityLowering,
   type AnyQueryObject,
   type LoweredKernelQuery,
   type QueryObject,
@@ -68,11 +69,13 @@ export type QuerySnapshot<Out> = {
 export type QuerySubscription<Out> = Subscription<QuerySnapshot<Out>>;
 
 export const queryObservationKey = (query: AnyQueryObject): string => {
-  const lowered = lowerQueryObject(query);
+  const { lowering, identities } = symbolicIdentityLowering();
+  const lowered = lowerQueryObject(query, lowering);
   const focus = entityFocusOf(query);
   return JSON.stringify([
     lowered.query,
     lowered.shape,
+    identities,
     focus === undefined ? null : `${focus._tag}:${focus.ns}`,
   ]);
 };
@@ -162,6 +165,7 @@ class QueryObserver {
 
   constructor(
     private readonly lowered: LoweredKernelQuery,
+    private readonly lower: () => LoweredKernelQuery,
     private readonly release: (self: QueryObserver) => void,
     private readonly shape: (rows: unknown) => unknown,
     retired?: RetiredObservation | undefined,
@@ -211,7 +215,8 @@ class QueryObserver {
       return;
     }
     try {
-      const rows = this.lowered.finalize(await runQuery(view, this.lowered.query));
+      const lowered = this.lowered.bindsEntities ? this.lower() : this.lowered;
+      const rows = lowered.finalize(await runQuery(view, lowered.query));
       if (rows instanceof NotOne) {
         this.publish(generation, "error", undefined, stale, rows);
         return;
@@ -370,18 +375,20 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   ): QuerySubscription<ClientValue<Out>> {
     this.context.assertLive("observe");
     const value = query as AnyQueryObject;
-    const lowered = lowerQueryObject(value, {
-      entity: (eid) => this.entityId(eid),
-      resolveEntity: (id) =>
-        typeof id === "string" ? this.localIdOf(id) : undefined,
-    });
+    const lower = (): LoweredKernelQuery =>
+      lowerQueryObject(value, {
+        entity: (eid) => this.entityId(eid),
+        resolveEntity: (id) =>
+          typeof id === "string" ? this.localIdOf(id) : undefined,
+      });
+    const lowered = lower();
     const key = queryObservationKey(value);
     const shape = this.shapeRows(entityFocusOf(query), lowered);
     void this.activate();
     let last: QueryObserver | undefined = this.observers.get(key);
     return Object.freeze({
       subscribe: (onChange: () => void) => {
-        const observer = this.acquire(key, lowered, shape);
+        const observer = this.acquire(key, lowered, lower, shape);
         last = observer;
         return observer.subscribe(onChange);
       },
@@ -446,13 +453,14 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private acquire(
     key: string,
     lowered: LoweredKernelQuery,
+    lower: () => LoweredKernelQuery,
     shape: (rows: unknown) => unknown,
   ): QueryObserver {
     const existing = this.observers.get(key);
     if (existing !== undefined) return existing;
     const retired = this.retired.get(key);
     this.retired.delete(key);
-    const observer = new QueryObserver(lowered, (self) => {
+    const observer = new QueryObserver(lowered, lower, (self) => {
       if (this.observers.get(key) !== self) return;
       this.observers.delete(key);
       this.retired.set(key, {
@@ -946,10 +954,13 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
 
   private localIdOf(id: string): number | undefined {
-    const committed = this.handles.get(id);
+    const mapped = this.reconciler?.mappings().get(id);
+    const committed = this.handles.get(mapped ?? id);
     if (committed !== undefined) return committed;
     for (const [local, handle] of this.speculative) {
-      if (handle === id) return local;
+      if (handle === id || (mapped !== undefined && handle === mapped)) {
+        return local;
+      }
     }
     return undefined;
   }

@@ -1,11 +1,545 @@
 ---
 import AnimationDemo from "./AnimationDemo.astro";
+
+const tasks = [
+  ["Write release notes", "RAM-212", "rcpt 4f2a"],
+  ["Verify permissions", "RAM-218", "rcpt 7c15"],
+  ["Connect the agent", "RAM-223", "rcpt b930"],
+];
+
+const steps = [
+  ["01", "describe", "graph, catalog, and what this caller may call"],
+  ["02", "query", "reads only the fields policy exposes"],
+  ["03", "mutate", "invokes your named operations · 3 receipts"],
+];
 ---
 
 <AnimationDemo
   variant="agents"
-  src="/demos/agents-everything-a-user-can-do.html?v=shared-narrative-10"
   title="An agent discovering, querying, and mutating through Ramose"
+  cycleMs={9000}
   initialTitle="describe"
-  initialMeta="graph, catalog, allowed calls"
-/>
+  initialMeta="graph, catalog, and what this caller may call"
+>
+  <div class="agent-demo">
+    <div class="agent-stage">
+      <div class="rg-demo-window agent-terminal">
+        <div class="rg-demo-titlebar">
+          <span class="rg-demo-dots"><i></i><i></i><i></i></span>
+          <span>codex<span class="muted"> — ~/launch-app</span></span>
+          <span class="rg-demo-live agent-mcp"><i></i>mcp</span>
+        </div>
+        <div class="agent-terminal__body">
+          <div class="agent-command"><b>›</b><span data-agent-command></span></div>
+          <div class="agent-log" data-agent-log="0.15"><span>•</span><p>Discovering the project model and allowed operations…</p></div>
+          <div class="agent-log" data-agent-log="0.22"><span>✓</span><p><strong>ramose.describe</strong><code>{`{ at: ["acme", "launch"] }`}</code></p></div>
+          <div class="agent-log is-result" data-agent-log="0.31"><span>↳</span><p>Visible: <b>Task</b> · <b>Task.setDone</b> · Task.delete not exposed</p></div>
+          <div class="agent-log" data-agent-log="0.42"><span>✓</span><p><strong>ramose.query</strong><code>{`{ done: false, assignee: "me" }`}</code></p></div>
+          <div class="agent-log is-result" data-agent-log="0.49"><span>↳</span><p>3 open tasks on the launch board</p></div>
+          <div class="agent-log" data-agent-log="0.56"><span>✓</span><p><strong>ramose.mutate</strong><code>{`Task.setDone { done: true } ×3`}</code></p></div>
+          <div class="agent-log is-result" data-agent-log="0.78"><span>↳</span><p><em>3 receipts committed</em> · policy allowed · same operation as the UI</p></div>
+          <div class="agent-log is-complete" data-agent-log="0.87"><span>●</span><p>Done — your launch tasks are complete.</p></div>
+        </div>
+      </div>
+
+      <div class="rg-demo-window agent-board">
+        <div class="rg-demo-titlebar">
+          <span class="rg-demo-dots"><i></i><i></i><i></i></span>
+          <span>app.acme.dev<span class="muted">/board/launch</span></span>
+          <span class="rg-demo-live"><i></i>Live</span>
+        </div>
+        <div class="agent-board__body">
+          <header class="agent-board__header">
+            <span><small>Product</small><strong>Launch board</strong></span>
+            <div><span><i>A</i>Assigned to me <b data-agent-open-count>3</b></span><span>Done <b data-agent-done-count>1</b></span></div>
+          </header>
+          <div class="agent-tasks">
+            {tasks.map(([title, id, receipt], index) => (
+              <div class="agent-task" data-agent-task={index}>
+                <i class="agent-check"></i>
+                <span><strong>{title}</strong><small>{id}</small></span>
+                <small class="agent-receipt">{receipt}</small>
+                <b class="agent-avatar">A</b>
+              </div>
+            ))}
+            <div class="agent-task is-closed">
+              <i class="agent-check">✓</i>
+              <span><strong>Connect auth</strong><small>RAM-204 · closed by Jules</small></span>
+            </div>
+          </div>
+          <footer class="agent-board__footer">
+            <span><i></i><b data-agent-board-status>Up to date</b></span>
+            <span>no shadow database · one policy</span>
+          </footer>
+        </div>
+      </div>
+    </div>
+
+    <div class="rg-demo-steps agent-steps">
+      {steps.map(([number, title, meta]) => (
+        <div class="rg-demo-step" data-demo-step data-title={title} data-meta={meta}>
+          <span class="rg-demo-step__number">{number}</span>
+          <strong>{title}</strong>
+          <small>{meta}</small>
+        </div>
+      ))}
+    </div>
+  </div>
+</AnimationDemo>
+
+<style>
+  .agent-demo {
+    min-width: 0;
+  }
+
+  .agent-stage {
+    display: grid;
+    gap: clamp(0.8rem, 2.5vw, 1.1rem);
+    padding: clamp(0.8rem, 3vw, 1.35rem);
+  }
+
+  .muted {
+    color: #5c534d;
+  }
+
+  .agent-mcp {
+    transition: color 320ms ease;
+  }
+
+  .agent-terminal {
+    background: #0c0b0a;
+  }
+
+  .agent-terminal__body {
+    display: grid;
+    align-content: start;
+    gap: 0.34rem;
+    min-height: clamp(13.5rem, 34vw, 16rem);
+    padding: clamp(0.9rem, 3vw, 1.15rem) clamp(0.85rem, 3vw, 1.25rem) clamp(1rem, 3vw, 1.3rem);
+    font-family: var(--sl-font-mono);
+    font-size: clamp(0.65rem, 1.75vw, 0.72rem);
+    line-height: 1.45;
+  }
+
+  .agent-command {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: 0.55rem;
+    min-height: 1.15rem;
+    margin-bottom: 0.55rem;
+    color: #f1ebe6;
+    font-size: clamp(0.7rem, 1.9vw, 0.78rem);
+  }
+
+  .agent-command b {
+    color: #ff6420;
+    font-weight: 500;
+  }
+
+  .agent-command [data-agent-command] {
+    min-width: 0;
+  }
+
+  .agent-command [data-agent-command]::after {
+    display: inline-block;
+    width: 0.42rem;
+    height: 0.86rem;
+    margin-left: 0.18rem;
+    vertical-align: -0.1rem;
+    background: #ff5b0a;
+    animation: agent-caret 1.04s step-end infinite;
+    content: "";
+  }
+
+  .agent-command [data-agent-command].is-submitted::after {
+    opacity: 0;
+    animation: none;
+  }
+
+  .agent-log {
+    display: grid;
+    grid-template-columns: 1.1rem minmax(0, 1fr);
+    gap: 0.5rem;
+    color: #786c65;
+    opacity: 0;
+    transform: translateY(3px);
+    transition: opacity 320ms ease, transform 320ms ease;
+  }
+
+  .agent-log.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .agent-log span {
+    color: #a76b4a;
+    text-align: center;
+  }
+
+  .agent-log p {
+    min-width: 0;
+    margin: 0;
+  }
+
+  .agent-log strong {
+    color: #d3c8c1;
+    font-weight: 500;
+  }
+
+  .agent-log code {
+    margin-left: 0.5rem;
+    padding: 0;
+    color: #8d7f77;
+    background: transparent;
+    font-size: inherit;
+  }
+
+  .agent-log.is-result span {
+    color: #5f544e;
+  }
+
+  .agent-log.is-result b {
+    color: #c6bbb4;
+    font-weight: 400;
+  }
+
+  .agent-log em {
+    color: #ffb080;
+    font-style: normal;
+  }
+
+  .agent-log.is-complete {
+    color: #d8cec7;
+  }
+
+  .agent-log.is-complete span {
+    color: #ff6420;
+    text-shadow: 0 0 0.8rem #ff3d00;
+  }
+
+  .agent-board {
+    transition: border-color 400ms ease, box-shadow 400ms ease;
+  }
+
+  .agent-board__body {
+    padding: clamp(0.9rem, 3vw, 1.15rem) clamp(0.85rem, 3vw, 1.25rem) clamp(0.95rem, 3vw, 1.2rem);
+  }
+
+  .agent-board__header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 0.7rem 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .agent-board__header > span {
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .agent-board__header > span small {
+    color: #6f635c;
+    font-family: var(--sl-font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .agent-board__header > span strong {
+    color: #f2ece7;
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .agent-board__header > div {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5625rem;
+    white-space: nowrap;
+  }
+
+  .agent-board__header > div > span {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.5rem;
+    color: #6d615a;
+    border: 1px solid #2d2723;
+    border-radius: 999px;
+  }
+
+  .agent-board__header > div > span:first-child {
+    color: #ff9a61;
+    border-color: #6e351d;
+    background: #1a100b;
+  }
+
+  .agent-board__header > div i,
+  .agent-avatar {
+    display: grid;
+    place-items: center;
+    width: 0.95rem;
+    height: 0.95rem;
+    color: #1b0c05;
+    border-radius: 50%;
+    background: #ff6500;
+    font-family: var(--sl-font-mono);
+    font-size: 0.45rem;
+    font-style: normal;
+  }
+
+  .agent-board__header > div b {
+    color: #ffb284;
+    font-weight: 500;
+  }
+
+  .agent-tasks {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .agent-task {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.6rem;
+    box-sizing: border-box;
+    min-height: 3.1rem;
+    padding: 0.5rem 0.7rem;
+    border: 1px solid #2b2521;
+    border-radius: 0.55rem;
+    background: #12100e;
+    transition: border-color 340ms ease, background-color 340ms ease, box-shadow 340ms ease;
+  }
+
+  .agent-check {
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    width: 0.9rem;
+    height: 0.9rem;
+    color: #0f1512;
+    border: 1.5px solid #4a413b;
+    border-radius: 0.25rem;
+    font-size: 0.55rem;
+    font-style: normal;
+  }
+
+  .agent-task > span {
+    display: grid;
+    flex: 1 1 6rem;
+    min-width: 0;
+    gap: 0.2rem;
+  }
+
+  .agent-task > span strong {
+    overflow: hidden;
+    color: #d6cdc6;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    transition: color 340ms ease;
+  }
+
+  .agent-task small {
+    color: #6b5f58;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5625rem;
+    letter-spacing: 0.04em;
+  }
+
+  .agent-receipt {
+    margin-left: auto;
+    color: #ffb284 !important;
+    opacity: 0;
+    transition: opacity 320ms ease;
+  }
+
+  .agent-avatar {
+    flex: 0 0 auto;
+    width: 1.2rem;
+    height: 1.2rem;
+    font-size: 0.5rem;
+  }
+
+  .agent-task.is-targeted {
+    border-color: #3d322b;
+  }
+
+  .agent-task.is-done {
+    border-color: #33291f;
+    background: #191310;
+  }
+
+  .agent-task.is-done .agent-check {
+    border-color: #4f7d70;
+    background: #4f7d70;
+  }
+
+  .agent-task.is-done .agent-check::before {
+    content: "✓";
+  }
+
+  .agent-task.is-done strong,
+  .agent-task.is-closed strong {
+    color: #a89f99;
+    text-decoration: line-through;
+    text-decoration-color: #4a423d;
+  }
+
+  .agent-task.is-flashing {
+    border-color: #a8542c;
+    box-shadow: 0 0 1.4rem -0.7rem rgba(255, 77, 8, 0.75);
+  }
+
+  .agent-task.is-flashing .agent-check {
+    background: #ff6500;
+  }
+
+  :global([data-animation-phase="receipts"]),
+  :global([data-animation-phase="complete"]) {
+    .agent-task.is-done .agent-receipt {
+      opacity: 1;
+    }
+  }
+
+  .agent-task.is-closed {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    border-color: #262120;
+    background: #141211;
+    opacity: 0.55;
+  }
+
+  .agent-task.is-closed .agent-check {
+    border-color: #4f7d70;
+    background: #4f7d70;
+  }
+
+  .agent-board__footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.35rem 1rem;
+    margin-top: 0.95rem;
+    color: #665a53;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5625rem;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+
+  .agent-board__footer > span:first-child {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .agent-board__footer i {
+    width: 0.3rem;
+    height: 0.3rem;
+    border-radius: 50%;
+    background: #ff6500;
+    opacity: 0.35;
+  }
+
+  .agent-board__footer b {
+    font-weight: 400;
+  }
+
+  .agent-board__footer > span:last-child {
+    color: #5c534d;
+  }
+
+  .agent-steps {
+    --demo-step-count: 3;
+  }
+
+  :global([data-animation-phase="describe"]),
+  :global([data-animation-phase="catalog"]),
+  :global([data-animation-phase="query"]),
+  :global([data-animation-phase="result"]),
+  :global([data-animation-phase="mutate"]),
+  :global([data-animation-phase="receipts"]),
+  :global([data-animation-phase="complete"]) {
+    .agent-mcp {
+      color: #b3a79f;
+    }
+  }
+
+  :global([data-animation-phase="mutate"]),
+  :global([data-animation-phase="receipts"]) {
+    .agent-board {
+      border-color: #5c3220;
+      box-shadow: 0 1.5rem 4rem -2.2rem #000, 0 0 2.4rem -1rem rgba(255, 76, 0, 0.35);
+    }
+
+    .agent-board__footer {
+      color: #bc8b70;
+    }
+
+    .agent-board__footer i {
+      opacity: 1;
+    }
+  }
+
+  :global([data-animation-phase="complete"]) {
+    .agent-board__footer {
+      color: #bc8b70;
+    }
+
+    .agent-board__footer i {
+      opacity: 1;
+    }
+  }
+
+  @container (max-width: 34rem) {
+    .agent-stage {
+      padding: 0.65rem;
+    }
+
+    .agent-terminal__body {
+      min-height: 15.5rem;
+      font-size: 0.6rem;
+    }
+
+    .agent-log code {
+      display: block;
+      margin-left: 0;
+    }
+
+    .agent-receipt {
+      display: none;
+    }
+
+    .agent-board__footer > span:last-child {
+      display: none;
+    }
+  }
+
+  @keyframes agent-caret {
+    50% { opacity: 0.15; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .agent-command [data-agent-command]::after {
+      animation: none;
+    }
+
+    .agent-log,
+    .agent-board,
+    .agent-task,
+    .agent-receipt {
+      transition: none;
+    }
+  }
+</style>

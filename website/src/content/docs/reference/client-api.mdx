@@ -91,6 +91,8 @@ A handle is *live* and *interned*: one object per entity per row shape, whose `.
 
 Every id here is an `EntityId`, or a `ClientRef` for something created offline — a row's `id`, a nested reference cell, `.ids()`, `select({ id: Task.id })`, and a declared entity-reference input. A local numeric id is never public: it is meaningless off this device, and a delete and recreate reassigns it.
 
+They are also what the next query filters by — `where({ assignee: me.id })`. See [the query builder](/reference/query-language/#filtering-by-an-entity).
+
 ## Targetless operations
 
 ```ts

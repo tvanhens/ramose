@@ -4,6 +4,7 @@ import type {
   PullElemPred,
 } from "../../internal/core/query/ast.ts";
 import { refTargetNs } from "../Pull.ts";
+import { isMutationRef } from "../refs.ts";
 import {
   collectBody,
   isBlank,
@@ -63,7 +64,17 @@ const regexSource = (re: RegExp | string): string => {
   return re.source;
 };
 
-const lowerValue = (v: unknown): unknown => unwrapEidLike(v);
+const lowerValue = (v: unknown): unknown => {
+  const named = typeof v === "object" && v !== null
+    ? (v as { readonly id?: unknown }).id
+    : v;
+  if (isMutationRef(named)) {
+    err(
+      "a pull-phase filter is compiled into the query value itself, before any replica binding exists, so it cannot resolve an entity identity — constrain the entity in the query's own where()",
+    );
+  }
+  return unwrapEidLike(v);
+};
 
 const isCmpPred = (p: PullElemPred): p is PullElemCmp =>
   typeof (p as PullElemCmp).op === "string" && Array.isArray((p as PullElemCmp).path);
@@ -303,7 +314,7 @@ export const lowerElemFilter = (
         path: [],
         op: "in",
         value: Array.isArray(values)
-          ? values.map(unwrapEidLike)
+          ? values.map(lowerValue)
           : err(`Q.in takes an array of values, got ${String(values)}`),
       };
     }

@@ -51,6 +51,9 @@ const asLogical = (
 ): LogicalDatom =>
   ({ entity, field, value, op: "add" }) as unknown as LogicalDatom;
 
+const storedMembershipType = (ns: string): string =>
+  ns.startsWith(":") ? ns : `:${ns}`;
+
 const referencesOf = (op: ProjectionOp): readonly MutationRef[] =>
   (op.op === "set" || op.op === "remove") && op.value !== null &&
     op.value.type === "ref"
@@ -156,7 +159,16 @@ export const projectOverlay = async (
     const e = resolved[0] as number;
     const retract = (prior: Datom): Datom => ({ ...prior, t: at, op: false });
     if (op.op === "create") {
-      return [makeDatom(e, RAMOSE_TYPE, ValueTag.Str, op.type, at, true)];
+      return [
+        makeDatom(
+          e,
+          RAMOSE_TYPE,
+          ValueTag.Str,
+          storedMembershipType(op.type),
+          at,
+          true,
+        ),
+      ];
     }
     if (op.op === "delete") {
       const own = await below.datomsArray(Index.EAVT, { e });

@@ -98,6 +98,21 @@ describe("queryObservationKey", () => {
     expect(queryObservationKey(right)).toBe(queryObservationKey(left));
   });
 
+  test("separates two questions that name different entities, and holds one identity steady", () => {
+    const db = createClient(options()).open();
+    const ada = `${"a".repeat(54)}A`;
+    const ben = `${"b".repeat(54)}A`;
+    const forAda = db.query.from(Note).where({ id: ada as never });
+    const forBen = db.query.from(Note).where({ id: ben as never });
+
+    expect(queryObservationKey(forAda)).not.toBe(queryObservationKey(forBen));
+    expect(queryObservationKey(forAda)).not.toBe(
+      queryObservationKey(db.query.from(Note)),
+    );
+    expect(queryObservationKey(db.query.from(Note).where({ id: ada as never })))
+      .toBe(queryObservationKey(forAda));
+  });
+
   test("keys a paged query that carries a cursor", () => {
     const db = createClient(options()).open();
     const first = db.query.from(Note).orderBy(Note.title).limit(1).after(null);

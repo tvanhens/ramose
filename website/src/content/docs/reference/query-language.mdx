@@ -28,6 +28,20 @@ query
 
 Typed field expressions expose compatible equality, comparison, membership, text, presence, and reference operators. Combine predicates with `and`, `or`, and `not`. Literal input is validated before execution.
 
+### Filtering by an entity
+
+The ids a query publishes are the ids the next query filters by, at any reference field and at `id` itself:
+
+```ts
+db.query.from(Task).where({ assignee: me.id })
+```
+
+The value is an `EntityId`, or the `ClientRef` of an entity this device created. Both are branded with the entity they name, so an identity of another type is a compile error. A `ClientRef` keeps naming the same entity when the server issues its `EntityId`: the query follows it without being rebuilt.
+
+An identity the local replica holds nothing for — never received, or issued to a different replica — matches nothing. That is an answer, not an error, and the query starts answering if the entity arrives.
+
+An entity identity is only meaningful where an entity can be held. At a scalar field, in a text comparison, or inside a `select(…)` collection's own `where`, one is refused when the query is built rather than quietly matching nothing.
+
 ## Relationships
 
 Traverse declared references and relationships from a bound source. Relationship clauses participate in the query; nested projection controls returned shape.

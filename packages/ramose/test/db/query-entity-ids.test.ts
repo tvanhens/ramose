@@ -10,6 +10,7 @@ import {
   Schema,
   again,
   all,
+  clientRef,
   lowerQueryObject,
   string,
 } from "../../src/db/internal.ts";
@@ -257,5 +258,203 @@ describe("entity ids in a lowered projection", () => {
     });
     const result = await runQuery(db, lowered.query);
     expect(() => lowered.finalize(result)).toThrow("no opaque identity");
+  });
+});
+
+const sealed = (seed: string): string => `${seed.repeat(54).slice(0, 54)}A`;
+
+describe("entity identities at a filter position", () => {
+  const bind = (entries: Record<string, number>) => {
+    const handles = new Map(Object.entries(entries));
+    return {
+      ...opaque,
+      resolveEntity: (id: unknown) => handles.get(id as string),
+    };
+  };
+
+  const binding = () =>
+    bind({
+      [`handle:${ids.author}`]: ids.author!,
+      [`handle:${ids.issue}`]: ids.issue!,
+    });
+
+  test("a reference filter resolves the identity a row published", async () => {
+    const listing = Query.from(Issue).where({
+      author: `handle:${ids.author}` as never,
+    });
+
+    expect(await rows(listing, binding())).toEqual([{
+      id: `handle:${ids.issue}`,
+      title: "Offline",
+      rank: 1_000,
+      author: { id: `handle:${ids.author}` },
+    }]);
+  });
+
+  test("the row cell itself filters, past the `{ id }` it is wrapped in", async () => {
+    const listing = Query.from(Issue).where({
+      author: { id: `handle:${ids.author}` } as never,
+    });
+
+    expect(await rows(listing, binding())).toHaveLength(1);
+  });
+
+  test("a filter stage takes the same identity the object literal does", async () => {
+    const listing = Query.from(Issue).where(
+      Query.is(Issue.author, `handle:${ids.author}` as never),
+    );
+
+    expect(await rows(listing, binding())).toHaveLength(1);
+  });
+
+  test("an identity filters the focus itself, through `id` and through `byId`", async () => {
+    const byField = Query.from(Issue).where({ id: `handle:${ids.issue}` as never });
+    const byStage = Query.from(Issue).where(
+      Query.byId(`handle:${ids.issue}` as never),
+    );
+
+    expect(await rows(byField, binding())).toHaveLength(1);
+    expect(await rows(byStage, binding())).toHaveLength(1);
+  });
+
+  test("an identity this replica cannot place answers nothing, and never as a literal", async () => {
+    const stranger = sealed("z");
+    const listing = Query.from(Issue).where({ author: stranger as never });
+    const lowered = lowerQueryObject(listing as never, binding());
+
+    expect(JSON.stringify(lowered.query)).not.toContain(stranger);
+    expect(await rows(listing, binding())).toEqual([]);
+  });
+
+  test("an identity issued to another replica is not visible here, which is not an error", async () => {
+    const elsewhere = bind({ [sealed("w")]: ids.author! });
+    const listing = Query.from(Issue).where({ author: sealed("v") as never });
+
+    expect(await rows(listing, elsewhere)).toEqual([]);
+  });
+
+  test("the same query stops being empty once the replica holds the entity", async () => {
+    const listing = Query.from(Issue).where({ author: sealed("p") as never });
+
+    expect(await rows(listing, bind({}))).toEqual([]);
+    expect(await rows(listing, bind({ [sealed("p")]: ids.author! })))
+      .toHaveLength(1);
+  });
+
+  test("a client ref answers wherever the client can place it", async () => {
+    const ref = clientRef();
+    const listing = Query.from(Issue).where({ author: ref as never });
+
+    expect(await rows(listing, bind({ [ref]: ids.author! }))).toHaveLength(1);
+    expect(await rows(listing, bind({}))).toEqual([]);
+  });
+
+  test("an unplaceable identity inside or / not is one arm that fails, not a broken query", async () => {
+    const either = Query.from(Issue).where(
+      Query.any(
+        Query.is(Issue.author, `handle:${ids.author}` as never),
+        Query.is(Issue.author, sealed("q") as never),
+      ),
+    );
+    expect(await rows(either, binding())).toHaveLength(1);
+
+    const notStranger = Query.from(Issue).where(
+      Query.not(Query.is(Issue.author, sealed("q") as never)),
+    );
+    expect(await rows(notStranger, binding())).toHaveLength(1);
+
+    const notAda = Query.from(Issue).where(
+      Query.not(Query.is(Issue.author, `handle:${ids.author}` as never)),
+    );
+    expect(await rows(notAda, binding())).toEqual([]);
+  });
+
+  test("a lowering reports whether it read the binding at all", () => {
+    const plain = lowerQueryObject(
+      Query.from(Issue).where({ title: "Offline" }) as never,
+      binding(),
+    );
+    const bound = lowerQueryObject(
+      Query.from(Issue).where({ author: sealed("p") as never }) as never,
+      binding(),
+    );
+
+    const paged = lowerQueryObject(
+      Query.from(Issue).orderBy(Issue.title).limit(1).after(
+        { _tag: "Cursor", keys: ["Offline", `handle:${ids.issue}`] } as never,
+      ) as never,
+      binding(),
+    );
+
+    expect(plain.bindsEntities).toBe(false);
+    expect(bound.bindsEntities).toBe(true);
+    expect(paged.bindsEntities).toBe(true);
+  });
+
+  test("`Q.in` keeps the members this replica can place and drops the rest", async () => {
+    const authored = (members: readonly string[]) =>
+      Query.q(function* () {
+        const issue = yield* Query.entities(Issue);
+        const author = yield* Q.fact(issue, Issue.author);
+        yield* Q.in(author.v, members as never);
+        return { id: issue };
+      });
+
+    expect(
+      await rows(authored([`handle:${ids.author}`, sealed("q")]), binding()),
+    ).toHaveLength(1);
+    expect(await rows(authored([sealed("q")]), binding())).toEqual([]);
+  });
+
+  test("an identity where no entity can be held is refused, not answered emptily", () => {
+    expect(() =>
+      lowerQueryObject(
+        Query.from(Issue).where({ title: sealed("p") as never }) as never,
+        binding(),
+      )
+    ).toThrow(/an entity identity is not a value/);
+
+    expect(() =>
+      lowerQueryObject(
+        Query.from(Issue).where(
+          Query.startsWith(Issue.title, clientRef() as never),
+        ) as never,
+        binding(),
+      )
+    ).toThrow(/an entity identity is not a value/);
+  });
+
+  test("a reference filter needs a replica to resolve against", () => {
+    expect(() =>
+      lowerQueryObject(
+        Query.from(Issue).where({ author: sealed("p") as never }) as never,
+      )
+    ).toThrow(/only meaningful against the replica/);
+  });
+
+  test("a reference position takes an entity, and says so when given something else", () => {
+    expect(() =>
+      lowerQueryObject(
+        Query.from(Issue).where({ author: { name: "Ada" } as never }) as never,
+        binding(),
+      )
+    ).toThrow(/takes an entity/);
+  });
+
+  test("a pull-phase filter says it cannot resolve one, rather than matching nothing", () => {
+    const nested = (where: readonly unknown[]) => () =>
+      Query.from(Node).select({
+        children: Node.children.select({ name: Node.name }, {
+          where: where as never,
+        }),
+      });
+
+    expect(nested([Query.is(Node.name, sealed("p") as never)]))
+      .toThrow(/before any replica binding exists/);
+    expect(nested([Query.is(Node.name, { id: sealed("p") } as never)]))
+      .toThrow(/before any replica binding exists/);
+    expect(
+      nested([(v: never) => Q.in(v, [clientRef()] as never)]),
+    ).toThrow(/before any replica binding exists/);
   });
 });

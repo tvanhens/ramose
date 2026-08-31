@@ -1,5 +1,8 @@
 import type { AnyComposer } from "../Composer.ts";
 import type { AnyEntity, Entity, FieldMap } from "../Entity.ts";
+import type { MutationRef } from "../refs.ts";
+
+export type EntityEq<N> = [N] extends [AnyEntity] ? MutationRef<N> : MutationRef;
 
 export type FocusIdents<N extends AnyComposer> =
   | {

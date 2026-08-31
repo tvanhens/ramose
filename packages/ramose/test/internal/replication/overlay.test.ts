@@ -48,7 +48,7 @@ const ATTRS: AttributeSpec[] = [
   { ident: ":user/name", valueType: ":db.type/string", cardinality: "one", optional: true },
 ];
 
-const Issue = { ns: "Issue" };
+const Issue = { ns: "issue" };
 const title: ProjectionField = { ident: ":issue/title", valueType: "string" };
 const rank: ProjectionField = { ident: ":issue/rank", valueType: "long" };
 const key: ProjectionField = { ident: ":issue/key", valueType: "uuid" };
@@ -94,15 +94,15 @@ beforeAll(async () => {
     v: Datom["v"],
   ): Datom => ({ e, a: a(ident), vt, v, t: REPLICA_USER_T, op: true });
   const facts: Datom[] = [
-    fact(alpha, ":ramose/type", ValueTag.Str, "Issue"),
+    fact(alpha, ":ramose/type", ValueTag.Str, ":issue"),
     fact(alpha, ":issue/title", ValueTag.Str, "alpha"),
     fact(alpha, ":issue/rank", ValueTag.Long, 1),
     fact(alpha, ":issue/tags", ValueTag.Str, "red"),
     fact(alpha, ":issue/owner", ValueTag.Ref, user),
-    fact(beta, ":ramose/type", ValueTag.Str, "Issue"),
+    fact(beta, ":ramose/type", ValueTag.Str, ":issue"),
     fact(beta, ":issue/title", ValueTag.Str, "beta"),
     fact(beta, ":issue/rank", ValueTag.Long, 2),
-    fact(user, ":ramose/type", ValueTag.Str, "User"),
+    fact(user, ":ramose/type", ValueTag.Str, ":user"),
     fact(user, ":user/name", ValueTag.Str, "ada"),
   ];
   const roots = await buildRoots(
@@ -186,7 +186,7 @@ const dump = async (db: Db): Promise<readonly string[]> =>
 const titles = async (db: Db): Promise<readonly string[]> =>
   (await query(
     db,
-    `[:find [?t ...] :where [?e :ramose/type "Issue"] [?e :issue/title ?t] :order ?t]`,
+    `[:find [?t ...] :where [?e :ramose/type ":issue"] [?e :issue/title ?t] :order ?t]`,
   )) as string[];
 
 describe("the committed value is untouched", () => {

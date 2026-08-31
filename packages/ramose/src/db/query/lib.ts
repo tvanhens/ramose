@@ -1,5 +1,6 @@
 import type { Eid } from "../Eid.ts";
 import { isComposer, type AnyComposer } from "../Composer.ts";
+import type { AnyEntity } from "../Entity.ts";
 import type { UnbrandedId } from "../idents.ts";
 import type {
   AttrValue,
@@ -11,7 +12,14 @@ import type {
   ValidShape,
   SelectResult,
 } from "../shapes.ts";
-import type { FocusMismatch, InFocus, OwnerOf, RefTarget, ReverseOk } from "./focus.ts";
+import type {
+  EntityEq,
+  FocusMismatch,
+  InFocus,
+  OwnerOf,
+  RefTarget,
+  ReverseOk,
+} from "./focus.ts";
 import {
   Q,
   type AggSpec,
@@ -169,7 +177,25 @@ export const stage: {
   ((x: unknown) =>
     isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar))) as never;
 
-type ValueIn<A> = AttrValue<A> | AnyVar | { readonly id: number };
+type EntityIn<E> = EntityEq<E> | { readonly id: EntityEq<E> };
+
+type RefIn<A> = A extends { readonly ident: ":db/id" }
+  ? EntityIn<OwnerOf<A>>
+  : A extends { readonly valueType: "ref" }
+    ? EntityIn<RefTarget<A, AnyComposer>>
+    : never;
+
+type ValueIn<A> = AttrValue<A> | AnyVar | { readonly id: number } | RefIn<A>;
+
+type IdIn<E> = number | EntityEq<E> | { readonly id: number | EntityEq<E> };
+
+type IdFilterStage<E> = <X>(
+  x: [X] extends [Pipeline<any, infer N>]
+    ? [E] extends [AnyEntity]
+      ? [N] extends [AnyEntity] ? ([N] extends [E] ? X : FocusMismatch) : X
+      : X
+    : X,
+) => FilterOut<X> & { readonly _ident?: ":db/id" };
 
 /** `is(A, v)`: `p(e) := [e A v]`. `is(N.id, v)` is the same filter as {@link byId}. */
 export const is = <A extends AttrLike>(
@@ -183,14 +209,16 @@ export const is = <A extends AttrLike>(
 /**
  * `byId(id)`: the focus is this entity. The blessed spelling of a filter by
  * entity id — a serializable query stage, equivalent to `is(N.id, id)`. The
- * id is a number or an `{ id }` cell; lowering unifies the focus with that
- * id (`ground`), and never emits a `:db/id` pattern (that is not an
- * attribute).
+ * id is an entity identity, a local id, or an `{ id }` cell; lowering unifies
+ * the focus with that id (`ground`), and never emits a `:db/id` pattern (that
+ * is not an attribute).
  */
-export const byId = (id: number | AnyVar | { readonly id: number }): FilterStage =>
+export const byId = <E extends AnyComposer = AnyComposer>(
+  id: IdIn<E> | AnyVar,
+): IdFilterStage<E> =>
   filter<void>(function* (e) {
     yield* Q.fact(e, { ident: ":db/id" as const }, id);
-  });
+  }) as IdFilterStage<E>;
 
 /** `has(A)`: the focus carries some `A` fact. */
 export const has = <A extends AttrLike>(attr: A): FilterStage<AnyComposer, A> =>

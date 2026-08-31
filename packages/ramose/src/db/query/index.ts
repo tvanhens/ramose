@@ -36,6 +36,7 @@ export {
   q,
   refine,
   rule,
+  symbolicIdentityLowering,
   type AnyQueryObject,
   type Cursor,
   type LoweredKernelQuery,

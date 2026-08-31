@@ -1,5 +1,6 @@
 import * as Data from "effect/Data";
 import type { AnyComposer } from "../db/Composer.ts";
+import type { AnyEntity } from "../db/Entity.ts";
 import { isClientRef, type ClientRef, type MutationRef } from "../db/refs.ts";
 import type { OptimisticPending } from "../internal/replication/reconciliation.ts";
 import type { ClientDatabase } from "./database.ts";
@@ -36,8 +37,12 @@ export class EntityWithdrawnError extends Data.TaggedError(
 )<{ readonly operation: string }> {}
 
 /** One entity, as an application holds it. */
-export interface EntityHandle<Data = unknown, Mutations = MutationNamespace> {
-  readonly id: MutationRef;
+export interface EntityHandle<
+  Data = unknown,
+  Mutations = MutationNamespace,
+  Entity extends AnyEntity = AnyEntity,
+> {
+  readonly id: MutationRef<Entity>;
   readonly data: Data;
   readonly local: EntityLocal;
   readonly mutate: Mutations;

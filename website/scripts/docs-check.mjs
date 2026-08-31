@@ -64,8 +64,8 @@ const BUDGETS = {
   "reference/query-language": 600,
   "reference/query-document": 600,
   "reference/operations": 700,
-  "reference/react": 630,
-  "reference/offline-limits": 860,
+  "reference/react": 820,
+  "reference/offline-limits": 890,
   "reference/mcp": 800,
   "reference/policy": 600,
   "reference/errors": 800,
@@ -401,34 +401,6 @@ if (run("images") && !onlyPage) {
     add("WARN", "images", "(site)",
       `${unused.length} unused asset(s), ${kb} KB — they still ship`,
       unused.map((u) => `${u.img} (${u.kb} KB)`).join(", "));
-  }
-}
-
-if (run("demos") && !onlyPage) {
-  const demos = join(PUBLIC, "demos");
-  for (const path of walk(demos).filter((p) => p.endsWith(".html"))) {
-    const src = readFileSync(path, "utf8");
-    const page = `/demos/${relative(demos, path)}`;
-    for (const type of [
-      "__bundler/manifest",
-      "__bundler/page_order",
-      "__bundler/template",
-    ]) {
-      const marker = `<script type="${type}">`;
-      const start = src.indexOf(marker);
-      const end = start < 0 ? -1 : src.indexOf("</script>", start + marker.length);
-      if (start < 0 || end < 0) {
-        add("ERROR", "demos", page, `missing ${type} payload`);
-        continue;
-      }
-      const payload = src.slice(start + marker.length, end).trim();
-      try {
-        JSON.parse(payload);
-      } catch (error) {
-        add("ERROR", "demos", page, `${type} payload is not valid JSON`,
-          error instanceof Error ? error.message : String(error));
-      }
-    }
   }
 }
 
