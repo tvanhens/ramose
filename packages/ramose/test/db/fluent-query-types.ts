@@ -104,6 +104,11 @@ Query.from(Comment).where(Query.is(Comment.issue, userHandle));
 // @ts-expect-error
 Query.from(Comment).where(Query.byId(userHandle));
 
+Query.from(Comment).where(Query.is(Comment.id, commentHandle));
+
+// @ts-expect-error
+Query.from(Comment).where(Query.is(Comment.id, userHandle));
+
 Query.from(Comment).where(Query.byId(1));
 
 declare const taggedIssueHandle: EntityId<typeof TaggedIssue>;

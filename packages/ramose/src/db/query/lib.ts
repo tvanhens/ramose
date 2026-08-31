@@ -177,11 +177,13 @@ export const stage: {
   ((x: unknown) =>
     isPipeline(x) ? addStage(x, { kind: "frag", frag }) : frag(x as AnyVar))) as never;
 
-type RefIn<A> = A extends { readonly valueType: "ref" }
-  ? EntityEq<RefTarget<A, AnyComposer>> | {
-    readonly id: EntityEq<RefTarget<A, AnyComposer>>;
-  }
-  : never;
+type EntityIn<E> = EntityEq<E> | { readonly id: EntityEq<E> };
+
+type RefIn<A> = A extends { readonly ident: ":db/id" }
+  ? EntityIn<OwnerOf<A>>
+  : A extends { readonly valueType: "ref" }
+    ? EntityIn<RefTarget<A, AnyComposer>>
+    : never;
 
 type ValueIn<A> = AttrValue<A> | AnyVar | { readonly id: number } | RefIn<A>;
 

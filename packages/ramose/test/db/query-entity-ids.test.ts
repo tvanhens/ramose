@@ -379,8 +379,16 @@ describe("entity identities at a filter position", () => {
       binding(),
     );
 
+    const paged = lowerQueryObject(
+      Query.from(Issue).orderBy(Issue.title).limit(1).after(
+        { _tag: "Cursor", keys: ["Offline", `handle:${ids.issue}`] } as never,
+      ) as never,
+      binding(),
+    );
+
     expect(plain.bindsEntities).toBe(false);
     expect(bound.bindsEntities).toBe(true);
+    expect(paged.bindsEntities).toBe(true);
   });
 
   test("`Q.in` keeps the members this replica can place and drops the rest", async () => {

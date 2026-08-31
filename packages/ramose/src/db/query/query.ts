@@ -1946,6 +1946,7 @@ export const lowerQueryObject = (
     if (pagedEntities[index] !== true) return key;
     const resolve = lowering?.resolveEntity;
     if (resolve === undefined) return key;
+    bindsEntities = true;
     const eid = resolve(key);
     if (eid === undefined) {
       throw new InvalidRequest({
