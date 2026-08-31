@@ -1926,6 +1926,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           operation: retitleByRenamedRef,
           input: {
             item_id: entityId,
+            also: entityId,
             title: "Retitled through a renamed handle",
             wire_note: entityId,
           },
@@ -1933,6 +1934,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(retitled.status).toBe(200);
         expect(retitled.body.result).toEqual({
           item: entityId,
+          also: entityId,
           title: "Retitled through a renamed handle",
           note: entityId,
         });
@@ -1949,6 +1951,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           operation: retitleByRenamedRef,
           input: {
             item_id: eid,
+            also: eid,
             title: "Retitled through a renamed handle",
             wire_note: entityId,
           },
@@ -1981,6 +1984,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
             operation: retitleByRenamedRef,
             input: {
               item_id: handle,
+              also: entityId,
               title: "Must not execute",
               wire_note: "",
             },

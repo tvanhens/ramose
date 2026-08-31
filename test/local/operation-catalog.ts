@@ -194,17 +194,24 @@ export const Item = Entity("nativeItem", {
       self: false,
       input: EffectSchema.Struct({
         item: OperationEntityId,
+        also: OperationEntityId,
         title: EffectSchema.String,
         note: EffectSchema.String,
       }).pipe(EffectSchema.encodeKeys({ item: "item_id", note: "wire_note" })),
       output: EffectSchema.Struct({
         item: OperationEntityId,
+        also: OperationEntityId,
         title: EffectSchema.String,
         note: EffectSchema.String,
       }),
       run(op, input) {
         op.set(Item, input.item, Item.title, input.title);
-        return { item: input.item, title: input.title, note: input.note };
+        return {
+          item: input.item,
+          also: input.also,
+          title: input.title,
+          note: input.note,
+        };
       },
     }),
     deleteAndEchoTitle: Operation({

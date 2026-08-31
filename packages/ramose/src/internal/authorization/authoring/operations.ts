@@ -613,17 +613,14 @@ const refDepths = (
   return into;
 };
 
-const wireRefsAreDeclared = (
+const sameRefDepths = (
   wire: OperationWireShape,
   decoded: OperationInputShape,
 ): boolean => {
-  const declared = [...refDepths(decoded, "", [])];
-  for (const depth of refDepths(wire, "", [])) {
-    const at = declared.indexOf(depth);
-    if (at < 0) return false;
-    declared.splice(at, 1);
-  }
-  return true;
+  const left = [...refDepths(wire, "", [])].sort(compareText);
+  const right = [...refDepths(decoded, "", [])].sort(compareText);
+  return left.length === right.length &&
+    left.every((depth, index) => depth === right[index]);
 };
 
 export const lowerOperationWireShape = (
@@ -643,6 +640,7 @@ export const lowerOperationWireShape = (
     readonly value?: Schema.Top;
     readonly from?: Schema.Top;
     readonly to?: Schema.Top;
+    readonly schema?: unknown;
   };
   if (record.fields !== undefined) {
     const keys = Reflect.ownKeys(record.fields);
@@ -669,8 +667,13 @@ export const lowerOperationWireShape = (
     } catch {
       return { _tag: "opaque" };
     }
-    return wireRefsAreDeclared(wire, decoded) ? wire : { _tag: "opaque" };
+    return sameRefDepths(wire, decoded) ? wire : decoded;
   }
+  const source = record.schema;
+  if (
+    Schema.isSchema(source) && source !== schema &&
+    SchemaAST.toType(source.ast)._tag === SchemaAST.toType(schema.ast)._tag
+  ) return lowerOperationWireShape(catalog, source, next);
   return primitiveShape(schema.ast) === undefined
     ? { _tag: "opaque" }
     : { _tag: "scalar" };
