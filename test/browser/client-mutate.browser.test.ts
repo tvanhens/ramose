@@ -95,10 +95,6 @@ const MUTATION_STORES = [
   "mutation-layers-v1",
 ] as const;
 
-/**
- * Every row in every mutation store of one storage namespace, counted with no
- * scope prefix, so a durable trace under any scope is visible.
- */
 const mutationCensus = async (
   name: string,
 ): Promise<Record<string, number>> => {
@@ -258,7 +254,6 @@ browserTest(
       expect(db.sync.getSnapshot().status).toBe("authentication-required");
 
       // And nothing durable was written for an invocation that never had a
-      // receiver, in any mutation store and under any scope.
       expect(await mutationCensus(name)).toEqual(NO_MUTATION_TRACE);
     } finally {
       await app.close();
@@ -303,7 +298,6 @@ browserTest("a targetless mutation queues durably and reports it", async ({ brow
     expect(JSON.stringify(record)).not.toContain("unitHash");
 
     expect(receipt.getSnapshot().status).toBe("queued");
-    // The census the refusal tests read as zero counts these rows.
     expect(await mutationCensus(name)).toEqual({
       ...NO_MUTATION_TRACE,
       "mutation-outbox-v1": 1,

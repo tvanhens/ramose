@@ -641,8 +641,6 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       const world = await seedWorld(base, MULTI_DEVICE_DATABASE, false);
       const eid = String(world.ids.parent);
 
-      // The first device mutates through the public operation surface and is
-      // answered with the entity's sealed handle.
       const first = await rename(
         base,
         world.database,
@@ -655,8 +653,6 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(isEntityId(handle)).toBe(true);
       expect(JSON.stringify(first.body)).not.toContain(eid);
 
-      // The second device replicates the same principal and finds that exact
-      // handle, with no numeric identity anywhere in the stream.
       const replicated = async () => {
         const response = await openReplication(base, world.database, world.member);
         expect(response.status).toBe(200);
@@ -679,8 +675,6 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(second.wire).not.toContain(`"${eid}"`);
       expect(second.wire).not.toContain(`:${eid}`);
 
-      // And mutates through the handle it replicated, which the server
-      // answers with the identical handle.
       const again = await json(base, `/db/${world.database}/op`, {
         method: "POST",
         token: world.member,
@@ -699,14 +693,11 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(again.body.result.id).toBe(handle);
       expect(JSON.stringify(again.body)).not.toContain(eid);
 
-      // Both devices converge on one entity under one identity.
       const converged = await replicated();
       expect(converged.titles).toContain("Device two");
       expect(converged.titles).not.toContain("Device one");
       expect([...converged.handles.values()]).toContain(handle);
 
-      // A handle stays the answer to one principal: another principal's
-      // replication of the same entity never carries it.
       const theirs = await openReplication(base, world.database, world.admin);
       const iterator = readReplicationNdjson(theirs)[Symbol.asyncIterator]();
       try {

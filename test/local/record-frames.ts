@@ -74,6 +74,7 @@ export const registerFrameRecorder = (
       });
 
       const run = Date.now().toString(36);
+      const changeTitle = `Recorded change ${run}`;
       const owner = await create(base, RECORDING_DATABASE, admin, ConformanceUser.ns, {
         sub: `recorder-${run}`,
       });
@@ -82,7 +83,7 @@ export const registerFrameRecorder = (
         RECORDING_DATABASE,
         admin,
         ConformanceIssue.ns,
-        { key: `recorder-${run}`, title: "Recorded", owner, org: "acme" },
+        { key: `recorder-${run}`, title: `Recorded ${run}`, owner, org: "acme" },
       );
 
       const response = await openReplication(base, RECORDING_DATABASE, token);
@@ -110,8 +111,6 @@ export const registerFrameRecorder = (
         await closeIterator(iterator);
       }
 
-      // The acknowledgement a client resuming that exact revision is answered
-      // with, recorded before anything commits over it.
       const resumeResponse = await openReplication(
         base,
         RECORDING_DATABASE,
@@ -133,8 +132,6 @@ export const registerFrameRecorder = (
         await closeIterator(resuming);
       }
 
-      // The change that continues that same revision, recorded from a live
-      // session over one real commit.
       const changeResponse = await openReplication(base, RECORDING_DATABASE, token);
       expect(changeResponse.status).toBe(200);
       const changing = readReplicationNdjson(changeResponse)[Symbol.asyncIterator]();
@@ -147,7 +144,7 @@ export const registerFrameRecorder = (
         const renamed = await invoke(base, RECORDING_DATABASE, token, {
           owner: { kind: "entity", name: ConformanceIssue.ns },
           localName: "rename",
-        }, { title: "Recorded change" }, subject);
+        }, { title: changeTitle }, subject);
         expect(renamed.status).toBe(200);
         const next = await pending;
         if (next.done || next.value.frame.type !== "Change") {
@@ -181,7 +178,7 @@ export const registerFrameRecorder = (
             identity,
             attributes: attributesOf(datoms),
             revision,
-            change: { from: revision, revision: changeRevision },
+            change: { from: revision, revision: changeRevision, title: changeTitle },
           }, null, 2)
         }\n`,
       );

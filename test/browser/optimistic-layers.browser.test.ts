@@ -283,11 +283,6 @@ const recordedFrames = async (root: string) => {
   );
 };
 
-/**
- * Install the recorded activation's own snapshot and bind it to the credential
- * a session opened at `root` presents, so that session resumes this replica
- * instead of taking a fresh snapshot.
- */
 const installRecorded = async (
   storage: IndexedDbReplicaStorage,
   root: string,
@@ -884,10 +879,6 @@ type PendingFence = {
   readonly activation: number;
 };
 
-/**
- * A replica restored from the recorded activation, carrying one committed
- * receipt no activation has observed yet.
- */
 const pendingFence = async (
   database: string,
   root: string,
@@ -945,8 +936,6 @@ browserTest(
     let session: ReplicationSession | undefined;
     let refused: ReplicationSession | undefined;
     try {
-      // An activation that never reaches the server observes nothing, so the
-      // layer and its unobserved receipt stay exactly where they are.
       refused = await ReplicationSession.open({
         activation: {
           server: globalThis.location.origin,
@@ -986,8 +975,6 @@ browserTest(
       });
       await fenced(reconciler, session);
 
-      // The resume published the replica it restored, at the revision the
-      // recorded acknowledgement names.
       expect(session.snapshot()).toMatchObject({
         status: "open",
         value: { revision: recorded.revision, stale: false },
@@ -1014,7 +1001,7 @@ browserTest(
     let session: ReplicationSession | undefined;
     try {
       expect(await committedNames(storage, identity()))
-        .not.toContain("Recorded change");
+        .not.toContain(recorded.change.title);
 
       session = await ReplicationSession.open({
         activation: {
@@ -1030,14 +1017,12 @@ browserTest(
       });
       await fenced(reconciler, session);
 
-      // The change was applied, not resumed: the replica advanced to the
-      // revision the recorded frame committed, and carries its value.
       expect(session.snapshot()).toMatchObject({
         status: "open",
         value: { revision: recorded.change.revision, stale: false },
       });
       const authoritative = await committedNames(storage, identity());
-      expect(authoritative).toContain("Recorded change");
+      expect(authoritative).toContain(recorded.change.title);
       expect(authoritative).not.toContain("committed-unobserved");
       expect((await storage.outbox().receipt(receiver, invocation))?.observation)
         .toBe("observed");

@@ -1365,14 +1365,10 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         (typeof answers)[number],
       ];
 
-      // The body-shape refusal precedes the deployed-catalog presence refusal,
-      // and answers identically whether or not this deployment serves the
-      // database, so what it precedes it cannot disclose.
       expect(servedAnswer.malformed.status).toBe(400);
       expect([unservedAnswer.malformed.status, unservedAnswer.malformed.body])
         .toEqual([servedAnswer.malformed.status, servedAnswer.malformed.body]);
 
-      // Presence is decided on the request that carries an invocation.
       expect(servedAnswer.shaped.status).toBe(200);
       expect(unservedAnswer.shaped.status).toBe(403);
       expect(unservedAnswer.shaped.body).toEqual({ error: "unauthorized" });
@@ -2059,9 +2055,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         const version = (await otherDeploymentVersions())
           .get("nativeItem/createAllocating")!;
         const ref = clientRef();
-        // One durable record, submitted by every client that shares it: the
-        // tabs of a browser with no Web Locks to elect one of them, and the
-        // successor of a leader lost mid-submission.
         const record = queued(version, {
           input: { title: "Stormed offline" },
           allocations: [{ slot: "item", clientRef: ref }],

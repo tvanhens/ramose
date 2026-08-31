@@ -132,7 +132,6 @@ export const serve = (id: string): void =>
       return head.record.invocation;
     },
 
-    /** Settle the head of the queue the way a submitting tab settles it. */
     acknowledgeHead: async (
       { scope }: { readonly scope: ReplicaDatabaseScope },
     ): Promise<Settlement> => {
@@ -157,10 +156,6 @@ export const serve = (id: string): void =>
       }
     },
 
-    /**
-     * Stall this leader inside the transaction that queues one invocation, and
-     * stay there until the tab is destroyed.
-     */
     stallEnqueue: async (
       { scope, draft }: {
         readonly scope: ReplicaDatabaseScope;
@@ -178,10 +173,6 @@ export const serve = (id: string): void =>
       return draft.invocation;
     },
 
-    /**
-     * Acknowledge the head of the queue, then stall inside the transaction
-     * that begins the activation its receipt is fenced against.
-     */
     stallActivation: async (
       { scope }: { readonly scope: ReplicaDatabaseScope },
     ): Promise<string> => {
@@ -203,10 +194,6 @@ export const serve = (id: string): void =>
       return head.record.invocation;
     },
 
-    /**
-     * Acknowledge the head of the queue and begin an activation, then stall
-     * inside the transaction that fences its committed-unobserved receipt.
-     */
     stallObservationFence: async (
       { scope }: { readonly scope: ReplicaDatabaseScope },
     ): Promise<{ readonly invocation: string; readonly activation: number }> => {

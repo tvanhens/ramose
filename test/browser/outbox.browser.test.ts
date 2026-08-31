@@ -720,9 +720,6 @@ browserTest(
       first.close();
     }
 
-    // The same database under a compatible read view: a new read view and a
-    // new read-compatibility hash, and every identity the queue is addressed
-    // by unchanged.
     const drifted = identity({
       readView: opaque("w"),
       readCompatibilityHash: ReadCompatibilityHash.make(opaque("m")),
@@ -747,8 +744,6 @@ browserTest(
       expect(substituteMutationRefs(head.record, handles))
         .toEqual({ target: mapped, input: { assignee: mapped } });
 
-      // The identities the partition key does read still separate: the same
-      // principal's other database sees neither the queue nor the mapping.
       const sibling = identity({ database: OTHER_DATABASE });
       await confirm(second, sibling, "sibling");
       expect(await outbox.mappedHandles(replicaDatabaseScopeOf(sibling)))

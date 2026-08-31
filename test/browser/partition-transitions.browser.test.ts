@@ -594,14 +594,9 @@ browserTest(
       woken++;
     });
     try {
-      // A selector notice another tab broadcast arrives while this child's own
-      // activation is still opening, so the open reads the route slot before
-      // that tab writes it and the notice is dropped.
       void notified.activate();
       notified.reactivateUnconfirmed();
 
-      // Nothing else wakes this handle: the retry that settles the dropped
-      // notice is the second activation.
       await until(
         () => Promise.resolve(woken),
         (calls) => calls > 1,
@@ -614,7 +609,6 @@ browserTest(
       );
       expect(notified.syncStatus()).toBe("authentication-required");
 
-      // The same child with no notice to answer activates exactly once.
       void undisturbed.activate();
       await until(
         () => Promise.resolve(undisturbed.syncStatus()),
