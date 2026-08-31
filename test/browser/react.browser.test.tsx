@@ -1195,8 +1195,6 @@ browserTest(
 
       const statuses = seen.map((state) => state.status);
       expect(statuses).not.toContain("pending");
-      // The observation is handed to React's own subscription, so it is never
-      // retired and resumed between the wait ending and the render resuming.
       expect(statuses).not.toContain("stale");
       expect(text(browser.root)).not.toBe("loading");
       expect((seen.at(-1) as { readonly data: readonly unknown[] }).data.length)

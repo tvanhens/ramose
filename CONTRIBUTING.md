@@ -49,6 +49,12 @@ Do not introduce mocks, fake platform services, scripted peers, in-memory
 infrastructure substitutes, DOM shims, or fake IndexedDB. Re-record browser
 frame fixtures with `bun run record:frames`; do not edit the recordings by hand.
 
+`bun run test:local` and `bun run record:frames` start a container image pull
+that never returns on a machine whose `docker-credential-desktop` hangs. Each
+run leaks about ten hung `docker pull` and credential-helper pairs, so repeated
+runs exhaust the per-user process table and every later spawn fails. Recover
+with `pkill -x docker-credential-desktop`.
+
 ## Local development
 
 Run the Todos example and local peer with:
