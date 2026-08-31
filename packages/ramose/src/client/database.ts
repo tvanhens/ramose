@@ -16,6 +16,7 @@ import {
   type ReconciliationOptions,
 } from "../internal/replication/reconciliation.ts";
 import {
+  isReplicaFenceError,
   replicaDatabaseKey,
   replicaDatabaseScopeOf,
   type ReplicaDatabaseScope,
@@ -506,6 +507,16 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   activate(): Promise<void> {
     if (this.activation !== undefined) return this.activation;
     this.activation = this.open().catch((cause: unknown) => {
+      // A scope withdrawn while this activation was opening leaves no session
+      // to publish the fence, so this is where that activation is put back to
+      // nothing: the next wake-up starts a new one, admitted where the scope
+      // stands now.
+      if (isReplicaFenceError(cause)) {
+        this.activation = undefined;
+        this.refused = true;
+        this.publishStatus("offline");
+        return;
+      }
       const terminal = cause instanceof ActivationFailed ? cause.status : undefined;
       if (terminal === undefined) {
         this.publishStatus("offline");
@@ -522,7 +533,8 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
 
   /**
-   * Activate again after a credential this client or the server refused.
+   * Activate again after an activation that must start from nothing: a
+   * credential this client or the server refused, or a fence that overtook it.
    *
    * `auth()` runs once per activation, so a refreshed bearer is presented by
    * the next one. This is what makes a refused client recoverable without
