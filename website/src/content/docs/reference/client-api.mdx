@@ -128,13 +128,9 @@ Observe a receipt when the outcome matters; use `.local.pending` for lightweight
 
 `client.sync` and `db.sync` are subscriptions shaped like a query's, reporting idle, connecting, live, stale, offline, authentication-required, update-required and closed. A ready query can be useful offline; a live connection does not imply every receipt committed.
 
-**authentication-required** is recoverable without a new client: `auth()` runs once per activation, so signing in again and returning to the tab activates with the refreshed bearer.
-
 ## Persistence and multi-tab behavior
 
 Each activated graph has a persistent IndexedDB replica. Tabs share durable data and elect one network leader per principal and graph; closing a tab does not discard queued work.
-
-`clearLocalData()` and a principal replacement fence every tab of that principal through IndexedDB, including a tab whose activation has not authenticated yet. A fenced tab withdraws what it was showing and activates again; nothing from the cleared or replaced principal is published or submitted afterwards.
 
 <Next links={[
   { href: "/reference/query-language/", label: "Query builder", why: "construct typed local and server queries" },

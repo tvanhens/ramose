@@ -40,19 +40,13 @@ Invocations, client-created references, queue order, and receipts are persisted 
 
 ## One browser, one replica
 
-Tabs coordinate through browser locks, IndexedDB, and broadcast messages. One leader owns server synchronization; every tab can enqueue. If the leader closes, crashes, or is suspended part-way through a durable write, another resumes: the write either landed whole or not at all, and queued work is never lost. A leader whose durable write is refused because another tab has taken over stops retrying and stands for the election again rather than repeating a pass that cannot land. Where the browser offers no lock manager, every tab synchronizes for itself: correctness is unchanged, because concurrent writers converge on the same durable records, but the work is duplicated.
+Tabs coordinate through browser locks, IndexedDB, and broadcast messages. One leader owns server synchronization; every tab can enqueue. If the leader closes or crashes mid-write, another resumes: the write landed whole or not at all, and queued work is never lost. A leader whose write is refused because another tab took over stands for election again. Where the browser offers no lock manager, every tab synchronizes for itself: correctness is unchanged, because concurrent writers converge on the same durable records, but the work is duplicated.
 
-IndexedDB is what every tab agrees on. Broadcast messages only say that something changed and where, so a tab reads the durable records to learn what changed; they order nothing and carry no values. A tab that misses one — because the browser offers no broadcast channel, or because it was suspended — reads the same records when it is next activated and reaches the same state, later rather than never.
+IndexedDB is what every tab agrees on. Broadcast messages only say that something changed and where; they order nothing and carry no values, so a tab reads the durable records. A tab that misses one — no broadcast channel, or a suspended tab — reads the same records on its next activation and reaches the same state, later rather than never.
 
-A tab that never resolved a graph child can still queue work for it, and the leader that submits it may be a tab that never walked that path. The path each database was last confirmed at is recorded durably, and the leader activates it again to submit: the current names go back to the server, which re-authorizes them, and only a confirmation naming the same database becomes a submission target. A path renamed since it was recorded therefore leaves the queue where it is rather than submitting it somewhere else.
+A tab can queue work for a graph child it never resolved: the leader activates the path that child was last confirmed at, and submits only to a confirmation naming the same database.
 
-Under storage pressure, Ramose may evict inactive child graphs as complete units. It does not evict the active root, outbox, receipts, or part of a graph. A tab reading a database another tab evicts sees the whole database or none of it.
-
-## Clearing and changing principals reaches every tab
-
-`clearLocalData()` and a principal replacement fence every tab of that principal, including one whose activation is in flight and has not authenticated yet. The barrier is durable: IndexedDB records what was cleared, every install re-reads it inside the transaction that would write, and a tab that never received a broadcast — suspended, restored from bfcache, or on a browser with no broadcast channel — is refused just the same. A fenced tab withdraws what it was showing rather than leaving it on screen, and activates again; the credential the application presents then decides what it shows next.
-
-An activation refused for authentication leaves the client usable. `auth()` runs once per activation, so signing in again and returning to the tab activates with the refreshed bearer. `close()` and `clearLocalData()` are what end a client instance.
+Under storage pressure, Ramose may evict inactive child graphs as complete units. It does not evict the active root, outbox, receipts, or part of a graph, and a tab reading a database another tab evicts sees all of it or none. Logout and principal replacement fence every tab of that principal through IndexedDB — including one still authenticating, and one that never received a broadcast — before the next principal can render; a fenced tab withdraws what it was showing and activates again. A refused authentication leaves the client usable: `auth()` runs once per activation, so signing in again and returning activates with the refreshed bearer.
 
 ## Security remains observable offline
 
