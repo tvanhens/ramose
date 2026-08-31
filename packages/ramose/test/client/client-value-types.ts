@@ -1,9 +1,10 @@
 
 import type { Eid, Equal, Expect } from "../../src/db/internal.ts";
-import { Entity, Field, string } from "../../src/db/internal.ts";
+import { Entity, Field, Query, Ref, string } from "../../src/db/internal.ts";
 import type { AllRow } from "../../src/db/Pull.ts";
 import type { ClientRef, EntityId, MutationRef } from "../../src/db/refs.ts";
-import type { ClientValue } from "../../src/client/index.ts";
+import type { ClientValue, EntityHandle } from "../../src/client/index.ts";
+import type { EntityResult } from "../../src/client/graph.ts";
 
 const Issue = Entity("issue", { title: Field(string()) });
 type IssueEntity = typeof Issue;
@@ -75,3 +76,21 @@ export type _opaqueValues = Expect<
     readonly blob: Uint8Array;
   }>
 >;
+
+const Person = Entity("person", { name: Field(string()) });
+const Note = Entity("note", { body: Field(string()), author: Ref(Person) });
+
+/** A live handle knows the entity it is a handle for, so its id can filter. */
+export type _handleIdentity = Expect<
+  Equal<
+    EntityResult<typeof Person, unknown, readonly unknown[]>[number]["id"],
+    MutationRef<typeof Person>
+  >
+>;
+
+declare const author: EntityHandle<unknown, unknown, typeof Person>;
+Query.from(Note).where({ author: author.id });
+
+declare const stranger: EntityHandle<unknown, unknown, IssueEntity>;
+// @ts-expect-error — a handle for another entity is not this reference's value
+Query.from(Note).where({ author: stranger.id });

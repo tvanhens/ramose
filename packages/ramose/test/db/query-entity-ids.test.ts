@@ -435,12 +435,19 @@ describe("entity identities at a filter position", () => {
   });
 
   test("a pull-phase filter says it cannot resolve one, rather than matching nothing", () => {
-    expect(() =>
+    const nested = (where: readonly unknown[]) => () =>
       Query.from(Node).select({
         children: Node.children.select({ name: Node.name }, {
-          where: [Query.is(Node.name, sealed("p") as never)],
+          where: where as never,
         }),
-      })
+      });
+
+    expect(nested([Query.is(Node.name, sealed("p") as never)]))
+      .toThrow(/before any replica binding exists/);
+    expect(nested([Query.is(Node.name, { id: sealed("p") } as never)]))
+      .toThrow(/before any replica binding exists/);
+    expect(
+      nested([(v: never) => Q.in(v, [clientRef()] as never)]),
     ).toThrow(/before any replica binding exists/);
   });
 });

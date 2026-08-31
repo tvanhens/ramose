@@ -1,6 +1,6 @@
 import type { Eid } from "../Eid.ts";
 import { isComposer, type AnyComposer } from "../Composer.ts";
-import type { MutationRef } from "../refs.ts";
+import type { AnyEntity } from "../Entity.ts";
 import type { UnbrandedId } from "../idents.ts";
 import type {
   AttrValue,
@@ -185,7 +185,20 @@ type RefIn<A> = A extends { readonly valueType: "ref" }
 
 type ValueIn<A> = AttrValue<A> | AnyVar | { readonly id: number } | RefIn<A>;
 
-type IdIn = number | MutationRef | { readonly id: number | MutationRef };
+type IdIn<E> = number | EntityEq<E> | { readonly id: number | EntityEq<E> };
+
+/**
+ * A filter on the focus's own identity. An identity carries the entity it
+ * names, so applying one to a different entity's pipeline is a compile error;
+ * a trait focus is polymorphic and takes any of its implementors'.
+ */
+type IdFilterStage<E> = <X>(
+  x: [X] extends [Pipeline<any, infer N>]
+    ? [E] extends [AnyEntity]
+      ? [N] extends [AnyEntity] ? ([N] extends [E] ? X : FocusMismatch) : X
+      : X
+    : X,
+) => FilterOut<X> & { readonly _ident?: ":db/id" };
 
 /** `is(A, v)`: `p(e) := [e A v]`. `is(N.id, v)` is the same filter as {@link byId}. */
 export const is = <A extends AttrLike>(
@@ -203,10 +216,12 @@ export const is = <A extends AttrLike>(
  * the focus with that id (`ground`), and never emits a `:db/id` pattern (that
  * is not an attribute).
  */
-export const byId = (id: IdIn | AnyVar): FilterStage =>
+export const byId = <E extends AnyComposer = AnyComposer>(
+  id: IdIn<E> | AnyVar,
+): IdFilterStage<E> =>
   filter<void>(function* (e) {
     yield* Q.fact(e, { ident: ":db/id" as const }, id);
-  });
+  }) as IdFilterStage<E>;
 
 /** `has(A)`: the focus carries some `A` fact. */
 export const has = <A extends AttrLike>(attr: A): FilterStage<AnyComposer, A> =>

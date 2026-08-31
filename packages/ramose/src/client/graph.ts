@@ -99,7 +99,11 @@ export type EntityFocused<N extends AnyComposer, Row, Out> =
  * and the operations the deployed catalog declares for the entity's type.
  */
 export type EntityResult<N extends AnyComposer, Row, Out> = EntityResultOf<
-  EntityHandle<ClientValue<Row>, EntityMutations<N>>,
+  EntityHandle<
+    ClientValue<Row>,
+    EntityMutations<N>,
+    [N] extends [AnyEntity] ? N : AnyEntity
+  >,
   Out
 >;
 

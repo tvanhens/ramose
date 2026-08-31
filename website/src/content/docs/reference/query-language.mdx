@@ -36,7 +36,7 @@ The ids a query publishes are the ids the next query filters by, at any referenc
 db.query.from(Task).where({ assignee: me.id })
 ```
 
-The value is an `EntityId`, or the `ClientRef` of an entity this device created. Both are branded with the entity they name, so an identity of another type is a compile error, and so is a bare number. A `ClientRef` keeps naming the same entity when the server issues its `EntityId`: the query follows it without being rebuilt.
+The value is an `EntityId`, or the `ClientRef` of an entity this device created. Both are branded with the entity they name, so an identity of another type is a compile error. A `ClientRef` keeps naming the same entity when the server issues its `EntityId`: the query follows it without being rebuilt.
 
 An identity the local replica holds nothing for — never received, or issued to a different replica — matches nothing. That is an answer, not an error, and the query starts answering if the entity arrives.
 

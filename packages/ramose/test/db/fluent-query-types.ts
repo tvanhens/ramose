@@ -102,6 +102,15 @@ Query.from(Comment).where({ id: userHandle });
 Query.from(Comment).where(Query.is(Comment.issue, userHandle));
 
 // @ts-expect-error
+Query.from(Comment).where(Query.byId(userHandle));
+
+Query.from(Comment).where(Query.byId(1));
+
+declare const taggedIssueHandle: EntityId<typeof TaggedIssue>;
+Query.from(TaggedIssue).where(Query.byId(taggedIssueHandle));
+Query.from(Taggable).where(Query.byId(taggedIssueHandle));
+
+// @ts-expect-error
 Query.from(Comment).where({ nope: true });
 
 // @ts-expect-error

@@ -65,7 +65,10 @@ const regexSource = (re: RegExp | string): string => {
 };
 
 const lowerValue = (v: unknown): unknown => {
-  if (isMutationRef(v)) {
+  const named = typeof v === "object" && v !== null
+    ? (v as { readonly id?: unknown }).id
+    : v;
+  if (isMutationRef(named)) {
     err(
       "a pull-phase filter is compiled into the query value itself, before any replica binding exists, so it cannot resolve an entity identity — constrain the entity in the query's own where()",
     );
@@ -311,7 +314,7 @@ export const lowerElemFilter = (
         path: [],
         op: "in",
         value: Array.isArray(values)
-          ? values.map(unwrapEidLike)
+          ? values.map(lowerValue)
           : err(`Q.in takes an array of values, got ${String(values)}`),
       };
     }
