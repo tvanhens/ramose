@@ -12,6 +12,7 @@ import {
   type Expect,
 } from "../../src/db/internal.ts";
 import { EntityId } from "../../src/db/Operation.ts";
+import { Ref } from "../../src/db/valueTypes.ts";
 import type { MutationRef } from "../../src/db/refs.ts";
 import { compileReadAuthorization } from "../../src/internal/authorization/index.ts";
 import { createClient } from "../../src/client/index.ts";
@@ -19,6 +20,7 @@ import type {
   ClientDatabase,
   DatabaseMutations,
   EntityHandle,
+  MutationInput,
   MutationNamespace,
   Receipt,
 } from "../../src/client/index.ts";
@@ -65,6 +67,16 @@ const Issue = Entity("issue", {
     }),
     setStatus: Operation({
       input: EffectSchema.Struct({ status: EffectSchema.String }),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+    assign: Operation({
+      input: EffectSchema.Struct({
+        owner: Ref(Person),
+        labels: EffectSchema.Record(EffectSchema.String, EffectSchema.String),
+      }),
       output: EffectSchema.Struct({}),
       run() {
         return {};
@@ -188,8 +200,41 @@ const issue = db.observe(db.query.from(Issue)).getSnapshot().data![0]!;
 
 /** `entity.mutate` carries the entity's own operations and its traits'. */
 export type _entityNames = Expect<
-  Equal<keyof typeof issue.mutate, "setStatus" | "close" | "touch" | "archive">
+  Equal<
+    keyof typeof issue.mutate,
+    "setStatus" | "assign" | "close" | "touch" | "archive"
+  >
 >;
+
+/** A declared reference target keeps its entity: another entity's handle is not one. */
+export type _targetedRefInput = Expect<
+  Equal<
+    Parameters<typeof issue.mutate.assign>[0]["owner"],
+    MutationRef<typeof Person>
+  >
+>;
+
+/**
+ * A codec that transforms a reference-bearing schema exposes it through `to`,
+ * which is where the deployed lowering follows it too.
+ */
+declare const transformed: { readonly to: typeof EntityId; readonly Type: number };
+export type _transformedRefInput = Expect<
+  Equal<MutationInput<typeof transformed>, MutationRef>
+>;
+
+/** A record is not an array, however the codec exposes its value schema. */
+export type _recordInput = Expect<
+  Equal<
+    Parameters<typeof issue.mutate.assign>[0]["labels"],
+    { readonly [key: string]: string }
+  >
+>;
+
+declare const noteRef: MutationRef<typeof Note>;
+
+// @ts-expect-error — a handle branded for another entity
+issue.mutate.assign({ owner: noteRef, labels: {} });
 
 export const _setStatus: Receipt = issue.mutate.setStatus({ status: "closed" });
 

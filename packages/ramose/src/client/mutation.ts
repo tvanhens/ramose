@@ -117,7 +117,15 @@ export const mutationNamespace = (
     methods[name] = (input?: unknown): Receipt => {
       context.assertLive(`mutate.${name}`);
       const driver = new ReceiptDriver(invocationId());
-      void enqueue(context, database, operation, target, input ?? {}, driver)
+      void enqueue(
+        context,
+        database,
+        operation,
+        target,
+        // An absent argument is the empty input; a supplied `null` is a value.
+        input === undefined ? {} : input,
+        driver,
+      )
         .catch((cause: unknown) => {
           driver.fail(cause instanceof Error ? cause : new Error(String(cause)));
         });

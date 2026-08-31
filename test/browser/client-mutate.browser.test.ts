@@ -52,6 +52,13 @@ const Issue = Entity("issue", {
         return {};
       },
     }),
+    annotate: Operation({
+      input: EffectSchema.NullOr(EffectSchema.Struct({ note: EffectSchema.String })),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
   }),
 });
 
@@ -432,7 +439,7 @@ browserTest("an entity-focused query returns live handles", async ({ browser }) 
 
     expect(issue.local).toEqual({ pending: false, created: false });
 
-    expect(Object.keys(issue.mutate)).toEqual(["close"]);
+    expect(Object.keys(issue.mutate).sort()).toEqual(["annotate", "close"]);
 
     const again = await waitFor(issues, (snapshot) => snapshot.status === "ready");
     expect(again.data![0]).toBe(issue);
@@ -474,7 +481,7 @@ browserTest("a paged entity query returns a page of handles", async ({ browser }
     const rows = ready.data!.rows;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.data).toMatchObject({ id: rows[0]!.id, title: "Seeded" });
-    expect(Object.keys(rows[0]!.mutate)).toEqual(["close"]);
+    expect(Object.keys(rows[0]!.mutate).sort()).toEqual(["annotate", "close"]);
     // The tie-breaker is the paging root's identity, so a full page's cursor
     // always carries one — matched against the sealed shape rather than merely
     // "not a number", which a stringified eid would also satisfy.
@@ -602,13 +609,20 @@ browserTest(
       const stop = issues.subscribe(() => undefined);
       const ready = await waitFor(issues, (snapshot) => snapshot.status === "ready");
       const held = ready.data![0]!;
-      expect(Object.keys(held.mutate)).toEqual(["close"]);
+      expect(Object.keys(held.mutate).sort()).toEqual(["annotate", "close"]);
 
-      // An operation whose whole input is optional queues with no argument.
+      // An operation whose whole input is optional queues with no argument,
+      // and a supplied null is a value rather than an absent argument.
+      const annotated = held.mutate.annotate(null);
+      await annotated.queued;
+      expect((await queued(name, identity))[0]!.input).toBeNull();
+
       const receipt = held.mutate.close();
       await receipt.queued;
       expect(receipt.getSnapshot().status).toBe("queued");
-      expect((await queued(name, identity))[0]!.input).toEqual({});
+      expect(
+        (await queued(name, identity)).map((record) => record.input),
+      ).toEqual([null, {}]);
 
       const seen: string[] = [];
       const watchSync = db.sync.subscribe(() => {
@@ -638,7 +652,7 @@ browserTest(
       const after = await waitFor(issues, (snapshot) => snapshot.status === "ready");
       expect(after.data![0]).toBe(held);
       expect(held.data).toMatchObject({ id: held.id, title: "Seeded" });
-      expect(Object.keys(held.mutate)).toEqual(["close"]);
+      expect(Object.keys(held.mutate).sort()).toEqual(["annotate", "close"]);
       stop();
     } finally {
       await app.close();

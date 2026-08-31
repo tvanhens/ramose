@@ -1,4 +1,5 @@
 import type { AnyComposer } from "../db/Composer.ts";
+import type { AnyEntity } from "../db/Entity.ts";
 import { OwnedOperations } from "../db/Operation.ts";
 import type { MutationRef } from "../db/refs.ts";
 import type { AnySchema } from "../db/Schema.ts";
@@ -23,11 +24,20 @@ type UnionToIntersection<U> =
  * the server issued or the `ClientRef` this device minted for an entity it
  * created offline.
  */
-export type MutationInput<S> = S extends RamoseVt<"ref"> ? MutationRef
+export type MutationInput<S> = S extends RamoseVt<"ref"> ? RefInput<S>
   : S extends { readonly fields: infer Fields } ? StructInput<S, Fields>
-  : S extends { readonly value: infer Item } ? readonly MutationInput<Item>[]
+  : S extends { readonly value: infer Item }
+    ? CodecType<S> extends readonly unknown[] ? readonly MutationInput<Item>[]
+    : CodecType<S>
   : S extends { readonly schema: infer Inner } ? MutationInput<Inner>
+  : S extends { readonly to: infer Decoded } ? MutationInput<Decoded>
   : CodecType<S>;
+
+/** A declared reference position keeps the entity its schema names. */
+type RefInput<S> = S extends { readonly _target?: infer Target }
+  ? [NonNullable<Target>] extends [AnyEntity] ? MutationRef<NonNullable<Target>>
+  : MutationRef
+  : MutationRef;
 
 type StructInput<S, Fields> = {
   readonly [K in keyof CodecType<S>]: K extends keyof Fields
