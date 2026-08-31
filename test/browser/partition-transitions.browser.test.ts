@@ -376,6 +376,50 @@ browserTest(
 );
 
 browserTest(
+  "a replacement first confirmed on a graph path fences the principal it replaced",
+  async ({ browser }) => {
+    const name = `ramose-partition-child-replacement-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const child = `c${database}`.slice(0, 43);
+    await seed(name, await identityFor(database), NOTES);
+    const holder = await openTab(tabModule);
+    const replacing = await openTab(tabModule);
+    try {
+      // A holder writing under the principal about to be replaced.
+      const sibling = `x${database}`.slice(0, 43);
+      await holder.call("admit", { storageName: name });
+      expect(await holder.call<string>("installHeld", {
+        storageName: name,
+        database: sibling,
+        note: { entity: opaque("m"), title: "sibling", rank: "z" },
+      })).toBe("landed");
+
+      // The successor is confirmed on a graph path first. Its route slot comes
+      // from its own lineage, so the account's records name it nowhere yet.
+      await replacing.call("admit", { storageName: name });
+      await replacing.call("signIn", { bearer: "bearer-b" });
+      expect(await replacing.call<string>("bindHeld", {
+        storageName: name,
+        database: child,
+        principal: REPLACEMENT,
+        lineage: [opaque("9")],
+      })).toBe("landed");
+
+      // The principal it replaced is fenced all the same.
+      expect(await holder.call<string>("installHeld", {
+        storageName: name,
+        database: sibling,
+        note: { entity: opaque("k"), title: "late", rank: "z" },
+      })).toBe("ReplicaFencedError");
+    } finally {
+      await holder.close();
+      await replacing.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a credential the server refuses is presented again once it is refreshed",
   async ({ browser }) => {
     const name = `ramose-partition-refused-${browser.uniqueId}`;

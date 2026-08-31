@@ -274,6 +274,8 @@ type CommitInput = {
 
 type HoldInput = StartInput & {
   readonly principal?: string;
+  /** Confirm the one graph path below the root, at this lineage. */
+  readonly lineage?: readonly string[];
 };
 
 type EnqueueInput = {
@@ -458,26 +460,43 @@ export const serve = (id: string): void =>
       return held.admittedAt();
     },
 
-    /** Confirm an authenticated identity under the admission held above. */
+    /**
+     * Confirm an authenticated identity under the admission held above, on
+     * the root route or on the one graph path below it.
+     */
     bindHeld: async (
-      { storageName, database: id, principal }: HoldInput,
+      { storageName, database: id, principal, lineage }: HoldInput,
     ): Promise<string> => {
       const store = await heldStorage(storageName);
-      const identity = await identityFor(id, [], principal ?? PRINCIPAL);
-      const address = rootAddress();
-      const routeSlot = await rootReplicaRouteSlot();
+      const child = lineage !== undefined;
+      const identity = await identityFor(id, lineage ?? [], principal ?? PRINCIPAL);
+      const address = child
+        ? replicationActivationAddress({
+          server: OFFLINE,
+          root: ROOT,
+          graphPath: CHILD_PATH,
+        })
+        : rootAddress();
+      const routeSlot = child
+        ? await stableReplicaRouteSlot(lineage!)
+        : await rootReplicaRouteSlot();
       const [fingerprint, selector, scope, pathKey] = await Promise.all([
         replicationCredentialFingerprint(token ?? TOKEN, address, routeSlot),
         replicationCacheSelector(CACHE_KEY, address),
         replicaRouteScope(address),
-        replicaRoutePathKey([]),
+        replicaRoutePathKey(child ? CHILD_PATH : []),
       ]);
       return outcome(() =>
         store.bindAuthenticated({
           fingerprint,
           identity,
           candidateKey: { selector, routeSlot },
-          route: { scope, pathKey, slot: routeSlot },
+          route: {
+            scope,
+            pathKey,
+            slot: routeSlot,
+            ...(child ? { graphPath: CHILD_PATH } : {}),
+          },
         }, { lease: held })
       );
     },

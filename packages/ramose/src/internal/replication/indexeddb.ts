@@ -1914,21 +1914,15 @@ export class IndexedDbReplicaStorage {
     try {
       const generations = transaction.objectStore(GENERATIONS);
       const candidates = transaction.objectStore(CACHE_CANDIDATES);
-      const [scopeRecord, databaseRecord, existingRoute, heldCandidate] = await Promise
-        .all([
-          requestResult<GenerationRecord | undefined>(generations.get(scopeKey)),
-          requestResult<GenerationRecord | undefined>(generations.get(databaseKey)),
-          binding.route === undefined
-            ? undefined
-            : requestResult<RouteSlotRecord | undefined>(
-              transaction.objectStore(ROUTE_SLOTS).get([binding.route.scope, binding.route.pathKey]),
-            ),
-          binding.candidateKey === undefined
-            ? undefined
-            : requestResult<CacheCandidateRecord | undefined>(
-              candidates.get([binding.candidateKey.selector, binding.candidateKey.routeSlot]),
-            ),
-        ]);
+      const [scopeRecord, databaseRecord, existingRoute] = await Promise.all([
+        requestResult<GenerationRecord | undefined>(generations.get(scopeKey)),
+        requestResult<GenerationRecord | undefined>(generations.get(databaseKey)),
+        binding.route === undefined
+          ? undefined
+          : requestResult<RouteSlotRecord | undefined>(
+            transaction.objectStore(ROUTE_SLOTS).get([binding.route.scope, binding.route.pathKey]),
+          ),
+      ]);
       for (const seeded of confirmationRecords(binding.identity, Date.now())) {
         const existing = seeded.kind === "scope" ? scopeRecord : databaseRecord;
         if (existing === undefined) generations.put(seeded);
@@ -1943,10 +1937,10 @@ export class IndexedDbReplicaStorage {
           throw error;
         }
       }
-      const replaced = await this.stageReplacedPrincipal(
+      const replaced = await this.stageReplacedPrincipals(
         transaction,
         binding.identity,
-        heldCandidate,
+        binding.candidateKey?.selector,
       );
       transaction.objectStore(CREDENTIAL_BINDINGS).put({
         fingerprint: binding.fingerprint,
@@ -1988,7 +1982,7 @@ export class IndexedDbReplicaStorage {
         }
       }
       await commitTransaction(transaction);
-      if (replaced !== undefined) this.announce(replicaNotice("reset", replaced));
+      for (const scope of replaced) this.announce(replicaNotice("reset", scope));
       this.announce(identityNotice("selector", binding.identity));
     } finally {
       removeAbort();
@@ -1996,42 +1990,55 @@ export class IndexedDbReplicaStorage {
   }
 
   /**
-   * Fence the principal an account selector used to name.
+   * Fence the principals an account selector used to name.
    *
-   * One selector names one account, so a confirmation that answers it with
-   * another principal has replaced the one before it. Bumping the previous
-   * scope's generation inside this transaction is what stops a tab still
-   * holding that principal from publishing or submitting it: the tab re-reads
-   * the generation its lease adopted and finds it moved, whether or not the
-   * notice announced below ever reaches it.
+   * One selector names one account on one server and root, so a confirmation
+   * that answers it with another principal has replaced the one before it.
+   * Every route slot recorded under the selector is read, not only the one
+   * being confirmed: the selector carries no path, so the principal being
+   * replaced is recorded under whatever slots its own lineages named, and a
+   * successor first confirmed on a graph path shares none of them.
+   *
+   * Bumping each replaced scope's generation inside this transaction is what
+   * stops a tab still holding that principal from publishing or submitting it:
+   * the tab re-reads the generation its lease adopted and finds it moved,
+   * whether or not the notice announced below ever reaches it.
    */
-  private async stageReplacedPrincipal(
+  private async stageReplacedPrincipals(
     transaction: IDBTransaction,
     confirmed: ReplicationIdentity,
-    held: CacheCandidateRecord | undefined,
-  ): Promise<ReplicaScope | undefined> {
-    if (held === undefined) return undefined;
-    const previous = replicaScopeOf(held.identity);
-    if (identityInScope(confirmed, previous)) return undefined;
-    const generations = transaction.objectStore(GENERATIONS);
-    const key = replicaScopeKey(previous);
-    const [record, barrier] = await Promise.all([
-      requestResult<GenerationRecord | undefined>(generations.get(key)),
-      requestResult<GenerationRecord | undefined>(
-        generations.get(REPLICA_CLEAR_BARRIER_KEY),
+    selector: string | undefined,
+  ): Promise<readonly ReplicaScope[]> {
+    if (selector === undefined) return [];
+    const held = await requestResult<CacheCandidateRecord[]>(
+      transaction.objectStore(CACHE_CANDIDATES).getAll(
+        compoundPrefixRange(selector),
       ),
-    ]);
-    const clearedAt = await this.advanceBarrier(generations, barrier);
-    generations.put({
-      key,
-      kind: "scope",
-      scope: key,
-      generation: (record?.generation ?? 0) + 1,
-      confirmedAt: record?.confirmedAt ?? Date.now(),
-      fencedAt: Date.now(),
-      clearedAt,
-    } satisfies GenerationRecord);
-    return previous;
+    );
+    const replaced = new Map<string, ReplicaScope>();
+    for (const candidate of held) {
+      const previous = replicaScopeOf(candidate.identity);
+      if (identityInScope(confirmed, previous)) continue;
+      replaced.set(replicaScopeKey(previous), previous);
+    }
+    if (replaced.size === 0) return [];
+    const generations = transaction.objectStore(GENERATIONS);
+    const clearedAt = await this.advanceBarrier(generations);
+    for (const key of replaced.keys()) {
+      const record = await requestResult<GenerationRecord | undefined>(
+        generations.get(key),
+      );
+      generations.put({
+        key,
+        kind: "scope",
+        scope: key,
+        generation: (record?.generation ?? 0) + 1,
+        confirmedAt: record?.confirmedAt ?? Date.now(),
+        fencedAt: Date.now(),
+        clearedAt,
+      } satisfies GenerationRecord);
+    }
+    return Object.freeze([...replaced.values()]);
   }
 
   /**
