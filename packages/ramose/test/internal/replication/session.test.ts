@@ -5,8 +5,6 @@ import {
   classifyReplicationAdoption,
   classifyReplicationCandidateFrame,
   classifyReplicationChange,
-  REPLICATION_SUPERSEDED_MEMORY,
-  replicationPublicationAfter,
   replicationTerminalSnapshot,
 } from "../../../src/internal/replication/session.ts";
 import { snapshotChunk, changeFrame } from "../../replication-fixtures.ts";
@@ -25,10 +23,11 @@ const identity: ReplicationIdentity = {
 };
 const change = (from: string, revision: string) => (changeFrame({
   type: "Change" as const,
-  protocol: 1 as const,
+  protocol: 2 as const,
   identity,
   from,
   revision,
+  ordinal: 2,
   datoms: [],
 }));
 
@@ -45,66 +44,39 @@ describe("replication change sequencing", () => {
 });
 
 describe("committed publication monotonicity", () => {
-  const numbered = (index: number): string => String(index).padStart(43, "0");
   const rotated: ReplicationIdentity = { ...identity, readView: opaque("w") };
-  const advanced = replicationPublicationAfter(
-    replicationPublicationAfter(undefined, { identity, revision: opaque("1") }),
-    { identity, revision: opaque("2") },
-  );
+  const published = { identity, ordinal: 4 };
 
-  test("refuses only a revision this partition already left behind", () => {
-    expect(classifyReplicationAdoption(undefined, { identity, revision: opaque("1") }))
+  test("refuses only an ordinal this partition has already advanced past", () => {
+    expect(classifyReplicationAdoption(undefined, { identity, ordinal: 1 }))
       .toBe("adopt");
-    expect(classifyReplicationAdoption(advanced, { identity, revision: opaque("1") }))
+    expect(classifyReplicationAdoption(published, { identity, ordinal: 3 }))
       .toBe("refuse");
-    expect(classifyReplicationAdoption(advanced, { identity, revision: opaque("2") }))
+    expect(classifyReplicationAdoption(published, { identity, ordinal: 4 }))
       .toBe("adopt");
-    expect(classifyReplicationAdoption(advanced, { identity, revision: opaque("3") }))
+    expect(classifyReplicationAdoption(published, { identity, ordinal: 5 }))
       .toBe("adopt");
-    expect(classifyReplicationAdoption(advanced, {
-      identity: rotated,
-      revision: opaque("1"),
-    })).toBe("adopt");
   });
 
-  test("a rotated read view starts a new lineage and remembered revisions stay bounded", () => {
-    const rotation = replicationPublicationAfter(advanced, {
-      identity: rotated,
-      revision: opaque("1"),
-    });
-    expect(rotation.superseded.size).toBe(0);
-    expect(classifyReplicationAdoption(rotation, { identity, revision: opaque("1") }))
+  test("a rotated read view starts a new lineage the published ordinal cannot refuse", () => {
+    expect(classifyReplicationAdoption(published, { identity: rotated, ordinal: 1 }))
       .toBe("adopt");
-
-    let publication = replicationPublicationAfter(undefined, {
+    expect(classifyReplicationAdoption({ identity: rotated, ordinal: 9 }, {
       identity,
-      revision: numbered(0),
-    });
-    for (let index = 1; index <= REPLICATION_SUPERSEDED_MEMORY + 4; index++) {
-      publication = replicationPublicationAfter(publication, {
-        identity,
-        revision: numbered(index),
-      });
-    }
-    expect(publication.superseded.size).toBe(REPLICATION_SUPERSEDED_MEMORY);
-    expect(classifyReplicationAdoption(publication, { identity, revision: numbered(0) }))
-      .toBe("adopt");
-    expect(classifyReplicationAdoption(publication, {
-      identity,
-      revision: numbered(REPLICATION_SUPERSEDED_MEMORY),
-    })).toBe("refuse");
+      ordinal: 1,
+    })).toBe("adopt");
   });
 });
 
 test("protocol terminal reasons remain observable to later reconnect policy", () => {
   expect(replicationTerminalSnapshot({
-    type: "TerminalError", protocol: 1, identity, code: "closed",
+    type: "TerminalError", protocol: 2, identity, code: "closed",
   })).toEqual({ status: "terminal", terminalCode: "closed" });
   expect(replicationTerminalSnapshot({
-    type: "TerminalError", protocol: 1, code: "incompatible-version",
+    type: "TerminalError", protocol: 2, code: "incompatible-version",
   })).toEqual({ status: "terminal", terminalCode: "incompatible-version" });
   expect(replicationTerminalSnapshot({
-    type: "TerminalError", protocol: 1, code: "update-required",
+    type: "TerminalError", protocol: 2, code: "update-required",
   })).toEqual({ status: "terminal", terminalCode: "update-required" });
 });
 
@@ -114,7 +86,7 @@ describe("metadata-only cache candidate confirmation", () => {
 
   test("accepts only frames that establish a valid initial transition", () => {
     expect(classifyReplicationCandidateFrame(candidate, {
-      type: "ResumeReady", protocol: 1, identity, revision,
+      type: "ResumeReady", protocol: 2, identity, revision,
     })).toBe("resume");
     expect(classifyReplicationCandidateFrame(candidate, change(revision, opaque("2"))))
       .toBe("change");
@@ -123,10 +95,10 @@ describe("metadata-only cache candidate confirmation", () => {
     expect(classifyReplicationCandidateFrame(candidate, change(opaque("0"), opaque("2"))))
       .toBe("invalid");
     expect(classifyReplicationCandidateFrame(undefined, {
-      type: "Reset", protocol: 1, identity,
+      type: "Reset", protocol: 2, identity,
     })).toBe("reset");
     expect(classifyReplicationCandidateFrame(undefined, {
-      type: "SnapshotStart", protocol: 1, identity,
+      type: "SnapshotStart", protocol: 2, identity,
       snapshot: opaque("s"), revision,
     })).toBe("snapshot");
   });
@@ -134,21 +106,21 @@ describe("metadata-only cache candidate confirmation", () => {
   test("snapshot fragments, mismatched resumes, and unseeded liveness fail closed", () => {
     const other = { ...identity, principal: opaque("o") };
     expect(classifyReplicationCandidateFrame(candidate, snapshotChunk({
-      type: "SnapshotChunk", protocol: 1, identity,
+      type: "SnapshotChunk", protocol: 2, identity,
       snapshot: opaque("s"), index: 0, datoms: [],
     }))).toBe("invalid");
     expect(classifyReplicationCandidateFrame(candidate, {
-      type: "SnapshotCommit", protocol: 1, identity,
-      snapshot: opaque("s"), revision, chunks: 0,
+      type: "SnapshotCommit", protocol: 2, identity,
+      snapshot: opaque("s"), revision, ordinal: 1, chunks: 0,
     })).toBe("invalid");
     expect(classifyReplicationCandidateFrame(candidate, {
-      type: "ResumeReady", protocol: 1, identity: other, revision,
+      type: "ResumeReady", protocol: 2, identity: other, revision,
     })).toBe("invalid");
     expect(classifyReplicationCandidateFrame(undefined, {
-      type: "KeepAlive", protocol: 1, identity,
+      type: "KeepAlive", protocol: 2, identity,
     })).toBe("invalid");
     expect(classifyReplicationCandidateFrame(candidate, {
-      type: "TerminalError", protocol: 1, code: "closed",
+      type: "TerminalError", protocol: 2, code: "closed",
     })).toBe("invalid");
   });
 });

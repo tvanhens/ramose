@@ -20,7 +20,9 @@ import {
   type RuntimeBoundaries,
 } from "../runtime-boundaries.ts";
 import {
+  isReplicationOrdinal,
   REPLICA_STORAGE_VERSION,
+  REPLICATION_PROTOCOL_VERSION,
   type Change,
   type EntityHandleBinding,
   type ReplicationIdentity,
@@ -134,7 +136,8 @@ export const REPLICA_MANIFEST_STORAGE_VERSION =
   OPTIMISTIC_LAYER_DATABASE_VERSION + 1;
 const MANIFEST_V3_DATABASE_VERSION = REPLICA_MANIFEST_STORAGE_VERSION;
 const GRAPH_RECEIVER_DATABASE_VERSION = MANIFEST_V3_DATABASE_VERSION + 1;
-export const REPLICA_DATABASE_VERSION = GRAPH_RECEIVER_DATABASE_VERSION;
+const MANIFEST_V4_DATABASE_VERSION = GRAPH_RECEIVER_DATABASE_VERSION + 1;
+export const REPLICA_DATABASE_VERSION = MANIFEST_V4_DATABASE_VERSION;
 const DATABASE_VERSION = REPLICA_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
 const COMMITTED_HEADS = REPLICA_COMMITTED_HEADS_STORE;
@@ -190,6 +193,7 @@ type CommittedHeadRecord = {
   readonly identity: ReplicationIdentity;
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly revision: string;
+  readonly ordinal: number;
 };
 
 type StagingRecord = {
@@ -298,11 +302,19 @@ const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
   identity: record.identity,
   readCompatibilityHash: record.readCompatibilityHash,
   revision: record.revision,
+  ordinal: record.ordinal,
 });
+
+const supersedesStoredHead = (
+  stored: CommittedHeadRecord | undefined,
+  candidate: CommittedRecord,
+): boolean =>
+  !isReplicationOrdinal(stored?.ordinal) || candidate.ordinal >= stored.ordinal;
 
 export type RestoredReplica = {
   readonly db: Db;
   readonly revision: string;
+  readonly ordinal: number;
   readonly handles: ReadonlyMap<string, number>;
   readonly release: () => void;
 };
@@ -615,6 +627,7 @@ const materialize = async (
     identity,
     readCompatibilityHash: identity.readCompatibilityHash,
     revision: committed.revision,
+    ordinal: committed.ordinal,
     datoms: Object.freeze([...committed.datoms]),
     attributes: Object.freeze(specs),
     entityIds: Object.freeze([...entities]),
@@ -949,7 +962,7 @@ export class IndexedDbReplicaStorage {
         seedConfirmedGenerations(request.transaction);
       }
       if (
-        oldVersion > 0 && oldVersion < MANIFEST_V3_DATABASE_VERSION &&
+        oldVersion > 0 && oldVersion < MANIFEST_V4_DATABASE_VERSION &&
         request.transaction !== null
       ) {
         const upgrade = request.transaction;
@@ -1803,6 +1816,7 @@ export class IndexedDbReplicaStorage {
     return replicaRestored({
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      ordinal: validated.replica.record.ordinal,
       handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
@@ -1883,6 +1897,7 @@ export class IndexedDbReplicaStorage {
       identity: candidate.identity,
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      ordinal: validated.replica.record.ordinal,
       handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
@@ -2114,6 +2129,7 @@ export class IndexedDbReplicaStorage {
       identity: binding.identity,
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      ordinal: validated.replica.record.ordinal,
       handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
@@ -2272,7 +2288,7 @@ export class IndexedDbReplicaStorage {
     }
     let state = transition(emptyClientReplicationState(), {
       type: "SnapshotStart",
-      protocol: 1,
+      protocol: REPLICATION_PROTOCOL_VERSION,
       identity: staging.identity,
       snapshot: staging.snapshot,
       revision: staging.revision,
@@ -2280,7 +2296,7 @@ export class IndexedDbReplicaStorage {
     for (const chunk of chunks.sort((a, b) => a.index - b.index)) {
       state = transition(state, {
         type: "SnapshotChunk",
-        protocol: 1,
+        protocol: REPLICATION_PROTOCOL_VERSION,
         identity: staging.identity,
         snapshot: staging.snapshot,
         index: chunk.index,
@@ -2404,11 +2420,15 @@ export class IndexedDbReplicaStorage {
       const currentCommitted = await requestResult<CommittedRecord | undefined>(
         transaction.objectStore(COMMITTED).get(built.record.partition),
       );
+      const head = await requestResult<CommittedHeadRecord | undefined>(
+        transaction.objectStore(COMMITTED_HEADS).get(built.record.partition),
+      );
       if (
         current === undefined || current.snapshot !== frame.snapshot ||
         current.revision !== frame.revision ||
         !sameReplicationIdentity(current.identity, frame.identity) ||
-        (currentCommitted?.revision ?? null) !== baseRevision
+        (currentCommitted?.revision ?? null) !== baseRevision ||
+        !supersedesStoredHead(head, built.record)
       ) {
         await abortTransaction(transaction);
         return undefined;
@@ -2430,6 +2450,7 @@ export class IndexedDbReplicaStorage {
     return {
       db: built.db,
       revision: built.record.revision,
+      ordinal: built.record.ordinal,
       handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };
@@ -2467,6 +2488,7 @@ export class IndexedDbReplicaStorage {
       identity: prior.identity,
       committed: {
         revision: prior.revision,
+        ordinal: prior.ordinal,
         datoms: prior.datoms,
         handles: new Map(prior.entityHandles),
       },
@@ -2476,6 +2498,7 @@ export class IndexedDbReplicaStorage {
       return {
         db: dbFromRecord(this.database, prior, frame.identity.readCompatibilityHash),
         revision: prior.revision,
+        ordinal: prior.ordinal,
         handles: recordHandles(prior),
         release: this.retainRoots(frame.identity, prior.roots),
       };
@@ -2529,7 +2552,13 @@ export class IndexedDbReplicaStorage {
       const current = await requestResult<CommittedRecord | undefined>(
         write.objectStore(COMMITTED).get(partition),
       );
-      if (current?.revision !== prior.revision) {
+      const head = await requestResult<CommittedHeadRecord | undefined>(
+        write.objectStore(COMMITTED_HEADS).get(partition),
+      );
+      if (
+        current?.revision !== prior.revision ||
+        !supersedesStoredHead(head, built.record)
+      ) {
         await abortTransaction(write);
         return undefined;
       }
@@ -2548,6 +2577,7 @@ export class IndexedDbReplicaStorage {
     return {
       db: built.db,
       revision: built.record.revision,
+      ordinal: built.record.ordinal,
       handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };

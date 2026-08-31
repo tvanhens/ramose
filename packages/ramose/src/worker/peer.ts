@@ -181,6 +181,10 @@ export type ReplicationRevisionRecord = {
   readonly keyId: string;
 };
 
+export type ReplicationRevisionIssuance =
+  | { readonly type: "issued"; readonly ordinal: number }
+  | { readonly type: "refused" };
+
 const rejectQuarantined = async (
   response: Response,
   keyId: string,
@@ -217,7 +221,7 @@ export const rememberReplicationRevision = async (
   env: RamoseEnv,
   database: string,
   record: ReplicationRevisionRecord,
-): Promise<void> => {
+): Promise<ReplicationRevisionIssuance> => {
   const response = await replicationRevisionStore(
     env,
     database,
@@ -238,6 +242,10 @@ export const rememberReplicationRevision = async (
     status: response.status,
     body: await response.text(),
   });
+  const body = (await response.json()) as { readonly ordinal?: unknown };
+  return Number.isSafeInteger(body.ordinal) && (body.ordinal as number) > 0
+    ? Object.freeze({ type: "issued" as const, ordinal: body.ordinal as number })
+    : Object.freeze({ type: "refused" as const });
 };
 
 export const resolveReplicationRevision = async (

@@ -51,6 +51,7 @@ import {
   rememberReplicationRevision,
   resolveReplicationRevision,
   watchBasisChanges,
+  type ReplicationRevisionIssuance,
 } from "./peer.ts";
 
 const encoder = new TextEncoder();
@@ -206,7 +207,7 @@ const currentState = async (
 const remember = (
   input: ReplicationRun,
   state: ServerReplicaState,
-): Promise<void> =>
+): Promise<ReplicationRevisionIssuance> =>
   rememberReplicationRevision(
     input.env,
     rawDatabase(state.version),
@@ -325,7 +326,8 @@ const snapshotFrames = async function* (
     if (!leaseAlive(finalVersion) || finalState.revision !== candidate.revision) {
       continue;
     }
-    await remember(input, finalState);
+    const issued = await remember(input, finalState);
+    if (issued.type !== "issued") continue;
     if (!leaseAlive(finalVersion)) continue;
     await atBoundary(input.boundaries, "replication.snapshot.commit", signal);
     if (!leaseAlive(finalVersion)) continue;
@@ -336,6 +338,7 @@ const snapshotFrames = async function* (
       identity: expectedIdentity,
       snapshot,
       revision: candidate.revision,
+      ordinal: issued.ordinal,
       chunks: index,
     });
     return finalState;
@@ -487,7 +490,8 @@ const advanceFrames = async function* (
       basisT: finalBasisT,
       revision,
     });
-    await remember(input, finalState);
+    const issued = await remember(input, finalState);
+    if (issued.type !== "issued") continue;
     if (revision === previous.revision) {
       await atBoundary(
         input.boundaries,
@@ -532,6 +536,7 @@ const advanceFrames = async function* (
       identity: expectedIdentity,
       from: previous.revision,
       revision,
+      ordinal: issued.ordinal,
       datoms: delta.datoms,
       handles: delta.handles,
     });

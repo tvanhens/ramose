@@ -235,7 +235,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         keyId: current,
       });
       expect(remembered.status).toBe(200);
-      expect(remembered.body).toEqual({ ok: true, stored: true });
+      expect(remembered.body).toEqual({ ok: true, stored: true, ordinal: 1 });
 
       const resolved = await testAdmin(base, database, "/replication-revision", {
         action: "resolve",
@@ -282,6 +282,48 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       expect(stillThere.body).toEqual({ found: true, basisT: 7 });
     });
 
+    test("one dense ordinal per visible change, and a lagging stream mints none", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = uniqueDb("revision-ordinal");
+      const binding = opaqueId();
+      const keyId = (await probeIdentityRoot(base, database)).keyId;
+      const committed = opaqueId();
+      const advanced = opaqueId();
+      const lagging = opaqueId();
+      const remember = (revision: string, basisT: number) =>
+        testAdmin(base, database, "/replication-revision", {
+          action: "remember",
+          revision,
+          binding,
+          basisT,
+          keyId,
+        });
+      const resolve = (revision: string) =>
+        testAdmin(base, database, "/replication-revision", {
+          action: "resolve",
+          revision,
+          binding,
+          keyId,
+        });
+
+      expect((await remember(committed, 4)).body)
+        .toEqual({ ok: true, stored: true, ordinal: 1 });
+
+      expect((await remember(committed, 9)).body)
+        .toEqual({ ok: true, stored: true, ordinal: 1 });
+      expect((await remember(committed, 4)).body)
+        .toEqual({ ok: true, stored: true, ordinal: 1 });
+      expect((await resolve(committed)).body).toEqual({ found: true, basisT: 9 });
+
+      expect((await remember(lagging, 8)).body)
+        .toEqual({ ok: true, stored: false, refused: "stale-basis" });
+      expect((await resolve(lagging)).body).toEqual({ found: false });
+
+      expect((await remember(advanced, 9)).body)
+        .toEqual({ ok: true, stored: true, ordinal: 2 });
+      expect((await resolve(advanced)).body).toEqual({ found: true, basisT: 9 });
+    });
+
     test("advancing a remembered revision does not refresh its eviction order", async () => {
       const base = ctx.urls().conformanceUrl;
       const database = uniqueDb("revision-retention");
@@ -306,7 +348,8 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
           },
         );
         expect(remembered.status).toBe(200);
-        expect(remembered.body).toEqual({ ok: true, stored: true });
+        expect(remembered.body)
+          .toEqual({ ok: true, stored: true, ordinal: index + 1 });
       }
 
       await testAdmin(base, database, "/replication-revision", {

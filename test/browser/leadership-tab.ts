@@ -238,16 +238,16 @@ export const serve = (id: string): void =>
     ): Promise<string> => {
       const opened = storage!;
       await opened.startSnapshot({
-        type: "SnapshotStart", protocol: 1, identity, snapshot, revision,
+        type: "SnapshotStart", protocol: 2, identity, snapshot, revision,
       });
       await opened.stageSnapshotChunk(snapshotChunk({
-        type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0,
+        type: "SnapshotChunk", protocol: 2, identity, snapshot, index: 0,
         datoms: datoms as never,
       }));
       armCheckpoint("replica.install", "wait");
       let failure: string | undefined;
       void opened.commitSnapshot({
-        type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
+        type: "SnapshotCommit", protocol: 2, identity, snapshot, revision, ordinal: 1, chunks: 1,
       }, attributes).then(
         (installed) => installed?.release(),
         (error: unknown) => {

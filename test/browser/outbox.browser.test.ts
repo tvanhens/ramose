@@ -191,11 +191,11 @@ const confirm = async (
   const snapshot = `snapshot-${label}`.padEnd(43, "0");
   const revision = `revision-${label}`.padEnd(43, "0");
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
+    type: "SnapshotStart", protocol: 2, identity: selected, snapshot, revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
-    protocol: 1,
+    protocol: 2,
     identity: selected,
     snapshot,
     index: 0,
@@ -207,7 +207,7 @@ const confirm = async (
     }],
   }));
   dropped(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
+    type: "SnapshotCommit", protocol: 2, identity: selected, snapshot, revision, ordinal: 1, chunks: 1,
   }, REPLICA_ATTRIBUTES));
 };
 

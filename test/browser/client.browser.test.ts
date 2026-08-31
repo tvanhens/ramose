@@ -105,13 +105,13 @@ const seed = async (
     const snapshot = opaque("q");
     const revision = opaque("r");
     await storage.startSnapshot({
-      type: "SnapshotStart", protocol: 1, identity, snapshot, revision,
+      type: "SnapshotStart", protocol: 2, identity, snapshot, revision,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0, datoms,
+      type: "SnapshotChunk", protocol: 2, identity, snapshot, index: 0, datoms,
     }));
     const committed = await storage.commitSnapshot({
-      type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
+      type: "SnapshotCommit", protocol: 2, identity, snapshot, revision, ordinal: 1, chunks: 1,
     }, installed.attributes);
     expect(committed).toBeDefined();
     committed!.release();
@@ -598,17 +598,17 @@ browserTest("fences a replaced principal before any of its data can be read", as
     const snapshot = opaque("q");
     const revision = opaque("r");
     await storage.startSnapshot({
-      type: "SnapshotStart", protocol: 1, identity: prior, snapshot, revision,
+      type: "SnapshotStart", protocol: 2, identity: prior, snapshot, revision,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk", protocol: 1, identity: prior, snapshot, index: 0,
+      type: "SnapshotChunk", protocol: 2, identity: prior, snapshot, index: 0,
       datoms: [
         { entity, field: ":ramose/type", value: { type: "string", value: ":conformanceIssue" }, op: "add" },
         { entity, field: ":conformanceIssue/title", value: { type: "string", value: "prior-principal" }, op: "add" },
       ],
     }));
     (await storage.commitSnapshot({
-      type: "SnapshotCommit", protocol: 1, identity: prior, snapshot, revision, chunks: 1,
+      type: "SnapshotCommit", protocol: 2, identity: prior, snapshot, revision, ordinal: 1, chunks: 1,
     }, installed.attributes))!.release();
     await storage.bindAuthenticated({
       fingerprint: await replicationCredentialFingerprint(

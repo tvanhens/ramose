@@ -15,6 +15,7 @@ export const emptyEntityHandles: EntityHandles = new Map();
 
 export type CommittedReplica = {
   readonly revision: string;
+  readonly ordinal: number;
   readonly datoms: readonly LogicalDatom[];
   readonly handles: EntityHandles;
 };
@@ -251,6 +252,7 @@ const commitSnapshot = (
     identity: frame.identity,
     committed: Object.freeze({
       revision: frame.revision,
+      ordinal: frame.ordinal,
       datoms: Object.freeze(datoms),
       handles: retainHandles(staging.handles, datoms),
     }),
@@ -266,6 +268,7 @@ const applyChange = (
   if (committed === undefined) return fail("change arrived before a committed value");
   if (frame.revision === committed.revision) return Result.succeed(state);
   if (frame.from !== committed.revision) return Result.succeed(state);
+  if (frame.ordinal < committed.ordinal) return Result.succeed(state);
 
   const operations = new Map<string, LogicalDatom["op"]>();
   for (const datom of frame.datoms) {
@@ -302,6 +305,7 @@ const applyChange = (
     identity: frame.identity,
     committed: Object.freeze({
       revision: frame.revision,
+      ordinal: frame.ordinal,
       datoms,
       handles: retainHandles(handles, datoms),
     }),

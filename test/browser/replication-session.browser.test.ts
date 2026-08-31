@@ -122,13 +122,13 @@ const install = async (
     op: "add",
   }];
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 1, identity, snapshot, revision,
+    type: "SnapshotStart", protocol: 2, identity, snapshot, revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
-    type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0, datoms,
+    type: "SnapshotChunk", protocol: 2, identity, snapshot, index: 0, datoms,
   }));
   expect(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
+    type: "SnapshotCommit", protocol: 2, identity, snapshot, revision, ordinal: 1, chunks: 1,
   }, attributes)).toBeDefined();
 };
 
@@ -256,15 +256,17 @@ browserTest("a follower never re-renders a committed revision it has already lef
   const rename = async (
     from: string,
     revision: string,
+    ordinal: number,
     before: string,
     after: string,
   ): Promise<void> => {
     (await storage.applyChange(changeFrame({
       type: "Change",
-      protocol: 1,
+      protocol: 2,
       identity: selected,
       from,
       revision,
+      ordinal,
       datoms: [fact(before, "retract"), fact(after, "add")],
     })))?.release();
   };
@@ -285,63 +287,70 @@ browserTest("a follower never re-renders a committed revision it has already lef
       storage,
     });
     const rendered: string[] = [];
+    const ordinals: number[] = [];
     const failed = new Promise<void>((resolve) => {
       session!.observe((snapshot) => {
-        const revision = snapshot.value?.revision;
-        if (revision !== undefined && rendered.at(-1) !== revision) rendered.push(revision);
+        const value = snapshot.value;
+        if (value !== undefined && rendered.at(-1) !== value.revision) {
+          rendered.push(value.revision);
+          ordinals.push(value.ordinal);
+        }
         if (snapshot.status === "failed") resolve();
       });
     });
     await failed;
     expect(session.snapshot().value?.revision).toBe(installed);
 
-    await rename(installed, committed, "persisted", "committed");
+    await rename(installed, committed, 2, "persisted", "committed");
     expect(await session.refreshFromDurable()).toBe(true);
     expect(session.snapshot().value?.revision).toBe(committed);
     expect(await named(session.snapshot().value!.db)).toEqual(["committed"]);
 
     await storage.startSnapshot({
       type: "SnapshotStart",
-      protocol: 1,
+      protocol: 2,
       identity: selected,
       snapshot: opaque("p"),
       revision: installed,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 1,
+      protocol: 2,
       identity: selected,
       snapshot: opaque("p"),
       index: 0,
       datoms: [fact("persisted", "add")],
     }));
-    (await storage.commitSnapshot({
+    expect(await storage.commitSnapshot({
       type: "SnapshotCommit",
-      protocol: 1,
+      protocol: 2,
       identity: selected,
       snapshot: opaque("p"),
       revision: installed,
+      ordinal: 1,
       chunks: 1,
-    }, attributes))?.release();
-    const regressed = await storage.restore(
+    }, attributes)).toBeUndefined();
+    const stored = await storage.restore(
       selected,
       attributes,
       selected.readCompatibilityHash,
     );
-    expect(regressed?.revision).toBe(installed);
-    expect(await named(regressed!.db)).toEqual(["persisted"]);
-    regressed!.release();
+    expect(stored?.revision).toBe(committed);
+    expect(stored?.ordinal).toBe(2);
+    expect(await named(stored!.db)).toEqual(["committed"]);
+    stored!.release();
 
     expect(await session.refreshFromDurable()).toBe(false);
     expect(session.snapshot().value?.revision).toBe(committed);
     expect(await named(session.snapshot().value!.db)).toEqual(["committed"]);
 
-    await rename(installed, current, "persisted", "current");
+    await rename(committed, current, 3, "committed", "current");
     expect(await session.refreshFromDurable()).toBe(true);
     expect(session.snapshot().value?.revision).toBe(current);
     expect(await named(session.snapshot().value!.db)).toEqual(["current"]);
 
     expect(rendered).toEqual([installed, committed, current]);
+    expect(ordinals).toEqual([1, 2, 3]);
   } finally {
     await session?.close();
     storage.close();
@@ -401,10 +410,11 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     inspectedHead.close();
     expect(head).toEqual({
       partition,
-      storageVersion: 3,
+      storageVersion: 4,
       identity: selected,
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
+      ordinal: 1,
     });
     expect(head?.revision).toBe(manifest?.revision);
     expect(head).not.toHaveProperty("datoms");
@@ -451,10 +461,11 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
 
     const correctHead = {
       partition,
-      storageVersion: 3,
+      storageVersion: 4,
       identity: selected,
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
+      ordinal: 1,
     };
     const missing = await openNative(name);
     let corruptHead = missing.transaction("replica-committed-heads-v1", "readwrite");
@@ -481,7 +492,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
 
     const ready = {
       type: "ResumeReady" as const,
-      protocol: 1 as const,
+      protocol: 2 as const,
       identity: selected,
       revision: opaque("r"),
     };
@@ -504,10 +515,11 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     const changedRevision = opaque("3");
     expect((await storage.applyChange(changeFrame({
       type: "Change",
-      protocol: 1,
+      protocol: 2,
       identity: selected,
       from: opaque("r"),
       revision: changedRevision,
+      ordinal: 2,
       datoms: [],
     })))?.revision).toBe(changedRevision);
     expect((await storage.selectCacheCandidate(
@@ -529,7 +541,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       oldKey,
       selected.readCompatibilityHash,
     );
-    const reset = { type: "Reset" as const, protocol: 1 as const, identity: other };
+    const reset = { type: "Reset" as const, protocol: 2 as const, identity: other };
     expect(classifyReplicationCandidateFrame(collision, reset)).toBe("reset");
     await storage.bindAuthenticated({
       fingerprint: await replicationCredentialFingerprint(
@@ -557,7 +569,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     )).toBeUndefined();
     const start = {
       type: "SnapshotStart" as const,
-      protocol: 1 as const,
+      protocol: 2 as const,
       identity: selected,
       snapshot: opaque("n"),
       revision: opaque("3"),
@@ -852,7 +864,7 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
       attributes,
       selected.readCompatibilityHash,
     ))?.revision).toBe(opaque("r"));
-    expect(replicaPartitionKey(selected).startsWith("ramose-replica-v3:")).toBe(true);
+    expect(replicaPartitionKey(selected).startsWith("ramose-replica-v4:")).toBe(true);
   } finally {
     upgraded?.close();
     await deleteDatabase(legacyName);
@@ -877,7 +889,7 @@ browserTest(
     expect(replicaScopeKey(scope)).toBe(scopeKey);
     const partition = mutationPartitionKey(receiver);
     const legacyPartition = replicaPartitionKey(selected).replace(
-      "ramose-replica-v3:",
+      "ramose-replica-v4:",
       "ramose-replica-v2:",
     );
 

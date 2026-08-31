@@ -114,7 +114,7 @@ const scopeOf = (selected: ReplicationIdentity) => replicaScopeOf(selected);
 const databaseOf = (selected: ReplicationIdentity) => replicaDatabaseScopeOf(selected);
 
 const scopePrefix = (selected: ReplicationIdentity): string =>
-  ["ramose-replica-v3", selected.server, selected.principal, ""].join(":");
+  ["ramose-replica-v4", selected.server, selected.principal, ""].join(":");
 
 const snapshotDatom = (value: string): SnapshotDatom => ({
   entity: opaque("x"),
@@ -131,14 +131,14 @@ const installSnapshot = async (
 ): Promise<void> => {
   const snapshot = opaque("q");
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
+    type: "SnapshotStart", protocol: 2, identity: selected, snapshot, revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
-    type: "SnapshotChunk", protocol: 1, identity: selected, snapshot, index: 0,
+    type: "SnapshotChunk", protocol: 2, identity: selected, snapshot, index: 0,
     datoms: [snapshotDatom(value)],
   }));
   expect(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
+    type: "SnapshotCommit", protocol: 2, identity: selected, snapshot, revision, ordinal: 1, chunks: 1,
   }, attributes)).toBeDefined();
 };
 
@@ -250,7 +250,7 @@ browserTest("clears one confirmed scope and preserves every other realm byte-ide
       _tag: "ReplicaScopeClearedError",
     });
     await expect(storage.startSnapshot({
-      type: "SnapshotStart", protocol: 1, identity: left,
+      type: "SnapshotStart", protocol: 2, identity: left,
       snapshot: opaque("z"), revision: opaque("9"),
     })).rejects.toMatchObject({ _tag: "ReplicaScopeClearedError" });
     await expect(confirm(storage, left, "again")).rejects.toMatchObject({
@@ -327,7 +327,7 @@ browserTest("a fenced lease cannot repopulate a cleared scope or write nodes aft
     expect(lease.generationOf(replicaScopeKey(scopeOf(left)))).toBe(1);
     expect(lease.generationOf(replicaDatabaseKey(databaseOf(left)))).toBe(1);
     await writer.startSnapshot({
-      type: "SnapshotStart", protocol: 1, identity: left,
+      type: "SnapshotStart", protocol: 2, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
     }, { lease });
 
@@ -336,12 +336,12 @@ browserTest("a fenced lease cannot repopulate a cleared scope or write nodes aft
     expect((await maintainer.clearScope(scopeOf(left))).generation).toBe(2);
 
     await expect(writer.startSnapshot({
-      type: "SnapshotStart", protocol: 1, identity: left,
+      type: "SnapshotStart", protocol: 2, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
     }, { lease: idle })).rejects.toMatchObject({ _tag: "ReplicaFencedError" });
 
     await expect(writer.startSnapshot({
-      type: "SnapshotStart", protocol: 1, identity: left,
+      type: "SnapshotStart", protocol: 2, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
     }, { lease })).rejects.toMatchObject({
       _tag: "ReplicaFencedError",
@@ -361,26 +361,26 @@ browserTest("a fenced lease cannot repopulate a cleared scope or write nodes aft
       lease: renewed,
     });
     await writer.startSnapshot({
-      type: "SnapshotStart", protocol: 1, identity: left,
+      type: "SnapshotStart", protocol: 2, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
     }, { lease: renewed });
     await writer.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk", protocol: 1, identity: left, snapshot: opaque("q"), index: 0,
+      type: "SnapshotChunk", protocol: 2, identity: left, snapshot: opaque("q"), index: 0,
       datoms: [snapshotDatom("reinstalled")],
     }), { lease: renewed });
 
     expect((await evictor.evictDatabase(databaseOf(left))).generation).toBe(2);
     await writer.startSnapshot({
-      type: "SnapshotStart", protocol: 1, identity: left,
+      type: "SnapshotStart", protocol: 2, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
     }, { lease: await writer.lease() });
     await writer.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk", protocol: 1, identity: left, snapshot: opaque("q"), index: 0,
+      type: "SnapshotChunk", protocol: 2, identity: left, snapshot: opaque("q"), index: 0,
       datoms: [snapshotDatom("reinstalled")],
     }));
     await expect(writer.commitSnapshot({
-      type: "SnapshotCommit", protocol: 1, identity: left,
-      snapshot: opaque("q"), revision: opaque("2"), chunks: 1,
+      type: "SnapshotCommit", protocol: 2, identity: left,
+      snapshot: opaque("q"), revision: opaque("2"), ordinal: 1, chunks: 1,
     }, attributes, { lease: renewed })).rejects.toMatchObject({
       _tag: "ReplicaFencedError",
       key: replicaDatabaseKey(databaseOf(left)),
@@ -522,7 +522,7 @@ browserTest("a replica stored before generations existed stays clearable", async
   const name = `ramose-lifecycle-backfill-${browser.uniqueId}`;
   const left = identity();
   const partition = [
-    "ramose-replica-v3", left.server, left.principal, left.database, left.readView,
+    "ramose-replica-v4", left.server, left.principal, left.database, left.readView,
     left.readCompatibilityHash,
   ].join(":");
   let storage: IndexedDbReplicaStorage | undefined;
