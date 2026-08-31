@@ -1,4 +1,3 @@
-
 import type { InvocationId } from "../db/refs.ts";
 import { Store, type Subscription } from "./subscription.ts";
 
@@ -43,7 +42,6 @@ const PENDING: ReceiptState = Object.freeze({ status: "pending" as const });
 const QUEUED: ReceiptState = Object.freeze({ status: "queued" as const });
 const COMMITTED: ReceiptState = Object.freeze({ status: "committed" as const });
 
-/** The writable half of a receipt, held by whatever drives one invocation. */
 export class ReceiptDriver {
   private readonly store = new Store<ReceiptState>(PENDING);
   private settleQueued!: () => void;

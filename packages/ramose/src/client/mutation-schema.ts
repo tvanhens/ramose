@@ -33,7 +33,6 @@ export type MutationInput<S> = S extends RamoseVt<"ref"> ? RefInput<S>
   : S extends { readonly to: infer Decoded } ? MutationInput<Decoded>
   : CodecType<S>;
 
-/** A declared reference position keeps the entity its schema names. */
 type RefInput<S> = S extends { readonly _target?: infer Target }
   ? [NonNullable<Target>] extends [AnyEntity] ? MutationRef<NonNullable<Target>>
   : MutationRef
@@ -56,7 +55,6 @@ export type MutationMethod = (input?: any) => Receipt;
 /** Every operation a surface reaches, when the catalog is not statically known. */
 export type MutationNamespace = Readonly<Record<string, MutationMethod>>;
 
-/** A mutation whose whole input is optional is callable with no argument. */
 type MutationCall<In> = {} extends In ? (input?: In) => Receipt
   : (input: In) => Receipt;
 
@@ -69,14 +67,6 @@ type OperationsOf<Owner> = Owner extends
 
 type SelfFlag<Op> = Op extends { readonly self: infer Flag } ? Flag : never;
 
-/**
- * Whether an operation's placement is decided when it is authored.
- *
- * An operation whose `self` is computed carries `boolean`, and which namespace
- * the deployment installs it under is not knowable here. It appears under both
- * rather than under neither, and takes the method type of an operation whose
- * input is not statically known.
- */
 type PlacementKnown<Op> = boolean extends SelfFlag<Op> ? false : true;
 
 type MethodsWhereSelf<Owner, Self extends boolean> = {

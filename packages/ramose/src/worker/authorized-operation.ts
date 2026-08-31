@@ -34,12 +34,6 @@ import {
 } from "./authorized-read.ts";
 import { invalidateBasis } from "./peer.ts";
 
-/**
- * Everything `/op` accepts from a caller, which excludes any catalog proof:
- * `catalogKey` and `unitHash` are derived from deployed state, and a request
- * supplying either is refused. Compatibility is decided by the pinned
- * `OperationVersion` the durable record carries.
- */
 export type ParsedOperationRequest = Omit<
   OperationInvocation,
   | "database"

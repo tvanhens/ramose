@@ -147,11 +147,9 @@ const receiptStates = async (name: string): Promise<readonly string[]> =>
     readonly state: string;
   }[]).map((receipt) => receipt.state).sort();
 
-/** A database id of the shape the protocol uses, unique to one test. */
 const databaseOf = (uniqueId: string): string =>
   uniqueId.replaceAll("-", "").padEnd(43, "z").slice(0, 43);
 
-/** The durable leadership epoch, read outside every participant. */
 const durableEpoch = async (name: string, key: string): Promise<number> => {
   const records = await dumpStore(name, REPLICA_GENERATIONS_STORE) as readonly {
     readonly key: string;
@@ -246,7 +244,6 @@ browserTest("two tabs of one scope elect exactly one leader", async ({ browser }
     const led = await stand(first, name, scope);
     const queued = await stand(second, name, scope);
 
-    // Neither tab was told the name: both derived it from the scope.
     expect(led.key).toBe(replicaLeaderKey(scope, name));
     expect(queued.key).toBe(led.key);
     expect(queued.status).toBe("waiting");
@@ -255,7 +252,6 @@ browserTest("two tabs of one scope elect exactly one leader", async ({ browser }
     expect(elected.epoch).toBe(1);
     expect(await durableEpoch(name, led.key)).toBe(1);
 
-    // The second tab stays a waiting follower for as long as we watch it.
     for (let attempt = 0; attempt < 10; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 20));
       const report = await second.call<TabReport>("report");
@@ -292,7 +288,6 @@ browserTest("a closing leader hands leadership to a waiting tab", async ({ brows
     ]);
 
     const took = await leading(second);
-    // No expiry to wait out: the release itself grants the queued request.
     expect(performance.now() - started).toBeLessThan(1_000);
     expect(took.epoch).toBe(2);
     expect(await durableEpoch(name, key)).toBe(2);
@@ -314,7 +309,6 @@ browserTest("a crashed leader releases leadership to a waiting tab", async ({ br
     await stand(second, name, scope);
     expect((await second.call<TabReport>("report")).status).toBe("waiting");
 
-    // The tab dies with no chance to release anything.
     first.crash();
 
     const took = await leading(second);
@@ -421,7 +415,6 @@ browserTest(
       expect(await deposed.claimLeadership(key, scope)).toBe(1);
       const submitting = deposed.outbox(() => ({ key, epoch: 1 }));
 
-      // Another tab takes over while this submission is in flight.
       expect(await successor.claimLeadership(key, scope)).toBe(2);
 
       await expect(submitting.acknowledge(queued, COMMITTED, 1_700_000_000_001))
@@ -434,16 +427,12 @@ browserTest(
       expect(await receiptStates(name)).toEqual(["queued", "queued"]);
       expect((await dumpStore(name, "mutation-outbox-v1")).length).toBe(2);
 
-      // The same acknowledgement under the successor's epoch lands, so the
-      // fence refused the writer rather than the write.
       const receipt = await successor
         .outbox(() => ({ key, epoch: 2 }))
         .acknowledge(queued, COMMITTED, 1_700_000_000_002);
       expect(receipt.state).toBe("committed");
       expect(await receiptStates(name)).toEqual(["committed", "queued"]);
 
-      // Decoy: a submitter with no epoch to validate lands the write the
-      // fence refused, so the fence is what stopped it.
       const unfenced = await deposed.outbox()
         .acknowledge(decoyed, COMMITTED, 1_700_000_000_003);
       expect(unfenced.state).toBe("committed");
@@ -508,7 +497,6 @@ browserTest(
         return loop;
       };
 
-      // The follower enqueues durably, exactly as a leader would.
       await storage.outbox().enqueue(draft(receiver), { scope });
       expect((await dumpStore(name, "mutation-outbox-v1")).length).toBe(1);
 
@@ -540,7 +528,6 @@ browserTest(
     const scope = replicaScopeOf(left);
     const first = await IndexedDbReplicaStorage.open(name);
     const second = await IndexedDbReplicaStorage.open(name);
-    // Without Web Locks there is no election: every client submits for itself.
     const unelected = [first, second].map((storage) =>
       SyncLeadership.begin({
         name: replicaLeaderKey(receiver, name),
@@ -662,13 +649,10 @@ browserTest(
       expect([stood.status, stood.submits, stood.epoch])
         .toEqual(["waiting", false, undefined]);
 
-      // The lock the deposed leader gave up grants the tab that was waiting,
-      // and its claim takes the epoch after the one that stopped fencing.
       const took = await leading(successor, "the successor to take the epoch");
       expect(took.epoch).toBe(2);
       expect(await durableEpoch(name, took.key)).toBe(2);
 
-      // Standing again is what lets the deposed tab carry the work later.
       await successor.call<TabReport>("release");
       const again = await leading(deposed, "the tab that stood down to lead again");
       expect(again.epoch).toBe(3);
@@ -705,7 +689,6 @@ browserTest(
         drafts: [draft(receiver)],
       })).toBe(1);
 
-      // The leader is inside the transaction that settles the receipt.
       const invocation = await crashing.call<string>("stallAcknowledgement", {
         scope: receiver,
       });
@@ -714,8 +697,6 @@ browserTest(
       await stand(successor, name, receiver);
       expect((await leading(successor)).epoch).toBe(2);
 
-      // The acknowledgement either landed whole or not at all, and the
-      // successor finishes whatever it finds under its own epoch.
       const settling = await IndexedDbReplicaStorage.open(name);
       try {
         const submitting = settling.outbox(() => ({ key, epoch: 2 }));
@@ -766,7 +747,6 @@ browserTest(
         drafts: [draft(receiver), draft(receiver)],
       });
 
-      // The leader has planned the head and is waiting on the server for it.
       const invocation = await crashing.call<string>("planHead", {
         scope: receiver,
       });
@@ -828,9 +808,6 @@ browserTest(
       await stand(successor, name, receiver);
       expect((await leading(successor)).epoch).toBe(2);
 
-      // The install was one transaction, so the successor finds the replica
-      // whole or absent — and when it is absent, what stands is the staging
-      // the install would have read, which is where the work resumes.
       const installed = await dumpStore(name, "replica-committed-v1");
       expect(installed.length).toBeLessThan(2);
       const settling = await IndexedDbReplicaStorage.open(name);

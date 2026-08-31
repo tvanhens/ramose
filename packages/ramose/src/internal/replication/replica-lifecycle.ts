@@ -3,17 +3,6 @@ import { REPLICA_STORAGE_VERSION, type ReplicationIdentity } from "./protocol.ts
 
 export const REPLICA_GENERATIONS_STORE = "replica-generations-v1";
 
-/**
- * The durable counter every scope clear advances, and the record an activation
- * reads before it has a principal to name a scope with.
- *
- * A tab that has not authenticated yet cannot fence on a scope generation: it
- * does not know which scope it is activating into until the server answers. It
- * records this counter instead, and the clear that lands while it waits stamps
- * the cleared scope with the value it advanced to, so the install transaction
- * can tell an activation that began before the clear from one that began after
- * it without either side having enrolled.
- */
 export const REPLICA_CLEAR_BARRIER_KEY = "ramose-replica-clear-barrier-v1";
 
 export const REPLICA_COMMITTED_HEADS_STORE = "replica-committed-heads-v1";
@@ -137,7 +126,6 @@ export class ReplicaDatabaseActiveError extends Data.TaggedError(
   "ReplicaDatabaseActiveError",
 )<{ readonly database: string; readonly pins: number }> {}
 
-/** Whether a scope this holder was reading has been withdrawn under it. */
 export const isReplicaFenceError = (error: unknown): boolean => {
   const tag = (error as { readonly _tag?: unknown } | undefined)?._tag;
   return tag === "ReplicaFencedError" || tag === "ReplicaScopeClearedError";
@@ -154,16 +142,8 @@ export const replicaFenceDecision = (
 export class ReplicaLease {
   private readonly observed = new Map<string, number>();
 
-  /**
-   * @param admission the clear barrier this holder was admitted at, which is
-   * the barrier its activation read before it could name a scope.
-   */
   constructor(private readonly admission: number = 0) {}
 
-  /**
-   * Refuse a holder admitted before the clear that stamped `clearedAt` on the
-   * scope it is writing into.
-   */
   admit(key: string, clearedAt: number): void {
     if (clearedAt <= this.admission) return;
     throw new ReplicaFencedError({

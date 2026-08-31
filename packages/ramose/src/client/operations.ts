@@ -1,4 +1,3 @@
-
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type { CatalogDefinition } from "../Catalog.ts";
@@ -35,7 +34,6 @@ import type { InstalledProjection } from "../internal/replication/projection-bin
 
 const NO_ARTIFACT = DigestHex.make("0".repeat(64));
 
-/** One deployed operation, as a client may invoke it. */
 export type ClientOperation = {
   readonly owner: OwnerRef;
   readonly localName: string;
@@ -50,7 +48,6 @@ export type ClientOperation = {
     | undefined;
 };
 
-/** Every deployed operation, indexed the two ways the public surface reaches them. */
 export type ClientOperations = {
   readonly catalog: CatalogId;
   readonly database: ReadonlyMap<string, ClientOperation>;
@@ -88,13 +85,6 @@ const authoredOperations = (
   return authored;
 };
 
-/**
- * What one handle stands as while the declared schema encodes around it.
- *
- * Distinct per position, and negative so it cannot be confused with an eid,
- * because finding it again in the encoded value is what proves the handle is
- * going back where the schema put it.
- */
 const maskedRef = (index: number): number => -(index + 1);
 
 const readPath = (
@@ -129,18 +119,6 @@ const writePath = (
   return { ...(value as Record<string, unknown>), [segment]: child };
 };
 
-/**
- * Encode one operation input, preserving the opaque handles it carries.
- *
- * A declared entity-reference position is a number in the deployed operation
- * body and an `EntityId` or `ClientRef` here, because a client is never handed
- * a numeric eid. The declared schema decides every other position, so the
- * handles stand aside while it does and return to the positions they came from.
- *
- * @throws when a handle's position cannot be found again after encoding. A
- * codec that moves it has left an invocation that would name the wrong entity,
- * and this refuses before anything is queued rather than submitting one.
- */
 const encodeInput = (
   snapshot: OwnedOperationSnapshot,
   input: unknown,
@@ -192,7 +170,6 @@ const clientOperation = (
   };
 };
 
-/** Lower the installed catalog's operations, synchronously. */
 export const installClientOperations = (
   definition: CatalogDefinition,
   schema: AnySchema,
@@ -241,7 +218,6 @@ export const installClientOperations = (
   });
 };
 
-/** The self and trait operations one declared focus reaches. */
 export const selfOperationsFor = (
   operations: ClientOperations,
   composition: CompositionIndex,

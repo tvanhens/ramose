@@ -253,14 +253,6 @@ export type InterruptedReason =
   | "aborted"
   | "storage";
 
-/**
- * Tell the two fences a submission can fail apart.
- *
- * A leadership epoch that no longer stands says this tab is not the submitter
- * and another one is. A scope generation that no longer stands says the scope
- * itself was withdrawn, and standing for its leadership again would only take
- * the work back up under a principal that has been replaced.
- */
 export const interruptedReason = (error: unknown): InterruptedReason => {
   const tag = (error as { readonly _tag?: unknown } | undefined)?._tag;
   switch (tag) {

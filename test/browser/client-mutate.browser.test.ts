@@ -1,4 +1,3 @@
-
 import { expect } from "vitest";
 import * as EffectSchema from "effect/Schema";
 import { Catalog } from "../../packages/ramose/src/Catalog.ts";
@@ -83,7 +82,6 @@ const CACHE_KEY = "account-a";
 
 const opaque = (character: string): string => character.repeat(43);
 
-/** A sealed entity handle: 55 canonical base64url characters. */
 const SEALED = /^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/;
 
 const deleteDatabase = (name: string): Promise<void> =>
@@ -230,15 +228,6 @@ const queued = async (name: string, identity: ReplicationIdentity) => {
 browserTest(
   "a fresh client whose credential is refused fails its mutations",
   async ({ browser }) => {
-    // No seeded replica, which is the whole point: every other test here starts
-    // from a database that has already synchronized once, so the path where a
-    // client's very first activation fails was never walked. An expired refresh
-    // token at boot reaches it, and so does a browser that refuses storage.
-    //
-    // A refused credential is not an unreachable network. Reported as `offline`
-    // it would leave the receiver waiting for an identity that cannot arrive,
-    // and since the activation is memoized nothing would ever try again — the
-    // mutation's promises would hang for the life of the page.
     const name = `ramose-mutate-fresh-refused-${browser.uniqueId}`;
     const app = createClient({
       url: OFFLINE,
@@ -482,9 +471,6 @@ browserTest("a paged entity query returns a page of handles", async ({ browser }
     expect(rows).toHaveLength(1);
     expect(rows[0]!.data).toMatchObject({ id: rows[0]!.id, title: "Seeded" });
     expect(Object.keys(rows[0]!.mutate).sort()).toEqual(["annotate", "close"]);
-    // The tie-breaker is the paging root's identity, so a full page's cursor
-    // always carries one — matched against the sealed shape rather than merely
-    // "not a number", which a stringified eid would also satisfy.
     expect(ready.data!.cursor?.keys).toHaveLength(2);
     expect(ready.data!.cursor!.keys.filter((key) =>
       typeof key === "string" && SEALED.test(key)
@@ -497,8 +483,6 @@ browserTest("a paged entity query returns a page of handles", async ({ browser }
     const stopByAuthor = byAuthor.subscribe(() => undefined);
     const sorted = await waitFor(byAuthor, (snapshot) => snapshot.status === "ready");
     const cursor = sorted.data!.cursor;
-    // Both cells are identities here — the reference sort key and the root
-    // tie-breaker — so both must be sealed handles.
     expect(cursor?.keys).toHaveLength(2);
     for (const key of cursor!.keys) expect(key).toMatch(SEALED);
 
@@ -611,8 +595,6 @@ browserTest(
       const held = ready.data![0]!;
       expect(Object.keys(held.mutate).sort()).toEqual(["annotate", "close"]);
 
-      // An operation whose whole input is optional queues with no argument,
-      // and a supplied null is a value rather than an absent argument.
       const annotated = held.mutate.annotate(null);
       await annotated.queued;
       expect((await queued(name, identity))[0]!.input).toBeNull();
@@ -644,9 +626,6 @@ browserTest(
       }]);
 
       watchSync();
-      // The reopen is a reconnect over a value this handle is still
-      // publishing — the same held row the assertions below read — which is
-      // what `stale` means and what `connecting` denies.
       expect(seen).toContain("stale");
 
       await receipt.committed;

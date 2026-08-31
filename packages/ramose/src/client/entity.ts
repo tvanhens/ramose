@@ -1,4 +1,3 @@
-
 import * as Data from "effect/Data";
 import type { AnyComposer } from "../db/Composer.ts";
 import { isClientRef, type ClientRef, type MutationRef } from "../db/refs.ts";
@@ -44,7 +43,6 @@ export interface EntityHandle<Data = unknown, Mutations = MutationNamespace> {
   readonly mutate: Mutations;
 }
 
-/** Every handle one database has handed out, interned by opaque identity. */
 export class EntityRegistry {
   private readonly handles = new Map<string, LiveHandle>();
   private readonly aliases = new Map<string, MutationRef>();
@@ -187,13 +185,11 @@ class LiveHandle implements EntityHandle {
   }
 }
 
-/** The opaque identity a row carries, if the row is entity-focused. */
 export const rowIdentity = (row: unknown): MutationRef | undefined => {
   if (row === null || typeof row !== "object") return undefined;
   const id = (row as { readonly id?: unknown }).id;
   return typeof id === "string" ? (id as MutationRef) : undefined;
 };
 
-/** Whether one opaque identity is a ref this device minted. */
 export const isLocalIdentity = (id: MutationRef): id is ClientRef =>
   isClientRef(id);

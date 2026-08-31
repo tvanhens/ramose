@@ -383,10 +383,6 @@ export class IndexedDbOutbox {
     lease?.observe(scopeKey, current.generation);
   }
 
-  /**
-   * Refuse an acknowledgement from a submitter whose leadership another tab
-   * has already taken over.
-   */
   private async fenceLeadership(transaction: IDBTransaction): Promise<void> {
     const fence = this.leader?.();
     if (fence === undefined) return;

@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
 
-/** The ports `examples/graph` pins for its peer and its identity Worker. */
 export const PEER_PORT = 1341;
 export const IDENTITY_PORT = 1342;
 
@@ -10,13 +9,6 @@ export const IDENTITY_ORIGIN = `http://127.0.0.1:${IDENTITY_PORT}`;
 const READY_TIMEOUT_MS = 240_000;
 const READY_POLL_MS = 250;
 
-/**
- * Whether one of the stack's own Workers is answering here.
- *
- * A completed response is not enough: a fixed port another service holds, or a
- * Worker still booting behind its own error, both answer. Readiness is this
- * Worker's own successful answer.
- */
 const serving = async (url: string): Promise<boolean> => {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });

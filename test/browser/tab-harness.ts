@@ -1,11 +1,3 @@
-/**
- * Real tabs for the browser lane. Each tab is an iframe running a module in
- * its own realm, with its own Web Locks client and IndexedDB connections, and
- * removing the frame destroys that browsing context the way closing or
- * crashing a tab does. The two sides talk over a BroadcastChannel named for
- * the tab, which is harness plumbing that nothing under test reads.
- */
-
 type TabRequest = {
   readonly seq: number;
   readonly command: string;
@@ -23,13 +15,9 @@ const channelName = (id: string): string => `ramose-tab-${id}`;
 
 export type TabHandle = {
   readonly id: string;
-  /** Run a command in the tab and wait for its reply. */
   readonly call: <A>(command: string, payload?: unknown) => Promise<A>;
-  /** Deliver the activation event a browser sends when a tab comes back. */
   readonly wake: () => void;
-  /** Destroy the browsing context with no chance to clean up. */
   readonly crash: () => void;
-  /** Let the tab shut down, then destroy it. */
   readonly close: () => Promise<void>;
 };
 
@@ -97,7 +85,6 @@ export type TabHandlers = Readonly<
   Record<string, (payload: never) => unknown | Promise<unknown>>
 >;
 
-/** Answer the parent's commands. Called by a tab module's own `serve`. */
 export const serveTab = (id: string, handlers: TabHandlers): void => {
   const channel = new BroadcastChannel(channelName(id));
   channel.addEventListener("message", (event) => {

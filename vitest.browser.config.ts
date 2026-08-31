@@ -18,15 +18,11 @@ const replicationFrameFixtures = (root: string): Plugin => ({
 
       const match = /^\/db\/([A-Za-z0-9_-]+)\/replicate$/.exec(path);
       if (match === null) return next();
-      // The status an expired bearer is answered with, so the browser lane can
-      // reach the client's own refusal path over a real response.
       if (match[1] === "refuses-credentials") {
         response.statusCode = 401;
         response.end();
         return;
       }
-      // The same status for graph paths only, which leaves a root activation
-      // to fail as an unreachable one and its restored value on screen.
       if (match[1] === "refuses-children") {
         const body: Buffer[] = [];
         request.on("data", (chunk: Buffer) => body.push(chunk));
@@ -54,11 +50,6 @@ const replicationFrameFixtures = (root: string): Plugin => ({
   },
 });
 
-/**
- * Which principal a forwarded request carries, read from the bearer's own
- * unverified payload. The peer still verifies it; this only says whose wire a
- * partition test asked to cut.
- */
 const bearerSubject = (request: IncomingMessage): string => {
   const header = request.headers.authorization;
   const payload = header?.slice("Bearer ".length).split(".")[1];
@@ -74,17 +65,7 @@ const bearerSubject = (request: IncomingMessage): string => {
   }
 };
 
-/**
- * Bring the `examples/graph` stack up, and give the browser a same-origin path
- * to it.
- *
- * The example owns a real peer Worker, a real Transactor, a real R2 store and
- * the identity Worker that mints its bearers. This lane runs the example's own
- * client against the example's own stack: requests are forwarded verbatim, so
- * what the browser sends is what a deployed peer answers.
- */
 const exampleStack = (): Plugin => {
-  /** The connections each principal currently holds, so a cut can take them. */
   const held = new Map<string, Set<AbortController>>();
 
   const hold = (subject: string, connection: AbortController): (() => void) => {
@@ -143,7 +124,6 @@ const exampleStack = (): Plugin => {
         }
       }
     } catch {
-      // Either the browser closed a long-lived stream, or a partition cut it.
       response.destroy();
     } finally {
       release();

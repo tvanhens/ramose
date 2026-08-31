@@ -28,7 +28,6 @@ import { useDb, useQuery } from "../../src/react/index.ts";
 
 const Child = { key: "child", schema: Schema({}) } satisfies CodeDefinition;
 
-/** Not a literal, so which namespace installs the operation is decided later. */
 declare const computedPlacement: boolean;
 
 const Archivable = Trait("archivable", { archivedAt: string({ optional: true }) }, {
@@ -140,10 +139,6 @@ const client = createClient({
 
 const db = client.open();
 
-/**
- * `db.mutate` carries exactly the targetless operations the catalog declares,
- * plus any whose placement is computed and so could be installed here.
- */
 export type _databaseNames = Expect<
   Equal<keyof typeof db.mutate, "createIssue" | "touch">
 >;
@@ -158,7 +153,6 @@ export const _createIssue: Receipt = db.mutate.createIssue({
   origin: { board },
 });
 
-/** A declared entity-reference position accepts the opaque handle, at any depth. */
 export type _refInput = Expect<
   Equal<Parameters<typeof db.mutate.createIssue>[0]["author"], MutationRef>
 >;
@@ -198,7 +192,6 @@ db.mutate.setStatus({ status: "open" });
 
 const issue = db.observe(db.query.from(Issue)).getSnapshot().data![0]!;
 
-/** `entity.mutate` carries the entity's own operations and its traits'. */
 export type _entityNames = Expect<
   Equal<
     keyof typeof issue.mutate,
@@ -206,7 +199,6 @@ export type _entityNames = Expect<
   >
 >;
 
-/** A declared reference target keeps its entity: another entity's handle is not one. */
 export type _targetedRefInput = Expect<
   Equal<
     Parameters<typeof issue.mutate.assign>[0]["owner"],
@@ -214,16 +206,11 @@ export type _targetedRefInput = Expect<
   >
 >;
 
-/**
- * A codec that transforms a reference-bearing schema exposes it through `to`,
- * which is where the deployed lowering follows it too.
- */
 declare const transformed: { readonly to: typeof EntityId; readonly Type: number };
 export type _transformedRefInput = Expect<
   Equal<MutationInput<typeof transformed>, MutationRef>
 >;
 
-/** A record is not an array, however the codec exposes its value schema. */
 export type _recordInput = Expect<
   Equal<
     Parameters<typeof issue.mutate.assign>[0]["labels"],
@@ -238,7 +225,6 @@ issue.mutate.assign({ owner: noteRef, labels: {} });
 
 export const _setStatus: Receipt = issue.mutate.setStatus({ status: "closed" });
 
-/** An operation whose whole input is optional needs no argument. */
 export const _close: Receipt = issue.mutate.close();
 export const _archive: Receipt = issue.mutate.archive();
 
@@ -248,22 +234,16 @@ issue.mutate.createIssue({ title: "Offline" });
 // @ts-expect-error — the wrong type at a declared position
 issue.mutate.setStatus({ status: 7 });
 
-/** `.data` stays the row, and `.local` stays the sidecar. */
 export type _entityData = Expect<
   Equal<typeof issue.data.title, string>
 >;
 
-/**
- * A child database is bound to a catalog these types do not name, so its
- * operations stay the runtime namespace.
- */
 const childDb = db.query.from(Organization).where({ slug: "acme" }).one().db();
 export type _childNamespace = Expect<
   Equal<typeof childDb.mutate, MutationNamespace>
 >;
 export const _childCall: Receipt = childDb.mutate.anything({ whatever: true });
 
-/** The loose spellings remain supertypes of the derived ones. */
 export const _looseDatabase: ClientDatabase = db;
 export const _looseHandle: EntityHandle = issue;
 
@@ -271,7 +251,6 @@ type Answered<State> = State extends { readonly status: "ready"; readonly data: 
   ? A
   : never;
 
-/** The React adapter keeps the focus, so a rendered row is a live handle. */
 const renderedIssues = useQuery(db.query.from(Issue), db);
 declare const rendered: Answered<typeof renderedIssues>[number];
 export const _renderedSetStatus: Receipt = rendered.mutate.setStatus({
@@ -281,10 +260,6 @@ export const _renderedSetStatus: Receipt = rendered.mutate.setStatus({
 // @ts-expect-error — an operation this focus does not reach
 rendered.mutate.createIssue({ title: "Offline" });
 
-/**
- * A trait focus reaches only its own operations, as `selfOperationsFor` does:
- * a polymorphic read over a trait says nothing about which composers answer it.
- */
 const archivable = db.observe(db.query.from(Archivable)).getSnapshot().data![0]!;
 export type _traitFocusNames = Expect<
   Equal<keyof typeof archivable.mutate, "archive">
@@ -293,7 +268,6 @@ export type _traitFocusNames = Expect<
 // @ts-expect-error — an operation the composing entity declares, not this trait
 archivable.mutate.setStatus({ status: "closed" });
 
-/** The React root database answers the namespace its catalog is named with. */
 const typedRoot = useDb<DatabaseMutations<typeof AppSchema>>();
 export const _typedRootCall: Receipt = typedRoot.mutate.createIssue({
   title: "Offline",
@@ -305,10 +279,6 @@ export const _typedRootCall: Receipt = typedRoot.mutate.createIssue({
 // @ts-expect-error — an operation the catalog does not declare
 typedRoot.mutate.misspelled({});
 
-/**
- * A focus chosen at runtime is several alternatives, and each handle carries
- * only the one that was chosen: what stays callable is what both answer.
- */
 declare const chooseIssue: boolean;
 const either = db
   .observe(db.query.from(chooseIssue ? Issue : Note))
@@ -321,20 +291,14 @@ either.mutate.setStatus({ status: "closed" });
 // @ts-expect-error — and only the other one declares this
 either.mutate.pin({});
 
-/**
- * An operation whose placement is computed is reachable from both namespaces
- * rather than from neither, under the method type of an unknown input.
- */
 export const _computedPlacementOnDatabase: Receipt = db.mutate.touch({});
 export const _computedPlacementOnEntity: Receipt = issue.mutate.touch({});
 
-/** A provider-backed database with no named catalog stays the runtime namespace. */
 const looseRoot = useDb();
 export type _looseRoot = Expect<
   Equal<typeof looseRoot.mutate, MutationNamespace>
 >;
 
-/** A projection has no focus, so it stays plain data. */
 const renderedTitles = useQuery(
   db.query.from(Issue).select({ title: Issue.title }),
   db,

@@ -170,14 +170,6 @@ class RamoseClient implements Client {
     });
   }
 
-  /**
-   * Act on one durable change another holder of this storage namespace
-   * committed.
-   *
-   * The notice says what changed and where, never what it now says: every
-   * branch re-reads the durable records, so this tab reaches the same state it
-   * would have reached later on its own next activation.
-   */
   private receive(notice: ReplicaNotice): void {
     const identity = this.confirmed;
     if (this.terminal !== undefined || identity === undefined) return;
@@ -216,21 +208,6 @@ class RamoseClient implements Client {
     }
   }
 
-  /**
-   * Read every durable record this tab renders or submits from, without
-   * waiting for a notice about any of them.
-   *
-   * A tab that was suspended may have missed the clear or the principal
-   * replacement that withdrew the scope it is holding, so nothing submits
-   * until the generations every handle adopted have been read again: a pass
-   * begun before that answer arrives would still find this tab's handles
-   * confirmed and could submit the withdrawn principal's queued work.
-   *
-   * A handle left `offline` by a connection that died is reopened here too. It
-   * missed nothing durable — its own stream simply ended — so what it needs is
-   * not another read but another activation, and this is the moment a device
-   * that regained its connection reaches one.
-   */
   private wake(): void {
     if (this.terminal !== undefined) return;
     const revalidated = this.revalidate();
@@ -249,22 +226,10 @@ class RamoseClient implements Client {
     });
   }
 
-  /** Re-read the durable generations every handle of this client adopted. */
   private async revalidate(): Promise<void> {
     await Promise.all(this.handles().map((handle) => handle.revalidate()));
   }
 
-  /**
-   * Take the identity a handle of this client has confirmed.
-   *
-   * A confirmation that names another scope has replaced the one this client
-   * was holding, and the tabs that were holding it are told by the durable
-   * generation the replacement bumped. This tab is one of them: it does not
-   * receive its own broadcast, so a sibling handle still publishing the
-   * previous principal would keep publishing it — and keep answering as a
-   * submission endpoint — until some later wake-up. Reading the generations
-   * again here is what withdraws it.
-   */
   private confirm(identity: ReplicationIdentity, held = true): void {
     const previous = this.confirmed;
     if (held || previous === undefined) this.confirmed = identity;
@@ -304,13 +269,6 @@ class RamoseClient implements Client {
     };
   }
 
-  /**
-   * Show what this tab just wrote.
-   *
-   * A durable layer another tab writes arrives here as a notice; the tab that
-   * wrote it never receives its own broadcast, so the same re-read happens on
-   * the spot instead.
-   */
   private observeLayers(database: string): void {
     if (this.terminal !== undefined) return;
     for (const handle of this.handleByKey(database)) {
@@ -322,12 +280,6 @@ class RamoseClient implements Client {
     this.submissionLoop?.close();
   }
 
-  /**
-   * Stand for the leadership of the confirmed root scope. Every tab of one
-   * storage namespace, server, root, and principal stands for the same one,
-   * and only the tab holding it submits. A confirmation that names another
-   * scope gives the leadership of the previous one back.
-   */
   private elect(identity: ReplicationIdentity): void {
     if (this.terminal !== undefined) return;
     const scope = replicaScopeOf(identity);
@@ -377,16 +329,6 @@ class RamoseClient implements Client {
     return this.submissionLoop;
   }
 
-  /**
-   * Open the database a queued invocation names but no handle in this tab has
-   * resolved.
-   *
-   * Another tab walked the path and durably recorded where the receiver was
-   * confirmed; this activates that path again. The names go back to the server,
-   * which re-authorizes them, and only a confirmation naming this same receiver
-   * becomes an endpoint — so a path renamed since it was recorded leaves the
-   * queue where it is instead of submitting it somewhere else.
-   */
   private resolveReceiver(receiver: ReplicaDatabaseScope): void {
     const key = replicaDatabaseKey(receiver);
     if (this.terminal !== undefined || this.receivers.has(key)) return;
@@ -410,7 +352,6 @@ class RamoseClient implements Client {
     );
   }
 
-  /** Close a database this tab opened only to drain one receiver's queue. */
   private retireReceiver(receiver: ReplicaDatabaseScope): void {
     const key = replicaDatabaseKey(receiver);
     if (!this.receivers.delete(key)) return;
@@ -507,17 +448,6 @@ class RamoseClient implements Client {
     return { token: credential.token, cacheKey: credential.cacheKey };
   }
 
-  /**
-   * Report the synchronization state of the databases this application
-   * opened.
-   *
-   * A database opened only to drain a queue is not one of them: it is this
-   * client's own errand, and letting a receiver it cannot reach report
-   * `offline` — or a recorded path the server no longer authorizes report
-   * `authentication-required` — would answer for databases the application is
-   * reading perfectly well. What became of that queued work is its receipt's
-   * answer to give.
-   */
   private refreshSync(): void {
     if (this.terminal !== undefined) {
       this.syncStore.publish(syncState("closed"));

@@ -1,4 +1,3 @@
-
 import { clientRef, invocationId, type ClientRef, type MutationRef } from "../db/refs.ts";
 import { inputEntityRefHandles } from "../internal/authorization/entity-targets.ts";
 import type { JsonValue } from "../internal/authorization/json.ts";
@@ -13,7 +12,6 @@ import type { ClientOperation } from "./operations.ts";
 import type { MutationMethod, MutationNamespace } from "./mutation-schema.ts";
 import { ReceiptDriver, type Receipt } from "./receipt.ts";
 
-/** Everything one mutation call needs from the client that owns it. */
 export type MutationContext = {
   readonly databaseOperations: () => ReadonlyMap<string, ClientOperation>;
   readonly selfOperations: (
@@ -107,7 +105,6 @@ const enqueue = async (
   context.submit(receiver);
 };
 
-/** One callable method per operation, each returning a durable receipt. */
 export const mutationNamespace = (
   context: MutationContext,
   database: ClientDatabase,
@@ -124,7 +121,6 @@ export const mutationNamespace = (
         database,
         operation,
         target,
-        // An absent argument is the empty input; a supplied `null` is a value.
         input === undefined ? {} : input,
         driver,
       )

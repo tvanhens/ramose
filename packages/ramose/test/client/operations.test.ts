@@ -1,4 +1,3 @@
-
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
@@ -80,7 +79,6 @@ const Board = Entity("board", { name: string() }, {
   }),
 });
 
-/** An operation whose codec renames the position a reference was declared at. */
 const Relocated = Entity("relocated", { name: string() }, {
   operations: (Operation) => ({
     createRelocated: Operation({

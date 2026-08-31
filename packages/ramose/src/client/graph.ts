@@ -174,7 +174,6 @@ export type ClientValue<A> = A extends Eid<infer E extends AnyEntity>
     }
   : A;
 
-/** What a graph child needs from whatever database it hangs off. */
 export interface GraphAncestor {
   readonly activateGraph: () => void;
   readonly boundDatabase: () => ClientDatabaseHandle | undefined;
@@ -210,10 +209,6 @@ export const graphStableKey = (
   entity: string,
 ): string => `${replicaDatabaseKey(scope)} ${entity}`;
 
-/**
- * The registry key of a database opened to submit to it rather than to read a
- * path to it. It names the receiver, which is all a queue knows about one.
- */
 export const receiverStableKey = (receiver: ReplicaDatabaseScope): string =>
   `receiver ${replicaDatabaseKey(receiver)}`;
 
@@ -238,10 +233,8 @@ const resolvedSegment = (row: unknown): ResolvedSegment | undefined => {
 
 const CHAIN = ["where", "orderBy", "limit", "offset", "ids", "after"] as const;
 
-/** The entity focus a decorated query still carries, if it has one. */
 export const ENTITY_FOCUS = Symbol.for("ramose/client/entity-focus") as symbol;
 
-/** The focus one query value declares, or `undefined` for a projection. */
 export const entityFocusOf = (query: unknown): AnyComposer | undefined => {
   if (query === null || typeof query !== "object") return undefined;
   const focus = (query as Record<symbol, unknown>)[ENTITY_FOCUS];

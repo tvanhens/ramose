@@ -289,7 +289,6 @@ export const backlink = <A extends AttrLike>(attr: A): TraversalStage<A> =>
 
 type ElemPred = (focus: AnyVar) => Iterable<unknown>;
 
-/** A filter over a reverse ref: the attr must point at the current focus. */
 export type ReverseFilter<A extends AttrLike> = <X>(
   x: ReverseParam<X, A>,
 ) => FilterOut<X>;

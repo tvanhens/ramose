@@ -1,10 +1,3 @@
-/**
- * The query language: kernel (`Q`), constructor and composition (`Query`),
- * the fluent app spelling (`Query.from`), and the pipeable stdlib. One
- * kind of object — every query is a rule — with two advanced spellings
- * (pipe, generator) under the fluent chain.
- */
-
 export {
   Q,
   isVar,

@@ -31,15 +31,6 @@ const mint = async (subject: string): Promise<string> =>
     .setExpirationTime(`${TOKEN_TTL_SECONDS}s`)
     .sign(await key());
 
-/**
- * The example's identity plane: it publishes a JWKS the peer verifies against,
- * and mints a short-lived bearer for whoever asks.
- *
- * Asking is enough because this is a development identity. The shape is the
- * real one — the peer only ever sees a signed ES256 bearer it verifies against
- * a published key — and swapping this Worker for Better Auth, as Reef does,
- * changes nothing on the peer or in the client.
- */
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);

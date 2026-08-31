@@ -1,19 +1,3 @@
-
-/**
- * The catalog-authoring surface, re-exported.
- *
- * An application that authors its catalog and runs the offline client needs
- * `Catalog` and `Policy` in the same bundle as `createClient`. Both resolved
- * only from `ramose` before, which carries the whole deploy engine — so the
- * choice was a re-export here or a two-package split for every consumer.
- *
- * A re-export, because it costs nothing a browser must not load: a build of
- * `client + Catalog + Policy` reaches Effect and the portable authorization
- * kernel and stops there, with no `alchemy`, no `cloudflare:workers`, no
- * `jose` and no `better-auth`. `test/client/bundle.test.ts` measures exactly
- * that with a real bundler, because a bundler is the only thing that knows
- * what a module graph actually drags in.
- */
 export { Catalog, type CatalogDefinition, type CatalogProps } from "../Catalog.ts";
 export * as Policy from "../Policy.ts";
 

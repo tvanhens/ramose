@@ -219,22 +219,6 @@ export class ReplicationSession {
     this.loop = run(this, this.generation);
   }
 
-  /**
-   * Re-read the durable committed head this session's confirmed identity names
-   * and publish it when it has moved past the value this session is holding.
-   *
-   * A holder installs a replica before it publishes one, so the durable head of
-   * one identity only ever advances: a revision that differs from the published
-   * one is a later revision another tab of this scope installed. A session
-   * whose own response is still delivering ignores this — its stream is the
-   * fresher path and the one that keeps the change chain continuous — so this
-   * is what a tab reads when its own stream has ended.
-   *
-   * Refreshes run one at a time. Two notices about consecutive writes would
-   * otherwise read two revisions concurrently, and the reader that finished
-   * second could publish the older of them: the durable head advances, but a
-   * read of it is only as fresh as the moment it ran.
-   */
   refreshFromDurable(): Promise<boolean> {
     const next = this.refreshing.then(
       () => this.readDurableHead(),
@@ -280,15 +264,6 @@ export class ReplicationSession {
     return true;
   }
 
-  /**
-   * The identity this session's credential is bound to now.
-   *
-   * Another tab that rebinds the same credential to a rotated read view leaves
-   * this session holding a superseded identity, and reading the durable head of
-   * that one would restore the view the rotation replaced. The rebound identity
-   * is only adopted for the same database and the read compatibility this build
-   * confirmed; anything else is a database this session does not describe.
-   */
   private async currentIdentity(
     held: ReplicationIdentity,
   ): Promise<ReplicationIdentity> {
@@ -305,16 +280,6 @@ export class ReplicationSession {
     return bound;
   }
 
-  /**
-   * Re-read the generations this session's lease adopted and stop the session
-   * when they have moved.
-   *
-   * A clear or a principal replacement in another tab is durable before it is
-   * announced, so this is what a holder of an already published value does with
-   * the announcement: a fenced session withdraws its value instead of leaving a
-   * superseded one on screen, and a session whose generations still stand is
-   * left alone.
-   */
   async revalidate(): Promise<boolean> {
     const identity = this.state.value?.identity ?? this.confirmedIdentity;
     const generation = this.generation;
@@ -348,8 +313,6 @@ export class ReplicationSession {
   }
 
   static async open(options: ReplicationSessionOptions): Promise<ReplicationSession> {
-    // Before any stored replica is read, so a clear that lands while this
-    // activation is reading one fences everything it goes on to publish.
     const admission = await options.storage.admission();
     const activation = replicationActivationAddress(options.activation);
     const observation = {

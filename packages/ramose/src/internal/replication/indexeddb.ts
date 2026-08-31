@@ -129,7 +129,6 @@ const STORAGE_V2_DATABASE_VERSION = 5;
 const LIFECYCLE_DATABASE_VERSION = 6;
 const MUTATION_INDEX_DATABASE_VERSION = 9;
 const OPTIMISTIC_LAYER_DATABASE_VERSION = 10;
-/** The layout below which stored replica values are not read again. */
 export const REPLICA_MANIFEST_STORAGE_VERSION =
   OPTIMISTIC_LAYER_DATABASE_VERSION + 1;
 const MANIFEST_V3_DATABASE_VERSION = REPLICA_MANIFEST_STORAGE_VERSION;
@@ -233,23 +232,6 @@ type RouteSlotRecord = {
 
 export const REPLICA_GRAPH_RECEIVER_VERSION = 1 as const;
 
-/**
- * The graph path one receiver database was last confirmed at.
- *
- * A tab plans work for a receiver whichever tab resolved it, and a leader that
- * never walked that path has no handle to submit through. This is what it
- * activates from. The path is a hint and never an authority: the activation it
- * feeds sends these names to the server, which re-authorizes them and answers
- * with the identity they name now, and only a confirmed identity naming this
- * same database becomes an endpoint. A path renamed since it was recorded
- * therefore surfaces as that activation's own outcome — a database this
- * receiver's queue is not submitted to — rather than as a misroute.
- *
- * Evicting a database keeps its record. Eviction frees a cached replica and
- * never the durable work queued for it, and the path is what a leader needs to
- * reach that database again once the replica is gone. Only clearing the scope
- * removes it, with the queue it belongs to.
- */
 export type ReplicaGraphReceiver = {
   readonly key: string;
   readonly version: typeof REPLICA_GRAPH_RECEIVER_VERSION;
@@ -267,7 +249,6 @@ type GenerationRecord = {
   readonly generation: number;
   readonly confirmedAt: number;
   readonly fencedAt: number | null;
-  /** The clear barrier the last clear of this scope advanced to. */
   readonly clearedAt?: number;
 };
 
@@ -350,7 +331,6 @@ export type ReplicaAuthenticatedBinding = {
   readonly candidateKey?: ReplicaCacheCandidateKey | undefined;
   readonly route?: (ReplicaRouteObservation & {
     readonly slot: ReplicaRouteSlot;
-    /** The path segments this activation sent, in order. */
     readonly graphPath?: readonly string[];
   }) | undefined;
 };
@@ -969,11 +949,6 @@ export class IndexedDbReplicaStorage {
     return storage;
   }
 
-  /**
-   * Run `listener` when another holder of this storage namespace commits a
-   * durable change. The notice names what changed and where; the listener
-   * reads the durable records to learn what it now says.
-   */
   notices(listener: ReplicaNoticeListener): () => void {
     return this.register(this.channel.subscribe(listener));
   }
@@ -986,10 +961,6 @@ export class IndexedDbReplicaStorage {
     this.channel.post(notice);
   }
 
-  /**
-   * Run `listener` when another connection's upgrade closes this one, which
-   * leaves this holder unable to read or write until it reopens.
-   */
   onInvalidated(listener: () => void): () => void {
     this.invalidations.add(listener);
     return this.register(() => {
@@ -1027,10 +998,6 @@ export class IndexedDbReplicaStorage {
     return once;
   }
 
-  /**
-   * @param leader the leadership epoch a submitter revalidates as it settles a
-   * queue. Enqueuing needs none, so every tab keeps queuing durably.
-   */
   outbox(leader?: () => LeadershipFence | undefined): IndexedDbOutbox {
     return new IndexedDbOutbox(
       this.database,
@@ -1041,10 +1008,6 @@ export class IndexedDbReplicaStorage {
     );
   }
 
-  /**
-   * Take the durable leadership epoch of `key`, one higher than the epoch of
-   * whoever held it before.
-   */
   async claimLeadership(key: string, scope: ReplicaScope): Promise<number> {
     const scopeKey = this.assertScopeLive(scope);
     const transaction = this.database.transaction(GENERATIONS, "readwrite");
@@ -1063,10 +1026,6 @@ export class IndexedDbReplicaStorage {
     return generation;
   }
 
-  /**
-   * The clear barrier as it stands, which is what a holder about to activate
-   * records before it knows which scope it will install into.
-   */
   async admission(): Promise<number> {
     const transaction = this.database.transaction(GENERATIONS, "readonly");
     const record = await requestResult<GenerationRecord | undefined>(
@@ -1076,12 +1035,10 @@ export class IndexedDbReplicaStorage {
     return record?.generation ?? 0;
   }
 
-  /** A lease admitted at the current clear barrier and holding no generation. */
   async lease(): Promise<ReplicaLease> {
     return new ReplicaLease(await this.admission());
   }
 
-  /** Read the generations `lease` guards, and fail when they have moved. */
   async confirmLease(
     lease: ReplicaLease,
     identity: ReplicationIdentity,
@@ -1736,7 +1693,6 @@ export class IndexedDbReplicaStorage {
     return (record?.generation ?? 0) === sweep;
   }
 
-  /** The identity this credential is bound to, which another tab may rebind. */
   async boundIdentity(
     fingerprint: string,
   ): Promise<ReplicationIdentity | undefined> {
@@ -1871,10 +1827,6 @@ export class IndexedDbReplicaStorage {
     );
   }
 
-  /**
-   * The graph path a receiver database was last confirmed at, which is what a
-   * tab that never resolved it activates from before it can submit to it.
-   */
   async graphReceiver(
     receiver: ReplicaDatabaseScope,
   ): Promise<ReplicaGraphReceiver | undefined> {
@@ -1989,21 +1941,6 @@ export class IndexedDbReplicaStorage {
     }
   }
 
-  /**
-   * Fence the principals an account selector used to name.
-   *
-   * One selector names one account on one server and root, so a confirmation
-   * that answers it with another principal has replaced the one before it.
-   * Every route slot recorded under the selector is read, not only the one
-   * being confirmed: the selector carries no path, so the principal being
-   * replaced is recorded under whatever slots its own lineages named, and a
-   * successor first confirmed on a graph path shares none of them.
-   *
-   * Bumping each replaced scope's generation inside this transaction is what
-   * stops a tab still holding that principal from publishing or submitting it:
-   * the tab re-reads the generation its lease adopted and finds it moved,
-   * whether or not the notice announced below ever reaches it.
-   */
   private async stageReplacedPrincipals(
     transaction: IDBTransaction,
     confirmed: ReplicationIdentity,
@@ -2041,10 +1978,6 @@ export class IndexedDbReplicaStorage {
     return Object.freeze([...replaced.values()]);
   }
 
-  /**
-   * Advance the barrier that tells an activation begun before a scope was
-   * withdrawn from one begun after it, and answer the value it advanced to.
-   */
   private async advanceBarrier(
     generations: IDBObjectStore,
     held?: GenerationRecord | undefined,

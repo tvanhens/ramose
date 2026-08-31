@@ -72,7 +72,6 @@ const deleteDatabase = (name: string): Promise<void> =>
     request.addEventListener("blocked", () => resolve(), { once: true });
   });
 
-/** A database id of the shape the protocol uses, unique to one test. */
 const databaseOf = (uniqueId: string): string =>
   uniqueId.replaceAll("-", "").padEnd(43, "z").slice(0, 43);
 
@@ -185,8 +184,6 @@ browserTest(
         "second",
       ]);
 
-      // Two installs with no round trip between them, so both notices land
-      // while the first durable read is still running.
       expect(
         await leader.call<string>("commit", {
           storageName: name,
@@ -208,7 +205,6 @@ browserTest(
       );
       expect(converged).toEqual(["first", "second", "third", "fourth"]);
 
-      // A read that finished late must not put the earlier revision back.
       await steady(
         () => titles(follower),
         (rows) => rows.includes("fourth"),
@@ -231,7 +227,6 @@ browserTest(
     const leader = await openTab(tabModule);
     const follower = await openTab(tabModule);
     try {
-      // This realm has no BroadcastChannel, so nothing here posts or receives.
       expect(await follower.call<boolean>("withoutBroadcasts")).toBe(true);
       expect((await started(follower, name, database)).titles).toEqual([
         "first",
@@ -246,7 +241,6 @@ browserTest(
         revision: NEXT_REVISION,
       });
 
-      // No notice can arrive, so the tab keeps rendering what it read.
       await steady(
         () => titles(follower),
         (rows) => !rows.includes("third"),
@@ -290,7 +284,6 @@ browserTest(
         "the other tab to render the optimistic layer",
       );
       expect(moved.titles).toEqual(["renamed", "second"]);
-      // The layer is this client's pending work in both tabs, not a commit.
       expect(moved.pending[0]).toBe(true);
       expect(await writer.call<string>("receipt")).toBe("queued");
     } finally {
@@ -390,8 +383,6 @@ browserTest(
       );
       await leader.call<LoopReport>("settle");
 
-      // Only the follower has resolved this child; the queue is where the
-      // leader learns of it.
       await follower.call("enqueue", {
         storageName: name,
         database,
@@ -450,8 +441,6 @@ browserTest(
         title: "queued",
       });
 
-      // The leader has no handle for this child and no path to activate one
-      // from except the record the tab that confirmed it wrote.
       const woken = await until(
         () => leader.call<LoopReport>("loop"),
         (loop) => loop.resolved.length > 0,
@@ -494,9 +483,6 @@ browserTest(
         expect((await storage.graphReceiver(receiver))?.graphPath)
           .toEqual([...CHILD_PATH]);
 
-        // The same path is confirmed again, naming another database. Both
-        // records stand: the path is what an activation sends, and the
-        // identity it comes back with is what a queue is submitted through.
         await seedDatabases(name, [{
           identity: await identityFor(after, CHILD_LINEAGE),
           datoms: noteDatoms([{ entity: opaque("h"), title: "after", rank: "a" }]),
@@ -512,7 +498,6 @@ browserTest(
         storage.close();
       }
 
-      // Work queued for the database that path used to name stays queued.
       await reader.call("enqueue", {
         storageName: name,
         database,
@@ -547,7 +532,6 @@ browserTest(
       await follower.call<string>("rename", { from: "first", to: "renamed" });
       expect(await follower.call<string>("receipt")).toBe("queued");
 
-      // The leader submits and acknowledges; the follower never does.
       const queued = await leader.outbox().restore(replicaScopeOf(identity));
       expect(queued.records).toHaveLength(1);
       const receipt = await leader.outbox().acknowledge(
@@ -599,8 +583,6 @@ browserTest(
         "the tab's own stream to end",
       );
 
-      // The child replica is durable, but no tab has confirmed which route
-      // names it, so this tab cannot say what the path resolves to.
       await steady(
         () => follower.call<QueryReport>("report"),
         (report) => report.status === "pending",
@@ -640,7 +622,6 @@ browserTest(
         "leadership",
       );
 
-      // Thirty durable enqueues at once, so thirty notices land in a burst.
       expect(
         await follower.call<number>("enqueue", {
           storageName: name,

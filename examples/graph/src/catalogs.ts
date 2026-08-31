@@ -12,12 +12,10 @@ import {
   string,
 } from "ramose/db";
 
-/** The root route this deployment publishes, and the only one a client configures. */
 export const ROOT_DATABASE = "example-graph";
 
 let appCatalog!: ReturnType<typeof Catalog>;
 
-/** A board's issues. The leaf of the graph, and where the app spends its time. */
 export const Issue = Entity("issue", {
   title: string(),
   status: string(),
@@ -28,9 +26,6 @@ export const Issue = Entity("issue", {
       input: EffectSchema.Struct({ title: EffectSchema.String }),
       output: EffectSchema.Struct({ id: EntityId }),
       allocates: { issue: ["id"] },
-      // The projection is what an offline device renders until the server
-      // commits. It is declared, never inferred from the operation body: the
-      // body is deployed code the client neither has nor may execute.
       optimistic: ({ input, tx }) => {
         const issue = tx.create("issue", Issue);
         tx.set(issue, Issue.title, input.title);
@@ -65,7 +60,6 @@ export const Issue = Entity("issue", {
   }),
 });
 
-/** A board is one child database of its organization. */
 export const Board = Entity("board", {
   slug: Field.unique(string(), "strict"),
 }, {
@@ -94,7 +88,6 @@ export const Board = Entity("board", {
   }),
 });
 
-/** An organization is one child database of the root. */
 export const Organization = Entity("organization", {
   slug: Field.unique(string(), "strict"),
 }, {
@@ -123,16 +116,6 @@ export const Organization = Entity("organization", {
   }),
 });
 
-/**
- * One catalog for every level of the graph.
- *
- * The MVP client installs exactly one catalog, so a child database bound to a
- * *different* one fails closed: the client would have neither its read view nor
- * its operations. Binding each `Graph` back to this catalog is what lets the
- * same client open the root, an organization and a board, and mutate all three.
- * What differs between the levels is which entities each database actually
- * holds, and the authorized path that reaches it.
- */
 export const AppSchema = Schema({
   organization: Organization,
   board: Board,

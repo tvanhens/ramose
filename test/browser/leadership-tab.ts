@@ -79,7 +79,6 @@ const stalled = async (
   }
 };
 
-/** The tab entry point: `openTab` loads this module and calls it. */
 export const serve = (id: string): void =>
   serveTab(id, {
     stand: async ({ storageName, scope }: Standing): Promise<TabReport> => {
@@ -101,13 +100,11 @@ export const serve = (id: string): void =>
     },
     report: (): TabReport => report(),
 
-    /** Give up an epoch a durable write refused and stand for a fresh one. */
     standDown: async (): Promise<TabReport> => {
       await leadership?.standDown();
       return report();
     },
 
-    /** Queue work this tab's leader, or its successor, has to carry. */
     enqueue: async (
       { scope, drafts }: {
         readonly scope: ReplicaDatabaseScope;
@@ -121,7 +118,6 @@ export const serve = (id: string): void =>
       return drafts.length;
     },
 
-    /** Plan the head of the queue the way a submitting leader plans it. */
     planHead: async (
       { scope }: { readonly scope: ReplicaDatabaseScope },
     ): Promise<string> => {
@@ -217,10 +213,6 @@ export const serve = (id: string): void =>
       return { invocation: head.record.invocation, activation };
     },
 
-    /**
-     * Stall this leader inside the transaction that acknowledges the head of
-     * the queue, and stay there until the tab is destroyed.
-     */
     stallAcknowledgement: async (
       { scope }: { readonly scope: ReplicaDatabaseScope },
     ): Promise<string> => {
@@ -241,10 +233,6 @@ export const serve = (id: string): void =>
       return head.record.invocation;
     },
 
-    /**
-     * Stall this leader inside the transaction that installs a snapshot, and
-     * stay there until the tab is destroyed.
-     */
     stallInstall: async (
       { identity, attributes, snapshot, revision, datoms }: Staging,
     ): Promise<string> => {

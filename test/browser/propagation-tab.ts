@@ -137,7 +137,6 @@ export const noteDatoms = (
     fact(note.entity, ":note/rank", note.rank),
   ]);
 
-/** The graph row whose name is the one path segment of the child database. */
 export const workspaceDatoms = (entity: string): readonly NoteDatom[] => [
   fact(entity, ":ramose/type", ":workspace"),
   fact(entity, ":workspace/slug", "acme"),
@@ -151,9 +150,7 @@ export type SeededDatabase = {
   readonly identity: ReplicationIdentity;
   readonly datoms: readonly NoteDatom[];
   readonly graphPath?: readonly string[];
-  /** Write the durable route observation a confirming session writes. */
   readonly observeRoute?: boolean;
-  /** Whether a bearer binding is written, as a confirming session writes one. */
   readonly bind?: boolean;
 };
 
@@ -165,7 +162,6 @@ const routeSlotOf = (entry: SeededDatabase): Promise<string> =>
     ? rootReplicaRouteSlot()
     : stableReplicaRouteSlot(entry.identity.graphLineage);
 
-/** Write the route observation a session writes once it confirms a child. */
 export const observeChildRoute = async (
   name: string,
   identity: ReplicationIdentity,
@@ -191,7 +187,6 @@ export const observeChildRoute = async (
   }
 };
 
-/** Install the snapshots and bearer bindings every tab opens against. */
 export const seedDatabases = async (
   name: string,
   entries: readonly SeededDatabase[],
@@ -265,7 +260,6 @@ type CommitInput = {
   readonly note: SeededNote;
   readonly from: string;
   readonly revision: string;
-  /** A second change installed straight after, with no round trip between. */
   readonly then?: {
     readonly note: SeededNote;
     readonly revision: string;
@@ -274,7 +268,6 @@ type CommitInput = {
 
 type HoldInput = StartInput & {
   readonly principal?: string;
-  /** Confirm the one graph path below the root, at this lineage. */
   readonly lineage?: readonly string[];
 };
 
@@ -297,7 +290,6 @@ type LoopReport = {
   readonly passes: number;
   readonly planned: readonly string[];
   readonly overlapped: boolean;
-  /** The graph path each unresolved receiver was durably recorded at. */
   readonly resolved: readonly string[];
   readonly retired: readonly string[];
 };
@@ -369,7 +361,6 @@ const heldStorage = async (name: string): Promise<IndexedDbReplicaStorage> => {
   return storage;
 };
 
-/** The tag of the failure a durable write was refused with, or `landed`. */
 const outcome = async (run: () => Promise<void>): Promise<string> => {
   try {
     await run();
@@ -402,13 +393,8 @@ const draft = (
   enqueuedAt: Date.now(),
 });
 
-/** The tab entry point: `openTab` loads this module and calls it. */
 export const serve = (id: string): void =>
   serveTab(id, {
-    /**
-     * Leave this realm without `BroadcastChannel`, which is the runtime a
-     * browser too old for it gives every consumer here.
-     */
     withoutBroadcasts: (): boolean => {
       Reflect.deleteProperty(globalThis, "BroadcastChannel");
       return (globalThis as { readonly BroadcastChannel?: unknown })
@@ -420,7 +406,6 @@ export const serve = (id: string): void =>
       return observeNotes(database);
     },
 
-    /** Observe the notes of the graph child one path segment down. */
     startChild: async ({ storageName }: StartInput): Promise<QueryReport> => {
       const root = open(storageName);
       return observeNotes(
@@ -430,45 +415,32 @@ export const serve = (id: string): void =>
 
     report: (): QueryReport => report(),
 
-    /** Every value this tab's observers have published, in order. */
     published: (): readonly QueryReport[] => published,
 
-    /** How many times this client has asked the application for a credential. */
     presented: (): number => presented,
 
     sync: (): string => client?.sync.getSnapshot().status ?? "absent",
 
-    /** Present the bearer of another account the way a sign-in does. */
     signIn: ({ bearer }: { readonly bearer: string }): string => {
       token = bearer;
       return token;
     },
 
-    /** Leave the application with no credential to activate with. */
     signOut: (): boolean => {
       token = undefined;
       return true;
     },
 
-    /** Clear this principal's local data through the public API. */
     clearLocal: async (): Promise<string> => {
       await client!.clearLocalData();
       return client!.sync.getSnapshot().status;
     },
 
-    /**
-     * Take the admission a session takes when it opens, before it has an
-     * authenticated identity to name a scope with.
-     */
     admit: async ({ storageName }: StartInput): Promise<number> => {
       held = await (await heldStorage(storageName)).lease();
       return held.admittedAt();
     },
 
-    /**
-     * Confirm an authenticated identity under the admission held above, on
-     * the root route or on the one graph path below it.
-     */
     bindHeld: async (
       { storageName, database: id, principal, lineage }: HoldInput,
     ): Promise<string> => {
@@ -506,7 +478,6 @@ export const serve = (id: string): void =>
       );
     },
 
-    /** Install a fresh snapshot under the admission held above. */
     installHeld: async (
       { storageName, database: id, note }: HoldInput & {
         readonly note: SeededNote;
@@ -532,7 +503,6 @@ export const serve = (id: string): void =>
       });
     },
 
-    /** Evict one graph child database, which no public API exposes. */
     evict: async (
       { storageName, database: id }: StartInput,
     ): Promise<string> => {
@@ -543,7 +513,6 @@ export const serve = (id: string): void =>
       });
     },
 
-    /** The graph path this receiver database was last confirmed at. */
     receiverPath: async (
       { storageName, database: id }: StartInput,
     ): Promise<readonly string[]> => {
@@ -553,7 +522,6 @@ export const serve = (id: string): void =>
       return record?.graphPath ?? [];
     },
 
-    /** How much of one database a restore found, or `-1` when it found none. */
     restoreOnce: async (
       { storageName, database: id, lineage }: StartInput & {
         readonly lineage?: readonly string[];
@@ -572,10 +540,6 @@ export const serve = (id: string): void =>
       return found;
     },
 
-    /**
-     * Restore one database until it is gone, reporting how much of it each
-     * attempt found.
-     */
     probeRestores: async (
       { storageName, database: id, lineage }: StartInput & {
         readonly lineage?: readonly string[];
@@ -599,7 +563,6 @@ export const serve = (id: string): void =>
       }
     },
 
-    /** Rename through the public API, which enqueues durably in any tab. */
     rename: async (
       { from, to }: { readonly from: string; readonly to: string },
     ): Promise<string> => {
@@ -617,7 +580,6 @@ export const serve = (id: string): void =>
 
     receipt: (): string => receiptState.status,
 
-    /** Install a durable change the way a leader's own stream installs one. */
     commit: async (
       { storageName, database: id, note, from, revision, then }: CommitInput,
     ): Promise<string> => {
@@ -642,7 +604,6 @@ export const serve = (id: string): void =>
         : await install(revision, then.revision, then.note);
     },
 
-    /** Queue work for a receiver database without submitting it. */
     enqueue: async (
       { storageName, database: id, title, child, count }: EnqueueInput,
     ): Promise<number> => {
@@ -659,10 +620,6 @@ export const serve = (id: string): void =>
       return queued.length;
     },
 
-    /**
-     * Stand for the scope's leadership and run the submission passes a leader
-     * runs, recording what each pass planned for.
-     */
     lead: async (
       { storageName, database: id }: StartInput,
     ): Promise<LoopReport> => {

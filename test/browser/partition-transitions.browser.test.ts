@@ -46,7 +46,6 @@ const deleteDatabase = (name: string): Promise<void> =>
     request.addEventListener("blocked", () => resolve(), { once: true });
   });
 
-/** Whether some other browsing context is holding this scope's leadership. */
 const lockHeld = async (key: string): Promise<boolean> => {
   let granted = false;
   await navigator.locks.request(key, { ifAvailable: true }, (lock) => {
@@ -65,7 +64,6 @@ const leaderKey = async (
     storageName,
   );
 
-/** A database id of the shape the protocol uses, unique to one test. */
 const databaseOf = (uniqueId: string): string =>
   uniqueId.replaceAll("-", "").padEnd(43, "z").slice(0, 43);
 
@@ -157,18 +155,12 @@ browserTest(
       const leadership = await leaderKey(name, database);
       expect(await lockHeld(leadership)).toBe(true);
 
-      // The second holder is activating: it has read the barrier and has no
-      // authenticated identity yet, so it is not enrolled in the scope at all.
       expect(await activating.call<number>("admit", { storageName: name })).toBe(0);
 
       expect(await clearing.call<string>("clearLocal")).toBe("closed");
 
-      // Clearing awaits the shutdown it started, so the leadership this tab
-      // held is given up by the time the call returns.
       expect(await lockHeld(leadership)).toBe(false);
 
-      // The identity it goes on to authenticate is the one the clear removed,
-      // and the install transaction is where that is found out.
       expect(await activating.call<string>("bindHeld", {
         storageName: name,
         database,
@@ -181,8 +173,6 @@ browserTest(
       expect(await dumpStore(name, "replica-committed-v1")).toEqual([]);
       expect(await dumpStore(name, "replica-credential-bindings-v1")).toEqual([]);
 
-      // Admitted after the clear, the same holder installs a fresh replica:
-      // the barrier refused the activation the clear overtook, not the scope.
       expect(await activating.call<number>("admit", { storageName: name })).toBe(1);
       expect(await activating.call<string>("bindHeld", {
         storageName: name,
@@ -229,7 +219,6 @@ browserTest(
         "the withdrawn value",
       );
 
-      // Nothing the cleared scope held was published again on the way here.
       const published = await reader.call<readonly QueryReport[]>("published");
       const held = published.map((report) => report.titles.length > 0);
       expect(held).toContain(true);
@@ -265,11 +254,8 @@ browserTest(
       expect((await started(reader, name, database)).titles)
         .toEqual(["first", "second"]);
 
-      // A third tab is authenticating as the principal about to be replaced,
-      // and will not answer until after the replacement has landed.
       expect(await late.call<number>("admit", { storageName: name })).toBe(0);
 
-      // A holder of the principal about to be replaced, writing under it.
       const sibling = `x${database}`.slice(0, 43);
       await replacing.call("admit", { storageName: name });
       expect(await replacing.call<string>("installHeld", {
@@ -278,8 +264,6 @@ browserTest(
         note: { entity: opaque("m"), title: "sibling", rank: "z" },
       })).toBe("landed");
 
-      // The application signs the reading tab in as the account's new
-      // principal, and the other tab is the one whose session confirms it.
       await reader.call("signIn", { bearer: "bearer-b" });
       await replacing.call("signIn", { bearer: "bearer-b" });
       expect(await replacing.call<string>("bindHeld", {
@@ -295,8 +279,6 @@ browserTest(
       );
       expect(settled.titles).toEqual(["successor"]);
 
-      // A confirmation that names another scope elects for that one and gives
-      // the leadership of the scope before it back.
       const successorLeadership = await leaderKey(name, database, REPLACEMENT);
       await until(
         () => lockHeld(successorLeadership),
@@ -315,16 +297,12 @@ browserTest(
         expect(report.titles).not.toContain("second");
       }
 
-      // A holder writing under the replaced principal is refused the moment
-      // the replacement lands, whether or not the notice ever arrived.
       expect(await replacing.call<string>("installHeld", {
         storageName: name,
         database: sibling,
         note: { entity: opaque("m"), title: "late", rank: "z" },
       })).toBe("ReplicaFencedError");
 
-      // The activation that was still authenticating as the replaced
-      // principal cannot put the account back to it either.
       expect(await late.call<string>("bindHeld", {
         storageName: name,
         database,
@@ -361,8 +339,6 @@ browserTest(
       ).toBe("authentication-required");
       expect((await tab.call<QueryReport>("report")).titles).toEqual([]);
 
-      // The application signs in again. The same client instance activates
-      // again on its next wake-up and presents the refreshed bearer.
       await tab.call("signIn", { bearer: "bearer-a" });
       tab.wake();
 
@@ -389,7 +365,6 @@ browserTest(
     const holder = await openTab(tabModule);
     const replacing = await openTab(tabModule);
     try {
-      // A holder writing under the principal about to be replaced.
       const sibling = `x${database}`.slice(0, 43);
       await holder.call("admit", { storageName: name });
       expect(await holder.call<string>("installHeld", {
@@ -398,8 +373,6 @@ browserTest(
         note: { entity: opaque("m"), title: "sibling", rank: "z" },
       })).toBe("landed");
 
-      // The successor is confirmed on a graph path first. Its route slot comes
-      // from its own lineage, so the account's records name it nowhere yet.
       await replacing.call("admit", { storageName: name });
       await replacing.call("signIn", { bearer: "bearer-b" });
       expect(await replacing.call<string>("bindHeld", {
@@ -409,7 +382,6 @@ browserTest(
         lineage: [opaque("9")],
       })).toBe("landed");
 
-      // The principal it replaced is fenced all the same.
       expect(await holder.call<string>("installHeld", {
         storageName: name,
         database: sibling,
@@ -451,8 +423,6 @@ browserTest(
         );
         expect(presented).toBe(1);
 
-        // The application signs in again, and returning to the tab is what
-        // presents the refreshed bearer. This client is not terminal.
         bearer = "refreshed";
         globalThis.dispatchEvent(new Event("focus"));
 
@@ -517,9 +487,6 @@ browserTest(
       );
       expect(presented).toBe(1);
 
-      // The order a wake-up calls these in: restarting the unconfirmed child
-      // is the activation that presents the refreshed credential, and a second
-      // one beside it would leave the first holding a session nothing closes.
       for (let wakes = 0; wakes < 3; wakes++) {
         const before = presented;
         handle.reactivateUnconfirmed();
@@ -644,8 +611,6 @@ browserTest(
       expect((await started(reader, name, database)).titles)
         .toEqual(["first", "second"]);
 
-      // Another holder installs the rotated read view of the same database
-      // and binds this bearer to it, which is what a confirming tab does.
       await seedDatabases(name, [{
         identity: rotated,
         datoms: noteDatoms([{ entity: opaque("r"), title: "rotated", rank: "a" }]),
@@ -706,7 +671,6 @@ browserTest(
       };
       expect(await reading.call<number>("restoreOnce", restoring)).toBe(2);
 
-      // Work queued for the database about to be evicted.
       await reading.call("enqueue", {
         storageName: name,
         database,
@@ -720,14 +684,10 @@ browserTest(
         database: child,
       })).toBe("landed");
 
-      // Every restore that found the database found all of it: the eviction
-      // deletes a database as one unit, so a reader sees it whole or not.
       for (const found of await probing) expect(found).toBe(2);
       expect(await reading.call<number>("restoreOnce", restoring)).toBe(-1);
       expect(await evicting.call<number>("restoreOnce", restoring)).toBe(-1);
 
-      // Eviction frees a cached replica and never the durable work queued for
-      // it, so the path a leader reaches that database by outlives the cache.
       expect((await dumpStore(name, "mutation-outbox-v1")).length).toBe(1);
       expect(await evicting.call<readonly string[]>("receiverPath", {
         storageName: name,

@@ -53,7 +53,6 @@ const deleteDatabase = (name: string): Promise<void> =>
     request.addEventListener("error", () => reject(request.error), { once: true });
   });
 
-/** One signed-in principal of the example's identity plane. */
 const principal = (uniqueId: string): string =>
   `user_${uniqueId.replaceAll("-", "").slice(0, 20)}`;
 
@@ -64,13 +63,6 @@ const partition = async (subject: string, offline: boolean): Promise<void> => {
   expect(response.status).toBe(204);
 };
 
-/**
- * The bearer an application holds between activations.
- *
- * A real application caches its access token until it expires and asks its
- * identity provider for another one — which is what makes an exact prior
- * binding, and a rotation, two different things a test can ask for.
- */
 class Wallet {
   minted = 0;
   private held: { readonly token: string; readonly cacheKey: string } | undefined;
@@ -78,15 +70,11 @@ class Wallet {
 
   constructor(private readonly subject: string) {}
 
-  /** Sign out and back in: the next activation presents a different bearer. */
   rotate(): void {
     this.held = undefined;
   }
 
   readonly session = async (): Promise<{ token: string; cacheKey: string }> => {
-    // A held bearer is presented again while it is comfortably valid, which is
-    // what makes an exact prior binding reachable; a nearly expired one is
-    // renewed, as an application's own token client would renew it.
     if (this.held !== undefined && Date.now() < this.expiresAt) return this.held;
     const answered = await fetch(
       `${TOKEN_PATH}?sub=${encodeURIComponent(this.subject)}`,
@@ -127,24 +115,15 @@ const rows = (db: ClientDatabase, query: Parameters<ClientDatabase["observe"]>[0
 const named = (values: readonly Row[]): readonly string[] =>
   values.map((row) => String(row["name"] ?? row["slug"]));
 
-/** The titles of live issue handles, which carry their data under `.data`. */
 const titles = (values: readonly Row[]): readonly string[] =>
   values.map((row) =>
     String((row as unknown as { readonly data: { readonly title: string } }).data.title)
   );
 
-/**
- * Look at the tab again, the way a person does with a laptop that woke up.
- *
- * A client reactivates when its tab is activated; a test that only waits is
- * waiting for something nobody asked for. This is the same event the browser
- * dispatches on a real refocus, and the only thing that stands in for a person.
- */
 const look = (): void => {
   window.dispatchEvent(new Event("focus"));
 };
 
-/** Wait for one database's status while looking at the tab. */
 const awake = async (
   db: ClientDatabase,
   ready: (status: string) => boolean,
@@ -168,10 +147,6 @@ const settled = async (receipt: Receipt): Promise<void> => {
   await receipt.committed;
 };
 
-/**
- * Provision one organization and one board for a test, through the same public
- * surface an application uses.
- */
 const visible = async (
   db: ClientDatabase,
   query: Parameters<ClientDatabase["observe"]>[0],
@@ -207,8 +182,6 @@ const workspace = async (
   }));
   await visible(organization, boards(organization), boardSlug, "the created board");
   const board = boardDb(root, organizationSlug, boardSlug);
-  // The board stays observed for the life of the test, as it would while it is
-  // the screen a person is looking at.
   rows(board, issues(board));
   await until(
     () => board.sync.getSnapshot().status,
@@ -266,7 +239,6 @@ browserTest(
         title: "Ship the example",
         status: "open",
       });
-      // The public identity is the sealed handle, never a numeric eid.
       expect(handle.id).toMatch(/^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/);
       expect(handle.local.pending).toBe(false);
 
@@ -281,8 +253,6 @@ browserTest(
       issueRows.release();
       await first.client.close();
 
-      // Reopening with the exact prior bearer binding renders the persisted
-      // replica before anything is reachable.
       await partition(subject, true);
       const second = app(storageName, wallet);
       try {
@@ -334,8 +304,6 @@ browserTest(
       const receipt = boardHandle.mutate.createIssue({ title: "Written offline" });
       await receipt.queued;
 
-      // The optimistic layer is visible immediately, and its row carries the
-      // ClientRef this device minted rather than a server handle.
       const offline = await until(
         () => open.read(),
         (values) => values.length === 2,
@@ -351,7 +319,6 @@ browserTest(
       expect(optimistic.id.startsWith("cr1_")).toBe(true);
       expect(optimistic.local).toEqual({ pending: true, created: true });
 
-      // Nothing settles while the wire is cut, and the row never disappears.
       await steady(
         () => open.read().length,
         (count) => count === 2,
@@ -361,8 +328,6 @@ browserTest(
       await partition(subject, false);
       await receipt.committed;
 
-      // The commit is durable, and the layer stays visible until a fresh
-      // activation observes it: the count never drops below two.
       const converged = await until(
         () =>
           open.read().map((row) =>
@@ -401,9 +366,6 @@ browserTest(
       await settled(board1.mutate.createIssue({ title: "Before the outage" }));
       await first.client.close();
 
-      // The device is offline before this client is constructed, so its very
-      // first activation is the one that fails: there is no session behind it
-      // that a reconnect could resume, only a durable replica to render.
       await partition(subject, true);
       const second = app(storageName, wallet);
       try {
@@ -422,14 +384,10 @@ browserTest(
         const board2 = boardDb(reopened, slug, board);
         const view = rows(board2, issues(board2));
 
-        // The wire comes back and the tab is looked at. Nothing else happens:
-        // no new client, no reload, and no queued work to drive a recovery.
         await partition(subject, false);
         await awake(reopened, (status) => status === "live", "the root returning to live");
         await awake(board2, (status) => status === "live", "the board returning to live");
 
-        // Live means the read path came back with it: a write made now is
-        // committed by the server and observed on the recovered session.
         await settled(board2.mutate.createIssue({ title: "After the outage" }));
         const converged = await until(
           () => view.read(),
@@ -481,14 +439,10 @@ browserTest(
         "the committed issue",
       );
       const minted = wallet.minted;
-      // Every status this board publishes from the cut to the recovery, so the
-      // reconnect can be held to the contract those statuses carry.
       const published: string[] = [];
       const record = boardHandle.sync.subscribe(() => {
         published.push(boardHandle.sync.getSnapshot().status);
       });
-      // And what the observers say alongside it, so the two `stale` signals an
-      // application renders from can be held to the same fact.
       let sampling = true;
       let unconfirmed = 0;
       const sampler = (async () => {
@@ -506,7 +460,6 @@ browserTest(
         (status) => status === "offline",
         "the cut wire ending the session",
       );
-      // What was confirmed stays readable while nothing is reachable.
       await steady(
         () => titles(view.read()),
         (values) => values.includes("Held across the cut"),
@@ -521,20 +474,11 @@ browserTest(
       sampling = false;
       await sampler;
       releaseObserved();
-      // A resume, not a reset: the value was never withdrawn, and the bearer
-      // presented again is the one the session was already bound to.
       expect(titles(view.read())).toContain("Held across the cut");
       expect(wallet.minted).toBe(minted);
-      // And it says so the whole way. `connecting` means nothing is readable;
-      // this board was readable at every moment, so each attempt to reach the
-      // server again is `stale` — a rendered view is never told to empty
-      // itself while the client is only reconnecting behind it.
       expect(published).toContain("stale");
       expect(published).toContain("live");
       expect(published).not.toContain("connecting");
-      // The observers say it too: while an activation is reaching for the
-      // server again the rendered rows are still there and no longer
-      // confirmed, which is the state a reconnect banner is rendered from.
       expect(unconfirmed).toBeGreaterThan(0);
       await settled(boardHandle.mutate.createIssue({ title: "Written after resuming" }));
       await until(
@@ -567,10 +511,6 @@ browserTest(
       await first.client.close();
       expect(wallet.minted).toBe(1);
 
-      // The application signed out and back in: the next activation presents a
-      // different bearer, so no exact prior binding covers the stored replica.
-      // Its account selector still nominates one, and nominating grants
-      // nothing.
       wallet.rotate();
       await partition(subject, true);
       const second = app(storageName, wallet);
@@ -589,8 +529,6 @@ browserTest(
         );
         expect(wallet.minted).toBe(2);
 
-        // The wire comes back. The server's own answer is the confirmation,
-        // and it is what makes the stored replica observable.
         await partition(subject, false);
         await awake(
           reopened,
@@ -602,7 +540,6 @@ browserTest(
           (values) => values.includes(slug),
           "the replica the server confirmed for the rotated bearer",
         );
-        // Still one round of renewal: a confirmation is not another sign-in.
         expect(wallet.minted).toBe(2);
         view.release();
       } finally {
@@ -616,13 +553,6 @@ browserTest(
   },
 );
 
-/**
- * The databases a client opened only to drain a queue.
- *
- * Read from the client itself, because that is the distinction under test: an
- * errand is a handle the application never asked for, and `client.sync` does
- * not answer for it.
- */
 const errandStatuses = (client: Client): readonly string[] => {
   const receivers = (client as unknown as {
     readonly receivers: ReadonlyMap<
@@ -655,8 +585,6 @@ browserTest(
         (status) => status === "ready",
         "the board's own value to become readable",
       );
-      // Queued while the wire is cut, so it is still queued when this client is
-      // gone and the next one opens only the root.
       await partition(subject, true);
       await board1.mutate.createIssue({ title: "Queued for an errand" }).queued;
       release();
@@ -664,8 +592,6 @@ browserTest(
 
       const second = app(storageName, wallet);
       try {
-        // This client opens the root and nothing else. The board it never opens
-        // is reached only because a queued invocation names it.
         const reopened = second.client.open();
         const view = rows(reopened, organizations(reopened));
         await until(
@@ -675,8 +601,6 @@ browserTest(
         );
         await partition(subject, false);
 
-        // The root is the only database this application opened, so it is the
-        // whole of what `client.sync` may answer for while this sampler runs.
         let sampling = true;
         let staged = 0;
         let discriminated = 0;
@@ -688,9 +612,6 @@ browserTest(
             const application = reopened.sync.getSnapshot().status;
             const client = second.client.sync.getSnapshot().status;
             if (errands.length > 0) staged += 1;
-            // An errand reporting anything other than what the application's
-            // own database reports is a moment the aggregate would have moved
-            // if the errand were counted.
             if (
               errands.some((status) => status !== "resolving" && status !== application)
             ) discriminated += 1;
@@ -700,10 +621,6 @@ browserTest(
         })();
 
         await awake(reopened, (status) => status === "live", "the root returning to live");
-        // The errand is opened by the leadership the confirmation elects, which
-        // is after the application's own database has settled — so its
-        // activation reports for itself while the root reports for the
-        // application, and `client.sync` answers only for the latter.
         await until(
           () => discriminated,
           (count) => count > 0,
@@ -716,8 +633,6 @@ browserTest(
         expect(staged).toBeGreaterThan(0);
         expect(reported).toBeUndefined();
 
-        // Only now does the application open the board, to read what the
-        // errand submitted on its behalf.
         const board2 = boardDb(reopened, slug, board);
         const queued = rows(board2, issues(board2));
         await until(

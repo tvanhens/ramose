@@ -127,7 +127,6 @@ type RetiredObservation = {
   readonly plain: unknown;
 };
 
-/** Everything a database handle needs from the client that owns it. */
 export type DatabaseContext = {
   readonly server: string;
   readonly root: string;
@@ -277,11 +276,6 @@ export type ClientDatabase<Mutations = MutationNamespace> =
   & ClientDatabaseReads
   & { readonly mutate: Mutations };
 
-/**
- * An activation failure whose cause decides a terminal state rather than
- * `offline`: a refused credential is not an unreachable network, and a storage
- * layer that will not open leaves no durable substrate to queue against.
- */
 class ActivationFailed extends Error {
   constructor(readonly status: SyncStatus, cause: unknown) {
     super("ramose/client: activation failed", { cause });
@@ -513,10 +507,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   activate(): Promise<void> {
     if (this.activation !== undefined) return this.activation;
     const opening = this.open().catch((cause: unknown) => {
-      // A scope withdrawn while this activation was opening leaves no session
-      // to publish the fence, so this is where that activation is put back to
-      // nothing: the next wake-up starts a new one, admitted where the scope
-      // stands now.
       if (isReplicaFenceError(cause)) {
         this.activation = undefined;
         this.refused = true;
@@ -528,19 +518,11 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
         this.publishStatus("offline");
         return;
       }
-      // Cleared so a later activation can retry: an expired token at boot is
-      // recoverable the moment the application signs in again, and the waiters
-      // are already settled by the fenced status published below.
       this.activation = undefined;
       this.refused = true;
       this.publishStatus(terminal);
     });
     this.activation = opening;
-    // What "in flight" means for this handle, and the only thing that means
-    // it. An activation that failed leaves its memo behind — settled, holding
-    // nothing, and indistinguishable from one still opening by the memo alone
-    // — so the retry paths ask this instead and never start a second open
-    // beside a first.
     this.opening = opening;
     void opening.then(() => {
       if (this.opening !== opening) return;
@@ -550,37 +532,12 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     return this.activation;
   }
 
-  /**
-   * Start one activation in place of a settled one.
-   *
-   * Every path that reopens a handle goes through here, so "one activation in
-   * flight per handle" is one condition in one place: an open already running
-   * is returned rather than joined by a second, which is what keeps a retry
-   * from leaving the first holding a session nothing closes.
-   */
   private restart(): Promise<void> {
     if (this.opening !== undefined) return this.opening;
     this.activation = undefined;
     return this.activate();
   }
 
-  /**
-   * Activate again after an activation that must start from nothing: a
-   * credential this client or the server refused, or a fence that overtook it.
-   *
-   * `auth()` runs once per activation, so a refreshed bearer is presented by
-   * the next one. This is what makes a refused client recoverable without
-   * constructing another: the application signs in again and the next
-   * activation wake-up — a focused tab, a page shown from bfcache, a broadcast
-   * selector notice — carries the new credential. The refusal may have come
-   * from `auth()` itself, which leaves no session behind, or from the server
-   * answering the activation, which leaves one holding the refusal; either way
-   * the next activation starts from nothing.
-   *
-   * An activation already opening is that next activation: it will present
-   * whatever `auth()` answers now, and starting a second one beside it would
-   * leave the first holding a session nothing closes.
-   */
   reactivateRefused(): void {
     if (!this.live() || !this.refused) return;
     if (this.session === undefined && this.activation !== undefined) return;
@@ -594,18 +551,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     void this.activate();
   }
 
-  /**
-   * What this handle's own read stream says, rather than what the handle
-   * publishes.
-   *
-   * The published status is an aggregate: a queue this build cannot replay
-   * reports `update-required` over a committed replica that is readable and a
-   * read stream that was perfectly compatible, and deciding a retry on that
-   * aggregate would leave exactly that database never reading again after a
-   * cut. Every disposition that must stay fenced — a rotated view, a refused
-   * credential, a fence — still says so here, now decided by the session that
-   * produced it.
-   */
   private disposition(): SyncStatus {
     const snapshot = this.session?.snapshot();
     return snapshot === undefined
@@ -613,28 +558,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       : readSessionSnapshot(snapshot).status;
   }
 
-  /**
-   * Activate again after an activation that could not reach the server.
-   *
-   * A connection that dies is not a refusal and not a fence. It publishes
-   * `offline`, leaves whatever was already confirmed readable, and leaves the
-   * memoized activation settled behind it — and nothing else starts another
-   * one. `reactivateRefused()` answers a credential this client or the server
-   * refused; `reactivateUnconfirmed()` answers a route another tab confirmed,
-   * for a child that has none of its own. Neither describes a device that just
-   * came back, so this is the path it comes back on.
-   *
-   * A wake this handle cannot answer yet is remembered rather than dropped.
-   * `online` fires on a transition and a foreground tab that never loses focus
-   * regains it never, so a wake that lands while an activation is still opening
-   * — or while a stream that is already dead has not published its failure yet
-   * — is the only one this device is going to send. `answerWake()` asks it
-   * again the moment the disposition is known.
-   *
-   * The session this was holding is closed before another opens: a transport
-   * failure has already ended its stream, and leaving it attached would leave
-   * two observers publishing into one handle.
-   */
   reactivateOffline(): void {
     if (!this.live() || this.refused) return;
     if (this.opening !== undefined || this.disposition() !== "offline") {
@@ -650,21 +573,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     void this.restart();
   }
 
-  /**
-   * Ask a remembered wake again now that this handle's disposition has moved.
-   *
-   * Called where a disposition becomes known: when an activation settles, and
-   * when the session publishes.
-   *
-   * A wake is *not* answered by a value: a stream that is already dying can
-   * publish a buffered frame, or a keep-alive, before it publishes the failure
-   * that ended it, and treating that as an answer would drop the one wake this
-   * device was going to send. So a remembered wake is only ever spent — by the
-   * retry it asks for — or dropped where no later activation could change the
-   * answer: a refused credential, a build that is behind, a closed handle.
-   * Held otherwise, which costs at most one reconnection attempt the first time
-   * a stream fails after the tab was last activated.
-   */
   private answerWake(): void {
     if (!this.wakePending) return;
     if (!this.live()) {
@@ -684,10 +592,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
 
   private async open(): Promise<void> {
-    // `connecting` says nothing is readable and `stale` says something is,
-    // unconfirmed — so a reactivation over a value this handle is still
-    // publishing is `stale`, and a build that is behind keeps saying so rather
-    // than being talked over by an activation that cannot change it.
     this.publishStatus(
       this.updateRequired || this.queueUpdateRequired
         ? "update-required"
@@ -695,11 +599,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
         ? "connecting"
         : "stale",
     );
-    // And every observer says the same thing. A retained value stops being
-    // confirmed when this activation begins, not when it answers — the two
-    // `stale` signals an application renders from are one fact, and a
-    // reconnect that can take a storage read and a credential is exactly the
-    // window where they would otherwise disagree.
     if (this.committed !== undefined && !this.stale) {
       this.stale = true;
       this.spawn(this.recompute());
@@ -739,36 +638,16 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.releaseSession = session.observe((snapshot) => this.accept(snapshot));
   }
 
-  /**
-   * Read the durable committed head again and republish what changed.
-   *
-   * Another tab of this scope installs into the same IndexedDB records, so a
-   * tab whose own stream has ended still renders what the scope committed.
-   */
   async refreshCommitted(): Promise<void> {
     if (!this.live()) return;
     await this.session?.refreshFromDurable().catch(() => false);
   }
 
-  /**
-   * Read the durable optimistic layers, mappings, and activation fence again
-   * and republish the local value, the pending sidecars, and the observers
-   * they feed.
-   */
   async refreshOptimistic(): Promise<void> {
     if (!this.live()) return;
     await this.reconciler?.refresh().catch(() => undefined);
   }
 
-  /**
-   * Open the session again for a database whose durable identity is still
-   * unconfirmed, so a route another tab has since confirmed is read rather
-   * than waited for.
-   *
-   * An activation that has not produced a session yet is one already in
-   * flight, and reading the route again is what it is on its way to doing:
-   * clearing the guard for it would leave two opens racing to own one handle.
-   */
   reactivateUnconfirmed(): void {
     if (!this.live() || this.identity !== undefined) return;
     if (this.activation === undefined || this.context.graphPath.length === 0) return;
@@ -850,8 +729,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
     this.lastSession = snapshot;
     const disposition = readSessionSnapshot(snapshot);
-    // The server answering the activation with a refusal is the other way a
-    // credential is refused, and the one a refreshed bearer recovers from.
     if (disposition.status === "authentication-required") this.refused = true;
     this.stale = value === undefined ? true : value.stale;
     const catalog = this.catalog;
@@ -869,14 +746,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.answerWake();
   }
 
-  /**
-   * Read the route again for a selector notice that arrived while this
-   * handle's own activation was still opening.
-   *
-   * That open read the route slot before the other tab wrote it, so the notice
-   * it would have answered was dropped. Answering it once the session settles
-   * is what keeps the recovery from waiting for the next notice.
-   */
   private retryAwaitedRoute(): void {
     if (!this.awaitedRoute || this.identity !== undefined) return;
     const status = this.session?.snapshot().status;
@@ -934,15 +803,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
   }
 
-  /**
-   * Withdraw what a fenced session was holding and activate again.
-   *
-   * The scope this handle was reading was cleared or given to another
-   * principal, so the value it holds is one no tab may publish. Activating
-   * again is what reaches the state the scope is in now: the credential this
-   * client presents decides which principal answers, and nothing from the
-   * fenced one survives the transition.
-   */
   private refence(): void {
     this.releaseSession?.();
     this.releaseSession = undefined;
@@ -956,10 +816,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     if (this.live()) void this.activate();
   }
 
-  /**
-   * Re-read the durable generations this handle's session adopted, so a clear
-   * or principal replacement another tab committed withdraws this value.
-   */
   async revalidate(): Promise<void> {
     if (!this.live()) return;
     await this.session?.revalidate().catch(() => false);
