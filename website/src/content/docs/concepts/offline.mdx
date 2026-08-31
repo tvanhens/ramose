@@ -46,7 +46,7 @@ IndexedDB is what every tab agrees on. Broadcast messages only say that somethin
 
 A tab can queue work for a graph child it never resolved: the leader activates the path that child was last confirmed at, and submits only to a confirmation naming the same database.
 
-Under storage pressure, Ramose may evict inactive child graphs as complete units. It does not evict the active root, outbox, receipts, or part of a graph, and a tab reading a database another tab evicts sees all of it or none. Logout and principal replacement fence every tab of that principal through IndexedDB — including one still authenticating, and one that never received a broadcast — before the next principal can render; a fenced tab withdraws what it was showing and activates again. A refused authentication leaves the client usable: `auth()` runs once per activation, so signing in again and returning activates with the refreshed bearer.
+Under storage pressure, Ramose reclaims stored content nothing reaches any more and retries the write; if that is not enough the write fails with a typed quota error rather than discarding a graph. Authenticating a different principal under the same account selector fences every tab of the previous one through IndexedDB — including one still authenticating, and one that never received a broadcast — before the replacement can render; a fenced tab withdraws what it was showing and activates again. Signing out carries no such authentication, so `clearLocalData()` is what removes that account's data. A refused authentication leaves the client usable: `auth()` runs once per activation, so signing in again activates with the refreshed bearer.
 
 ## Security remains observable offline
 
