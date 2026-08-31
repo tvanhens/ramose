@@ -110,6 +110,13 @@ const largeBytes = (length: number): Uint8Array => {
   return value;
 };
 
+const firstDifferingByte = (left: Uint8Array, right: Uint8Array): number => {
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) return index;
+  }
+  return -1;
+};
+
 const gateTraitCount = Query.q(function* () {
   const entity = yield* Query.entities(GateTagged);
   return Q.value(Q.count(entity));
@@ -1087,7 +1094,9 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         if (restoredBody?.value.type !== "string") throw new Error("no body");
         if (restoredBlob?.value.type !== "bytes") throw new Error("no blob");
         expect(restoredBody.value.value).toBe(body);
-        expect([...base64ToBytes(restoredBlob.value.value)]).toEqual([...blob]);
+        const restoredBlobBytes = base64ToBytes(restoredBlob.value.value);
+        expect(restoredBlobBytes.byteLength).toBe(blob.byteLength);
+        expect(firstDifferingByte(restoredBlobBytes, blob)).toBe(-1);
       } finally {
         await closeObservedStream(frames);
       }

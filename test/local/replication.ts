@@ -130,8 +130,9 @@ const waitForCheckpoint = async (
   database: string,
   name: string,
   scope: "worker" | "replica" | "transactor" = "worker",
+  attempts = 320,
 ): Promise<void> => {
-  for (let attempt = 0; attempt < 320; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const status = await testAdmin(base, database, "/checkpoint", {
       scope,
       action: "status",
@@ -391,6 +392,7 @@ const observeBackpressuredBurst = async (
   expect(response.status).toBe(200);
   const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
   const checkpoints: string[] = [];
+  const digestAttempts = 320 + hiddenCount * 4;
   try {
     const snapshot = await collectCommittedSnapshot(iterator);
 
@@ -408,12 +410,24 @@ const observeBackpressuredBurst = async (
     if (hiddenCount > 0) await currentBasis(base, world.database);
     await armCheckpoint(base, world.database, "replication.silent");
     await releaseCheckpoint(base, world.database, "replication.cycle");
-    await waitForCheckpoint(base, world.database, "replication.silent");
+    await waitForCheckpoint(
+      base,
+      world.database,
+      "replication.silent",
+      "worker",
+      digestAttempts,
+    );
     checkpoints.push("silent");
     await releaseCheckpoint(base, world.database, "replication.silent");
 
     await armCheckpoint(base, world.database, "replication.cycle");
-    await waitForCheckpoint(base, world.database, "replication.cycle");
+    await waitForCheckpoint(
+      base,
+      world.database,
+      "replication.cycle",
+      "worker",
+      digestAttempts,
+    );
     checkpoints.push("cycle");
 
     const renamed = await rename(

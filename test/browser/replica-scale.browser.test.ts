@@ -348,6 +348,17 @@ const stageSnapshot = async (
   return index;
 };
 
+const writtenNodes = async (
+  storage: IndexedDbReplicaStorage,
+): Promise<number> => {
+  for (let attempt = 0; attempt < 20_000; attempt++) {
+    const written = storage.writeCounts().nodes;
+    if (written > 0) return written;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return storage.writeCounts().nodes;
+};
+
 const completeAt = async (
   name: string,
   selected: ReplicationIdentity,
@@ -724,12 +735,16 @@ for (const scale of CRASH_SCALES) {
             chunks,
           }, attributes, signal === undefined ? {} : { signal });
 
-        await withStorage(name, async (storage) => {
+        const partialNodes = await withStorage(name, async (storage) => {
+          storage.resetWriteCounts();
           const controller = new AbortController();
           const cut = commit(storage, controller.signal);
+          const written = await writtenNodes(storage);
           controller.abort();
           await expect(cut).rejects.toBeDefined();
+          return written;
         });
+        expect(partialNodes).toBeGreaterThan(0);
         expect(await completeAt(name, selected, [first])).toBe(first);
 
         for (const checkpoint of ["replica.installing", "replica.install"]) {
@@ -744,9 +759,12 @@ for (const scale of CRASH_SCALES) {
           expect(await completeAt(name, selected, [first])).toBe(first);
         }
 
-        await withStorage(name, async (storage) => {
+        const completeNodes = await withStorage(name, async (storage) => {
+          storage.resetWriteCounts();
           expect((await commit(storage))?.revision).toBe(second);
+          return storage.writeCounts().nodes;
         });
+        expect(partialNodes).toBeLessThan(completeNodes);
         expect(await completeAt(name, selected, [second])).toBe(second);
 
         const change = changeFrame({
