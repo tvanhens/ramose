@@ -1,5 +1,7 @@
 import type {
+  ClientRef,
   Eid,
+  EntityId,
   EntityRow,
   Equal,
   Expect,
@@ -72,6 +74,32 @@ export type _selectRow = Expect<
 
 Query.from(Comment).where({ text: "ok" });
 Query.from(Comment).where({ issue: issueId, text: "ok" });
+
+declare const issueHandle: EntityId<typeof Issue>;
+declare const issueRef: ClientRef<typeof Issue>;
+declare const userHandle: EntityId<typeof User>;
+declare const commentHandle: EntityId<typeof Comment>;
+
+Query.from(Comment).where({ issue: issueHandle });
+Query.from(Comment).where({ issue: issueRef });
+Query.from(Comment).where({ issue: { id: issueHandle } });
+Query.from(Comment).where({ issue: issueHandle, text: "ok" });
+Query.from(Comment).where({ id: commentHandle });
+Query.from(Comment).where(Query.is(Comment.issue, issueHandle));
+Query.from(Comment).where(Query.byId(commentHandle));
+Query.from(TagLink).where({ target: taggedIssueId });
+
+// @ts-expect-error
+Query.from(Comment).where({ issue: userHandle });
+
+// @ts-expect-error
+Query.from(Comment).where({ issue: issueId.toString() });
+
+// @ts-expect-error
+Query.from(Comment).where({ id: userHandle });
+
+// @ts-expect-error
+Query.from(Comment).where(Query.is(Comment.issue, userHandle));
 
 // @ts-expect-error
 Query.from(Comment).where({ nope: true });

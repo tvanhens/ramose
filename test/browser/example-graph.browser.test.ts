@@ -253,7 +253,10 @@ browserTest(
       const issueRows = rows(board1, issues(board1));
       const created = await until(
         () => issueRows.read(),
-        (values) => values.length === 1,
+        (values) =>
+          values.length === 1 &&
+          (values[0] as unknown as { readonly local: { readonly pending: boolean } })
+              .local.pending === false,
         "the issue the example just created",
       );
       const handle = created[0] as unknown as {

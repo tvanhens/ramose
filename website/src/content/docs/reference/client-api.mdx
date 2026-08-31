@@ -91,6 +91,22 @@ A handle is *live* and *interned*: one object per entity per row shape, whose `.
 
 Every id here is an `EntityId`, or a `ClientRef` for something created offline — a row's `id`, a nested reference cell, `.ids()`, `select({ id: Task.id })`, and a declared entity-reference input. A local numeric id is never public: it is meaningless off this device, and a delete and recreate reassigns it.
 
+### Filtering by an entity
+
+The ids a query publishes are the ids the next query filters by, at any reference field and at `id` itself:
+
+```ts
+const mine = projectDb.observe(
+  projectDb.query.from(Task).where({ assignee: me.id }),
+)
+```
+
+The value is entity-branded: a handle for a `Project` at `Task.assignee` is a compile error, and so is a bare number. An `EntityId` and the `ClientRef` of an entity this device created are both accepted, and a `ClientRef` keeps naming the same entity when the server issues its `EntityId` — the query follows it without being rebuilt.
+
+An identity this replica holds nothing for — never received, or issued to a different replica — matches nothing. That is an answer, not an error: the entity is simply not visible here, and the query starts answering if it arrives.
+
+An entity identity is only meaningful where an entity can be held. At a scalar field, in a comparison, or inside a `select(…)` collection's own `where`, one is refused when the query is built rather than quietly matching nothing.
+
 ## Targetless operations
 
 ```ts

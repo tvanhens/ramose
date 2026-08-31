@@ -1,6 +1,6 @@
 import type { Eid } from "../Eid.ts";
 import { isComposer, type AnyComposer } from "../Composer.ts";
-import type { FocusAttr } from "./focus.ts";
+import type { EntityEq, FocusAttr } from "./focus.ts";
 import type {
   AttrValue,
   FocusShape,
@@ -131,8 +131,13 @@ const withDefaultShape = (pipe: Pipeline): Pipeline => {
   return idx === -1 ? next : { ...next, stages: [...next.stages, ...pipe.stages.slice(idx)] };
 };
 
-type EqValue<A> = IsRef<A> extends true
-  ? AttrValue<A> | { readonly id: number }
+type RefEq<A, Enclosing extends AnyComposer> =
+  | AttrValue<A>
+  | EntityEq<RefTarget<A, Enclosing>>
+  | { readonly id: number | EntityEq<RefTarget<A, Enclosing>> };
+
+type EqValue<A, Enclosing extends AnyComposer> = IsRef<A> extends true
+  ? RefEq<A, Enclosing>
   : AttrValue<A>;
 
 /**
@@ -140,9 +145,13 @@ type EqValue<A> = IsRef<A> extends true
  * a wrong key or value type is a compile error.
  */
 export type WhereEq<N extends AnyComposer> = {
-  readonly [K in keyof N["fields"]]?: EqValue<N["fields"][K]>;
+  readonly [K in keyof N["fields"]]?: EqValue<N["fields"][K], N>;
 } & {
-  readonly id?: Eid<N> | number | { readonly id: number };
+  readonly id?:
+    | Eid<N>
+    | number
+    | EntityEq<N>
+    | { readonly id: number | EntityEq<N> };
 };
 
 const EQ_CLAUSE = new WeakMap<object, { readonly key: string; readonly value: unknown }>();

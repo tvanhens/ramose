@@ -28,6 +28,8 @@ query
 
 Typed field expressions expose compatible equality, comparison, membership, text, presence, and reference operators. Combine predicates with `and`, `or`, and `not`. Literal input is validated before execution.
 
+A reference is compared by entity identity — the `EntityId` a query published, or the `ClientRef` of an entity this device created. Both are branded with the entity they name, so an identity of another type is a compile error; one this replica holds nothing for matches nothing rather than failing, and an identity anywhere an entity cannot be held is refused when the query is built.
+
 ## Relationships
 
 Traverse declared references and relationships from a bound source. Relationship clauses participate in the query; nested projection controls returned shape.

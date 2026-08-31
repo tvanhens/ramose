@@ -2,6 +2,7 @@ import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
 import { RAMOSE_TYPE_IDENT, TX_BASE } from "../../internal/core/schema.ts";
 import { makeEid, type Eid } from "../Eid.ts";
 import { InvalidRequest, NotOne } from "../Errors.ts";
+import { isMutationRef } from "../refs.ts";
 import type { AnyComposer } from "../Composer.ts";
 import {
   lowerOrderPath,
@@ -924,16 +925,52 @@ export const refine =
       false,
     );
 
+/**
+ * How one lowering renders and reads entity identity.
+ *
+ * `entity` renders a local id as the opaque identity a reader is handed.
+ * `resolveEntity` is the same binding read backwards: it takes an identity a
+ * caller was handed — an `EntityId`, or the `ClientRef` an entity this device
+ * created still answers to — and returns the local id it names here, or
+ * `undefined` when this replica holds no such entity. Both a paging cursor and
+ * a filter at a reference position go through it.
+ */
 export type QueryLowering = {
-  readonly entity: (eid: number) => unknown;
+  readonly entity?: ((eid: number) => unknown) | undefined;
   readonly resolveEntity?: ((id: unknown) => number | undefined) | undefined;
 };
+
+/**
+ * A lowering that resolves every entity identity to a distinct placeholder and
+ * records the identities themselves. It binds nothing, so it lowers the same
+ * query the same way wherever it runs — which is what an identity key needs and
+ * what a live binding cannot give it.
+ */
+export const symbolicIdentityLowering = (): {
+  readonly lowering: QueryLowering;
+  readonly identities: readonly unknown[];
+} => {
+  const identities: unknown[] = [];
+  return {
+    lowering: { resolveEntity: (id) => -identities.push(id) },
+    identities,
+  };
+};
+
 export interface LoweredKernelQuery {
   readonly query: Record<string, unknown>;
   readonly shape: string;
   readonly rowShape: string;
   readonly finalize: (result: unknown) => unknown;
   readonly result: "page" | "row" | "rows";
+  /**
+   * Whether this lowering read the replica binding to resolve an entity
+   * identity. Such a query is only as current as the binding it was lowered
+   * against — an identity this replica has not received yet resolves to
+   * nothing now and to an entity later — so a live reader lowers it again
+   * rather than keeping the first answer.
+   */
+  readonly bindsEntities: boolean;
 }
 
 interface FlatCell {
@@ -960,6 +997,23 @@ const unwrapEidLike = (v: unknown): unknown =>
   Object.keys(v).length === 1
     ? (v as { id: number }).id
     : v;
+
+/** What an entity position was given, past the `{ id }` cell a row carries. */
+const namedEntity = (v: unknown): unknown => {
+  if (typeof v !== "object" || v === null) return v;
+  const id = (v as { id?: unknown }).id;
+  return typeof id === "string" || typeof id === "number" ? id : v;
+};
+
+const isRefAttr = (attr: { readonly ident: string } | undefined): boolean =>
+  attr !== undefined && (attr as { valueType?: unknown }).valueType === "ref";
+
+/**
+ * A constant at an entity position that this replica cannot place. It is not a
+ * failure: the identity is well formed and simply names no entity visible here,
+ * so every clause holding one is lowered to a clause nothing satisfies.
+ */
+const UNRESOLVED: unique symbol = Symbol("ramose/query/unresolved");
 
 const regexSource = (re: RegExp | string): string => {
   if (typeof re === "string") return re;
@@ -993,6 +1047,7 @@ export const lowerQueryObject = (
   lowering?: QueryLowering,
 ): LoweredKernelQuery => {
   const entityId = lowering?.entity ?? ((eid: number) => makeEid(eid));
+  let bindsEntities = false;
   resetGensym();
   const ctx: BuildCtx = { clauses: [] };
   const built = runInto(qv, ctx, qv.stripCursor);
@@ -1106,9 +1161,45 @@ export const lowerQueryObject = (
     return into;
   };
 
-  const lowerConst = (v: unknown, _use: string): unknown => unwrapEidLike(v);
+  const resolveIdentity = lowering?.resolveEntity;
 
-  const lowerPos = (v: unknown, use: string): unknown => {
+  const lowerEntityConst = (v: unknown, use: string): unknown => {
+    const named = namedEntity(v);
+    if (typeof named !== "string") {
+      if (typeof named === "object" && named !== null && !Array.isArray(named)) {
+        throw new InvalidRequest({
+          message:
+            `ramose/query: ${use} takes an entity — an entity id, or the row cell that carries one`,
+        });
+      }
+      return unwrapEidLike(named);
+    }
+    bindsEntities = true;
+    if (resolveIdentity === undefined) {
+      throw new InvalidRequest({
+        message:
+          `ramose/query: ${use} names an entity by its opaque identity, and an identity is only meaningful against the replica it was issued to — ask this question through a client's own query`,
+      });
+    }
+    const eid = resolveIdentity(named);
+    return eid === undefined ? UNRESOLVED : eid;
+  };
+
+  const refuseIdentity = (v: unknown, use: string): void => {
+    if (!isMutationRef(v)) return;
+    throw new InvalidRequest({
+      message:
+        `ramose/query: an entity identity is not a value for ${use} — only a reference holds an entity; compare the reference itself`,
+    });
+  };
+
+  const lowerConst = (v: unknown, use: string, entity = false): unknown => {
+    if (entity) return lowerEntityConst(v, use);
+    refuseIdentity(v, use);
+    return unwrapEidLike(v);
+  };
+
+  const lowerPos = (v: unknown, use: string, entity = false): unknown => {
     if (v === undefined || isBlank(v)) return "_";
     if (isVar(v)) return nameOf(v);
     if (isAggSpec(v)) {
@@ -1116,18 +1207,20 @@ export const lowerQueryObject = (
         `ramose/query: an aggregate cell is not a value for ${use} — an aggregate exists only after grouping, as a projected cell or a top-level comparison operand`,
       );
     }
-    return lowerConst(v, use);
+    return lowerConst(v, use, entity);
   };
 
-  const neverClause = (): unknown[] => [["ground", []], [freshName("n"), "..."]];
+  const groundNothing = (name: string): unknown[] => [["ground", []], [name, "..."]];
+
+  const neverClause = (): unknown[] => groundNothing(freshName("n"));
 
   const lowerClauses = (list: readonly BClause[], outer: Set<number>): unknown[] => {
     const out: unknown[] = [];
     for (const c of list) {
       switch (c._tag) {
         case "fact": {
-          const clause = lowerFact(c);
-          if (clause !== undefined) out.push(clause);
+          const clauses = lowerFact(c);
+          if (clauses !== undefined) out.push(...clauses);
           break;
         }
         case "cmp":
@@ -1253,7 +1346,7 @@ export const lowerQueryObject = (
 
   const isWireVar = (x: unknown): x is string => typeof x === "string" && x.startsWith("?");
 
-  const lowerIdFact = (c: FactCommand<any>): unknown[] | undefined => {
+  const lowerIdFact = (c: FactCommand<any>): readonly unknown[][] | undefined => {
     if (c.txVar !== undefined || c.opVar !== undefined) {
       throw new Error(
         "ramose/query: :db/id is the entity's identity, not a datom — it has no tx or op position",
@@ -1265,37 +1358,54 @@ export const lowerQueryObject = (
       const eName = names.get(ePos.id);
       const vName = names.get(vPos.id);
       if (eName !== undefined && vName !== undefined) {
-        return eName === vName ? undefined : [["identity", eName], vName];
+        return eName === vName ? undefined : [[["identity", eName], vName]];
       }
       const n = eName ?? vName ?? nameOf(ePos);
       names.set(ePos.id, n);
       names.set(vPos.id, n);
       return undefined;
     }
-    const e = lowerPos(ePos, "an entity position");
-    const v = lowerPos(vPos, ":db/id's value");
+    const e = lowerPos(ePos, "an entity position", true);
+    const v = lowerPos(vPos, ":db/id's value", true);
+    if (e === UNRESOLVED || v === UNRESOLVED) {
+      const bound = [e, v].find(isWireVar);
+      return [bound === undefined ? neverClause() : groundNothing(bound)];
+    }
     if (e === v || e === "_" || v === "_") return undefined;
-    if (isWireVar(e) && !isWireVar(v)) return [["ground", v], e];
-    if (isWireVar(v) && !isWireVar(e)) return [["ground", e], v];
-    return neverClause();
+    if (isWireVar(e) && !isWireVar(v)) return [[["ground", v], e]];
+    if (isWireVar(v) && !isWireVar(e)) return [[["ground", e], v]];
+    return [neverClause()];
   };
 
-  const lowerFact = (c: FactCommand<any>): unknown[] | undefined => {
+  const lowerFact = (c: FactCommand<any>): readonly unknown[][] | undefined => {
     if (c.attr?.ident === ":db/id") return lowerIdFact(c);
-    const e = lowerPos(c.eVar ?? c.e0, "an entity position");
+    const e = lowerPos(c.eVar ?? c.e0, "an entity position", true);
     const attr = c.attr?.ident ?? "_";
-    const v = lowerPos(c.vVar ?? c.v0, attr === "_" ? "a value position" : `${attr}'s value`);
-    const clause: unknown[] = [e, attr, v];
+    const v = lowerPos(
+      c.vVar ?? c.v0,
+      attr === "_" ? "a value position" : `${attr}'s value`,
+      isRefAttr(c.attr),
+    );
+    const unplaced = e === UNRESOLVED || v === UNRESOLVED;
+    const clause: unknown[] = [
+      e === UNRESOLVED ? freshName("u") : e,
+      attr,
+      v === UNRESOLVED ? freshName("u") : v,
+    ];
     if (c.txVar !== undefined || c.opVar !== undefined) {
       clause.push(c.txVar !== undefined ? nameOf(c.txVar) : "_");
     }
     if (c.opVar !== undefined) clause.push(nameOf(c.opVar));
-    return clause;
+    return unplaced ? [clause, neverClause()] : [clause];
   };
 
   const lowerCmp = (c: CmpCommand): unknown[][] => {
     const { op, args, ignoreCase } = c;
     const tSided = args.some((a) => isVar(a) && a.kind === "t");
+    const entitySided = args.some(
+      (a) => isVar(a) && (a.kind === "entity" || a.kind === "id"),
+    );
+    const use = `the comparison "${op}"`;
     const operand = (a: Position): unknown => {
       if (isAggSpec(a)) {
         throw new Error(
@@ -1307,15 +1417,17 @@ export const lowerQueryObject = (
       if (op === "re-find?") return regexSource(v as RegExp | string);
       if (op === "in") {
         if (!Array.isArray(v)) throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
-        return v.map(unwrapEidLike);
+        return v.map((member) => lowerConst(member, use, entitySided));
       }
-      v = unwrapEidLike(v);
+      v = lowerConst(v, use, entitySided);
       if (tSided && typeof v === "number") return TX_BASE + v;
       return v;
     };
     if (op === "in") {
       const [subject, list] = args;
-      const values = operand(list) as unknown[];
+      const values = (operand(list) as unknown[]).filter(
+        (value) => value !== UNRESOLVED,
+      );
       if (Array.isArray(values) && values.length === 0) return [neverClause()];
       if (!isVar(subject)) {
         throw new Error("ramose/query: Q.in's first argument is a bound var");
@@ -1338,7 +1450,7 @@ export const lowerQueryObject = (
         if (isBlank(a) || a === undefined) {
           throw new Error("ramose/query: ignoreCase needs a bound var or a string on each side");
         }
-        const v = unwrapEidLike(a);
+        const v = lowerConst(a, use);
         if (typeof v !== "string") {
           throw new Error("ramose/query: ignoreCase applies to strings");
         }
@@ -1346,7 +1458,9 @@ export const lowerQueryObject = (
       });
       return [...extras, [[op, ...folded]]];
     }
-    return [[[op, ...args.map(operand)]]];
+    const operands = args.map(operand);
+    if (operands.includes(UNRESOLVED)) return [neverClause()];
+    return [[[op, ...operands]]];
   };
 
   const clauses = built.clauses;
@@ -1581,12 +1695,13 @@ export const lowerQueryObject = (
         return nameOf(a);
       }
       let v: unknown = a;
+      const use = `the post-group comparison "${c.op}"`;
       if (c.op === "re-find?") return regexSource(v as RegExp | string);
       if (c.op === "in") {
         if (!Array.isArray(v)) throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
-        return v.map(unwrapEidLike);
+        return v.map((member) => lowerConst(member, use));
       }
-      v = unwrapEidLike(v);
+      v = lowerConst(v, use);
       if (tSided && typeof v === "number") return TX_BASE + v;
       return v;
     };
@@ -1894,6 +2009,7 @@ export const lowerQueryObject = (
 
   return {
     query,
+    bindsEntities,
     result: seek !== undefined ? "page" : take !== undefined ? "row" : "rows",
     rowShape,
     shape: JSON.stringify({
