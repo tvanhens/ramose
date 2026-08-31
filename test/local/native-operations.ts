@@ -2002,6 +2002,52 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(absent.body.result).toEqual([]);
       });
 
+      test("a renamed output reference is sealed, and its slot still binds", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-allocation-renamed";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_output_renamed");
+        const createRenamed = {
+          owner: { kind: "entity" as const, name: "nativeEncoded" },
+          localName: "createRenamed",
+        };
+        const ref = clientRef();
+        const body = {
+          invocationId: "output-renamed-01",
+          operation: createRenamed,
+          input: { label: "acme" },
+          allocations: [{ slot: "row", clientRef: ref }],
+        };
+
+        const created = await invokeWith(base, database, token, body);
+        expect(created.status).toBe(200);
+        expect(created.body.mappings).toEqual([
+          { clientRef: ref, entityId: expect.any(String) },
+        ]);
+        const entityId = created.body.mappings[0].entityId as string;
+        expect(isEntityId(entityId)).toBe(true);
+        expect(created.body.result).toEqual({ wire_id: entityId });
+
+        const allocatedEid = await openEntityHandle(
+          base,
+          database,
+          token,
+          entityId,
+        );
+        expect(JSON.stringify(created.body)).not.toContain(String(allocatedEid));
+
+        const receiptsBefore = await operationReceiptCount(base, database);
+        const replayed = await invokeWith(base, database, token, body);
+        expect(replayed.status).toBe(200);
+        expect(replayed.body).toEqual(created.body);
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeEncoded/label "acme"]]',
+        });
+        expect(rows.body.result).toEqual([[allocatedEid]]);
+      });
+
       test("an undeclared slot is refused before the operation body runs", async () => {
         const base = ctx.urls().nativeOperationsUrl;
         const database = "operations-allocation-undeclared";

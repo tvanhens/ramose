@@ -1,5 +1,4 @@
 import { clientRef, invocationId, type ClientRef, type MutationRef } from "../db/refs.ts";
-import { inputEntityRefHandles } from "../internal/authorization/entity-targets.ts";
 import type { JsonValue } from "../internal/authorization/json.ts";
 import type { IndexedDbReplicaStorage } from "../internal/replication/indexeddb.ts";
 import type { OutboxDraft, QueuedTarget } from "../internal/replication/outbox.ts";
@@ -8,7 +7,7 @@ import type { ReplicaDatabaseScope } from "../internal/replication/replica-lifec
 import type { ClientCatalog } from "./catalog.ts";
 import { resolveGraphReceiver } from "./graph.ts";
 import type { ClientDatabase } from "./database.ts";
-import type { ClientOperation } from "./operations.ts";
+import { encodedInputRefs, type ClientOperation } from "./operations.ts";
 import type { MutationMethod, MutationNamespace } from "./mutation-schema.ts";
 import { ReceiptDriver, type Receipt } from "./receipt.ts";
 
@@ -82,13 +81,7 @@ const enqueue = async (
     target: queuedTarget(target),
     input: encoded,
     allocations,
-    inputRefs: inputEntityRefHandles(operation.input, encoded).flatMap((path) => {
-      const ref = path.reduce<unknown>(
-        (value, segment) => (value as Record<string, unknown>)[segment as string],
-        encoded,
-      );
-      return typeof ref === "string" ? [{ path, ref: ref as MutationRef }] : [];
-    }),
+    inputRefs: encodedInputRefs(operation, encoded),
     enqueuedAt: Date.now(),
   };
   context.track(receiver, driver);

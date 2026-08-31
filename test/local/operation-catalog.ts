@@ -52,6 +52,7 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-sealed-input-consumed",
   "operations-sealed-input-pinned",
   "operations-sealed-input-renamed",
+  "operations-allocation-renamed",
   "operations-client-input-refs",
   "operations-client-storm",
   "operations-seal-order",
@@ -362,6 +363,7 @@ export const Encoded = Entity("nativeEncoded", {
 
     createRenamed: Operation({
       self: false,
+      allocates: { row: ["id"] },
       input: EffectSchema.Struct({ label: EffectSchema.String }),
       output: EffectSchema.Struct({ id: OperationEntityId }).pipe(
         EffectSchema.encodeKeys({ id: "wire_id" }),

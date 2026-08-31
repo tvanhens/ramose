@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import {
   Entity,
   Field,
@@ -18,6 +19,7 @@ import {
 } from "../../src/internal/authorization/identities.ts";
 import { completeSchema } from "../../src/internal/authorization/read-tables.ts";
 import {
+  encodedInputRefs,
   installClientOperations,
   selfOperationsFor,
 } from "../../src/client/operations.ts";
@@ -92,6 +94,98 @@ const Relocated = Entity("relocated", { name: string() }, {
     }),
   }),
 });
+
+type BuriedWire = {
+  readonly title: string;
+  readonly holder: { readonly author: number };
+};
+
+type BuriedValue = {
+  readonly title: string;
+  readonly author: number;
+};
+
+const Buried = Entity("buried", { name: string() }, {
+  operations: (Operation) => ({
+    createBuried: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        title: EffectSchema.String,
+        holder: EffectSchema.Struct({ author: EntityId }),
+      }).pipe(
+        EffectSchema.decodeTo(
+          EffectSchema.Struct({
+            title: EffectSchema.String,
+            author: EntityId,
+          }),
+          {
+            decode: SchemaGetter.transform((value: BuriedWire): BuriedValue => ({
+              title: value.title,
+              author: value.holder.author,
+            })),
+            encode: SchemaGetter.transform((value: BuriedValue): BuriedWire => ({
+              title: value.title,
+              holder: { author: value.author },
+            })),
+          },
+        ),
+      ),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
+});
+
+type SwappedWire = {
+  readonly slot: number;
+  readonly rank: number;
+};
+
+type SwappedValue = {
+  readonly author: number;
+  readonly rank: number;
+};
+
+const Swapped = Entity("swapped", { name: string() }, {
+  operations: (Operation) => ({
+    createSwapped: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        slot: EntityId,
+        rank: EffectSchema.Finite,
+      }).pipe(
+        EffectSchema.decodeTo(
+          EffectSchema.Struct({
+            author: EntityId,
+            rank: EffectSchema.Finite,
+          }),
+          {
+            decode: SchemaGetter.transform((value: SwappedWire): SwappedValue => ({
+              author: value.slot,
+              rank: value.rank,
+            })),
+            encode: SchemaGetter.transform((value: SwappedValue): SwappedWire => ({
+              slot: value.rank,
+              rank: value.author,
+            })),
+          },
+        ),
+      ),
+      output: EffectSchema.Struct({}),
+      run() {
+        return {};
+      },
+    }),
+  }),
+});
+
+const SwappingSchema = Schema("swapping", { swapped: Swapped });
+SwappingSchema.applyPolicy(() => {});
+
+const BuryingSchema = Schema("burying", { buried: Buried });
+BuryingSchema.applyPolicy(() => {});
 
 const RelocatingSchema = Schema("relocating", { relocated: Relocated });
 RelocatingSchema.applyPolicy(() => {});
@@ -206,13 +300,68 @@ describe("the installed client mutation surface", () => {
     )).toEqual([["author"], ["origin", "board"], ["watchers", 0]]);
   });
 
-  test("refuses to encode a reference the codec would move", () => {
+  test("encodes a reference at the wire key a renaming codec gives it", () => {
     const relocating = installClientOperations(
       RelocatingSchema,
       completeSchema(RelocatingSchema),
     ).database.get("createRelocated")!;
+    const author = "e".repeat(55);
+    const encoded = relocating.encode({ author, title: "Offline" });
+    expect(encoded).toEqual({ wireAuthor: author, title: "Offline" });
+    expect(JSON.stringify(encoded)).not.toContain(String(Number.MIN_SAFE_INTEGER));
+  });
+
+  test("declares the outbox's reference positions where the wire carries them", () => {
+    const relocating = installClientOperations(
+      RelocatingSchema,
+      completeSchema(RelocatingSchema),
+    ).database.get("createRelocated")!;
+    const author = "e".repeat(55);
+    const encoded = relocating.encode({ author, title: "Offline" });
+
+    expect(encodedInputRefs(relocating, encoded)).toEqual([
+      { path: ["wireAuthor"], ref: author as never },
+    ]);
+    expect(inputEntityRefHandles(relocating.input, encoded)).toEqual([]);
+
+    const create = createCard();
+    const board = "cr1_board";
+    const watcher = "f".repeat(55);
+    expect(encodedInputRefs(
+      create,
+      create.encode({
+        title: "Offline",
+        rank: 3,
+        author,
+        watchers: [watcher],
+        origin: { board },
+      }),
+    )).toEqual([
+      { path: ["author"], ref: author as never },
+      { path: ["origin", "board"], ref: board as never },
+      { path: ["watchers", 0], ref: watcher as never },
+    ]);
+  });
+
+  test("refuses a codec that leaves an ordinary scalar where the reference belongs", () => {
+    const swapping = installClientOperations(
+      SwappingSchema,
+      completeSchema(SwappingSchema),
+    ).database.get("createSwapped")!;
+    for (const rank of [-1, Number.MIN_SAFE_INTEGER]) {
+      expect(() => swapping.encode({ author: "e".repeat(55), rank })).toThrow(
+        /moved the entity reference/,
+      );
+    }
+  });
+
+  test("refuses to encode a reference the codec does not carry to the wire", () => {
+    const burying = installClientOperations(
+      BuryingSchema,
+      completeSchema(BuryingSchema),
+    ).database.get("createBuried")!;
     expect(() =>
-      relocating.encode({ author: "e".repeat(55), title: "Offline" })
+      burying.encode({ author: "e".repeat(55), title: "Offline" })
     ).toThrow(/moved the entity reference/);
   });
 
