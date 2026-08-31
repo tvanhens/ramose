@@ -473,6 +473,8 @@ browserTest(
       const boardHandle = await workspace(root, slug, board);
       await settled(boardHandle.mutate.createIssue({ title: "Held across the cut" }));
       const view = rows(boardHandle, issues(boardHandle));
+      const observed = boardHandle.observe(issues(boardHandle));
+      const releaseObserved = observed.subscribe(() => undefined);
       await until(
         () => titles(view.read()),
         (values) => values.includes("Held across the cut"),
@@ -485,6 +487,18 @@ browserTest(
       const record = boardHandle.sync.subscribe(() => {
         published.push(boardHandle.sync.getSnapshot().status);
       });
+      // And what the observers say alongside it, so the two `stale` signals an
+      // application renders from can be held to the same fact.
+      let sampling = true;
+      let unconfirmed = 0;
+      const sampler = (async () => {
+        const deadline = performance.now() + 60_000;
+        while (sampling && performance.now() < deadline) {
+          const snapshot = observed.getSnapshot();
+          if (snapshot.status === "ready" && snapshot.stale) unconfirmed += 1;
+          await new Promise((resolve) => setTimeout(resolve));
+        }
+      })();
 
       await partition(subject, true);
       await awake(
@@ -504,6 +518,9 @@ browserTest(
       await awake(boardHandle, (status) => status === "live", "the board resuming");
 
       record();
+      sampling = false;
+      await sampler;
+      releaseObserved();
       // A resume, not a reset: the value was never withdrawn, and the bearer
       // presented again is the one the session was already bound to.
       expect(titles(view.read())).toContain("Held across the cut");
@@ -515,6 +532,10 @@ browserTest(
       expect(published).toContain("stale");
       expect(published).toContain("live");
       expect(published).not.toContain("connecting");
+      // The observers say it too: while an activation is reaching for the
+      // server again the rendered rows are still there and no longer
+      // confirmed, which is the state a reconnect banner is rendered from.
+      expect(unconfirmed).toBeGreaterThan(0);
       await settled(boardHandle.mutate.createIssue({ title: "Written after resuming" }));
       await until(
         () => titles(view.read()),
@@ -654,31 +675,49 @@ browserTest(
         );
         await partition(subject, false);
 
-        let errands = 0;
+        // The root is the only database this application opened, so it is the
+        // whole of what `client.sync` may answer for while this sampler runs.
+        let sampling = true;
+        let staged = 0;
         let discriminated = 0;
         let reported: string | undefined;
-        const sampling = (async () => {
+        const sampler = (async () => {
           const deadline = performance.now() + 30_000;
-          while (performance.now() < deadline && discriminated < 200) {
-            const statuses = errandStatuses(second.client);
+          while (sampling && performance.now() < deadline) {
+            const errands = errandStatuses(second.client);
+            const application = reopened.sync.getSnapshot().status;
             const client = second.client.sync.getSnapshot().status;
-            if (statuses.length > 0) errands += 1;
+            if (errands.length > 0) staged += 1;
+            // An errand reporting anything other than what the application's
+            // own database reports is a moment the aggregate would have moved
+            // if the errand were counted.
             if (
-              reopened.sync.getSnapshot().status === "live" &&
-              statuses.some((status) => status !== "live")
-            ) {
-              discriminated += 1;
-              if (client !== "live") reported ??= client;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 5));
+              errands.some((status) => status !== "resolving" && status !== application)
+            ) discriminated += 1;
+            if (client !== application) reported ??= `${client} beside ${application}`;
+            await new Promise((resolve) => setTimeout(resolve));
           }
         })();
 
         await awake(reopened, (status) => status === "live", "the root returning to live");
-        // The errand is opened after the root is already live — the queue is
-        // drained by the leadership that confirmation elects — so its own
-        // activation is in flight while the application's database is not, and
-        // that is the moment `client.sync` must still answer `live`.
+        // The errand is opened by the leadership the confirmation elects, which
+        // is after the application's own database has settled — so its
+        // activation reports for itself while the root reports for the
+        // application, and `client.sync` answers only for the latter.
+        await until(
+          () => discriminated,
+          (count) => count > 0,
+          "an errand reporting differently from the database the application opened",
+          20_000,
+        );
+        sampling = false;
+        await sampler;
+
+        expect(staged).toBeGreaterThan(0);
+        expect(reported).toBeUndefined();
+
+        // Only now does the application open the board, to read what the
+        // errand submitted on its behalf.
         const board2 = boardDb(reopened, slug, board);
         const queued = rows(board2, issues(board2));
         await until(
@@ -686,11 +725,6 @@ browserTest(
           (values) => values.includes("Queued for an errand"),
           "the invocation the errand submitted",
         );
-        await sampling;
-
-        expect(errands).toBeGreaterThan(0);
-        expect(discriminated).toBeGreaterThan(0);
-        expect(reported).toBeUndefined();
         queued.release();
         view.release();
       } finally {

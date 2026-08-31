@@ -595,22 +595,22 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
 
   /**
-   * Whether this handle's own read stream is merely unreachable.
+   * What this handle's own read stream says, rather than what the handle
+   * publishes.
    *
-   * Read from the session that produced the disposition rather than from the
-   * status the handle publishes, because the published status is an aggregate:
-   * a queue this build cannot replay reports `update-required` over a
-   * committed replica that is readable and a read stream that was perfectly
-   * compatible, and admitting on that aggregate would leave exactly that
-   * database never reading again after a cut. Every disposition that must stay
-   * fenced — a rotated view, a refused credential, a fence — is still excluded,
-   * now by the session that decided it.
+   * The published status is an aggregate: a queue this build cannot replay
+   * reports `update-required` over a committed replica that is readable and a
+   * read stream that was perfectly compatible, and deciding a retry on that
+   * aggregate would leave exactly that database never reading again after a
+   * cut. Every disposition that must stay fenced — a rotated view, a refused
+   * credential, a fence — still says so here, now decided by the session that
+   * produced it.
    */
-  private unreachable(): boolean {
+  private disposition(): SyncStatus {
     const snapshot = this.session?.snapshot();
     return snapshot === undefined
-      ? this.syncStatus() === "offline"
-      : readSessionSnapshot(snapshot).status === "offline";
+      ? this.syncStatus()
+      : readSessionSnapshot(snapshot).status;
   }
 
   /**
@@ -637,7 +637,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
    */
   reactivateOffline(): void {
     if (!this.live() || this.refused) return;
-    if (this.opening !== undefined || !this.unreachable()) {
+    if (this.opening !== undefined || this.disposition() !== "offline") {
       this.wakePending = true;
       return;
     }
@@ -651,21 +651,36 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
 
   /**
-   * Ask a remembered wake again now that this handle's disposition is known.
+   * Ask a remembered wake again now that this handle's disposition has moved.
    *
    * Called where a disposition becomes known: when an activation settles, and
-   * when the session publishes. A handle that reached the server has answered
-   * the wake and forgets it; one that is fenced has nothing to answer and
-   * forgets it too; one still opening keeps it for the next settlement.
+   * when the session publishes.
+   *
+   * A wake is *not* answered by a value: a stream that is already dying can
+   * publish a buffered frame, or a keep-alive, before it publishes the failure
+   * that ended it, and treating that as an answer would drop the one wake this
+   * device was going to send. So a remembered wake is only ever spent — by the
+   * retry it asks for — or dropped where no later activation could change the
+   * answer: a refused credential, a build that is behind, a closed handle.
+   * Held otherwise, which costs at most one reconnection attempt the first time
+   * a stream fails after the tab was last activated.
    */
   private answerWake(): void {
-    if (!this.wakePending || !this.live()) return;
+    if (!this.wakePending) return;
+    if (!this.live()) {
+      this.wakePending = false;
+      return;
+    }
     if (this.opening !== undefined) return;
-    if (this.unreachable() && !this.refused) {
+    const disposition = this.disposition();
+    if (disposition === "offline" && !this.refused) {
       this.reactivateOffline();
       return;
     }
-    if (this.syncStatus() !== "connecting") this.wakePending = false;
+    if (
+      this.refused || disposition === "authentication-required" ||
+      disposition === "update-required" || disposition === "closed"
+    ) this.wakePending = false;
   }
 
   private async open(): Promise<void> {
@@ -680,6 +695,15 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
         ? "connecting"
         : "stale",
     );
+    // And every observer says the same thing. A retained value stops being
+    // confirmed when this activation begins, not when it answers — the two
+    // `stale` signals an application renders from are one fact, and a
+    // reconnect that can take a storage read and a credential is exactly the
+    // window where they would otherwise disagree.
+    if (this.committed !== undefined && !this.stale) {
+      this.stale = true;
+      this.spawn(this.recompute());
+    }
     const [catalog, storage] = await activationStep(
       "closed",
       () => Promise.all([this.context.catalog(), this.context.storage()]),
