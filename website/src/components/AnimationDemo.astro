@@ -168,7 +168,6 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
   const updateHistory = (demo: Demo, progress: number) => {
     const scrubIn = 0.1;
     const scrubOut = 0.46;
-    const continueIn = 0.74;
     const reset = 0.9;
     const rest = 18;
     const now = 100;
@@ -179,14 +178,13 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
     let position = now;
     if (progress >= scrubIn && progress < scrubOut) {
       position = now - (now - rest) * ease(clamp((progress - scrubIn) / (scrubOut - scrubIn)));
-    } else if (progress >= scrubOut && progress < continueIn) {
+    } else if (progress >= scrubOut && progress < reset) {
       position = rest;
     }
     const scrubbing = progress >= scrubIn && progress < scrubOut;
     const inPast = position < now - 0.5;
-    const adopted = progress >= continueIn && progress < reset;
     const looping = progress >= reset;
-    demo.dataset.animationPhase = looping ? "reset" : adopted ? "continue" : inPast ? "history" : "ready";
+    demo.dataset.animationPhase = looping ? "reset" : inPast ? "history" : "ready";
     demo.style.setProperty("--history-position", `${position.toFixed(2)}%`);
     const timeAt = (point: number) => {
       const seconds = 52 + Math.round((16 * (point - rest)) / (now - rest));
@@ -194,44 +192,41 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
     };
     const clock = timeAt(position);
     const cards = [68, 73, 78];
-    const revealed = (at: number) => !looping && (adopted || position <= at);
+    const revealed = (at: number) => !looping && position <= at;
     let visible = 0;
     demo.querySelectorAll<HTMLElement>("[data-history-card]").forEach((card, index) => {
       const shown = revealed(cards[index]);
-      const fresh = shown && !adopted && !looping && position > cards[index] - 4;
+      const fresh = shown && !looping && position > cards[index] - 4;
       card.classList.toggle("is-visible", shown);
       card.classList.toggle("is-fresh", fresh);
       if (shown) visible++;
     });
-    const showBadges = visible > 0 && !adopted && !looping;
+    const showBadges = visible > 0 && !looping;
     state(demo, "[data-history-card]", "show-badge", showBadges);
-    state(demo, "[data-history-empty]", "is-visible", !(looping ? visible > 0 : position <= 84 || adopted));
+    state(demo, "[data-history-empty]", "is-visible", !(looping ? visible > 0 : position <= 84));
     text(demo, "[data-history-count]", String(visible));
     text(demo, "[data-history-clock]", clock);
     text(demo, "[data-history-window-start]", timeAt(0));
-    text(demo, "[data-history-live]", inPast && !adopted ? `History · ${clock}` : "Live");
-    text(demo, "[data-history-view]", inPast && !adopted ? `Viewing ${clock}` : "Viewing now");
+    text(demo, "[data-history-live]", inPast ? `History · ${clock}` : "Live");
+    text(demo, "[data-history-view]", inPast ? `Viewing ${clock}` : "Viewing now");
     const status = looping
       ? "Now · after deletion"
-      : adopted
-        ? "Continuing from 12:40:52 · nothing was lost"
-        : visible === 3
-          ? "Before deletion · 3 issues restored"
-          : visible > 0
-            ? `Restoring · ${visible} of 3 issues back at ${clock}`
-            : inPast
-              ? `Rewinding · ${clock}`
-              : "Now · after deletion";
+      : visible === 3
+        ? "Before deletion · 3 issues restored"
+        : visible > 0
+          ? `Restoring · ${visible} of 3 issues back at ${clock}`
+          : inPast
+            ? `Rewinding · ${clock}`
+            : "Now · after deletion";
     text(demo, "[data-history-status]", status);
     demo.querySelectorAll<HTMLElement>("[data-history-event]").forEach((event, index) => {
       const firing = looping && progress < reset + 0.05;
       event.classList.toggle("is-passed", firing || (!looping && position <= cards[index]));
     });
     stepStates(demo, [
-      { active: (!inPast && !adopted) || looping, done: !looping && inPast },
+      { active: !inPast || looping, done: !looping && inPast },
       { active: scrubbing && visible < 3, done: !looping && visible > 0 },
-      { active: visible === 3 && !adopted && !looping, done: !looping && adopted },
-      { active: adopted, done: false },
+      { active: visible === 3 && !looping, done: false },
     ]);
   };
 
