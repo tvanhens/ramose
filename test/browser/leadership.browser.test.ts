@@ -756,11 +756,10 @@ browserTest(
       expect((await leading(successor)).epoch).toBe(2);
 
       // The install was one transaction, so the successor finds the replica
-      // whole or absent, never the staging the crash was standing in.
+      // whole or absent — and when it is absent, what stands is the staging
+      // the install would have read, which is where the work resumes.
       const installed = await dumpStore(name, "replica-committed-v1");
       expect(installed.length).toBeLessThan(2);
-      expect(await dumpStore(name, "replica-staging-v1")).toEqual([]);
-      expect(await dumpStore(name, "replica-staging-chunks-v1")).toEqual([]);
       const settling = await IndexedDbReplicaStorage.open(name);
       try {
         const restored = await settling.restore(
@@ -768,11 +767,18 @@ browserTest(
           REPLICA_ATTRIBUTES,
           READ_COMPATIBILITY,
         );
-        if (installed.length === 0) expect(restored).toBeUndefined();
-        else expect(restored?.handles.size).toBe(1);
+        if (installed.length === 0) {
+          expect(restored).toBeUndefined();
+        } else {
+          expect(restored?.handles.size).toBe(1);
+          expect(await dumpStore(name, "replica-staging-v1")).toEqual([]);
+          expect(await dumpStore(name, "replica-staging-chunks-v1")).toEqual([]);
+        }
         restored?.release();
         await confirm(settling, left, "left");
         expect((await dumpStore(name, "replica-committed-v1")).length).toBe(1);
+        expect(await dumpStore(name, "replica-staging-v1")).toEqual([]);
+        expect(await dumpStore(name, "replica-staging-chunks-v1")).toEqual([]);
       } finally {
         settling.close();
       }
