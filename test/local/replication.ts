@@ -130,9 +130,8 @@ const waitForCheckpoint = async (
   database: string,
   name: string,
   scope: "worker" | "replica" | "transactor" = "worker",
-  attempts = 320,
 ): Promise<void> => {
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  for (let attempt = 0; attempt < 320; attempt++) {
     const status = await testAdmin(base, database, "/checkpoint", {
       scope,
       action: "status",
@@ -392,7 +391,6 @@ const observeBackpressuredBurst = async (
   expect(response.status).toBe(200);
   const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
   const checkpoints: string[] = [];
-  const digestAttempts = 320 + hiddenCount * 4;
   try {
     const snapshot = await collectCommittedSnapshot(iterator);
 
@@ -410,24 +408,12 @@ const observeBackpressuredBurst = async (
     if (hiddenCount > 0) await currentBasis(base, world.database);
     await armCheckpoint(base, world.database, "replication.silent");
     await releaseCheckpoint(base, world.database, "replication.cycle");
-    await waitForCheckpoint(
-      base,
-      world.database,
-      "replication.silent",
-      "worker",
-      digestAttempts,
-    );
+    await waitForCheckpoint(base, world.database, "replication.silent");
     checkpoints.push("silent");
     await releaseCheckpoint(base, world.database, "replication.silent");
 
     await armCheckpoint(base, world.database, "replication.cycle");
-    await waitForCheckpoint(
-      base,
-      world.database,
-      "replication.cycle",
-      "worker",
-      digestAttempts,
-    );
+    await waitForCheckpoint(base, world.database, "replication.cycle");
     checkpoints.push("cycle");
 
     const renamed = await rename(
@@ -1230,37 +1216,37 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       async () => {
         const base = ctx.urls().conformanceUrl;
         const world = await seedWorld(base, HIDDEN_SCALE_DATABASE, false);
-        const zero = await observeBackpressuredBurst(base, world, 0);
-        const restored = await rename(
+        const initialResponse = await openReplication(
           base,
           world.database,
           world.member,
-          world.ids.parent,
-          "Beta",
         );
-        expect(restored.status).toBe(200);
-        await currentBasis(base, world.database);
+        const initialIterator = readReplicationNdjson(
+          initialResponse,
+        )[Symbol.asyncIterator]();
+        const initial = await collectCommittedSnapshot(initialIterator);
+        await closeIterator(initialIterator);
+        const revision = initial.state.committed!.revision;
+        const initialWire = initial.frames.map((item) => item.wire);
 
-        const hidden = await observeBackpressuredBurst(
-          base,
-          world,
-          HIDDEN_SCALE_COMMITS,
-        );
-        expect(zero.checkpoints).toEqual(["cycle", "silent", "cycle", "change"]);
+        const zero = await observeUnchangedResume(base, world, revision);
+        for (let index = 0; index < HIDDEN_SCALE_COMMITS; index++) {
+          await commitHidden(base, world, index);
+        }
+        await currentBasis(base, world.database);
+        const hidden = await observeUnchangedResume(base, world, revision);
+
         expect(hidden.checkpoints).toEqual(zero.checkpoints);
-        expect(hidden.snapshot).toEqual(zero.snapshot);
-        expect(hidden.visible).toBe(zero.visible);
-        expect(hidden.visible).not.toMatch(/Parked hidden/);
+        expect(hidden.frames).toEqual(zero.frames);
+        expect(hidden.frames.join("\n")).not.toMatch(/Parked hidden|count|queue/);
 
         const after = await openReplication(base, world.database, world.member);
         const afterIterator = readReplicationNdjson(after)[Symbol.asyncIterator]();
         try {
           const complete = await collectCommittedSnapshot(afterIterator);
-          expect(titlesOf(complete.state)).toEqual([
-            "Backpressure visible",
-            "Gamma",
-            "Omega",
-          ]);
+          expect(complete.frames.map((item) => item.wire)).toEqual(initialWire);
+          expect(complete.state.committed?.revision).toBe(revision);
+          expect(titlesOf(complete.state)).toEqual(["Beta", "Gamma", "Omega"]);
         } finally {
           await closeIterator(afterIterator);
         }
