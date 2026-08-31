@@ -78,6 +78,28 @@ describe("leadership without web locks", () => {
     expect(leadership.submits()).toBe(false);
   });
 
+  test("an unelected tab has no epoch to stand down from and keeps submitting", async () => {
+    let claims = 0;
+    const leadership = SyncLeadership.begin({
+      name: replicaLeaderKey(scope(), "ramose-replicas"),
+      locks: undefined,
+      claim: () => {
+        claims++;
+        return Promise.resolve(1);
+      },
+      onLeading: () => undefined,
+    });
+    await settled();
+
+    await leadership.standDown();
+    expect([leadership.status(), leadership.submits(), claims]).toEqual([
+      "unelected",
+      true,
+      0,
+    ]);
+    await leadership.release();
+  });
+
   test("a tab released before it leads never announces leadership", async () => {
     let leading = 0;
     const leadership = SyncLeadership.begin({

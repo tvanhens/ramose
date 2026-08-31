@@ -137,6 +137,26 @@ export class SyncLeadership {
   }
 
   /**
+   * Give up an epoch that no longer fences and stand for the election again.
+   *
+   * A write refused by the durable epoch says this tab is no longer the leader
+   * its epoch named, so retrying under that epoch can only be refused again.
+   * Dropping the lock grants whichever tab deposed it, and standing again takes
+   * a fresh epoch when this tab is granted the lock next, which is what lets a
+   * tab that is still the only one open carry on submitting.
+   */
+  async standDown(): Promise<void> {
+    if (this.state !== "leading") return;
+    this.state = "waiting";
+    this.epoch = undefined;
+    const release = this.held;
+    this.held = undefined;
+    release?.();
+    await this.granted;
+    if (this.state === "waiting") this.elect();
+  }
+
+  /**
    * Give leadership up: a leader drops the lock, which grants the next queued
    * tab, and a follower stops waiting for one. Resolves once the lock is no
    * longer held.

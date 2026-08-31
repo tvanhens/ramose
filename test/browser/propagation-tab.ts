@@ -24,6 +24,7 @@ import {
   replicaDatabaseScopeOf,
   replicaScopeOf,
   type ReplicaDatabaseScope,
+  type ReplicaLease,
 } from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
 import {
   platformLocks,
@@ -94,13 +95,16 @@ export type SeededNote = {
   readonly rank: string;
 };
 
+export const PRINCIPAL = opaque("p");
+
 export const identityFor = async (
   database: string,
   graphLineage: readonly string[] = [],
+  principal: string = PRINCIPAL,
 ): Promise<ReplicationIdentity> => ({
   version: 1,
   server: opaque("s"),
-  principal: opaque("p"),
+  principal,
   database,
   catalog: opaque("c"),
   readView: opaque("v"),
@@ -149,6 +153,8 @@ export type SeededDatabase = {
   readonly graphPath?: readonly string[];
   /** Write the durable route observation a confirming session writes. */
   readonly observeRoute?: boolean;
+  /** Whether a bearer binding is written, as a confirming session writes one. */
+  readonly bind?: boolean;
 };
 
 export const childRouteSlot = (): Promise<string> =>
@@ -210,6 +216,7 @@ export const seedDatabases = async (
       const address = replicationActivationAddress({
         server: OFFLINE, root: ROOT, graphPath,
       });
+      if (entry.bind === false) continue;
       const routeSlot = await routeSlotOf(entry);
       await storage.bindAuthenticated({
         fingerprint: await replicationCredentialFingerprint(TOKEN, address, routeSlot),
@@ -263,6 +270,10 @@ type CommitInput = {
   };
 };
 
+type HoldInput = StartInput & {
+  readonly principal?: string;
+};
+
 type EnqueueInput = {
   readonly storageName: string;
   readonly database: string;
@@ -284,6 +295,9 @@ type LoopReport = {
   readonly overlapped: boolean;
 };
 
+let token = TOKEN;
+let held: ReplicaLease | undefined;
+let published: QueryReport[] = [];
 let client: Client | undefined;
 let database: ClientDatabase | undefined;
 let notes: ReturnType<ClientDatabase["observe"]> | undefined;
@@ -321,7 +335,7 @@ const open = (storageName: string): ClientDatabase => {
     url: OFFLINE,
     root: ROOT,
     catalog: NotesCatalog,
-    auth: () => ({ token: TOKEN, cacheKey: CACHE_KEY }),
+    auth: () => ({ token, cacheKey: CACHE_KEY }),
     storageName,
   });
   database = client.open();
@@ -331,14 +345,29 @@ const open = (storageName: string): ClientDatabase => {
 const observeNotes = (target: ClientDatabase): QueryReport => {
   const observed = target.observe(target.query.from(Note).orderBy(Note.rank));
   notes = observed;
-  releaseNotes = observed.subscribe(() => undefined);
+  published = [report()];
+  releaseNotes = observed.subscribe(() => published.push(report()));
   return report();
 };
 
-const held = async (name: string): Promise<IndexedDbReplicaStorage> => {
+const heldStorage = async (name: string): Promise<IndexedDbReplicaStorage> => {
   storage ??= await IndexedDbReplicaStorage.open(name);
   return storage;
 };
+
+/** The tag of the failure a durable write was refused with, or `landed`. */
+const outcome = async (run: () => Promise<void>): Promise<string> => {
+  try {
+    await run();
+    return "landed";
+  } catch (error) {
+    const tag = (error as { readonly _tag?: unknown } | undefined)?._tag;
+    return typeof tag === "string" ? tag : String(error);
+  }
+};
+
+const rootAddress = (): ReturnType<typeof replicationActivationAddress> =>
+  replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] });
 
 const draft = (
   receiver: ReplicaDatabaseScope,
@@ -387,7 +416,138 @@ export const serve = (id: string): void =>
 
     report: (): QueryReport => report(),
 
+    /** Every value this tab's observers have published, in order. */
+    published: (): readonly QueryReport[] => published,
+
     sync: (): string => client?.sync.getSnapshot().status ?? "absent",
+
+    /** Present the bearer of another account the way a sign-in does. */
+    signIn: ({ bearer }: { readonly bearer: string }): string => {
+      token = bearer;
+      return token;
+    },
+
+    /** Clear this principal's local data through the public API. */
+    clearLocal: async (): Promise<string> => {
+      await client!.clearLocalData();
+      return client!.sync.getSnapshot().status;
+    },
+
+    /**
+     * Take the admission a session takes when it opens, before it has an
+     * authenticated identity to name a scope with.
+     */
+    admit: async ({ storageName }: StartInput): Promise<number> => {
+      held = await (await heldStorage(storageName)).lease();
+      return held.admittedAt();
+    },
+
+    /** Confirm an authenticated identity under the admission held above. */
+    bindHeld: async (
+      { storageName, database: id, principal }: HoldInput,
+    ): Promise<string> => {
+      const store = await heldStorage(storageName);
+      const identity = await identityFor(id, [], principal ?? PRINCIPAL);
+      const address = rootAddress();
+      const routeSlot = await rootReplicaRouteSlot();
+      const [fingerprint, selector, scope, pathKey] = await Promise.all([
+        replicationCredentialFingerprint(token, address, routeSlot),
+        replicationCacheSelector(CACHE_KEY, address),
+        replicaRouteScope(address),
+        replicaRoutePathKey([]),
+      ]);
+      return outcome(() =>
+        store.bindAuthenticated({
+          fingerprint,
+          identity,
+          candidateKey: { selector, routeSlot },
+          route: { scope, pathKey, slot: routeSlot },
+        }, { lease: held })
+      );
+    },
+
+    /** Install a fresh snapshot under the admission held above. */
+    installHeld: async (
+      { storageName, database: id, note }: HoldInput & {
+        readonly note: SeededNote;
+      },
+    ): Promise<string> => {
+      const store = await heldStorage(storageName);
+      const identity = await identityFor(id);
+      const snapshot = opaque("h");
+      const revision = opaque("i");
+      return outcome(async () => {
+        await store.startSnapshot({
+          type: "SnapshotStart", protocol: 1, identity, snapshot, revision,
+        }, { lease: held });
+        await store.stageSnapshotChunk(snapshotChunk({
+          type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0,
+          datoms: noteDatoms([note]),
+        }), { lease: held });
+        (await store.commitSnapshot({
+          type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
+        }, (await installClientCatalog(NotesCatalog)).attributes, {
+          lease: held,
+        }))?.release();
+      });
+    },
+
+    /** Evict one graph child database, which no public API exposes. */
+    evict: async (
+      { storageName, database: id }: StartInput,
+    ): Promise<string> => {
+      const store = await heldStorage(storageName);
+      const identity = await identityFor(id, CHILD_LINEAGE);
+      return outcome(async () => {
+        await store.evictDatabase(replicaDatabaseScopeOf(identity));
+      });
+    },
+
+    /** How much of one database a restore found, or `-1` when it found none. */
+    restoreOnce: async (
+      { storageName, database: id, lineage }: StartInput & {
+        readonly lineage?: readonly string[];
+      },
+    ): Promise<number> => {
+      const store = await heldStorage(storageName);
+      const installed = await installClientCatalog(NotesCatalog);
+      const restored = await store.restore(
+        await identityFor(id, lineage ?? []),
+        installed.attributes,
+        installed.readCompatibilityHash,
+      ).catch(() => undefined);
+      if (restored === undefined) return -1;
+      const found = restored.handles.size;
+      restored.release();
+      return found;
+    },
+
+    /**
+     * Restore one database until it is gone, reporting how much of it each
+     * attempt found.
+     */
+    probeRestores: async (
+      { storageName, database: id, lineage }: StartInput & {
+        readonly lineage?: readonly string[];
+      },
+    ): Promise<readonly number[]> => {
+      const store = await heldStorage(storageName);
+      const installed = await installClientCatalog(NotesCatalog);
+      const identity = await identityFor(id, lineage ?? []);
+      const found: number[] = [];
+      const deadline = performance.now() + 4_000;
+      for (;;) {
+        const restored = await store.restore(
+          identity,
+          installed.attributes,
+          installed.readCompatibilityHash,
+        ).catch(() => undefined);
+        if (restored === undefined) return found;
+        found.push(restored.handles.size);
+        restored.release();
+        if (performance.now() > deadline) return found;
+      }
+    },
 
     /** Rename through the public API, which enqueues durably in any tab. */
     rename: async (
@@ -411,7 +571,7 @@ export const serve = (id: string): void =>
     commit: async (
       { storageName, database: id, note, from, revision, then }: CommitInput,
     ): Promise<string> => {
-      const opened = await held(storageName);
+      const opened = await heldStorage(storageName);
       const identity = await identityFor(id);
       const install = async (
         base: string,
@@ -436,7 +596,7 @@ export const serve = (id: string): void =>
     enqueue: async (
       { storageName, database: id, title, child, count }: EnqueueInput,
     ): Promise<number> => {
-      const opened = await held(storageName);
+      const opened = await heldStorage(storageName);
       const identity = await identityFor(id);
       const receiver = child === undefined
         ? replicaDatabaseScopeOf(identity)
@@ -456,7 +616,7 @@ export const serve = (id: string): void =>
     lead: async (
       { storageName, database: id }: StartInput,
     ): Promise<LoopReport> => {
-      const opened = await held(storageName);
+      const opened = await heldStorage(storageName);
       const identity = await identityFor(id);
       const scope = replicaScopeOf(identity);
       const key = replicaLeaderKey(replicaDatabaseScopeOf(identity), storageName);

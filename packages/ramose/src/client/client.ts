@@ -179,9 +179,13 @@ class RamoseClient implements Client {
     if (replicaScopeKey(scope) !== notice.scope) return;
     switch (notice.kind) {
       case "replica":
-      case "reset":
         for (const handle of this.handleByKey(notice.database)) {
           void handle.refreshCommitted();
+        }
+        return;
+      case "reset":
+        for (const handle of this.handleByKey(notice.database)) {
+          void handle.revalidate().then(() => handle.refreshCommitted());
         }
         return;
       case "layer":
@@ -210,7 +214,7 @@ class RamoseClient implements Client {
   private wake(): void {
     if (this.terminal !== undefined) return;
     for (const handle of this.handles()) {
-      void handle.refreshCommitted();
+      void handle.revalidate().then(() => handle.refreshCommitted());
       void handle.refreshOptimistic();
       handle.reactivateUnconfirmed();
     }

@@ -16,6 +16,7 @@ import {
 } from "./replica-integrity.ts";
 import { sameReplicationIdentity } from "./state.ts";
 import {
+  identityInDatabase,
   replicaDatabaseKey,
   replicaDatabaseScopeOf,
   replicaScopeOf,
@@ -52,7 +53,12 @@ export type ReplicationSessionSnapshot = {
   readonly status: "connecting" | "open" | "terminal" | "failed" | "closed";
   readonly value?: ReplicationSessionValue;
   readonly terminalCode?: "closed" | "incompatible-version" | "update-required";
-  readonly failure?: "unauthorized" | "transport";
+  readonly failure?: "unauthorized" | "transport" | "fenced";
+};
+
+const isReplicaFence = (error: unknown): boolean => {
+  const tag = (error as { readonly _tag?: unknown } | undefined)?._tag;
+  return tag === "ReplicaFencedError" || tag === "ReplicaScopeClearedError";
 };
 
 export type ReplicationSessionObserver = (snapshot: ReplicationSessionSnapshot) => void;
@@ -183,6 +189,7 @@ export class ReplicationSession {
   private releaseRetention: (() => void) | undefined;
   private retainedDb: Db | undefined;
   private confirmedIdentity: ReplicationIdentity | undefined;
+  private bound: string | undefined;
   private refreshing: Promise<void> = Promise.resolve();
   private fenced = false;
 
@@ -247,9 +254,10 @@ export class ReplicationSession {
   private async readDurableHead(): Promise<boolean> {
     const status = this.state.status;
     if (status !== "failed" && status !== "terminal") return false;
-    const identity = this.state.value?.identity ?? this.confirmedIdentity;
-    if (identity === undefined) return false;
+    const held = this.state.value?.identity ?? this.confirmedIdentity;
+    if (held === undefined) return false;
     const generation = this.generation;
+    const identity = await this.currentIdentity(held);
     const restored = restoredReplica(
       await this.storage.restoreOutcome(
         identity,
@@ -258,17 +266,72 @@ export class ReplicationSession {
       ),
     );
     if (restored === undefined) return false;
-    const held = this.state.value;
-    if (!this.current(generation) || restored.revision === held?.revision) {
+    const published = this.state.value;
+    if (
+      !this.current(generation) ||
+      (restored.revision === published?.revision &&
+        sameReplicationIdentity(identity, published.identity))
+    ) {
       restored.release();
       return false;
     }
     this.adopt(restored);
+    this.confirmedIdentity = identity;
     this.publish(Object.freeze({
       ...this.state,
-      value: valueFrom(identity, restored, held?.stale ?? true),
+      value: valueFrom(identity, restored, published?.stale ?? true),
     }));
     return true;
+  }
+
+  /**
+   * The identity this session's credential is bound to now.
+   *
+   * Another tab that rebinds the same credential to a rotated read view leaves
+   * this session holding a superseded identity, and reading the durable head of
+   * that one would restore the view the rotation replaced. The rebound identity
+   * is only adopted for the same database and the read compatibility this build
+   * confirmed; anything else is a database this session does not describe.
+   */
+  private async currentIdentity(
+    held: ReplicationIdentity,
+  ): Promise<ReplicationIdentity> {
+    if (this.bound === undefined) return held;
+    const bound = await this.storage.boundIdentity(this.bound)
+      .catch(() => undefined);
+    if (
+      bound === undefined ||
+      bound.readCompatibilityHash !== this.readCompatibilityHash ||
+      !identityInDatabase(bound, replicaDatabaseScopeOf(held))
+    ) {
+      return held;
+    }
+    return bound;
+  }
+
+  /**
+   * Re-read the generations this session's lease adopted and stop the session
+   * when they have moved.
+   *
+   * A clear or a principal replacement in another tab is durable before it is
+   * announced, so this is what a holder of an already published value does with
+   * the announcement: a fenced session withdraws its value instead of leaving a
+   * superseded one on screen, and a session whose generations still stand is
+   * left alone.
+   */
+  async revalidate(): Promise<boolean> {
+    const identity = this.state.value?.identity ?? this.confirmedIdentity;
+    const generation = this.generation;
+    if (identity === undefined || !this.current(generation)) return false;
+    try {
+      await this.storage.confirmLease(this.lease, identity);
+      return false;
+    } catch (error) {
+      if (!isReplicaFence(error) || !this.current(generation)) return false;
+      this.publish({ status: "failed", failure: "fenced" });
+      this.controller.abort(error);
+      return true;
+    }
   }
 
   private track(identity: ReplicationIdentity): void {
@@ -339,7 +402,7 @@ export class ReplicationSession {
         )
         : undefined;
       lease = restored === undefined
-        ? options.storage.lease()
+        ? await options.storage.lease()
         : await options.storage.leaseFor(restored.identity);
     } catch (error) {
       for (const release of registration?.releases ?? []) release();
@@ -356,6 +419,7 @@ export class ReplicationSession {
       registration,
       retention,
       async (session, generation) => {
+        session.bound = fingerprint;
         let responseIdentity: ReplicationIdentity | undefined;
         let bindingConfirmed = restored !== undefined && candidateKey === undefined &&
           slotConfirmed;
@@ -418,6 +482,7 @@ export class ReplicationSession {
                   route: { ...observation, slot: confirmedSlot },
                 }, { signal: session.controller.signal, lease: session.lease });
                 if (!session.current(generation)) return;
+                session.bound = confirmedFingerprint;
                 bindingConfirmed = true;
                 if (session.state.value === undefined) {
                   const terminal = await session.acceptConfirmedInitial(
@@ -444,6 +509,11 @@ export class ReplicationSession {
               .catch(() => undefined);
           }
           if (session.controller.signal.aborted || !session.current(generation)) return;
+          if (isReplicaFence(error)) {
+            session.publish({ status: "failed", failure: "fenced" });
+            session.controller.abort(error);
+            return;
+          }
           session.publish({
             status: "failed",
             failure: error instanceof ReplicationUnauthorizedError

@@ -566,3 +566,215 @@ browserTest(
     }
   },
 );
+
+browserTest(
+  "a leader whose epoch no longer fences stands down and the queued tab leads",
+  async ({ browser }) => {
+    const name = `ramose-leadership-stand-down-${browser.uniqueId}`;
+    const scope = replicaDatabaseScopeOf(
+      identity({ database: databaseOf(browser.uniqueId) }),
+    );
+    const deposed = await openTab(tabModule);
+    const successor = await openTab(tabModule);
+    try {
+      await stand(deposed, name, scope);
+      expect((await leading(deposed)).epoch).toBe(1);
+      await stand(successor, name, scope);
+
+      const stood = await deposed.call<TabReport>("standDown");
+      expect([stood.status, stood.submits, stood.epoch])
+        .toEqual(["waiting", false, undefined]);
+
+      // The lock the deposed leader gave up grants the tab that was waiting,
+      // and its claim takes the epoch after the one that stopped fencing.
+      const took = await leading(successor);
+      expect(took.epoch).toBe(2);
+      expect(await durableEpoch(name, took.key)).toBe(2);
+
+      // Standing again is what lets the deposed tab carry the work later.
+      await successor.call<TabReport>("release");
+      const again = await leading(deposed);
+      expect(again.epoch).toBe(3);
+      expect(await durableEpoch(name, again.key)).toBe(3);
+    } finally {
+      await deposed.close();
+      await successor.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a leader crashed inside its acknowledgement leaves the work for its successor",
+  async ({ browser }) => {
+    const name = `ramose-leadership-crash-ack-${browser.uniqueId}`;
+    const left = identity({ database: databaseOf(browser.uniqueId) });
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const key = replicaLeaderKey(receiver, name);
+    const seeding = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(seeding, left, "left");
+    } finally {
+      seeding.close();
+    }
+    const crashing = await openTab(tabModule);
+    const successor = await openTab(tabModule);
+    try {
+      await stand(crashing, name, receiver);
+      expect((await leading(crashing)).epoch).toBe(1);
+      expect(await crashing.call<number>("enqueue", {
+        scope: receiver,
+        drafts: [draft(receiver)],
+      })).toBe(1);
+
+      // The leader is inside the transaction that settles the receipt.
+      const invocation = await crashing.call<string>("stallAcknowledgement", {
+        scope: receiver,
+      });
+      crashing.crash();
+
+      await stand(successor, name, receiver);
+      expect((await leading(successor)).epoch).toBe(2);
+
+      // The acknowledgement either landed whole or not at all, and the
+      // successor finishes whatever it finds under its own epoch.
+      const settling = await IndexedDbReplicaStorage.open(name);
+      try {
+        const submitting = settling.outbox(() => ({ key, epoch: 2 }));
+        const { plans } = await submitting.submissionPlan(scope);
+        const head = plans[0]?.head ?? { type: "empty" as const };
+        if (head.type === "ready") {
+          expect(head.record.invocation).toBe(invocation);
+          expect(
+            (await submitting.acknowledge(head.record, COMMITTED, 1_700_000_000_002))
+              .state,
+          ).toBe("committed");
+        } else {
+          expect(head.type).toBe("empty");
+        }
+      } finally {
+        settling.close();
+      }
+      expect(await receiptStates(name)).toEqual(["committed"]);
+      expect(await dumpStore(name, "mutation-outbox-v1")).toEqual([]);
+    } finally {
+      await successor.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a leader crashed while submitting leaves the queued work for its successor",
+  async ({ browser }) => {
+    const name = `ramose-leadership-crash-submit-${browser.uniqueId}`;
+    const left = identity({ database: databaseOf(browser.uniqueId) });
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const key = replicaLeaderKey(receiver, name);
+    const seeding = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(seeding, left, "left");
+    } finally {
+      seeding.close();
+    }
+    const crashing = await openTab(tabModule);
+    const successor = await openTab(tabModule);
+    try {
+      await stand(crashing, name, receiver);
+      expect((await leading(crashing)).epoch).toBe(1);
+      await crashing.call<number>("enqueue", {
+        scope: receiver,
+        drafts: [draft(receiver), draft(receiver)],
+      });
+
+      // The leader has planned the head and is waiting on the server for it.
+      const invocation = await crashing.call<string>("planHead", {
+        scope: receiver,
+      });
+      crashing.crash();
+
+      await stand(successor, name, receiver);
+      expect((await leading(successor)).epoch).toBe(2);
+      const settling = await IndexedDbReplicaStorage.open(name);
+      try {
+        const submitting = settling.outbox(() => ({ key, epoch: 2 }));
+        const { plans } = await submitting.submissionPlan(scope);
+        const head = plans[0]!.head;
+        if (head.type !== "ready") {
+          throw new Error(`the queued work was left ${head.type}`);
+        }
+        expect(head.record.invocation).toBe(invocation);
+        await submitting.acknowledge(head.record, COMMITTED, 1_700_000_000_002);
+        const next = (await submitting.submissionPlan(scope)).plans[0]!.head;
+        if (next.type !== "ready") throw new Error(`the queue is ${next.type}`);
+        await submitting.acknowledge(next.record, COMMITTED, 1_700_000_000_003);
+      } finally {
+        settling.close();
+      }
+      expect(await receiptStates(name)).toEqual(["committed", "committed"]);
+      expect(await dumpStore(name, "mutation-outbox-v1")).toEqual([]);
+    } finally {
+      await successor.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a leader crashed inside its snapshot install leaves no half replica",
+  async ({ browser }) => {
+    const name = `ramose-leadership-crash-install-${browser.uniqueId}`;
+    const left = identity({ database: databaseOf(browser.uniqueId) });
+    const receiver = replicaDatabaseScopeOf(left);
+    const crashing = await openTab(tabModule);
+    const successor = await openTab(tabModule);
+    try {
+      await stand(crashing, name, receiver);
+      expect((await leading(crashing)).epoch).toBe(1);
+      expect(await crashing.call<string>("stallInstall", {
+        storageName: name,
+        identity: left,
+        attributes: REPLICA_ATTRIBUTES,
+        snapshot: opaque("q"),
+        revision: opaque("r"),
+        datoms: [{
+          entity: opaque("e"),
+          field: ":item/name",
+          value: { type: "string", value: "crashed" },
+          op: "add",
+        }],
+      })).toBe("replica.install");
+      crashing.crash();
+
+      await stand(successor, name, receiver);
+      expect((await leading(successor)).epoch).toBe(2);
+
+      // The install was one transaction, so the successor finds the replica
+      // whole or absent, never the staging the crash was standing in.
+      const installed = await dumpStore(name, "replica-committed-v1");
+      expect(installed.length).toBeLessThan(2);
+      expect(await dumpStore(name, "replica-staging-v1")).toEqual([]);
+      expect(await dumpStore(name, "replica-staging-chunks-v1")).toEqual([]);
+      const settling = await IndexedDbReplicaStorage.open(name);
+      try {
+        const restored = await settling.restore(
+          left,
+          REPLICA_ATTRIBUTES,
+          READ_COMPATIBILITY,
+        );
+        if (installed.length === 0) expect(restored).toBeUndefined();
+        else expect(restored?.handles.size).toBe(1);
+        restored?.release();
+        await confirm(settling, left, "left");
+        expect((await dumpStore(name, "replica-committed-v1")).length).toBe(1);
+      } finally {
+        settling.close();
+      }
+    } finally {
+      await successor.close();
+      await deleteDatabase(name);
+    }
+  },
+);

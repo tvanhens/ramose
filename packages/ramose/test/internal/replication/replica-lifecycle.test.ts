@@ -150,6 +150,37 @@ describe("generation fences", () => {
     expect(lease.generationOf(database)).toBe(2);
   });
 
+  test("a holder admitted before a clear cannot write into the cleared scope", () => {
+    const scope = replicaScopeKey(replicaScopeOf(identity()));
+    const admitted = new ReplicaLease(4);
+
+    admitted.admit(scope, 0);
+    admitted.admit(scope, 4);
+    expect(() => admitted.admit(scope, 5)).toThrow(ReplicaFencedError);
+
+    const readmitted = new ReplicaLease(5);
+    readmitted.admit(scope, 5);
+    expect(readmitted.admittedAt()).toBe(5);
+  });
+
+  test("a holder that never read the barrier is refused by the first clear", () => {
+    const scope = replicaScopeKey(replicaScopeOf(identity()));
+    const lease = new ReplicaLease();
+    expect(lease.admittedAt()).toBe(0);
+    lease.admit(scope, 0);
+    try {
+      lease.admit(scope, 1);
+      throw new Error("expected the barrier to refuse the holder");
+    } catch (error) {
+      expect(error).toMatchObject({
+        _tag: "ReplicaFencedError",
+        key: scope,
+        expected: 0,
+        observed: 1,
+      });
+    }
+  });
+
   test("a fence failure names the key and both generations", () => {
     const lease = new ReplicaLease();
     lease.observe("scope-key", 4);

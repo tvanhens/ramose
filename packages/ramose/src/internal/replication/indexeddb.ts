@@ -76,6 +76,7 @@ import {
 import {
   identityInDatabase,
   identityInScope,
+  REPLICA_CLEAR_BARRIER_KEY,
   REPLICA_COMMITTED_HEADS_STORE,
   REPLICA_GENERATIONS_STORE,
   replicaDatabaseKey,
@@ -226,11 +227,13 @@ type RouteSlotRecord = {
 
 type GenerationRecord = {
   readonly key: string;
-  readonly kind: "scope" | "database" | "partition" | "leader";
+  readonly kind: "scope" | "database" | "partition" | "leader" | "barrier";
   readonly scope: string;
   readonly generation: number;
   readonly confirmedAt: number;
   readonly fencedAt: number | null;
+  /** The clear barrier the last clear of this scope advanced to. */
+  readonly clearedAt?: number;
 };
 
 export type ReplicaRouteObservation = {
@@ -463,6 +466,7 @@ const enforceFence = async (
   try {
     fence.lease.observe(fence.scopeKey, scope?.generation ?? 0);
     fence.lease.observe(fence.databaseKey, database?.generation ?? 0);
+    fence.lease.admit(fence.scopeKey, scope?.clearedAt ?? 0);
   } catch (error) {
     await abortTransaction(transaction);
     throw error;
@@ -1019,16 +1023,38 @@ export class IndexedDbReplicaStorage {
     return generation;
   }
 
-  lease(): ReplicaLease {
-    return new ReplicaLease();
+  /**
+   * The clear barrier as it stands, which is what a holder about to activate
+   * records before it knows which scope it will install into.
+   */
+  async admission(): Promise<number> {
+    const transaction = this.database.transaction(GENERATIONS, "readonly");
+    const record = await requestResult<GenerationRecord | undefined>(
+      transaction.objectStore(GENERATIONS).get(REPLICA_CLEAR_BARRIER_KEY),
+    );
+    await transactionDone(transaction);
+    return record?.generation ?? 0;
   }
 
-  async leaseFor(identity: ReplicationIdentity): Promise<ReplicaLease> {
+  /** A lease admitted at the current clear barrier and holding no generation. */
+  async lease(): Promise<ReplicaLease> {
+    return new ReplicaLease(await this.admission());
+  }
+
+  /** Read the generations `lease` guards, and fail when they have moved. */
+  async confirmLease(
+    lease: ReplicaLease,
+    identity: ReplicationIdentity,
+  ): Promise<void> {
     this.assertScopeLive(replicaScopeOf(identity));
-    const lease = new ReplicaLease();
     const transaction = this.database.transaction(GENERATIONS, "readonly");
     await enforceFence(transaction, replicaFence(lease, identity));
     await transactionDone(transaction);
+  }
+
+  async leaseFor(identity: ReplicationIdentity): Promise<ReplicaLease> {
+    const lease = await this.lease();
+    await this.confirmLease(lease, identity);
     return lease;
   }
 
@@ -1175,10 +1201,23 @@ export class IndexedDbReplicaStorage {
     }
     const mutations = await clearMutationScope(transaction, scope);
     const generation = confirmed.generation + 1;
+    const barrier = await requestResult<GenerationRecord | undefined>(
+      generations.get(REPLICA_CLEAR_BARRIER_KEY),
+    );
+    const clearedAt = (barrier?.generation ?? 0) + 1;
+    generations.put({
+      key: REPLICA_CLEAR_BARRIER_KEY,
+      kind: "barrier",
+      scope: REPLICA_CLEAR_BARRIER_KEY,
+      generation: clearedAt,
+      confirmedAt: barrier?.confirmedAt ?? Date.now(),
+      fencedAt: Date.now(),
+    } satisfies GenerationRecord);
     generations.put({
       ...confirmed,
       generation,
       fencedAt: Date.now(),
+      clearedAt,
     } satisfies GenerationRecord);
     await this.boundaries.checkpoint("replica.clear");
     return Object.freeze({
@@ -1660,6 +1699,18 @@ export class IndexedDbReplicaStorage {
     return (record?.generation ?? 0) === sweep;
   }
 
+  /** The identity this credential is bound to, which another tab may rebind. */
+  async boundIdentity(
+    fingerprint: string,
+  ): Promise<ReplicationIdentity | undefined> {
+    const transaction = this.database.transaction(CREDENTIAL_BINDINGS, "readonly");
+    const record = await requestResult<CredentialBindingRecord | undefined>(
+      transaction.objectStore(CREDENTIAL_BINDINGS).get(fingerprint),
+    );
+    await transactionDone(transaction);
+    return record?.identity;
+  }
+
   async unbindCredential(fingerprint: string): Promise<void> {
     const transaction = this.database.transaction(CREDENTIAL_BINDINGS, "readwrite");
     transaction.objectStore(CREDENTIAL_BINDINGS).delete(fingerprint);
@@ -1807,15 +1858,22 @@ export class IndexedDbReplicaStorage {
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       const generations = transaction.objectStore(GENERATIONS);
-      const [scopeRecord, databaseRecord, existingRoute] = await Promise.all([
-        requestResult<GenerationRecord | undefined>(generations.get(scopeKey)),
-        requestResult<GenerationRecord | undefined>(generations.get(databaseKey)),
-        binding.route === undefined
-          ? undefined
-          : requestResult<RouteSlotRecord | undefined>(
-            transaction.objectStore(ROUTE_SLOTS).get([binding.route.scope, binding.route.pathKey]),
-          ),
-      ]);
+      const candidates = transaction.objectStore(CACHE_CANDIDATES);
+      const [scopeRecord, databaseRecord, existingRoute, heldCandidate] = await Promise
+        .all([
+          requestResult<GenerationRecord | undefined>(generations.get(scopeKey)),
+          requestResult<GenerationRecord | undefined>(generations.get(databaseKey)),
+          binding.route === undefined
+            ? undefined
+            : requestResult<RouteSlotRecord | undefined>(
+              transaction.objectStore(ROUTE_SLOTS).get([binding.route.scope, binding.route.pathKey]),
+            ),
+          binding.candidateKey === undefined
+            ? undefined
+            : requestResult<CacheCandidateRecord | undefined>(
+              candidates.get([binding.candidateKey.selector, binding.candidateKey.routeSlot]),
+            ),
+        ]);
       for (const seeded of confirmationRecords(binding.identity, Date.now())) {
         const existing = seeded.kind === "scope" ? scopeRecord : databaseRecord;
         if (existing === undefined) generations.put(seeded);
@@ -1824,17 +1882,23 @@ export class IndexedDbReplicaStorage {
         try {
           options.lease.observe(scopeKey, scopeRecord?.generation ?? 1);
           options.lease.observe(databaseKey, databaseRecord?.generation ?? 1);
+          options.lease.admit(scopeKey, scopeRecord?.clearedAt ?? 0);
         } catch (error) {
           await abortTransaction(transaction);
           throw error;
         }
       }
+      const replaced = await this.stageReplacedPrincipal(
+        transaction,
+        binding.identity,
+        heldCandidate,
+      );
       transaction.objectStore(CREDENTIAL_BINDINGS).put({
         fingerprint: binding.fingerprint,
         identity: binding.identity,
       } satisfies CredentialBindingRecord);
       if (binding.candidateKey !== undefined) {
-        transaction.objectStore(CACHE_CANDIDATES).put({
+        candidates.put({
           selector: binding.candidateKey.selector,
           routeSlot: binding.candidateKey.routeSlot,
           identity: binding.identity,
@@ -1854,10 +1918,46 @@ export class IndexedDbReplicaStorage {
         } satisfies RouteSlotRecord);
       }
       await commitTransaction(transaction);
+      if (replaced !== undefined) this.announce(replicaNotice("reset", replaced));
       this.announce(identityNotice("selector", binding.identity));
     } finally {
       removeAbort();
     }
+  }
+
+  /**
+   * Fence the principal an account selector used to name.
+   *
+   * One selector names one account, so a confirmation that answers it with
+   * another principal has replaced the one before it. Bumping the previous
+   * scope's generation inside this transaction is what stops a tab still
+   * holding that principal from publishing or submitting it: the tab re-reads
+   * the generation its lease adopted and finds it moved, whether or not the
+   * notice announced below ever reaches it.
+   */
+  private async stageReplacedPrincipal(
+    transaction: IDBTransaction,
+    confirmed: ReplicationIdentity,
+    held: CacheCandidateRecord | undefined,
+  ): Promise<ReplicaScope | undefined> {
+    if (held === undefined) return undefined;
+    const previous = replicaScopeOf(held.identity);
+    if (identityInScope(confirmed, previous)) return undefined;
+    const generations = transaction.objectStore(GENERATIONS);
+    const key = replicaScopeKey(previous);
+    const record = await requestResult<GenerationRecord | undefined>(
+      generations.get(key),
+    );
+    generations.put({
+      key,
+      kind: "scope",
+      scope: key,
+      generation: (record?.generation ?? 0) + 1,
+      confirmedAt: record?.confirmedAt ?? Date.now(),
+      fencedAt: Date.now(),
+      ...(record?.clearedAt === undefined ? {} : { clearedAt: record.clearedAt }),
+    } satisfies GenerationRecord);
+    return previous;
   }
 
   async bindCredential(

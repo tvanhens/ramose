@@ -530,7 +530,7 @@ browserTest("a fenced lease cannot queue work into a cleared scope", async ({ br
     const after = await dumpMutations(name);
     expect(after["mutation-outbox-v1"]).toEqual([]);
 
-    const fresh = writer.lease();
+    const fresh = await writer.lease();
     const queued = await writer.outbox().enqueue(draft(receiver), { scope, lease: fresh });
     expect(queued.sequence).toBe(1);
   } finally {

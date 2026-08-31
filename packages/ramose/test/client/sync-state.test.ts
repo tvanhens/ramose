@@ -68,6 +68,13 @@ describe("readSessionSnapshot", () => {
     })).toEqual({ status: "update-required", publishes: false });
   });
 
+  test("a fenced session withdraws its value while it activates again", () => {
+    expect(read({ status: "failed", failure: "fenced" }))
+      .toEqual({ status: "connecting", publishes: false });
+    expect(read({ status: "failed", failure: "fenced", value: value(false) }))
+      .toEqual({ status: "connecting", publishes: false });
+  });
+
   test("a closed session publishes nothing", () => {
     expect(read({ status: "closed", value: value(false) }))
       .toEqual({ status: "closed", publishes: false });

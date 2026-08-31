@@ -19,7 +19,33 @@ const advanced = (entry: QueueProgress): boolean =>
   entry.state._tag === "Committed" || entry.state._tag === "Rejected";
 
 const transient = (entry: QueueProgress): boolean =>
-  entry.state._tag === "Retry" || entry.state._tag === "Interrupted";
+  entry.state._tag === "Retry" ||
+  (entry.state._tag === "Interrupted" && entry.state.reason !== "scope-fenced");
+
+/**
+ * Work this tab was refused because the generation or epoch it wrote under is
+ * not the one that stands. Nothing about repeating the pass changes that.
+ */
+const deposed = (entry: QueueProgress): boolean =>
+  entry.state._tag === "Interrupted" && entry.state.reason === "scope-fenced";
+
+export type PassOutcome = "stand-down" | "again" | "later" | "settled";
+
+/**
+ * What a submission pass leaves behind it.
+ *
+ * A pass refused by a durable fence stands down instead of retrying: the epoch
+ * or generation it wrote under is not the one that stands, so the same pass
+ * under the same epoch can only be refused again, and a tab that keeps
+ * repeating it never lets whichever tab deposed it get on with the work.
+ */
+export const passOutcome = (
+  progress: readonly QueueProgress[],
+): PassOutcome => {
+  if (progress.some(deposed)) return "stand-down";
+  if (progress.some(advanced)) return "again";
+  return progress.some(transient) ? "later" : "settled";
+};
 
 const RETRY_DELAY_MS = 1_000;
 
@@ -127,11 +153,19 @@ export class SubmissionLoop {
       signal: this.inflight.signal,
     });
     await this.settle(progress);
-    if (progress.some(advanced)) {
-      this.request(scope);
-      return;
+    switch (passOutcome(progress)) {
+      case "stand-down":
+        await leadership.standDown();
+        return;
+      case "again":
+        this.request(scope);
+        return;
+      case "later":
+        this.later(scope);
+        return;
+      case "settled":
+        return;
     }
-    if (progress.some(transient)) this.later(scope);
   }
 
   private later(scope: ReplicaScope): void {

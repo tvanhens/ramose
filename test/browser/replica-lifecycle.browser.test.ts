@@ -356,7 +356,7 @@ browserTest("a fenced lease cannot repopulate a cleared scope or write nodes aft
     expect(afterFence["replica-staging-v1"]).toEqual([]);
     expect(afterFence["replica-credential-bindings-v1"]).toEqual([]);
 
-    const renewed = writer.lease();
+    const renewed = await writer.lease();
     await writer.bindAuthenticated({ fingerprint: "fingerprint-left", identity: left }, {
       lease: renewed,
     });
@@ -373,7 +373,7 @@ browserTest("a fenced lease cannot repopulate a cleared scope or write nodes aft
     await writer.startSnapshot({
       type: "SnapshotStart", protocol: 1, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
-    }, { lease: writer.lease() });
+    }, { lease: await writer.lease() });
     await writer.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: left, snapshot: opaque("q"), index: 0,
       datoms: [snapshotDatom("reinstalled")],

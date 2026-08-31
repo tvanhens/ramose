@@ -107,9 +107,14 @@ export const readSessionSnapshot = (
         ? { status: "update-required", publishes: false }
         : { status: "offline", publishes: true };
     case "failed":
-      return snapshot.failure === "unauthorized"
-        ? { status: "authentication-required", publishes: false }
-        : { status: "offline", publishes: true };
+      switch (snapshot.failure) {
+        case "unauthorized":
+          return { status: "authentication-required", publishes: false };
+        case "fenced":
+          return { status: "connecting", publishes: false };
+        default:
+          return { status: "offline", publishes: true };
+      }
     case "closed":
       return { status: "closed", publishes: false };
   }
@@ -638,6 +643,10 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.context.onFenced();
       return;
     }
+    if (snapshot.status === "failed" && snapshot.failure === "fenced") {
+      this.refence();
+      return;
+    }
     const value = snapshot.value;
     const identity = value?.identity;
     if (identity !== undefined) {
@@ -696,7 +705,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.graphChildren.clear();
   }
 
-  private transition(): void {
+  private transition(status: SyncStatus = "authentication-required"): void {
     this.generation++;
     this.committed = undefined;
     this.forgetHandles();
@@ -711,10 +720,41 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.releaseOverlay = undefined;
     this.updateRequired = false;
     this.retired.clear();
-    this.publishStatus("authentication-required");
+    this.publishStatus(status);
     for (const observer of this.observers.values()) {
       this.spawn(observer.run(this.generation, undefined, true));
     }
+  }
+
+  /**
+   * Withdraw what a fenced session was holding and activate again.
+   *
+   * The scope this handle was reading was cleared or given to another
+   * principal, so the value it holds is one no tab may publish. Activating
+   * again is what reaches the state the scope is in now: the credential this
+   * client presents decides which principal answers, and nothing from the
+   * fenced one survives the transition.
+   */
+  private refence(): void {
+    this.releaseSession?.();
+    this.releaseSession = undefined;
+    const session = this.session;
+    this.session = undefined;
+    this.identity = undefined;
+    this.lastSession = undefined;
+    this.activation = undefined;
+    this.transition("connecting");
+    if (session !== undefined) this.spawn(session.close());
+    if (this.live()) void this.activate();
+  }
+
+  /**
+   * Re-read the durable generations this handle's session adopted, so a clear
+   * or principal replacement another tab committed withdraws this value.
+   */
+  async revalidate(): Promise<void> {
+    if (!this.live()) return;
+    await this.session?.revalidate().catch(() => false);
   }
 
   private statusOf(snapshot: ReplicationSessionSnapshot): SyncStatus {
