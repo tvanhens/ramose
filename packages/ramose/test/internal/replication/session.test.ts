@@ -86,7 +86,7 @@ describe("metadata-only cache candidate confirmation", () => {
 
   test("accepts only frames that establish a valid initial transition", () => {
     expect(classifyReplicationCandidateFrame(candidate, {
-      type: "ResumeReady", protocol: 2, identity, revision,
+      type: "ResumeReady", protocol: 2, identity, revision, ordinal: 1,
     })).toBe("resume");
     expect(classifyReplicationCandidateFrame(candidate, change(revision, opaque("2"))))
       .toBe("change");
@@ -114,7 +114,7 @@ describe("metadata-only cache candidate confirmation", () => {
       snapshot: opaque("s"), revision, ordinal: 1, chunks: 0,
     })).toBe("invalid");
     expect(classifyReplicationCandidateFrame(candidate, {
-      type: "ResumeReady", protocol: 2, identity: other, revision,
+      type: "ResumeReady", protocol: 2, identity: other, revision, ordinal: 1,
     })).toBe("invalid");
     expect(classifyReplicationCandidateFrame(undefined, {
       type: "KeepAlive", protocol: 2, identity,

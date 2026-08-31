@@ -238,6 +238,43 @@ describe("client replication transition machine", () => {
     }))).toBe(advanced);
   });
 
+  test("an acknowledged resume carries the ordinal the identity has since reached", () => {
+    const prior = committed();
+    const acknowledged = apply(prior, {
+      type: "ResumeReady",
+      protocol: 2,
+      identity: active,
+      revision: opaque("K"),
+      ordinal: 3,
+    });
+    expect(acknowledged.committed).toEqual({
+      revision: opaque("K"),
+      ordinal: 3,
+      datoms: [{ ...first, op: "add" as const }],
+      handles: bindings(opaque("H")),
+    });
+
+    for (const ordinal of [1, 3]) {
+      expect(apply(acknowledged, {
+        type: "ResumeReady",
+        protocol: 2,
+        identity: active,
+        revision: opaque("K"),
+        ordinal,
+      })).toBe(acknowledged);
+    }
+
+    expect(apply(acknowledged, changeFrame({
+      type: "Change",
+      protocol: 2,
+      identity: active,
+      from: opaque("K"),
+      revision: opaque("L"),
+      ordinal: 2,
+      datoms: [second],
+    }))).toBe(acknowledged);
+  });
+
   test("resume-ready accepts only the matching committed partition and revision", () => {
     const prior = committed();
     const ready: ReplicationFrame = {
@@ -245,6 +282,7 @@ describe("client replication transition machine", () => {
       protocol: 2,
       identity: active,
       revision: opaque("K"),
+      ordinal: 1,
     };
     expect(apply(prior, ready)).toBe(prior);
     expect(apply(prior, ready)).toBe(prior);
@@ -318,6 +356,7 @@ describe("client replication transition machine", () => {
       protocol: 2,
       identity: active,
       revision: opaque("K"),
+      ordinal: 1,
     })).toBe(closed);
   });
 });

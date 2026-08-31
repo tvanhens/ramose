@@ -766,6 +766,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
           protocol: 2,
           identity: snapshotIdentity,
           revision: snapshot.state.committed!.revision,
+          ordinal: snapshot.state.committed!.ordinal,
         });
         const changed = resumed.next();
         const secondNote = await invoke(base, member, {
@@ -897,6 +898,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
           protocol: 2,
           identity,
           revision,
+          ordinal: 1,
         });
 
         const following = resumed.next();

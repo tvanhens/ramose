@@ -520,6 +520,7 @@ const advanceFrames = async function* (
           protocol: REPLICATION_PROTOCOL_VERSION,
           identity: expectedIdentity,
           revision,
+          ordinal: issued.ordinal,
         });
         return readyState;
       }

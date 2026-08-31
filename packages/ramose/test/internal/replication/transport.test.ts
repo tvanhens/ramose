@@ -37,6 +37,7 @@ const ready: ReplicationFrame = {
   protocol: 2,
   identity,
   revision: opaque("r"),
+  ordinal: 1,
 };
 
 const chunks = (...values: Uint8Array[]): AsyncIterable<Uint8Array> => ({

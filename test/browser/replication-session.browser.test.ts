@@ -358,6 +358,130 @@ browserTest("a follower never re-renders a committed revision it has already lef
   }
 });
 
+browserTest("an acknowledged resume durably advances the ordinal a delayed change cannot pass", async ({ browser }) => {
+  const name = `ramose-session-resume-ordinal-${browser.uniqueId}`;
+  const storage = await IndexedDbReplicaStorage.open(name);
+  const entity = opaque("e");
+  const installed = opaque("r");
+  const delayed = opaque("2");
+  const partition = replicaPartitionKey(selected);
+  const storedOrdinal = async (): Promise<number | undefined> => {
+    const database = await openNative(name);
+    const read = database.transaction("replica-committed-heads-v1", "readonly");
+    const head = await requestResult<{ readonly ordinal?: number } | undefined>(
+      read.objectStore("replica-committed-heads-v1").get(partition),
+    );
+    await transactionDone(read);
+    database.close();
+    return head?.ordinal;
+  };
+  const named = async (db: Db): Promise<string[]> => {
+    const attribute = db.attr(":item/name")!;
+    return (await db.datomsArray(Index.AEVT, { a: attribute.id }))
+      .map((datom) => datom.v as string);
+  };
+  const fact = <Op extends "add" | "retract">(value: string, op: Op) => ({
+    entity,
+    field: ":item/name",
+    value: { type: "string" as const, value },
+    op,
+  });
+  const acknowledge = (revision: string, ordinal: number) =>
+    storage.acknowledgeResume({
+      type: "ResumeReady",
+      protocol: 2,
+      identity: selected,
+      revision,
+      ordinal,
+    });
+  try {
+    await install(storage);
+    expect(await storedOrdinal()).toBe(1);
+
+    expect(await acknowledge(opaque("9"), 5)).toBeUndefined();
+    expect(await storedOrdinal()).toBe(1);
+
+    expect(await acknowledge(installed, 3)).toBe(3);
+    expect(await storedOrdinal()).toBe(3);
+    for (const ordinal of [1, 3]) {
+      expect(await acknowledge(installed, ordinal)).toBe(3);
+      expect(await storedOrdinal()).toBe(3);
+    }
+    const advanced = await storage.restore(
+      selected,
+      attributes,
+      selected.readCompatibilityHash,
+    );
+    expect(advanced?.revision).toBe(installed);
+    expect(advanced?.ordinal).toBe(3);
+    advanced!.release();
+
+    (await storage.applyChange(changeFrame({
+      type: "Change",
+      protocol: 2,
+      identity: selected,
+      from: installed,
+      revision: delayed,
+      ordinal: 2,
+      datoms: [fact("persisted", "retract"), fact("delayed", "add")],
+    })))?.release();
+    expect(await storedOrdinal()).toBe(3);
+
+    await storage.startSnapshot({
+      type: "SnapshotStart",
+      protocol: 2,
+      identity: selected,
+      snapshot: opaque("p"),
+      revision: delayed,
+    });
+    await storage.stageSnapshotChunk(snapshotChunk({
+      type: "SnapshotChunk",
+      protocol: 2,
+      identity: selected,
+      snapshot: opaque("p"),
+      index: 0,
+      datoms: [fact("delayed", "add")],
+    }));
+    expect(await storage.commitSnapshot({
+      type: "SnapshotCommit",
+      protocol: 2,
+      identity: selected,
+      snapshot: opaque("p"),
+      revision: delayed,
+      ordinal: 2,
+      chunks: 1,
+    }, attributes)).toBeUndefined();
+    expect(await storedOrdinal()).toBe(3);
+
+    const held = await storage.restore(
+      selected,
+      attributes,
+      selected.readCompatibilityHash,
+    );
+    expect(held?.revision).toBe(installed);
+    expect(await named(held!.db)).toEqual(["persisted"]);
+    held!.release();
+
+    const current = await storage.applyChange(changeFrame({
+      type: "Change",
+      protocol: 2,
+      identity: selected,
+      from: installed,
+      revision: opaque("3"),
+      ordinal: 4,
+      datoms: [fact("persisted", "retract"), fact("current", "add")],
+    }));
+    expect(current?.revision).toBe(opaque("3"));
+    expect(current?.ordinal).toBe(4);
+    expect(await named(current!.db)).toEqual(["current"]);
+    current!.release();
+    expect(await storedOrdinal()).toBe(4);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
 browserTest("keeps rotated-token candidates quarantined and safely rebinds collisions and renamed paths", async ({ browser }) => {
   const name = `ramose-session-candidate-${browser.uniqueId}`;
   const storage = await IndexedDbReplicaStorage.open(name);
@@ -495,6 +619,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       protocol: 2 as const,
       identity: selected,
       revision: opaque("r"),
+      ordinal: 1,
     };
     expect(classifyReplicationCandidateFrame(candidate, ready)).toBe("resume");
     await storage.bindAuthenticated({

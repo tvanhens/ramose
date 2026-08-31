@@ -26,6 +26,7 @@ import {
   type Change,
   type EntityHandleBinding,
   type ReplicationIdentity,
+  type ResumeReady,
   type SnapshotChunk,
   type SnapshotCommit,
   type SnapshotDatom,
@@ -2454,6 +2455,53 @@ export class IndexedDbReplicaStorage {
       handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };
+  }
+
+  async acknowledgeResume(
+    frame: ResumeReady,
+    options: ReplicaInstallOptions = {},
+  ): Promise<number | undefined> {
+    this.assertScopeLive(replicaScopeOf(frame.identity));
+    const fence = replicaFence(options.lease, frame.identity);
+    const partition = replicaPartitionKey(frame.identity);
+    const sweep = await this.sweepGeneration(partition);
+    options.signal?.throwIfAborted();
+    const write = this.database.transaction(
+      [COMMITTED, COMMITTED_HEADS, GENERATIONS],
+      "readwrite",
+    );
+    const removeAbort = abortWithSignal(write, options.signal);
+    try {
+      await enforceFence(write, fence);
+      await this.confirmNoSweep(write, partition, sweep);
+      const current = await requestResult<CommittedRecord | undefined>(
+        write.objectStore(COMMITTED).get(partition),
+      );
+      if (
+        current === undefined || current.revision !== frame.revision ||
+        !sameReplicationIdentity(current.identity, frame.identity)
+      ) {
+        await abortTransaction(write);
+        return undefined;
+      }
+      if (current.ordinal >= frame.ordinal) {
+        await transactionDone(write);
+        return current.ordinal;
+      }
+      const acknowledged: CommittedRecord = { ...current, ordinal: frame.ordinal };
+      write.objectStore(COMMITTED).put(acknowledged);
+      write.objectStore(COMMITTED_HEADS).put(committedHead(acknowledged));
+      await this.boundaries.checkpoint("replica.install");
+      await commitTransaction(write);
+      this.meter.manifests++;
+      this.meter.heads++;
+      return frame.ordinal;
+    } catch (error) {
+      await abortTransaction(write);
+      throw error;
+    } finally {
+      removeAbort();
+    }
   }
 
   async applyChange(

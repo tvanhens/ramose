@@ -393,10 +393,15 @@ export const applyReplicationFrame = (
     case "ResumeReady": {
       const identity = requireIdentity(state, frame.identity);
       if (Result.isFailure(identity)) return Result.fail(identity.failure);
-      if (state.committed?.revision !== frame.revision) {
+      const committed = state.committed;
+      if (committed?.revision !== frame.revision) {
         return fail("resume-ready revision does not match the committed value");
       }
-      return Result.succeed(state);
+      if (frame.ordinal <= committed.ordinal) return Result.succeed(state);
+      return Result.succeed({
+        ...state,
+        committed: Object.freeze({ ...committed, ordinal: frame.ordinal }),
+      });
     }
     case "KeepAlive": {
       const identity = requireIdentity(state, frame.identity);

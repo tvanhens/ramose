@@ -155,7 +155,7 @@ describe("replication frame codec", () => {
       ordinal: 2,
       datoms: [{ ...values[0]!, op: "retract" }],
     }),
-    { type: "ResumeReady", protocol: 2, identity, revision },
+    { type: "ResumeReady", protocol: 2, identity, revision, ordinal: 3 },
     { type: "Reset", protocol: 2, identity },
     { type: "KeepAlive", protocol: 2, identity },
     { type: "TerminalError", protocol: 2, code: "closed", identity },

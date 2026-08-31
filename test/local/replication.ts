@@ -269,6 +269,7 @@ const observeFirstSeenRetention = async (
   const first = await collectCommittedSnapshot(firstIterator);
   await closeIterator(firstIterator);
   const revision = first.state.committed!.revision;
+  const ordinal = first.state.committed!.ordinal;
 
   await armCheckpoint(base, world.database, "replication.resume.ready");
   const controller = new AbortController();
@@ -287,7 +288,11 @@ const observeFirstSeenRetention = async (
     await releaseCheckpoint(base, world.database, "replication.resume.ready");
     const ready = await withTimeout(next, 7_000, "first-seen resume ready");
     expect(ready.done).toBe(false);
-    expect(ready.value?.frame.type).toBe("ResumeReady");
+    expect(ready.value?.frame).toMatchObject({
+      type: "ResumeReady",
+      revision,
+      ordinal,
+    });
     const following = resumed.next();
     const publicOutcome = await Promise.race([
       following.then(() => "frame" as const),
@@ -315,9 +320,10 @@ type ResumeObservation = {
 const observeUnchangedResume = async (
   base: string,
   world: World,
-  revision: string,
+  committed: { readonly revision: string; readonly ordinal: number },
   attempts = 320,
 ): Promise<ResumeObservation> => {
+  const { revision, ordinal } = committed;
   const checkpoints: string[] = [];
   const controller = new AbortController();
   await armCheckpoint(base, world.database, "replication.resume.reconstruct");
@@ -361,6 +367,7 @@ const observeUnchangedResume = async (
       throw new Error(`unchanged resume did not acknowledge: ${JSON.stringify(ready)}`);
     }
     expect(ready.value.frame.revision).toBe(revision);
+    expect(ready.value.frame.ordinal).toBe(ordinal);
     const following = iterator.next();
     const afterReady = await Promise.race([
       following.then(() => "frame" as const),
@@ -741,8 +748,12 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       const initial = await collectCommittedSnapshot(initialIterator);
       await closeIterator(initialIterator);
       const revision = initial.state.committed!.revision;
+      const committed = {
+        revision,
+        ordinal: initial.state.committed!.ordinal,
+      };
 
-      const zero = await observeUnchangedResume(base, world, revision);
+      const zero = await observeUnchangedResume(base, world, committed);
       await create(base, world.database, world.admin, ConformanceIssue.ns, {
         key: "resume-ready-hidden",
         title: "Resume ready hidden",
@@ -750,7 +761,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         org: "other",
       });
       await currentBasis(base, world.database);
-      const hidden = await observeUnchangedResume(base, world, revision);
+      const hidden = await observeUnchangedResume(base, world, committed);
 
       expect(zero.checkpoints).toEqual(["resume.reconstruct", "resume.ready"]);
       expect(hidden.checkpoints).toEqual(zero.checkpoints);
@@ -1260,6 +1271,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       await closeIterator(initialIterator);
       const identity = snapshot.state.identity!;
       const revision = snapshot.state.committed!.revision;
+      const resumeOrdinal = snapshot.state.committed!.ordinal;
 
       const controller = new AbortController();
       const resumedResponse = await openReplication(
@@ -1282,6 +1294,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
           protocol: 2,
           identity,
           revision,
+          ordinal: resumeOrdinal,
         });
         const following = resumed.next();
         const quiet = await Promise.race([
@@ -1331,13 +1344,17 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         const initial = await collectCommittedSnapshot(initialIterator);
         await closeIterator(initialIterator);
         const revision = initial.state.committed!.revision;
+        const committed = {
+          revision,
+          ordinal: initial.state.committed!.ordinal,
+        };
         const initialWire = initial.frames.map((item) => item.wire);
 
         const scaleAttempts = 320 + HIDDEN_SCALE_COMMITS * 4;
         const zero = await observeUnchangedResume(
           base,
           world,
-          revision,
+          committed,
           scaleAttempts,
         );
         for (let index = 0; index < HIDDEN_SCALE_COMMITS; index++) {
@@ -1347,7 +1364,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         const hidden = await observeUnchangedResume(
           base,
           world,
-          revision,
+          committed,
           scaleAttempts,
         );
 
@@ -1379,6 +1396,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       await closeIterator(initialIterator);
       const identity = snapshot.state.identity!;
       const revision = snapshot.state.committed!.revision;
+      const resumeOrdinal = snapshot.state.committed!.ordinal;
 
       for (const target of ["transactor", "replica"] as const) {
         const aborted = await testAdmin(base, world.database, "/abort", { target });
@@ -1406,6 +1424,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
           protocol: 2,
           identity,
           revision,
+          ordinal: resumeOrdinal,
         });
       } finally {
         controller.abort();

@@ -264,6 +264,7 @@ export const ResumeReady = Schema.Struct({
   protocol: Schema.Literal(REPLICATION_PROTOCOL_VERSION),
   identity: ReplicationIdentity,
   revision: OpaqueReplicationId,
+  ordinal: ReplicationOrdinal,
 });
 export type ResumeReady = typeof ResumeReady.Type;
 
