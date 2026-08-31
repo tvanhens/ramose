@@ -225,9 +225,14 @@ browserTest(
     }]);
     const reader = await openTab(tabModule);
     const replacing = await openTab(tabModule);
+    const late = await openTab(tabModule);
     try {
       expect((await started(reader, name, database)).titles)
         .toEqual(["first", "second"]);
+
+      // A third tab is authenticating as the principal about to be replaced,
+      // and will not answer until after the replacement has landed.
+      expect(await late.call<number>("admit", { storageName: name })).toBe(0);
 
       // A holder of the principal about to be replaced, writing under it.
       const sibling = `x${database}`.slice(0, 43);
@@ -272,9 +277,58 @@ browserTest(
         database: sibling,
         note: { entity: opaque("m"), title: "late", rank: "z" },
       })).toBe("ReplicaFencedError");
+
+      // The activation that was still authenticating as the replaced
+      // principal cannot put the account back to it either.
+      expect(await late.call<string>("bindHeld", {
+        storageName: name,
+        database,
+      })).toBe("ReplicaFencedError");
+      const candidates = await dumpStore(name, "replica-cache-candidates-v1") as
+        readonly { readonly identity: { readonly principal: string } }[];
+      expect(candidates.map((candidate) => candidate.identity.principal))
+        .toEqual([REPLACEMENT]);
     } finally {
+      await late.close();
       await reader.close();
       await replacing.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a refused activation recovers on the wake-up after the application signs in",
+  async ({ browser }) => {
+    const name = `ramose-partition-signin-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    await seed(name, await identityFor(database), NOTES);
+    const tab = await openTab(tabModule);
+    try {
+      await tab.call("signOut");
+      await tab.call("start", { storageName: name, database });
+      expect(
+        await until(
+          () => tab.call<string>("sync"),
+          (status) => status === "authentication-required",
+          "the refused activation",
+        ),
+      ).toBe("authentication-required");
+      expect((await tab.call<QueryReport>("report")).titles).toEqual([]);
+
+      // The application signs in again. The same client instance activates
+      // again on its next wake-up and presents the refreshed bearer.
+      await tab.call("signIn", { bearer: "bearer-a" });
+      tab.wake();
+
+      const settled = await until(
+        () => tab.call<QueryReport>("report"),
+        (report) => report.titles.length > 0,
+        "the client to activate with the refreshed credential",
+      );
+      expect(settled.titles).toEqual(["first", "second"]);
+    } finally {
+      await tab.close();
       await deleteDatabase(name);
     }
   },

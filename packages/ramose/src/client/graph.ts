@@ -205,6 +205,13 @@ export const graphStableKey = (
   entity: string,
 ): string => `${replicaDatabaseKey(scope)} ${entity}`;
 
+/**
+ * The registry key of a database opened to submit to it rather than to read a
+ * path to it. It names the receiver, which is all a queue knows about one.
+ */
+export const receiverStableKey = (receiver: ReplicaDatabaseScope): string =>
+  `receiver ${replicaDatabaseKey(receiver)}`;
+
 type ResolvedSegment = {
   readonly id: EntityId;
   readonly name: string;

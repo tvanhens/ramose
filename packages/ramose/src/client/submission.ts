@@ -18,31 +18,39 @@ import type { ReceiptDriver } from "./receipt.ts";
 const advanced = (entry: QueueProgress): boolean =>
   entry.state._tag === "Committed" || entry.state._tag === "Rejected";
 
+const fenced = (
+  entry: QueueProgress,
+  reason: "scope-fenced" | "leadership-fenced",
+): boolean =>
+  entry.state._tag === "Interrupted" && entry.state.reason === reason;
+
 const transient = (entry: QueueProgress): boolean =>
   entry.state._tag === "Retry" ||
-  (entry.state._tag === "Interrupted" && entry.state.reason !== "scope-fenced");
+  (entry.state._tag === "Interrupted" &&
+    entry.state.reason !== "scope-fenced" &&
+    entry.state.reason !== "leadership-fenced");
 
-/**
- * Work this tab was refused because the generation or epoch it wrote under is
- * not the one that stands. Nothing about repeating the pass changes that.
- */
-const deposed = (entry: QueueProgress): boolean =>
-  entry.state._tag === "Interrupted" && entry.state.reason === "scope-fenced";
-
-export type PassOutcome = "stand-down" | "again" | "later" | "settled";
+export type PassOutcome = "withdraw" | "stand-down" | "again" | "later" | "settled";
 
 /**
  * What a submission pass leaves behind it.
  *
- * A pass refused by a durable fence stands down instead of retrying: the epoch
- * or generation it wrote under is not the one that stands, so the same pass
- * under the same epoch can only be refused again, and a tab that keeps
- * repeating it never lets whichever tab deposed it get on with the work.
+ * A pass refused by a durable fence never retries, because the epoch or
+ * generation it wrote under is not the one that stands and the same pass can
+ * only be refused again. Which fence refused it decides what follows. A
+ * leadership epoch another tab took means this tab is no longer the submitter,
+ * so it gives the lock up and stands again. A scope generation means the scope
+ * itself was withdrawn — cleared, or given to another principal — and standing
+ * for its leadership again would take that work back up under a principal that
+ * no longer holds it, so the tab re-reads what it is holding instead.
  */
 export const passOutcome = (
   progress: readonly QueueProgress[],
 ): PassOutcome => {
-  if (progress.some(deposed)) return "stand-down";
+  if (progress.some((entry) => fenced(entry, "scope-fenced"))) return "withdraw";
+  if (progress.some((entry) => fenced(entry, "leadership-fenced"))) {
+    return "stand-down";
+  }
   if (progress.some(advanced)) return "again";
   return progress.some(transient) ? "later" : "settled";
 };
@@ -70,6 +78,18 @@ export type SubmissionContext = {
     receiver: ReplicaDatabaseScope,
     credential: PassCredential,
   ) => MutationEndpoint | undefined;
+  /**
+   * Open a receiver this tab has queued work for but has not resolved. A
+   * confirmation is what turns it into an endpoint, so this returns nothing.
+   */
+  readonly resolve: (receiver: ReplicaDatabaseScope) => void;
+  /** Let go of a receiver this tab opened only to drain its queue. */
+  readonly retire: (receiver: ReplicaDatabaseScope) => void;
+  /**
+   * Re-read the durable generations every handle of this client adopted, so a
+   * scope withdrawn while this pass ran stops being submitted for.
+   */
+  readonly revalidate: () => Promise<void>;
   readonly reconcile: (
     receiver: ReplicaDatabaseScope,
     progress: readonly QueueProgress[],
@@ -152,8 +172,15 @@ export class SubmissionLoop {
       transport: submitMutation,
       signal: this.inflight.signal,
     });
+    for (const entry of progress) {
+      if (entry.state._tag === "Offline") this.context.resolve(entry.receiver);
+      else if (entry.state._tag === "Empty") this.context.retire(entry.receiver);
+    }
     await this.settle(progress);
     switch (passOutcome(progress)) {
+      case "withdraw":
+        await this.context.revalidate();
+        return;
       case "stand-down":
         await leadership.standDown();
         return;

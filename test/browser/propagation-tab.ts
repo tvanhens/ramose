@@ -183,6 +183,7 @@ export const observeChildRoute = async (
         scope: await replicaRouteScope(address),
         pathKey: await replicaRoutePathKey(CHILD_PATH),
         slot,
+        graphPath: CHILD_PATH,
       },
     });
   } finally {
@@ -235,6 +236,7 @@ export const seedDatabases = async (
               scope: await replicaRouteScope(address),
               pathKey: await replicaRoutePathKey(graphPath),
               slot: routeSlot,
+              graphPath,
             },
           }
           : {}),
@@ -293,9 +295,12 @@ type LoopReport = {
   readonly passes: number;
   readonly planned: readonly string[];
   readonly overlapped: boolean;
+  /** The graph path each unresolved receiver was durably recorded at. */
+  readonly resolved: readonly string[];
+  readonly retired: readonly string[];
 };
 
-let token = TOKEN;
+let token: string | undefined = TOKEN;
 let held: ReplicaLease | undefined;
 let published: QueryReport[] = [];
 let client: Client | undefined;
@@ -310,6 +315,8 @@ let leadership: SyncLeadership | undefined;
 let loop: SubmissionLoop | undefined;
 let passes = 0;
 let planned: string[] = [];
+let resolved: string[] = [];
+let retired: string[] = [];
 let inPass = false;
 let overlapped = false;
 
@@ -335,7 +342,10 @@ const open = (storageName: string): ClientDatabase => {
     url: OFFLINE,
     root: ROOT,
     catalog: NotesCatalog,
-    auth: () => ({ token, cacheKey: CACHE_KEY }),
+    auth: () => {
+      if (token === undefined) throw new Error("the application has no session");
+      return { token, cacheKey: CACHE_KEY };
+    },
     storageName,
   });
   database = client.open();
@@ -427,6 +437,12 @@ export const serve = (id: string): void =>
       return token;
     },
 
+    /** Leave the application with no credential to activate with. */
+    signOut: (): boolean => {
+      token = undefined;
+      return true;
+    },
+
     /** Clear this principal's local data through the public API. */
     clearLocal: async (): Promise<string> => {
       await client!.clearLocalData();
@@ -451,7 +467,7 @@ export const serve = (id: string): void =>
       const address = rootAddress();
       const routeSlot = await rootReplicaRouteSlot();
       const [fingerprint, selector, scope, pathKey] = await Promise.all([
-        replicationCredentialFingerprint(token, address, routeSlot),
+        replicationCredentialFingerprint(token ?? TOKEN, address, routeSlot),
         replicationCacheSelector(CACHE_KEY, address),
         replicaRouteScope(address),
         replicaRoutePathKey([]),
@@ -642,6 +658,15 @@ export const serve = (id: string): void =>
           planned.push(receiver.database);
           return undefined;
         },
+        resolve: (receiver) => {
+          void opened.graphReceiver(receiver).then((record) => {
+            if (record !== undefined) resolved.push(record.graphPath.join("/"));
+          });
+        },
+        retire: (receiver) => {
+          retired.push(receiver.database);
+        },
+        revalidate: () => Promise.resolve(),
         reconcile: () => Promise.resolve(),
         live: () => true,
       });
@@ -653,6 +678,8 @@ export const serve = (id: string): void =>
         passes,
         planned: [...planned],
         overlapped,
+        resolved: [...resolved],
+        retired: [...retired],
       };
     },
 
@@ -661,6 +688,8 @@ export const serve = (id: string): void =>
       passes,
       planned: [...planned],
       overlapped,
+      resolved: [...resolved],
+      retired: [...retired],
     }),
 
     settle: async (): Promise<LoopReport> => {
@@ -670,6 +699,8 @@ export const serve = (id: string): void =>
         passes,
         planned: [...planned],
         overlapped,
+        resolved: [...resolved],
+        retired: [...retired],
       };
     },
 

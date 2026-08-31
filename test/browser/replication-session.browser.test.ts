@@ -4,6 +4,7 @@ import type { AttributeSpec } from "../../packages/ramose/src/internal/core/sche
 import {
   IndexedDbReplicaStorage,
   REPLICA_DATABASE_VERSION,
+  REPLICA_MANIFEST_STORAGE_VERSION,
   replicaPartitionKey,
   type ReplicaCacheCandidate,
 } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
@@ -707,7 +708,7 @@ browserTest(
     try {
       const previous = await openNative(
         name,
-        REPLICA_DATABASE_VERSION - 1,
+        REPLICA_MANIFEST_STORAGE_VERSION - 1,
         (database, upgrade) => {
           for (const [store, keyPath] of PREVIOUS_STORE_KEY_PATHS) {
             database.createObjectStore(store, { keyPath: keyPath as string | string[] });

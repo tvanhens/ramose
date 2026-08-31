@@ -19,8 +19,8 @@ import {
   identityInDatabase,
   replicaDatabaseKey,
   replicaDatabaseScopeOf,
+  ReplicaLease,
   replicaScopeOf,
-  type ReplicaLease,
 } from "./replica-lifecycle.ts";
 import type { ReplicationFrame, ReplicationIdentity } from "./protocol.ts";
 import { satisfiesActivationFence } from "./activation-fence.ts";
@@ -352,6 +352,9 @@ export class ReplicationSession {
   }
 
   static async open(options: ReplicationSessionOptions): Promise<ReplicationSession> {
+    // Before any stored replica is read, so a clear that lands while this
+    // activation is reading one fences everything it goes on to publish.
+    const admission = await options.storage.admission();
     const activation = replicationActivationAddress(options.activation);
     const observation = {
       scope: await replicaRouteScope(activation),
@@ -401,9 +404,10 @@ export class ReplicationSession {
           options.readCompatibilityHash,
         )
         : undefined;
-      lease = restored === undefined
-        ? await options.storage.lease()
-        : await options.storage.leaseFor(restored.identity);
+      lease = new ReplicaLease(admission);
+      if (restored !== undefined) {
+        await options.storage.confirmLease(lease, restored.identity);
+      }
     } catch (error) {
       for (const release of registration?.releases ?? []) release();
       retention?.();
@@ -479,7 +483,11 @@ export class ReplicationSession {
                   ...(candidateKey === undefined
                     ? {}
                     : { candidateKey: { selector: candidateKey.selector, routeSlot: confirmedSlot } }),
-                  route: { ...observation, slot: confirmedSlot },
+                  route: {
+                    ...observation,
+                    slot: confirmedSlot,
+                    graphPath: activation.graphPath,
+                  },
                 }, { signal: session.controller.signal, lease: session.lease });
                 if (!session.current(generation)) return;
                 session.bound = confirmedFingerprint;

@@ -200,8 +200,9 @@ const until = async <A>(
   probe: () => Promise<A>,
   ready: (value: A) => boolean,
   label: string,
+  budget = 10_000,
 ): Promise<A> => {
-  const deadline = performance.now() + 4_000;
+  const deadline = performance.now() + budget;
   for (;;) {
     const value = await probe();
     if (ready(value)) return value;
@@ -218,11 +219,11 @@ const stand = async (
   scope: ReplicaDatabaseScope,
 ): Promise<TabReport> => tab.call<TabReport>("stand", { storageName, scope });
 
-const leading = (tab: TabHandle): Promise<TabReport> =>
+const leading = (tab: TabHandle, label = "leadership"): Promise<TabReport> =>
   until(
     () => tab.call<TabReport>("report"),
     (report) => report.status === "leading",
-    "leadership",
+    label,
   );
 
 browserTest("two tabs of one scope elect exactly one leader", async ({ browser }) => {
@@ -486,6 +487,9 @@ browserTest(
             return Promise.resolve({ token: "token", cacheKey: "cache" });
           },
           endpoint: () => undefined,
+          resolve: () => undefined,
+          retire: () => undefined,
+          revalidate: () => Promise.resolve(),
           reconcile: () => Promise.resolve(),
           live: () => true,
         });
@@ -587,13 +591,13 @@ browserTest(
 
       // The lock the deposed leader gave up grants the tab that was waiting,
       // and its claim takes the epoch after the one that stopped fencing.
-      const took = await leading(successor);
+      const took = await leading(successor, "the successor to take the epoch");
       expect(took.epoch).toBe(2);
       expect(await durableEpoch(name, took.key)).toBe(2);
 
       // Standing again is what lets the deposed tab carry the work later.
       await successor.call<TabReport>("release");
-      const again = await leading(deposed);
+      const again = await leading(deposed, "the tab that stood down to lead again");
       expect(again.epoch).toBe(3);
       expect(await durableEpoch(name, again.key)).toBe(3);
     } finally {

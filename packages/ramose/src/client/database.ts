@@ -339,6 +339,8 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private updateRequired = false;
   private queueUpdateRequired = false;
   private closed = false;
+  private refused = false;
+  private awaitedRoute = false;
   private generation = 0;
 
   constructor(private readonly context: DatabaseContext) {}
@@ -513,9 +515,26 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       // recoverable the moment the application signs in again, and the waiters
       // are already settled by the fenced status published below.
       this.activation = undefined;
+      this.refused = true;
       this.publishStatus(terminal);
     });
     return this.activation;
+  }
+
+  /**
+   * Activate again after an activation the client refused for its credential
+   * or its build.
+   *
+   * `auth()` runs once per activation, so a refreshed bearer is presented by
+   * the next one. This is what makes a refused client recoverable without
+   * constructing another: the application signs in again and the next
+   * activation wake-up — a focused tab, a page shown from bfcache, a
+   * broadcast selector notice — carries the new credential.
+   */
+  reactivateRefused(): void {
+    if (!this.live() || !this.refused || this.activation !== undefined) return;
+    this.refused = false;
+    void this.activate();
   }
 
   private async open(): Promise<void> {
@@ -589,7 +608,10 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     if (!this.live() || this.identity !== undefined) return;
     if (this.activation === undefined || this.context.graphPath.length === 0) return;
     const session = this.session;
-    if (session === undefined) return;
+    if (session === undefined) {
+      this.awaitedRoute = true;
+      return;
+    }
     const status = session.snapshot().status;
     if (status !== "failed" && status !== "terminal" && status !== "closed") return;
     this.releaseSession?.();
@@ -675,6 +697,23 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
     this.publishStatus(this.statusOf(snapshot));
     this.spawn(this.recompute());
+    this.retryAwaitedRoute();
+  }
+
+  /**
+   * Read the route again for a selector notice that arrived while this
+   * handle's own activation was still opening.
+   *
+   * That open read the route slot before the other tab wrote it, so the notice
+   * it would have answered was dropped. Answering it once the session settles
+   * is what keeps the recovery from waiting for the next notice.
+   */
+  private retryAwaitedRoute(): void {
+    if (!this.awaitedRoute || this.identity !== undefined) return;
+    const status = this.session?.snapshot().status;
+    if (status !== "failed" && status !== "terminal" && status !== "closed") return;
+    this.awaitedRoute = false;
+    this.reactivateUnconfirmed();
   }
 
   private fence(): void {

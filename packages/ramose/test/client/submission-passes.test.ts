@@ -45,19 +45,29 @@ describe("what a submission pass does next", () => {
       ["later", [interrupted("storage")]],
       ["later", [interrupted("scope-unconfirmed")]],
       ["later", [interrupted("invocation-conflict")]],
-      ["stand-down", [interrupted("scope-fenced")]],
+      ["stand-down", [interrupted("leadership-fenced")]],
+      ["withdraw", [interrupted("scope-fenced")]],
     ];
     for (const [outcome, progress] of cases) {
       expect([outcome, passOutcome(progress)]).toEqual([outcome, outcome]);
     }
   });
 
-  test("a refused fence stands the pass down however much else advanced", () => {
+  test("a refused fence ends the pass however much else advanced", () => {
+    expect(passOutcome([committed(), interrupted("leadership-fenced")]))
+      .toBe("stand-down");
+    expect(passOutcome([retry(), interrupted("leadership-fenced")]))
+      .toBe("stand-down");
     expect(passOutcome([committed(), interrupted("scope-fenced")]))
-      .toBe("stand-down");
-    expect(passOutcome([retry(), interrupted("scope-fenced")])).toBe("stand-down");
+      .toBe("withdraw");
     expect(passOutcome([interrupted("scope-fenced"), interrupted("storage")]))
-      .toBe("stand-down");
+      .toBe("withdraw");
+  });
+
+  test("a withdrawn scope outranks the leadership that was submitting for it", () => {
+    expect(
+      passOutcome([interrupted("leadership-fenced"), interrupted("scope-fenced")]),
+    ).toBe("withdraw");
   });
 
   test("work that advanced is drained before a transient failure waits", () => {

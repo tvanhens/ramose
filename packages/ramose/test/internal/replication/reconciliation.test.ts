@@ -4,6 +4,11 @@ import { clientRef, invocationId, unsafeEntityId } from "../../../src/db/refs.ts
 import * as Data from "effect/Data";
 import { pendingLayerState } from "../../../src/internal/replication/reconciliation.ts";
 import { interruptedReason } from "../../../src/internal/replication/submission.ts";
+import { replicaLeaderKey } from "../../../src/internal/replication/leadership.ts";
+import {
+  replicaDatabaseKey,
+  replicaScopeKey,
+} from "../../../src/internal/replication/replica-lifecycle.ts";
 import type {
   OverlayLayer,
   OverlayLayers,
@@ -113,6 +118,21 @@ describe("the interruption taxonomy", () => {
       .toBe("invocation-conflict");
     expect(interruptedReason(new Invalid({ reason: "unreadable" })))
       .toBe("record-invalid");
+  });
+
+  test("a leadership epoch is told apart from the scope it was submitting for", () => {
+    const scope = replicaScopeKey({ server: "s", principal: "p" });
+    const database = replicaDatabaseKey({ server: "s", principal: "p", database: "d" });
+    expect(interruptedReason(new Fenced({ key: scope }))).toBe("scope-fenced");
+    expect(interruptedReason(new Fenced({ key: database }))).toBe("scope-fenced");
+    expect(
+      interruptedReason(new Fenced({
+        key: replicaLeaderKey(
+          { server: "s", principal: "p", database: "d" },
+          "ramose-replicas",
+        ),
+      })),
+    ).toBe("leadership-fenced");
   });
 
   test("an aborted pass is itself, and anything unfamiliar is still reported", () => {
