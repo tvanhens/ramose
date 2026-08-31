@@ -1001,6 +1001,46 @@ browserTest(
   },
 );
 
+browserTest(
+  "an abandoned wait over a store a mounted component already claimed releases it",
+  async ({ browser }) => {
+    const name = `ramose-react-suspense-claimed-${browser.uniqueId}`;
+    const client = offlineClient(name);
+    const db = client.open();
+    const other = document.createElement("div");
+    document.body.appendChild(other);
+    try {
+      const mounted = await mount(
+        browser.root,
+        <RamoseProvider client={client}><Titles seen={[]} /></RamoseProvider>,
+      );
+      expect(text(browser.root)).toBe("pending");
+      expect(heldStoreCount(db)).toBe(1);
+
+      const waiting = await mount(other, <Waiting client={client} seen={[]} />);
+      expect(text(other)).toBe("loading");
+
+      await unmount(waiting);
+      other.remove();
+
+      await until(
+        () => client.sync.getSnapshot().status === "offline",
+        "an unreachable server",
+      );
+      await until(() => suspendedQueryCount(db) === 0, "the abandoned wait");
+
+      expect(heldStoreCount(db)).toBe(1);
+
+      await unmount(mounted);
+      expect(heldStoreCount(db)).toBe(0);
+    } finally {
+      other.remove();
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
 const NEVER: Promise<void> = new Promise<void>(() => undefined);
 
 const Blocked = (): ReactNode => {
@@ -1116,7 +1156,11 @@ browserTest(
 
       await until(() => seen.at(-1)?.status === "ready", "the committed value");
 
-      expect(seen.every((state) => state.status !== "pending")).toBe(true);
+      const statuses = seen.map((state) => state.status);
+      expect(statuses).not.toContain("pending");
+      // The observation is handed to React's own subscription, so it is never
+      // retired and resumed between the wait ending and the render resuming.
+      expect(statuses).not.toContain("stale");
       expect(text(browser.root)).not.toBe("loading");
       expect((seen.at(-1) as { readonly data: readonly unknown[] }).data.length)
         .toBeGreaterThan(0);

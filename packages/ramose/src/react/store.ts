@@ -96,8 +96,24 @@ class QueryStore<A> {
     return stop;
   };
 
+  /**
+   * Take a hold on behalf of a component React discarded.
+   *
+   * A store a mounted component has already claimed is outside both of a
+   * hold's release paths — eviction only reaches unclaimed entries, and the
+   * claim that would hand the observation over already happened. So the hold
+   * is told at once, which is safe for the same reason the ordering rule in
+   * `subscribe` is: a subscriber is already holding this observation open.
+   */
   attach(hold: StoreHold): void {
     this.hold = hold;
+    const stores = STORES.get(this.database);
+    if (
+      stores?.stores.get(this.key) === this.erased() &&
+      !stores.unclaimed.has(this.key)
+    ) {
+      hold.onClaimed();
+    }
   }
 
   detach(hold: StoreHold): void {

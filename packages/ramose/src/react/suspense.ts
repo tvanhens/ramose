@@ -42,12 +42,19 @@ const decided = (status: SyncStatus): boolean =>
  * something. Without this, a restored replica whose session fails a moment
  * before the query finishes running would be read as "offline and nothing
  * cached" and flash an empty scope over data that was about to arrive.
+ *
+ * `connecting` withdraws it, because that is the one status published exactly
+ * where nothing is readable: a fence and a failed activation both go back
+ * through it. Without the withdrawal a scope whose value was taken away would
+ * be remembered as having one forever, and a reactivation that then failed
+ * would leave a fallback waiting on connectivity with nothing to wait for.
  */
 const LOCAL = new WeakSet<ClientDatabase>();
 
 const reads = (database: ClientDatabase): boolean => {
   const status = database.sync.getSnapshot().status;
   if (carries(status)) LOCAL.add(database);
+  else if (status === "connecting") LOCAL.delete(database);
   return !decided(status) && (LOCAL.has(database) || delivers(status));
 };
 
@@ -67,13 +74,15 @@ class QuerySuspension implements StoreHold {
   private resolve!: () => void;
   private done = false;
   private claimed = false;
+  private released = false;
   private stopStore: (() => void) | undefined;
   private stopSync: (() => void) | undefined;
 
   constructor(
     private readonly database: ClientDatabase,
     private readonly store: QueryStore<unknown>,
-    private readonly forget: () => void,
+    private readonly waiting: Map<string, QuerySuspension>,
+    private readonly key: string,
   ) {
     this.promise = new Promise<void>((resolve) => {
       this.resolve = resolve;
@@ -87,6 +96,11 @@ class QuerySuspension implements StoreHold {
 
   settled(): boolean {
     return this.done;
+  }
+
+  /** Whether this has already let go of its observation. */
+  gone(): boolean {
+    return this.released;
   }
 
   private check(): void {
@@ -118,8 +132,9 @@ class QuerySuspension implements StoreHold {
   }
 
   private stop(): void {
+    this.released = true;
     this.store.detach(this);
-    this.forget();
+    if (this.waiting.get(this.key) === this) this.waiting.delete(this.key);
     this.stopSync?.();
     this.stopSync = undefined;
     this.stopStore?.();
@@ -152,10 +167,8 @@ export const suspend = (
     return existing.settled() ? undefined : existing.promise;
   }
   if (!reads(database)) return undefined;
-  const created = new QuerySuspension(database, store, () => {
-    if (waiting.get(key) === created) waiting.delete(key);
-  });
-  waiting.set(key, created);
+  const created = new QuerySuspension(database, store, waiting, key);
+  if (!created.gone()) waiting.set(key, created);
   return created.settled() ? undefined : created.promise;
 };
 

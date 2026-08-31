@@ -81,11 +81,13 @@ const Board = () => {
 }
 ```
 
-Same arguments and same `QueryState<A>` as `useQuery`; the difference is when it waits. It suspends only while this query has no local answer **and** the session could still produce one, so a restored replica renders `stale` rather than replacing cached data with a fallback.
+Same arguments and `QueryState<A>` as `useQuery`; only the waiting differs. It suspends only while this query has no local answer **and** the session could still produce one, so a restored replica renders `stale` rather than replacing cached data with a fallback.
 
-`pending` still reaches the component, and means something narrower here: no local answer *and* no session that can currently produce one — offline with nothing cached, or a fenced, unauthorized, or closed client. Render what an empty offline scope should look like; a fallback there would be a wait with no end. The component rerenders if the session later delivers an answer.
+`pending` still reaches the component, and means something narrower here: no local answer *and* no session that can currently produce one — offline with nothing cached, or a client that is closed, unauthorized, or behind the deployed build. Render what an empty offline scope should look like; a fallback would never end.
 
-Errors are returned, not thrown to an error boundary. `useQuery` is unchanged; adopt Suspense per component.
+A fence is not one of those: a cleared or reassigned scope withdraws its value and activates again, and the wait continues across that. The component rerenders when an answer arrives.
+
+Errors are returned, not thrown. `useQuery` is unchanged; adopt Suspense per component.
 
 ## Entity handles in React
 
@@ -132,7 +134,7 @@ Use this hook when output or rejection drives UI; use `entity.local.pending` for
 
 ### Suspending on one invocation
 
-A receipt carries `queued` and `committed` promises, so React 19 needs no adapter for this — `use(receipt.committed)` suspends until the server accepts the invocation and throws its refusal to the nearest error boundary. Hold the receipt in state so the promise is the same one on every render. React 18 has no `use()`; branch on `useReceipt`'s status instead.
+`receipt.committed` is a promise, so React 19 needs no adapter: `use(receipt.committed)` suspends until the server accepts, and throws its refusal to the nearest error boundary. Hold the receipt in state so the promise is stable across renders. React 18 has no `use()` — branch on `useReceipt`'s status instead.
 
 ## useSyncState
 

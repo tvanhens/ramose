@@ -178,10 +178,15 @@ export function useQuery<Row, Out>(
  *
  * `pending` therefore still reaches the component, and means something
  * narrower than it does in {@link useQuery}: there is no local answer *and*
- * the session cannot currently produce one, because it is offline, fenced,
- * unauthorized, or closed. Render what an empty offline scope should look
- * like; a fallback would be a wait with no end. The component re-renders with
- * the answer if the session later delivers one.
+ * the session cannot currently produce one, because it is offline, closed,
+ * unauthorized, or behind the deployed build. Render what an empty offline
+ * scope should look like; a fallback would be a wait with no end. The
+ * component re-renders with the answer if the session later delivers one.
+ *
+ * A fence is not one of those. A scope that is cleared or handed to another
+ * principal withdraws its value and activates again, and this keeps waiting
+ * across that — until the activation answers, or fails into one of the states
+ * above.
  *
  * The observation this waits on is held outside the component, because React
  * discards a component that suspends and nothing in its lifetime would be left
