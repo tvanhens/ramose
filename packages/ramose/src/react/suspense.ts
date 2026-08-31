@@ -45,16 +45,47 @@ const decided = (status: SyncStatus): boolean =>
  *
  * `connecting` withdraws it, because that is the one status published exactly
  * where nothing is readable: a fence and a failed activation both go back
- * through it. Without the withdrawal a scope whose value was taken away would
- * be remembered as having one forever, and a reactivation that then failed
- * would leave a fallback waiting on connectivity with nothing to wait for.
+ * through it, and a graph child republishes its parent's. Without the
+ * withdrawal a scope whose value was taken away would be remembered as having
+ * one forever, and a reactivation that then failed would leave a fallback
+ * waiting on connectivity with nothing to wait for.
  */
 const LOCAL = new WeakSet<ClientDatabase>();
 
+const WATCHED = new WeakSet<ClientDatabase>();
+
+/**
+ * Follow one database's session, so that what it reports is never missed.
+ *
+ * This has to be observed rather than sampled. A replica warmed through
+ * `useQuery` alone passes through `live` or `stale` between renders, with no
+ * suspense hook running to notice; the first `useSuspenseQuery` after that
+ * connection drops would then read "offline and nothing cached" over a replica
+ * that is fully loaded, and render an empty scope one tick before the data.
+ * Every query hook starts this watch for the same reason: the database to
+ * follow is the one an application reads, not the one it happens to suspend
+ * on.
+ *
+ * The subscription is deliberately never released. It is one listener per
+ * database, on a store the client owns for its own lifetime, and there is no
+ * later moment at which forgetting what a session reported would be correct:
+ * the fact this records outlives every component that could have released it.
+ */
+export const watchLocal = (database: ClientDatabase): void => {
+  if (WATCHED.has(database)) return;
+  WATCHED.add(database);
+  const note = (): void => {
+    const status = database.sync.getSnapshot().status;
+    if (carries(status)) LOCAL.add(database);
+    else if (status === "connecting") LOCAL.delete(database);
+  };
+  database.sync.subscribe(note);
+  note();
+};
+
 const reads = (database: ClientDatabase): boolean => {
+  watchLocal(database);
   const status = database.sync.getSnapshot().status;
-  if (carries(status)) LOCAL.add(database);
-  else if (status === "connecting") LOCAL.delete(database);
   return !decided(status) && (LOCAL.has(database) || delivers(status));
 };
 

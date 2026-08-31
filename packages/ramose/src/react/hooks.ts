@@ -23,7 +23,7 @@ import type {
 import { PENDING, type QueryState } from "./query-state.ts";
 import { IDLE, type ReceiptView } from "./receipt-state.ts";
 import { queryStore, type QueryStore } from "./store.ts";
-import { suspend } from "./suspense.ts";
+import { suspend, watchLocal } from "./suspense.ts";
 
 const ClientContext = createContext<Client | undefined>(undefined);
 
@@ -103,6 +103,7 @@ const observation = <Out>(
       `ramose/react: ${hook} needs a <RamoseProvider> or an explicit database`,
     );
   }
+  watchLocal(db);
   const key = queryObservationKey(query);
   return {
     db,

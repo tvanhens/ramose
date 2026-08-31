@@ -847,7 +847,7 @@ const SuspendedTitles = (
 ): ReactNode => {
   const all = useDb().query.from(Note).orderBy(Note.rank);
   const state = useSuspenseQuery(
-    (where === undefined ? all : all.where({ title: where }))
+    (where === undefined ? all : all.where({ rank: where }))
       .select({ title: Note.title }),
   ) as Rows;
   seen.push(state);
@@ -995,6 +995,51 @@ browserTest(
       expect(heldStoreCount(db)).toBeLessThanOrEqual(UNCLAIMED_LIMIT);
       expect(suspendedQueryCount(db)).toBeLessThanOrEqual(UNCLAIMED_LIMIT);
     } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a replica warmed by useQuery alone answers a first suspense mount with no pending frame",
+  async ({ browser }) => {
+    const name = `ramose-react-suspense-warmed-${browser.uniqueId}`;
+    await seed(name, [
+      { entity: opaque("e"), title: "second", rank: "b" },
+      { entity: opaque("f"), title: "first", rank: "a" },
+    ]);
+    const client = offlineClient(name);
+    const db = client.open();
+    const other = document.createElement("div");
+    document.body.appendChild(other);
+    try {
+      const warm = await mount(
+        browser.root,
+        <RamoseProvider client={client}><Titles seen={[]} /></RamoseProvider>,
+      );
+      await until(() => text(browser.root) === "firstsecond", "the restored replica");
+      await until(
+        () => client.sync.getSnapshot().status === "offline",
+        "an unreachable server",
+      );
+
+      const seen: Rows[] = [];
+      const first = await mount(
+        other,
+        <Waiting client={client} seen={seen} where="a" />,
+      );
+      await until(() => text(other) !== "loading", "the first suspense mount");
+
+      expect(seen.map((state) => state.status)).not.toContain("pending");
+      expect(text(other)).toBe("first");
+
+      await unmount(first);
+      other.remove();
+      await unmount(warm);
+      expect(heldStoreCount(db)).toBe(0);
+    } finally {
+      other.remove();
       await client.close();
       await deleteDatabase(name);
     }
