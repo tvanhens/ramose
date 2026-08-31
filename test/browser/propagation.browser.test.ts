@@ -664,6 +664,7 @@ browserTest(
     const tab = await openTab(tabModule);
     try {
       await started(tab, name, database);
+      const activated = await tab.call<number>("presented");
       await tab.call("enqueue", {
         storageName: name,
         database,
@@ -672,7 +673,7 @@ browserTest(
       });
       const planned = await until(
         () => tab.call<number>("presented"),
-        (presented) => presented > 0,
+        (presented) => presented > activated,
         "the client's own pass over the child's queue",
       );
       await steady(
