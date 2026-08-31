@@ -138,6 +138,7 @@ export class OptimisticReconciler {
   private readonly observers = new Set<OptimisticOverlayObserver>();
   private state: OptimisticOverlayState;
   private handles: ReadonlyMap<string, EntityId> = new Map();
+  private refreshing: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly store: ReconciliationStore,
@@ -165,7 +166,27 @@ export class OptimisticReconciler {
     return () => this.observers.delete(observer);
   }
 
-  async refresh(): Promise<OptimisticOverlayState> {
+  /**
+   * Read the durable layers, mappings, and activation fence again.
+   *
+   * Refreshes run one at a time. Two of them reading concurrently would each
+   * publish what they read, and the one that finished second could be holding
+   * the older layer set — which resurrects an acknowledged layer or drops a
+   * newer one until something else republishes.
+   */
+  refresh(): Promise<OptimisticOverlayState> {
+    const next = this.refreshing.then(
+      () => this.readDurableLayers(),
+      () => this.readDurableLayers(),
+    );
+    this.refreshing = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  private async readDurableLayers(): Promise<OptimisticOverlayState> {
     const [rows, handles] = await Promise.all([
       this.store.optimisticLayers(this.receiver),
       this.store.mappedHandles(this.receiver),
