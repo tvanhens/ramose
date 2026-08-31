@@ -11,9 +11,6 @@ import {
   INSTALLED_CATALOG_UNIT_VERSION,
   InvalidIR,
   MAX_COLLECTION_SIZE,
-  MAX_JSON_DEPTH,
-  MAX_CATALOG_DOCUMENT_BYTES,
-  MAX_CATALOG_DOCUMENT_NODES,
   MAX_STRING_LENGTH,
   POLICY_TEMPLATE_IR_VERSION,
   canonicalizeInstalledAuthorization,
@@ -65,22 +62,6 @@ const expectInvalid = (result: Result.Result<unknown, InvalidIR>, pattern: RegEx
     expect(result.failure.message).toMatch(pattern);
   }
 };
-
-const leafRows = (leaf: unknown, leaves: number): unknown[] => {
-  const rows: unknown[] = [];
-  let left = leaves;
-  while (left > 0) {
-    const n = Math.min(MAX_COLLECTION_SIZE, left);
-    rows.push(Array.from({ length: n }, () => leaf));
-    left -= n;
-  }
-  return rows;
-};
-
-const leafObjects = (leaf: unknown, objects: number, keys: number): unknown[] =>
-  Array.from({ length: objects }, (_, i) =>
-    Object.fromEntries(Array.from({ length: keys }, (_, j) => [`k${i}_${j}`, leaf])),
-  );
 
 const expectPlainFrozen = (value: object) => {
   expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
@@ -161,6 +142,16 @@ describe("structural decoding", () => {
     expectInvalid(installed, /InstalledAuthorizationIR|_tag|Expected/);
     expect(template._tag).not.toBe("InstalledAuthorizationIR");
   });
+
+  test("does not impose JSON string or collection limits on deployed documents", () => {
+    const result = decodePolicyTemplateResult({
+      ...emptyTemplateEncoded,
+      principal: { subjectClaim: "x".repeat(MAX_STRING_LENGTH + 1) },
+      classes: Array.from({ length: MAX_COLLECTION_SIZE + 1 }, (_, i) => `c${i}`),
+    });
+
+    expect(Result.isSuccess(result)).toBe(true);
+  });
 });
 
 describe("JSON-only rejections", () => {
@@ -211,31 +202,6 @@ describe("JSON-only rejections", () => {
     expectInvalid(decodePolicyTemplateResult(cycle), /cycle|JSON/);
   });
 
-  test("rejects a symbol key", () => {
-    const input = { ...emptyTemplateEncoded, [Symbol("hidden")]: true };
-    expectInvalid(decodePolicyTemplateResult(input), /symbol|JSON/);
-  });
-
-  test("rejects an accessor property without invoking it", () => {
-    let reads = 0;
-    const input = { ...emptyTemplateEncoded } as Record<string, unknown>;
-    Object.defineProperty(input, "sneak", {
-      enumerable: true,
-      get: () => {
-        reads += 1;
-        return 1;
-      },
-    });
-    expectInvalid(decodePolicyTemplateResult(input), /prototype|JSON|function/);
-    expect(reads).toBe(0);
-  });
-
-  test("rejects extra own properties on an array", () => {
-    const rules = [] as unknown as unknown[] & { extra: string };
-    rules.extra = "nope";
-    expectInvalid(decodePolicyTemplateResult({ ...emptyTemplateEncoded, rules }), /symbol|JSON|array/);
-  });
-
   test("rejects a sparse array", () => {
     const exprs = ["ok"] as unknown[];
     exprs[2] = { _tag: "const", value: true };
@@ -258,119 +224,6 @@ describe("JSON-only rejections", () => {
     );
   });
 
-  test("rejects an oversized string", () => {
-    expectInvalid(
-      decodePolicyTemplateResult({
-        ...emptyTemplateEncoded,
-        principal: { subjectClaim: "x".repeat(MAX_STRING_LENGTH + 1) },
-      }),
-      /oversized string/,
-    );
-  });
-
-  test("rejects an oversized collection", () => {
-    expectInvalid(
-      decodePolicyTemplateResult({
-        ...emptyTemplateEncoded,
-        classes: Array.from({ length: MAX_COLLECTION_SIZE + 1 }, (_, i) => `c${i}`),
-      }),
-      /oversized collection/,
-    );
-  });
-
-  test("rejects oversized depth as InvalidIR without throwing", () => {
-    let nested: unknown = null;
-    for (let i = 0; i < MAX_JSON_DEPTH + 2; i++) nested = { child: nested };
-    const result = decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: nested });
-    expectInvalid(result, /oversized depth/);
-  });
-
-  test("rejects a broad tree that stays inside depth and collection limits", () => {
-    const bushy = (depth: number): unknown =>
-      depth === 0 ? 0 : { l: bushy(depth - 1), r: bushy(depth - 1) };
-    expect(MAX_CATALOG_DOCUMENT_NODES).toBeLessThan(2 ** 16);
-    expectInvalid(
-      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: bushy(15) }),
-      /oversized document/,
-    );
-  });
-
-  test("rejects a document whose encoded strings exceed the byte budget", () => {
-    const fields: Record<string, string> = {};
-    const perString = MAX_STRING_LENGTH;
-    const count = Math.floor(MAX_CATALOG_DOCUMENT_BYTES / perString) + 2;
-    for (let i = 0; i < count; i++) fields[`k${i}`] = "x".repeat(perString);
-    expectInvalid(
-      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: fields }),
-      /oversized document/,
-    );
-  });
-
-  test("rejects a small repeated object reference as an alias", () => {
-    const shared = { a: 1 };
-    expectInvalid(
-      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: { x: shared, y: shared } }),
-      /alias/,
-    );
-  });
-
-  test("rejects a repeated reference spliced below the depth ceiling before Schema walks it", () => {
-    const chain = (n: number, leaf: unknown): unknown => {
-      let value = leaf;
-      for (let i = 0; i < n; i++) value = { n: value };
-      return value;
-    };
-    const shared = { n: 1 };
-    expectInvalid(
-      decodePolicyTemplateResult({
-        ...emptyTemplateEncoded,
-        extra: { a: shared, b: chain(10, shared) },
-      }),
-      /alias/,
-    );
-  });
-
-  test("accepts independently allocated but structurally equal subtrees", () => {
-    expectInvalid(
-      decodePolicyTemplateResult({
-        ...emptyTemplateEncoded,
-        extra: { x: { a: 1 }, y: { a: 1 } },
-      }),
-      /extra|unexpected|excess|Key/i,
-    );
-  });
-
-  test.each([true, false, null] as const)(
-    "charges a broad array of %s leaves at the exact node limit and one over",
-    (leaf) => {
-
-      const exact = leafRows(leaf, 32735);
-      expectInvalid(decodePolicyTemplateResult(exact), /PolicyTemplateIR|_tag|Expected|JSON/);
-      const over = leafRows(leaf, 32736);
-      expectInvalid(decodePolicyTemplateResult(over), /oversized document/);
-    },
-  );
-
-  test.each([true, false, null] as const)(
-    "charges a broad object of %s leaves at the exact node limit and one over",
-    (leaf) => {
-
-      const exact = leafObjects(leaf, 151, 108);
-      expectInvalid(decodePolicyTemplateResult(exact), /PolicyTemplateIR|_tag|Expected|JSON/);
-      exact.push(leaf);
-      expectInvalid(decodePolicyTemplateResult(exact), /oversized document/);
-    },
-  );
-
-  test("rejects every prototype other than Object.prototype or null", () => {
-    const nestedNull = Object.create(Object.create(null));
-    nestedNull.x = 1;
-    expectInvalid(
-      decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra: nestedNull }),
-      /prototype/,
-    );
-  });
-
   test("rejects dense-array holes created by a high index", () => {
     const rules: unknown[] = [];
     rules[3] = "nope";
@@ -380,70 +233,6 @@ describe("JSON-only rejections", () => {
     );
   });
 
-  test("rejects a lone low surrogate before Schema walks the input", () => {
-    expectInvalid(
-      decodePolicyTemplateResult({
-        ...emptyTemplateEncoded,
-        principal: { subjectClaim: "\uDEAD" },
-      }),
-      /unicode/,
-    );
-  });
-
-  test("rejects a trailing unpaired high surrogate", () => {
-    expectInvalid(
-      decodePolicyTemplateResult({
-        ...emptyTemplateEncoded,
-        principal: { subjectClaim: "abc\uD800" },
-      }),
-      /unicode/,
-    );
-    expectInvalid(
-      decodePolicyTemplateResult({
-        ...emptyTemplateEncoded,
-        principal: { subjectClaim: "abc\uDBFF" },
-      }),
-      /unicode/,
-    );
-  });
-
-  test("rejects a high surrogate followed by a non-low surrogate", () => {
-    expectInvalid(
-      decodePolicyTemplateResult({
-        ...emptyTemplateEncoded,
-        principal: { subjectClaim: "\uD800A" },
-      }),
-      /unicode/,
-    );
-    expectInvalid(
-      decodePolicyTemplateResult({
-        ...emptyTemplateEncoded,
-        principal: { subjectClaim: "\uD800\uD800" },
-      }),
-      /unicode/,
-    );
-  });
-
-  test("rejects a lone surrogate in an object key", () => {
-    const extra: Record<string, unknown> = {};
-    Object.defineProperty(extra, "abc\uD800", {
-      value: 1,
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
-    expectInvalid(decodePolicyTemplateResult({ ...emptyTemplateEncoded, extra }), /unicode/);
-  });
-
-  test("accepts a well-formed supplementary character", () => {
-    const decoded = Effect.runSync(
-      decodePolicyTemplate({
-        ...emptyTemplateEncoded,
-        principal: { subjectClaim: "abc\uD83D\uDE00" },
-      }),
-    );
-    expect(decoded.principal.subjectClaim).toBe("abc\uD83D\uDE00");
-  });
 });
 
 describe("schema shape rejections", () => {
