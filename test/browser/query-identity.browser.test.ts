@@ -80,17 +80,16 @@ const CACHE_KEY = "account-a";
 
 const opaque = (character: string): string => character.repeat(43);
 
-/** A handle shaped the way the server issues them: 54 characters and a tail. */
-const handle = (character: string): string => `${character.repeat(54)}A`;
+const serverIssuedHandle = (character: string): string =>
+  `${character.repeat(54)}A`;
 
-const ADA = handle("a");
-const BEN = handle("b");
-const SEEDED = handle("c");
-const OTHER = handle("d");
-const ELSEWHERE = handle("z");
+const ADA = serverIssuedHandle("a");
+const BEN = serverIssuedHandle("b");
+const SEEDED = serverIssuedHandle("c");
+const OTHER = serverIssuedHandle("d");
+const ELSEWHERE = serverIssuedHandle("z");
 
-/** The shape of a handle this replica publishes, sealed with its own key. */
-const SEALED = /^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/;
+const REPLICA_PUBLISHED_HANDLE = /^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/;
 
 const deleteDatabase = (name: string): Promise<void> =>
   new Promise((resolve, reject) => {
@@ -224,8 +223,8 @@ browserTest(
       const ada = seeded.data.author!.id;
       const ben = all.find((row) => row.data.title === "Other")!.data.author!.id;
 
-      expect(ada).toMatch(SEALED);
-      expect(ben).toMatch(SEALED);
+      expect(ada).toMatch(REPLICA_PUBLISHED_HANDLE);
+      expect(ben).toMatch(REPLICA_PUBLISHED_HANDLE);
       expect(ada).not.toBe(ben);
 
       expect(

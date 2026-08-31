@@ -261,7 +261,6 @@ describe("entity ids in a lowered projection", () => {
   });
 });
 
-/** A well-formed sealed handle: 54 base64url characters and a canonical tail. */
 const sealed = (seed: string): string => `${seed.repeat(54).slice(0, 54)}A`;
 
 describe("entity identities at a filter position", () => {

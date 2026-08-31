@@ -187,11 +187,6 @@ type ValueIn<A> = AttrValue<A> | AnyVar | { readonly id: number } | RefIn<A>;
 
 type IdIn<E> = number | EntityEq<E> | { readonly id: number | EntityEq<E> };
 
-/**
- * A filter on the focus's own identity. An identity carries the entity it
- * names, so applying one to a different entity's pipeline is a compile error;
- * a trait focus is polymorphic and takes any of its implementors'.
- */
 type IdFilterStage<E> = <X>(
   x: [X] extends [Pipeline<any, infer N>]
     ? [E] extends [AnyEntity]

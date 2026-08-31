@@ -925,27 +925,11 @@ export const refine =
       false,
     );
 
-/**
- * How one lowering renders and reads entity identity.
- *
- * `entity` renders a local id as the opaque identity a reader is handed.
- * `resolveEntity` is the same binding read backwards: it takes an identity a
- * caller was handed — an `EntityId`, or the `ClientRef` an entity this device
- * created still answers to — and returns the local id it names here, or
- * `undefined` when this replica holds no such entity. Both a paging cursor and
- * a filter at a reference position go through it.
- */
 export type QueryLowering = {
   readonly entity?: ((eid: number) => unknown) | undefined;
   readonly resolveEntity?: ((id: unknown) => number | undefined) | undefined;
 };
 
-/**
- * A lowering that resolves every entity identity to a distinct placeholder and
- * records the identities themselves. It binds nothing, so it lowers the same
- * query the same way wherever it runs — which is what an identity key needs and
- * what a live binding cannot give it.
- */
 export const symbolicIdentityLowering = (): {
   readonly lowering: QueryLowering;
   readonly identities: readonly unknown[];
@@ -963,13 +947,6 @@ export interface LoweredKernelQuery {
   readonly rowShape: string;
   readonly finalize: (result: unknown) => unknown;
   readonly result: "page" | "row" | "rows";
-  /**
-   * Whether this lowering read the replica binding to resolve an entity
-   * identity. Such a query is only as current as the binding it was lowered
-   * against — an identity this replica has not received yet resolves to
-   * nothing now and to an entity later — so a live reader lowers it again
-   * rather than keeping the first answer.
-   */
   readonly bindsEntities: boolean;
 }
 
@@ -998,7 +975,6 @@ const unwrapEidLike = (v: unknown): unknown =>
     ? (v as { id: number }).id
     : v;
 
-/** What an entity position was given, past the `{ id }` cell a row carries. */
 const namedEntity = (v: unknown): unknown => {
   if (typeof v !== "object" || v === null) return v;
   const id = (v as { id?: unknown }).id;
@@ -1008,12 +984,7 @@ const namedEntity = (v: unknown): unknown => {
 const isRefAttr = (attr: { readonly ident: string } | undefined): boolean =>
   attr !== undefined && (attr as { valueType?: unknown }).valueType === "ref";
 
-/**
- * A constant at an entity position that this replica cannot place. It is not a
- * failure: the identity is well formed and simply names no entity visible here,
- * so every clause holding one is lowered to a clause nothing satisfies.
- */
-const UNRESOLVED: unique symbol = Symbol("ramose/query/unresolved");
+const UNRESOLVED: unique symbol = Symbol("ramose/query/unplaceable-entity");
 
 const regexSource = (re: RegExp | string): string => {
   if (typeof re === "string") return re;

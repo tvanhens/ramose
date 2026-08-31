@@ -2,13 +2,6 @@ import type { AnyComposer } from "../Composer.ts";
 import type { AnyEntity, Entity, FieldMap } from "../Entity.ts";
 import type { MutationRef } from "../refs.ts";
 
-/**
- * What names one entity at a filter position: the opaque identity the client
- * publishes — an `EntityId`, or the `ClientRef` an entity this device created
- * still answers to — branded with the entity it names, so a handle for the
- * wrong entity is a compile error. A bare number is not one of these: a local
- * id is never handed out, and an `Eid` carries its own brand.
- */
 export type EntityEq<N> = [N] extends [AnyEntity] ? MutationRef<N> : MutationRef;
 
 export type FocusIdents<N extends AnyComposer> =

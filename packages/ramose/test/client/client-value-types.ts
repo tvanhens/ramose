@@ -80,7 +80,6 @@ export type _opaqueValues = Expect<
 const Person = Entity("person", { name: Field(string()) });
 const Note = Entity("note", { body: Field(string()), author: Ref(Person) });
 
-/** A live handle knows the entity it is a handle for, so its id can filter. */
 export type _handleIdentity = Expect<
   Equal<
     EntityResult<typeof Person, unknown, readonly unknown[]>[number]["id"],
@@ -92,5 +91,5 @@ declare const author: EntityHandle<unknown, unknown, typeof Person>;
 Query.from(Note).where({ author: author.id });
 
 declare const stranger: EntityHandle<unknown, unknown, IssueEntity>;
-// @ts-expect-error — a handle for another entity is not this reference's value
+// @ts-expect-error
 Query.from(Note).where({ author: stranger.id });

@@ -68,13 +68,6 @@ export type QuerySnapshot<Out> = {
 
 export type QuerySubscription<Out> = Subscription<QuerySnapshot<Out>>;
 
-/**
- * The identity of one observation.
- *
- * Entity identities lower symbolically here rather than through the replica
- * binding: two queries that name different entities stay different questions,
- * and one query keeps its identity while the binding underneath it moves.
- */
 export const queryObservationKey = (query: AnyQueryObject): string => {
   const { lowering, identities } = symbolicIdentityLowering();
   const lowered = lowerQueryObject(query, lowering);
@@ -1104,15 +1097,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     );
   }
 
-  /**
-   * The local id one published identity names in the value being read now.
-   *
-   * A `ClientRef` follows its authoritative mapping the moment the server
-   * issues one, so the same handle names the same entity across the moment it
-   * is confirmed. Before that it names the optimistic entity it created and
-   * nothing else. An identity this replica holds nothing for — never received,
-   * or issued to another replica — names no entity here.
-   */
   private localIdOf(id: string): number | undefined {
     const mapped = this.reconciler?.mappings().get(id);
     const committed = this.handles.get(mapped ?? id);
