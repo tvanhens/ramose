@@ -89,7 +89,7 @@ A handle is *live* and *interned*: one object per entity per row shape, whose `.
 
 ### Entity ids are opaque
 
-Every id here is an `EntityId`, or a `ClientRef` for something created offline — wherever one appears: a row's `id`, a nested reference cell, `.ids()`, `select({ id: Task.id })`. A local numeric eid is never public: it is meaningless off this device, and a delete/recreate reassigns it.
+Every id here is an `EntityId`, or a `ClientRef` for something created offline — a row's `id`, a nested reference cell, `.ids()`, `select({ id: Task.id })`, and a declared entity-reference input. A local numeric id is never public: it is meaningless off this device, and a delete and recreate reassigns it.
 
 ## Targetless operations
 
@@ -99,7 +99,7 @@ const receipt = projectDb.mutate.createTask({ title: "Ship docs" })
 
 Targetless operations live on `db.mutate`, targeted ones on `entity.mutate`. Both return the same durable receipt.
 
-Method presence is static, from the deployed catalog: a method exists exactly when the authored code declares that operation, never based on what this principal may do. A call the server refuses is a rejected receipt, not a missing method.
+Both namespaces are derived from the installed catalog: a misspelled name and a wrong-shaped input are compile errors, and `entity.mutate` carries the entity's own operations and its traits'. Presence never depends on what this principal may do: a refusal is a rejected receipt, not a missing method.
 
 A declared optimistic projection updates local queries before the acknowledgement.
 

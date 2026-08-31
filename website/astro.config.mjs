@@ -170,6 +170,7 @@ export default defineConfig({
             { label: "QueryDocument v1", slug: "reference/query-document" },
             { label: "Operations", slug: "reference/operations" },
             { label: "React", slug: "reference/react" },
+            { label: "Offline limits", slug: "reference/offline-limits" },
             { label: "MCP", slug: "reference/mcp" },
             { label: "Policy", slug: "reference/policy" },
             { label: "Errors", slug: "reference/errors" },

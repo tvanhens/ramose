@@ -40,6 +40,8 @@ const rootDb = useDb()
 
 Returns the authorized root database handle from the nearest provider. Child graph handles are obtained through typed query traversal and `.db()`.
 
+A context cannot carry its client's catalog into each component's types, so `useDb()` answers the runtime mutation namespace. Name it — `useDb<DatabaseMutations<typeof AppSchema>>()` — for the catalog's exact operations.
+
 ## useQuery
 
 ```tsx

@@ -63,6 +63,11 @@ The peer listens on `http://localhost:1337`. Run e2e tests against it with:
 RAMOSE_URL=http://localhost:1337 bun run test:e2e
 ```
 
+`bun run dev:graph` runs the offline-first browser client's example instead: a
+peer on `http://localhost:1341` and the identity Worker that mints its bearers
+on `http://localhost:1342`. `bun run test:browser` starts and stops that same
+stack itself, so a browser test can drive the example against a real peer.
+
 ## Cloudflare e2e
 
 `bun run test:e2e:cf` deploys a temporary stage, runs the e2e suite, and removes

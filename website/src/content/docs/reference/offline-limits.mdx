@@ -1,0 +1,67 @@
+---
+title: Offline limits and cache lifecycle
+description: What the browser client stores, when it reuses or discards it, and the limits an offline-first application should design around.
+---
+import Next from "../../../components/Next.astro";
+
+Everything here is a limit of the current release, not of the model. Each one is a place where the client refuses rather than guesses, and each is stated so an application can design around it instead of discovering it.
+
+*New here? Start with [Offline and synchronization](/concepts/offline/).*
+
+## What is stored
+
+Per signed-in account, per server, per graph:
+
+- the **committed replica** — one complete authorized value at one opaque revision;
+- the **outbox** — queued invocations, their order per graph, and the references this device minted for entities it created;
+- **receipts** — the authoritative answer to each invocation, so a lost acknowledgement never commits twice;
+- **optimistic layers** — the declared projection for each invocation still in flight.
+
+Query answers are never stored. Every answer is derived from the replica, which is why a query written tomorrow still runs over yesterday's offline data.
+
+The four are physically separate. A replica that must be discarded — an incompatible schema, a read-view change — is discarded on its own; queued work, receipts and reference mappings survive it, because an invocation's identity does not depend on the shape of the data it will produce.
+
+## When stored data is shown
+
+A stored replica becomes visible in exactly two ways.
+
+**An exact prior binding.** The same bearer that this replica was last confirmed under is presented again. The replica renders immediately, marked `stale`, before anything reaches the network — this is the offline start.
+
+**A current confirmation.** The bearer changed. `cacheKey` may then *nominate* the stored replica, and nothing more: it is an account selector, it never leaves the device, and it is not authority. The client shows nothing until the current authenticated response confirms the same replication identity and the same read compatibility. A mismatch, an unknown key, or no network at all shows no prior data.
+
+## When stored data is discarded
+
+| What changed | What happens |
+|---|---|
+| Documentation, defaults, an operation body, a deployment | Nothing. The replica is reused with no reset and no download. |
+| Field schema, entity or trait composition, read policy, graph-read semantics | The replica's representation is quarantined and replaced. Queued work, receipts and reference mappings survive. |
+| The graph path was renamed | Nothing, if it is the same graph entity. A same-named graph that was deleted and recreated is a different one, and is not reused. |
+| The signed-in account changed, or signed out | Every tab of the previous account is fenced through storage before the next one renders, then its data is removed or quarantined. |
+| Storage pressure | Inactive child graphs are evicted as complete units. The active root, the outbox and receipts are never evicted, and no graph is evicted in part. |
+| `await client.clearLocalData()` | Everything for the confirmed account, across every tab. The client is terminal afterwards; construct a new one. |
+
+`clearLocalData()` needs a confirmed account: with none, it fails and deletes nothing rather than guessing which data was yours.
+
+## Limits
+
+**One catalog per client.** A client installs exactly one catalog and uses it for every database it opens. A child graph bound to a *different* catalog fails closed: its queries report `update-required` with no data, and its mutations fail before queueing. Bind each `Graph` back to the catalog the client installs.
+
+**Optimistic updates are declared, never inferred.** An operation with no declared projection shows nothing locally until the server answers. The projection is a separate, explicit changeset because the operation body is deployed code the browser neither has nor may run.
+
+**Entity handles come from the database that answers them.** `db.query.from(Issue)` publishes live handles with `.local` and `.mutate`. A `select(…)` projects the focus away and publishes plain rows, and a query built through the portable `Ramose.Query.from` and reused across databases carries no focus either.
+
+**Local ids are never public.** Every id an application sees is an `EntityId` the server issued or a `ClientRef` this device minted. The numeric id inside the local store is meaningless off the device and is reassigned by a delete and recreate, so it is never handed out.
+
+**Filtering by an entity identity is not expressible yet.** `where({ author })` does not accept an `EntityId`. Mutation targets and operation inputs do; query filters will, additively, without moving any stored format.
+
+**No Suspense.** The React adapter reports `pending` as a state to render, not by suspending. A Suspense mode is additive and is tracked separately.
+
+**Without a lock manager, every tab synchronizes for itself.** Where the browser offers no lock manager, correctness is unchanged — concurrent writers converge on the same durable records and one invocation still commits once — but the network work is duplicated per tab.
+
+**A tab reconnects when it is activated.** A tab that lost its connection re-reads and re-activates when it is focused, shown from the back/forward cache, or told by another tab that something changed. Its queued work retries on its own; its *reads* wait for that activation.
+
+<Next links={[
+  { href: "/concepts/offline/", label: "Offline and synchronization", why: "the model these limits belong to" },
+  { href: "/reference/client-api/", label: "Client API", why: "the surface that reports each of these states" },
+  { href: "/guides/before-production/", label: "Before production", why: "what to check before shipping an offline-first app" },
+]} />
