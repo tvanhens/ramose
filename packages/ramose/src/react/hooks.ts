@@ -15,6 +15,7 @@ import type {
   ClientValue,
   EntityFocused,
   EntityResult,
+  MutationNamespace,
   Receipt,
   Subscription,
   SyncState,
@@ -66,8 +67,17 @@ const useClient = (): Client => {
  * recovers by constructing a new client, and a tree that keeps rendering
  * against the old one is asking a question that no longer has an answer. Swap
  * the client on the provider (or unmount the tree) as part of closing it.
+ *
+ * A React context holds one client for a whole tree and cannot carry that
+ * client's catalog into each consumer's types, so this answers the runtime
+ * namespace by default. Name the catalog's namespace —
+ * `useDb<DatabaseMutations<typeof AppSchema>>()` — or hold the typed client's
+ * own `open()` at module scope, to read `db.mutate` with the catalog's exact
+ * operations.
  */
-export const useDb = (): ClientDatabase => useClient().open();
+export const useDb = <Mutations = MutationNamespace>(): ClientDatabase<
+  Mutations
+> => useClient().open() as ClientDatabase<Mutations>;
 
 const pendingOnServer = (): QueryState<never> => PENDING;
 

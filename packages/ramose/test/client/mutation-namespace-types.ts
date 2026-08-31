@@ -17,11 +17,12 @@ import { compileReadAuthorization } from "../../src/internal/authorization/index
 import { createClient } from "../../src/client/index.ts";
 import type {
   ClientDatabase,
+  DatabaseMutations,
   EntityHandle,
   MutationNamespace,
   Receipt,
 } from "../../src/client/index.ts";
-import { useQuery } from "../../src/react/index.ts";
+import { useDb, useQuery } from "../../src/react/index.ts";
 
 const Child = { key: "child", schema: Schema({}) } satisfies CodeDefinition;
 
@@ -204,6 +205,36 @@ export const _renderedSetStatus: Receipt = rendered.mutate.setStatus({
 
 // @ts-expect-error — an operation this focus does not reach
 rendered.mutate.createIssue({ title: "Offline" });
+
+/**
+ * A trait focus reaches only its own operations, as `selfOperationsFor` does:
+ * a polymorphic read over a trait says nothing about which composers answer it.
+ */
+const archivable = db.observe(db.query.from(Archivable)).getSnapshot().data![0]!;
+export type _traitFocusNames = Expect<
+  Equal<keyof typeof archivable.mutate, "archive">
+>;
+
+// @ts-expect-error — an operation the composing entity declares, not this trait
+archivable.mutate.setStatus({ status: "closed" });
+
+/** The React root database answers the namespace its catalog is named with. */
+const typedRoot = useDb<DatabaseMutations<typeof AppSchema>>();
+export const _typedRootCall: Receipt = typedRoot.mutate.createIssue({
+  title: "Offline",
+  author,
+  watchers: [],
+  origin: { board },
+});
+
+// @ts-expect-error — an operation the catalog does not declare
+typedRoot.mutate.misspelled({});
+
+/** A provider-backed database with no named catalog stays the runtime namespace. */
+const looseRoot = useDb();
+export type _looseRoot = Expect<
+  Equal<typeof looseRoot.mutate, MutationNamespace>
+>;
 
 /** A projection has no focus, so it stays plain data. */
 const renderedTitles = useQuery(

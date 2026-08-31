@@ -95,7 +95,17 @@ export type DatabaseMutations<S extends AnySchema> = NamesEntities<S> extends
   true ? Namespace<SchemaOwners<S>, false>
   : MutationNamespace;
 
-/** The self and trait operations one declared focus reaches. */
+/**
+ * The self and trait operations one declared focus reaches.
+ *
+ * An entity reaches the operations its composed traits declare, transitively.
+ * A trait focus reaches only its own: a polymorphic read over a trait is not a
+ * claim about which composers answer it.
+ */
 export type EntityMutations<N extends AnyComposer> = NamesFields<N> extends true
-  ? Namespace<N | TraitClosure<TraitsOf<N>>, true>
+  ? Namespace<N | ComposedTraits<N>, true>
   : MutationNamespace;
+
+type ComposedTraits<N> = N extends { readonly _tag: "Entity" }
+  ? TraitClosure<TraitsOf<N>>
+  : never;

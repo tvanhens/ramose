@@ -253,7 +253,6 @@ browserTest(
       expect(receipt.getSnapshot().status).toBe("failed");
       expect(db.sync.getSnapshot().status).toBe("authentication-required");
 
-      // And nothing durable was written for an invocation that never had a
       expect(await mutationCensus(name)).toEqual(NO_MUTATION_TRACE);
     } finally {
       await app.close();
@@ -605,9 +604,11 @@ browserTest(
       const held = ready.data![0]!;
       expect(Object.keys(held.mutate)).toEqual(["close"]);
 
-      const receipt = held.mutate.close!({});
+      // An operation whose whole input is optional queues with no argument.
+      const receipt = held.mutate.close();
       await receipt.queued;
       expect(receipt.getSnapshot().status).toBe("queued");
+      expect((await queued(name, identity))[0]!.input).toEqual({});
 
       const seen: string[] = [];
       const watchSync = db.sync.subscribe(() => {
