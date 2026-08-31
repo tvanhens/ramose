@@ -7,9 +7,13 @@ import {
   replicaSweepKey,
   replicaSweepPrefix,
   stagingIsSweepable,
+  supersededPartitions,
   unreachableNodeHashes,
 } from "../../../src/internal/replication/replica-gc.ts";
-import { replicaPartitionScopeKey } from "../../../src/internal/replication/replica-lifecycle.ts";
+import {
+  replicaPartitionDatabasePrefix,
+  replicaPartitionScopeKey,
+} from "../../../src/internal/replication/replica-lifecycle.ts";
 
 const walkAll = (
   roots: readonly string[],
@@ -85,6 +89,52 @@ describe("sweep selection", () => {
 
   test("everything is garbage once no root set names the partition", () => {
     expect(unreachableNodeHashes(["a", "b"], new Set())).toEqual(["a", "b"]);
+  });
+});
+
+describe("supersession", () => {
+  const rotated = "ramose-replica-v3:s:p:d:w:h";
+  const original = "ramose-replica-v3:s:p:d:v:h";
+
+  test("a partition nothing references loses to a confirmed one over the same database", () => {
+    expect([...supersededPartitions([original, rotated], new Set([rotated]))])
+      .toEqual([original]);
+  });
+
+  test("the confirmed partition is never superseded by itself", () => {
+    expect(supersededPartitions([rotated], new Set([rotated])).size).toBe(0);
+  });
+
+  test("nothing is superseded while the database has no confirmed partition", () => {
+    expect(supersededPartitions([original, rotated], new Set()).size).toBe(0);
+    expect(
+      supersededPartitions([original], new Set(["ramose-replica-v3:s:p:e:v:h"])).size,
+    ).toBe(0);
+  });
+
+  test("a confirmation for another principal or server supersedes nothing", () => {
+    for (const other of ["ramose-replica-v3:s:q:d:v:h", "ramose-replica-v3:t:p:d:v:h"]) {
+      expect(supersededPartitions([original], new Set([other])).size).toBe(0);
+    }
+  });
+
+  test("two confirmed read views over one database keep each other alive", () => {
+    expect(supersededPartitions([original, rotated], new Set([original, rotated])).size)
+      .toBe(0);
+  });
+
+  test("a key that is not a partition key is never superseded and confirms nothing", () => {
+    expect(supersededPartitions(["ramose-replica-v3:s:p:d:v"], new Set([rotated])).size)
+      .toBe(0);
+    expect(supersededPartitions([original], new Set(["ramose-replica-v2:s:p:d:v:h"])).size)
+      .toBe(0);
+  });
+
+  test("a partition key names the database prefix that owns it", () => {
+    expect(replicaPartitionDatabasePrefix(original))
+      .toBe("ramose-replica-v3:s:p:d:");
+    expect(replicaPartitionDatabasePrefix("ramose-replica-v3:s:p:d:v")).toBeUndefined();
+    expect(replicaPartitionDatabasePrefix("")).toBeUndefined();
   });
 });
 

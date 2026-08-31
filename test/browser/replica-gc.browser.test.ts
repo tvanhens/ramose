@@ -1034,6 +1034,125 @@ browserTest(
 );
 
 browserTest(
+  "a rotated read view leaves a partition the next sweep reclaims whole",
+  async ({ browser }) => {
+    const name = `ramose-gc-rotated-read-view-${browser.uniqueId}`;
+    const original = identity();
+    const rotated = identity({ readView: opaque("w"), authenticator: opaque("b") });
+    const sibling = identity({ database: CHILD_DATABASE });
+    const partition = replicaPartitionKey(original);
+    const siblingPartition = replicaPartitionKey(sibling);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await installSnapshot(storage, original, opaque("1"), wideDatoms(60, "before"));
+      await installSnapshot(storage, sibling, opaque("3"), wideDatoms(20, "child"));
+      await confirm(storage, original, "root");
+      await confirm(storage, sibling, "child");
+      const before = await nodeHashes(name, partition);
+      const siblingBefore = await nodeHashes(name, siblingPartition);
+      expect(before.length).toBeGreaterThan(0);
+
+      await installSnapshot(storage, rotated, opaque("2"), wideDatoms(60, "after"));
+      await confirm(storage, rotated, "root");
+      expect((await dump(name))[COMMITTED]).toHaveLength(3);
+
+      const outcome = await storage.collectGarbage();
+      expect(outcome.partitions).toBe(3);
+      expect(outcome.swept).toBe(1);
+      expect(outcome.skipped).toBe(0);
+      expect(outcome.nodes).toBe(before.length);
+      expect(await nodeHashes(name, partition)).toEqual([]);
+      expect(await sweepGeneration(name, partition)).toBe(1);
+
+      const dumped = await dump(name);
+      expect(dumped[COMMITTED]).toHaveLength(2);
+      expect(dumped[COMMITTED_HEADS]).toHaveLength(2);
+
+      expect(await storage.restore(original, attributes, READ_COMPATIBILITY)).toBeUndefined();
+      expect(await revisionOf(storage.restore(rotated, attributes, READ_COMPATIBILITY)))
+        .toBe(opaque("2"));
+      expect(await revisionOf(storage.restore(sibling, attributes, READ_COMPATIBILITY)))
+        .toBe(opaque("3"));
+      expect(await nodeHashes(name, siblingPartition)).toEqual(siblingBefore);
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a walk parked over a superseded partition cannot publish after it is reclaimed",
+  async ({ browser }) => {
+    const name = `ramose-gc-superseded-parked-walk-${browser.uniqueId}`;
+    const original = identity();
+    const rotated = identity({ readView: opaque("w"), authenticator: opaque("b") });
+    const partition = replicaPartitionKey(original);
+    const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    try {
+      await installSnapshot(storage, original, opaque("1"), wideDatoms(120, "seed"));
+      await confirm(storage, original, "root");
+
+      armCheckpoint("replica.validated", "wait");
+      const walking = storage.restoreOutcome(original, attributes, READ_COMPATIBILITY);
+      await reachedCheckpoint("replica.validated");
+
+      await installSnapshot(storage, rotated, opaque("2"), wideDatoms(120, "next"));
+      await confirm(storage, rotated, "root");
+      const swept = await storage.collectGarbage();
+      expect(swept.nodes).toBeGreaterThan(0);
+      expect(await nodeHashes(name, partition)).toEqual([]);
+      expect(await sweepGeneration(name, partition)).toBe(1);
+
+      releaseCheckpoint("replica.validated");
+      const outcome = await walking;
+
+      expect(outcome._tag).toBe("absent");
+      expect(await revisionOf(storage.restore(rotated, attributes, READ_COMPATIBILITY)))
+        .toBe(opaque("2"));
+    } finally {
+      resetTestHooks();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a confirmation that reclaims a planned partition leaves it whole",
+  async ({ browser }) => {
+    const name = `ramose-gc-reconfirmed-partition-${browser.uniqueId}`;
+    const original = identity();
+    const rotated = identity({ readView: opaque("w"), authenticator: opaque("b") });
+    const partition = replicaPartitionKey(original);
+    const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
+    try {
+      await installSnapshot(storage, original, opaque("1"), wideDatoms(60, "seed"));
+      await installSnapshot(storage, rotated, opaque("2"), wideDatoms(60, "next"));
+      await confirm(storage, rotated, "root");
+      const before = await nodeHashes(name, partition);
+
+      armCheckpoint("replica.gc.planned", "wait");
+      const sweeping = storage.collectGarbage();
+      await reachedCheckpoint("replica.gc.planned");
+      await confirm(storage, original, "root");
+      releaseCheckpoint("replica.gc.planned");
+
+      const outcome = await sweeping;
+      expect(outcome.skipped).toBeGreaterThan(0);
+      expect(await nodeHashes(name, partition)).toEqual(before);
+      expect(await sweepGeneration(name, partition)).toBe(0);
+      expect(await revisionOf(storage.restore(original, attributes, READ_COMPATIBILITY)))
+        .toBe(opaque("1"));
+    } finally {
+      resetTestHooks();
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "clear, eviction, and close settle with GC rather than against it",
   async ({ browser }) => {
     const name = `ramose-gc-lifecycle-${browser.uniqueId}`;

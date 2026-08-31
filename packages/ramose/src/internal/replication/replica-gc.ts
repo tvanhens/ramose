@@ -1,5 +1,6 @@
 import * as Data from "effect/Data";
 import { REPLICA_STORAGE_VERSION } from "./protocol.ts";
+import { replicaPartitionDatabasePrefix } from "./replica-lifecycle.ts";
 
 export const replicaSweepKey = (partition: string): string =>
   [`ramose-replica-sweep-v${REPLICA_STORAGE_VERSION}`, partition].join(":");
@@ -59,6 +60,24 @@ export const unreachableNodeHashes = (
     swept.push(hash);
   }
   return Object.freeze(swept);
+};
+
+export const supersededPartitions = (
+  stored: Iterable<string>,
+  referenced: ReadonlySet<string>,
+): ReadonlySet<string> => {
+  const confirmed = new Set<string>();
+  for (const partition of referenced) {
+    const database = replicaPartitionDatabasePrefix(partition);
+    if (database !== undefined) confirmed.add(database);
+  }
+  const superseded = new Set<string>();
+  for (const partition of stored) {
+    if (referenced.has(partition)) continue;
+    const database = replicaPartitionDatabasePrefix(partition);
+    if (database !== undefined && confirmed.has(database)) superseded.add(partition);
+  }
+  return superseded;
 };
 
 export const stagingIsSweepable = (
