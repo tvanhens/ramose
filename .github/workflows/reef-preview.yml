@@ -9,8 +9,8 @@
 # embed the `pr-<n>` stage, and teardown destroys that stage only.
 #
 # URL shape: without a pinned hostname the peer URL exists only *after* a
-# deploy, so previews are two passes — deploy once, bake
-# `BUN_PUBLIC_PEER_ORIGIN=<peerUrl>` into the SPA, deploy again so the built
+# deploy, so previews are two passes — deploy once, bake the peer origin
+# into the SPA (`--define REEF_PEER_ORIGIN=...`), deploy again so the built
 # assets ship on the auth Worker. The human-facing URL is that auth Worker
 # (workers.dev). The peer's CORS allowlist already carries the auth Worker's
 # origin (examples/reef/src/infra/resources.ts).
@@ -98,9 +98,8 @@ jobs:
 
           # Pass 2: bake the peer origin into the SPA and ship it as the
           # auth Worker's assets.
-          BUN_PUBLIC_PEER_ORIGIN="$PEER_URL" \
-            bun build examples/reef/index.html --outdir examples/reef/dist \
-            --minify --env='BUN_PUBLIC_*'
+          bun build examples/reef/index.html --outdir examples/reef/dist \
+            --minify --define "REEF_PEER_ORIGIN=\"$PEER_URL\"" 
           bun alchemy deploy examples/reef/alchemy.run.ts \
             --stage "$STAGE" --yes | tee deploy.log
 

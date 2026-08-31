@@ -90,7 +90,7 @@ REEF_DOMAIN=reef.ramose.ai bun alchemy deploy examples/reef/alchemy.run.ts --sta
 
 Without `REEF_DOMAIN` the SPA needs the peer's origin baked in, because the
 auth Worker and the peer sit on different `workers.dev` hosts: deploy once,
-then rebuild with `BUN_PUBLIC_PEER_ORIGIN=<peerUrl>` and deploy again —
+then rebuild with `--define 'REEF_PEER_ORIGIN="<peerUrl>"'` and deploy again —
 `.github/workflows/reef-preview.yml` does exactly this for every PR.
 
 The API token needs the `todos` e2e permissions (Workers Scripts, R2 — see

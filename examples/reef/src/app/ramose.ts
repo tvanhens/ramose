@@ -6,10 +6,12 @@ import { mintToken } from "./auth.ts";
 export type ReefMutations = DatabaseMutations<typeof Reef>;
 export type ReefClient = Client<ReefMutations>;
 
+declare const REEF_PEER_ORIGIN: string | undefined;
+
 const peerOrigin = (): string =>
-  (typeof process !== "undefined"
-    ? process.env.BUN_PUBLIC_PEER_ORIGIN
-    : undefined) || location.origin;
+  typeof REEF_PEER_ORIGIN === "string" && REEF_PEER_ORIGIN !== ""
+    ? REEF_PEER_ORIGIN
+    : location.origin;
 
 export const openReef = (userId: string): ReefClient =>
   createClient({
