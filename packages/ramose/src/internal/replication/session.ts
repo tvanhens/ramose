@@ -17,6 +17,7 @@ import {
 import { sameReplicationIdentity } from "./state.ts";
 import {
   identityInDatabase,
+  isReplicaFenceError,
   replicaDatabaseKey,
   replicaDatabaseScopeOf,
   ReplicaLease,
@@ -54,11 +55,6 @@ export type ReplicationSessionSnapshot = {
   readonly value?: ReplicationSessionValue;
   readonly terminalCode?: "closed" | "incompatible-version" | "update-required";
   readonly failure?: "unauthorized" | "transport" | "fenced";
-};
-
-const isReplicaFence = (error: unknown): boolean => {
-  const tag = (error as { readonly _tag?: unknown } | undefined)?._tag;
-  return tag === "ReplicaFencedError" || tag === "ReplicaScopeClearedError";
 };
 
 export type ReplicationSessionObserver = (snapshot: ReplicationSessionSnapshot) => void;
@@ -327,7 +323,7 @@ export class ReplicationSession {
       await this.storage.confirmLease(this.lease, identity);
       return false;
     } catch (error) {
-      if (!isReplicaFence(error) || !this.current(generation)) return false;
+      if (!isReplicaFenceError(error) || !this.current(generation)) return false;
       this.publish({ status: "failed", failure: "fenced" });
       this.controller.abort(error);
       return true;
@@ -517,7 +513,7 @@ export class ReplicationSession {
               .catch(() => undefined);
           }
           if (session.controller.signal.aborted || !session.current(generation)) return;
-          if (isReplicaFence(error)) {
+          if (isReplicaFenceError(error)) {
             session.publish({ status: "failed", failure: "fenced" });
             session.controller.abort(error);
             return;

@@ -137,6 +137,12 @@ export class ReplicaDatabaseActiveError extends Data.TaggedError(
   "ReplicaDatabaseActiveError",
 )<{ readonly database: string; readonly pins: number }> {}
 
+/** Whether a scope this holder was reading has been withdrawn under it. */
+export const isReplicaFenceError = (error: unknown): boolean => {
+  const tag = (error as { readonly _tag?: unknown } | undefined)?._tag;
+  return tag === "ReplicaFencedError" || tag === "ReplicaScopeClearedError";
+};
+
 export type ReplicaFenceDecision = "adopt" | "match" | "fenced";
 
 export const replicaFenceDecision = (
