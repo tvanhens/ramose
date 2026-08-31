@@ -310,6 +310,7 @@ describe("authorized Graph paths", () => {
       ":pathNote/text": "nested visible",
     });
     expect(events).toEqual([
+      `provision:${world.root.database}`,
       `acquire:${world.root.database}`,
       `provision:${world.child.database}`,
       `acquire:${world.child.database}`,
@@ -342,7 +343,10 @@ describe("authorized Graph paths", () => {
       resolver(world, ["row-only"], ["acme"], events),
     ));
     expect(denied).toBeInstanceOf(GraphPathSegmentInaccessible);
-    expect(events).toEqual([`acquire:${world.root.database}`]);
+    expect(events).toEqual([
+      `provision:${world.root.database}`,
+      `acquire:${world.root.database}`,
+    ]);
   });
 
   test("does not skip an inaccessible ancestor or provision beyond it", async () => {
@@ -354,6 +358,7 @@ describe("authorized Graph paths", () => {
     expect(denied).toBeInstanceOf(GraphPathSegmentInaccessible);
     expect(denied).toMatchObject({ index: 1, segment: "design" });
     expect(events).toEqual([
+      `provision:${world.root.database}`,
       `acquire:${world.root.database}`,
       `provision:${world.child.database}`,
       `acquire:${world.child.database}`,

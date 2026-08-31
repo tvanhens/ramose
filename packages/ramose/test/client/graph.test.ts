@@ -223,6 +223,7 @@ describe("the resolved-database registry", () => {
       storage: () => Promise.reject(new Error("not activated")),
       assertLive: () => undefined,
       submit: () => undefined,
+      applied: () => undefined,
       track: () => undefined,
     },
     assertLive: () => undefined,

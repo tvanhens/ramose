@@ -383,6 +383,22 @@ export const resolveAuthorizedGraphPath = Effect.fn(
   let route = input.root;
   let context!: AuthorizedRequestContext;
 
+  yield* input.provision(
+    input.root,
+    Object.freeze({
+      rootDatabase: input.root.database,
+      graphs: Object.freeze([]),
+    }),
+  ).pipe(
+    Effect.mapError((cause) =>
+      new GraphPathProvisioningFailed({
+        database: input.root.database,
+        index: 0,
+        cause,
+      })
+    ),
+  );
+
   for (let index = 0; index <= path.length; index++) {
     context = yield* authorizeRoute(
       input,

@@ -19,6 +19,7 @@ const context: MutationContext = {
   storage: () => Promise.reject(new Error("not reached")),
   assertLive: () => undefined,
   submit: () => undefined,
+  applied: () => undefined,
   track: () => undefined,
 };
 

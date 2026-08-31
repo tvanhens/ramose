@@ -42,6 +42,7 @@
     "dev": "bun run scripts/build-packages.ts && bun alchemy dev",
     "dev:todos": "bun run scripts/build-packages.ts && CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun alchemy dev examples/todos/alchemy.run.ts",
     "dev:reef": "bun run scripts/build-packages.ts && CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun alchemy dev examples/reef/alchemy.run.ts",
+    "dev:graph": "bun run scripts/build-packages.ts && CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun alchemy dev examples/graph/alchemy.run.ts",
     "deploy": "bun run scripts/build-packages.ts && bun alchemy deploy",
     "deploy:prod": "bun run scripts/build-packages.ts && bun alchemy deploy --stage prod",
     "deploy:docs": "bun alchemy deploy website/alchemy.run.ts",

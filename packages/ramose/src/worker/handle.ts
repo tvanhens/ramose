@@ -428,7 +428,18 @@ export const handle = (
       const ack = parsed.path.length === 0
         ? rootProof === undefined
           ? yield* new Unauthorized({ status: 403 })
-          : yield* invoke(db, rootProof.catalogKey, rootProof.unitHash)
+          : yield* Effect.gen(function* () {
+            if (databaseBindings !== undefined) {
+              const root = yield* Effect.fromResult(
+                databaseBindings.root(DatabaseId.make(db)),
+              ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
+              yield* provisionResolvedDatabase(env, root, {
+                rootDatabase: root.database,
+                graphs: [],
+              });
+            }
+            return yield* invoke(db, rootProof.catalogKey, rootProof.unitHash);
+          })
         : databaseBindings === undefined
           ? yield* new Unauthorized({ status: 403 })
           : yield* Effect.gen(function* () {

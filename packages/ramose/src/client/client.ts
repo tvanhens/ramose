@@ -293,8 +293,23 @@ class RamoseClient implements Client {
       storage: () => this.storage(),
       assertLive: (operation) => this.assertLive(operation),
       submit: (receiver) => this.submissions().request(receiver),
+      applied: (receiver) => this.observeLayers(replicaDatabaseKey(receiver)),
       track: (receiver, driver) => this.submissions().track(receiver, driver),
     };
+  }
+
+  /**
+   * Show what this tab just wrote.
+   *
+   * A durable layer another tab writes arrives here as a notice; the tab that
+   * wrote it never receives its own broadcast, so the same re-read happens on
+   * the spot instead.
+   */
+  private observeLayers(database: string): void {
+    if (this.terminal !== undefined) return;
+    for (const handle of this.handleByKey(database)) {
+      void handle.refreshOptimistic();
+    }
   }
 
   private closeSubmissions(): void {

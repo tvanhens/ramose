@@ -23,6 +23,7 @@ export type MutationContext = {
   readonly storage: () => Promise<IndexedDbReplicaStorage>;
   readonly assertLive: (operation: string) => void;
   readonly submit: (receiver: ReplicaDatabaseScope) => void;
+  readonly applied: (receiver: ReplicaDatabaseScope) => void;
   readonly track: (
     receiver: ReplicaDatabaseScope,
     driver: ReceiptDriver,
@@ -102,6 +103,7 @@ const enqueue = async (
     }),
   });
   driver.queue();
+  context.applied(receiver);
   context.submit(receiver);
 };
 
