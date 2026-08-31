@@ -15,12 +15,14 @@
 # (workers.dev). The peer's CORS allowlist already carries the auth Worker's
 # origin (examples/reef/src/infra/resources.ts).
 #
-# State: ALCHEMY_STATE=local, `.alchemy/` via the Actions cache — encrypted
-# with `REEF_STATE_KEY` like reef-publish.yml, since Actions caches are
-# readable across branches.
+# State: Alchemy's Cloudflare state store, per `pr-<n>` stage (see
+# reef-publish.yml) — durable and account private, so teardown reads real
+# state instead of a possibly-evicted cache, and there is no `.alchemy/` to
+# carry between runs.
 #
-# Credentials: GitHub Environment "Development". The token also needs
-# Account / D1 / Edit (Better Auth's database).
+# Credentials: GitHub Environment "Development". The token needs Account /
+# D1 / Edit (Better Auth's database) plus the state-store scopes named in
+# reef-publish.yml.
 name: Reef preview
 
 on:
@@ -53,32 +55,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Install
         run: bun install --frozen-lockfile
-      - name: Restore stack state
-        uses: actions/cache/restore@v4
-        with:
-          path: .alchemy-state.enc
-          key: reef-preview-state-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
-          restore-keys: |
-            reef-preview-state-pr-${{ github.event.pull_request.number }}-
-      - name: Decrypt stack state
-        env:
-          REEF_STATE_KEY: ${{ secrets.REEF_STATE_KEY }}
-        run: |
-          if [ -z "$REEF_STATE_KEY" ]; then
-            echo "::error::Need REEF_STATE_KEY (secret) on the Development environment — see reef-publish.yml."
-            exit 1
-          fi
-          if [ -f .alchemy-state.enc ]; then
-            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:REEF_STATE_KEY \
-              -in .alchemy-state.enc | tar -x
-          fi
       - name: Deploy pr-${{ github.event.pull_request.number }} stage
         id: deploy
         env:
           CI: "1"
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ALCHEMY_STATE: local
           # Production-only. Must stay unset: a preview that inherits it would
           # adopt reef.ramose.ai and the pinned prod D1 / R2 / Workers.
         run: |
@@ -100,7 +82,7 @@ jobs:
           # Pass 1: mint (or update) the isolated Workers + D1 + R2. The peer
           # URL is only knowable after this.
           bun alchemy deploy examples/reef/alchemy.run.ts \
-            --stage "$STAGE" --yes | tee deploy.log
+            --stage "$STAGE" --yes --adopt | tee deploy.log
 
           PEER_URL="$(extract_url peerUrl)"
           API_URL="$(extract_url apiUrl)"
@@ -112,9 +94,9 @@ jobs:
           # Pass 2: bake the peer origin into the SPA and ship it as the
           # auth Worker's assets.
           bun build examples/reef/index.html --outdir examples/reef/dist \
-            --minify --define "REEF_PEER_ORIGIN=\"$PEER_URL\"" 
+            --minify --define "REEF_PEER_ORIGIN=\"$PEER_URL\""
           bun alchemy deploy examples/reef/alchemy.run.ts \
-            --stage "$STAGE" --yes | tee deploy.log
+            --stage "$STAGE" --yes --adopt | tee deploy.log
 
           echo "url=$API_URL" >> "$GITHUB_OUTPUT"
           echo "peer_url=$PEER_URL" >> "$GITHUB_OUTPUT"
@@ -168,21 +150,6 @@ jobs:
                 body,
               });
             }
-      - name: Encrypt stack state
-        if: always()
-        env:
-          REEF_STATE_KEY: ${{ secrets.REEF_STATE_KEY }}
-        run: |
-          if [ -d .alchemy ] && [ -n "$REEF_STATE_KEY" ]; then
-            tar -c .alchemy | openssl enc -aes-256-cbc -pbkdf2 \
-              -pass env:REEF_STATE_KEY -out .alchemy-state.enc
-          fi
-      - name: Save stack state
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .alchemy-state.enc
-          key: reef-preview-state-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   teardown:
     name: destroy-preview
@@ -195,33 +162,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Install
         run: bun install --frozen-lockfile
-      - name: Restore stack state
-        id: state
-        uses: actions/cache/restore@v4
-        with:
-          path: .alchemy-state.enc
-          key: reef-preview-state-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
-          restore-keys: |
-            reef-preview-state-pr-${{ github.event.pull_request.number }}-
-      - name: Decrypt stack state
-        env:
-          REEF_STATE_KEY: ${{ secrets.REEF_STATE_KEY }}
-        run: |
-          if [ -f .alchemy-state.enc ] && [ -n "$REEF_STATE_KEY" ]; then
-            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:REEF_STATE_KEY \
-              -in .alchemy-state.enc | tar -x
-          fi
       - name: Destroy pr-${{ github.event.pull_request.number }} stage
         env:
           CI: "1"
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ALCHEMY_STATE: local
         run: |
-          if [ ! -d .alchemy ]; then
-            echo "::warning::No cached stack state for this PR — nothing to destroy (or the cache was evicted; check the Cloudflare dashboard for stray pr-${{ github.event.pull_request.number }} resources)."
-            exit 0
-          fi
           bun run scripts/build-packages.ts
+          # Reads this stage from the Cloudflare state store; a stage that was
+          # never deployed (or already destroyed) is a no-op, not a failure.
           bun alchemy destroy examples/reef/alchemy.run.ts \
             --stage "pr-${{ github.event.pull_request.number }}" --yes

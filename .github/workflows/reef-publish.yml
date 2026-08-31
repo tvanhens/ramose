@@ -8,25 +8,20 @@
 # Same-origin means the SPA reaches both Workers at location.origin, and the
 # peer's workers.dev hostname stays up for the `Ramose.Server` health check.
 #
-# State: `ALCHEMY_STATE=local` with `.alchemy/` carried between runs via the
-# Actions cache, like docs-publish.yml — the CI token deliberately lacks the
-# scopes `Cloudflare.state()` needs (see CONTRIBUTING.md). Actions caches are
-# readable across branches — including by pull_request workflows from forks —
-# so the state (which holds the state-only `BetterAuthSecret`) is encrypted
-# with the `REEF_STATE_KEY` environment secret before it is cached; fork runs
-# can fetch the blob but cannot read it. This stack owns a
-# D1 database (accounts, JWKS keys) and an R2 bucket (every workspace's
-# datoms), and Alchemy's generated names carry a random suffix — so a cache
-# eviction would mint empty replacements and orphan the live data.
-# `REEF_DOMAIN` pins the physical names (see examples/reef/src/infra/domain.ts)
-# and `--adopt` reattaches them. `BetterAuthSecret` is Alchemy.Random
-# (state-only, not adopt-able): a cache eviction remints it. Old cookies die;
-# password sign-in still works, and `ramoseToken` mints a replacement JWKS key
-# when the old one cannot be decrypted.
+# State: Alchemy's Cloudflare state store — a Durable-Object-backed Worker on
+# this account (`Cloudflare.state()` in examples/reef/alchemy.run.ts, deployed
+# once by `bun alchemy bootstrap cloudflare`). State is durable and account
+# private: no `.alchemy/` in the Actions cache, so nothing to evict (a cache
+# eviction would have minted empty D1/R2 and orphaned live data) and no auth
+# material in a cross-branch-readable store. In CI the deploy resolves the
+# state-store bearer from the account's Secrets Store, so the token needs
+# **Secrets Store: Read** and **Workers edge-preview** on top of the scopes
+# below.
 #
-# Credentials come from the GitHub Environment "Development" — same as
-# docs-publish.yml. The token needs **Account / D1 / Edit** on top of the
-# minimum in CONTRIBUTING.md, plus zone access to manage the hostname.
+# Credentials come from the GitHub Environment "Development". The token needs
+# **Account / D1 / Edit** (Better Auth's database) and zone access for the
+# hostname, on top of the CONTRIBUTING.md minimum and the two state-store
+# scopes above.
 name: Reef publish
 
 on:
@@ -52,25 +47,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Install
         run: bun install --frozen-lockfile
-      - name: Restore stack state
-        uses: actions/cache/restore@v4
-        with:
-          path: .alchemy-state.enc
-          key: reef-prod-state-${{ github.run_id }}
-          restore-keys: |
-            reef-prod-state-
-      - name: Decrypt stack state
-        env:
-          REEF_STATE_KEY: ${{ secrets.REEF_STATE_KEY }}
-        run: |
-          if [ -z "$REEF_STATE_KEY" ]; then
-            echo "::error::Need REEF_STATE_KEY (secret) on the Development environment — it encrypts the cached Alchemy state (openssl aes-256-cbc passphrase; any long random string)."
-            exit 1
-          fi
-          if [ -f .alchemy-state.enc ]; then
-            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:REEF_STATE_KEY \
-              -in .alchemy-state.enc | tar -x
-          fi
       - name: Deploy prod stage
         id: deploy
         env:
@@ -80,7 +56,6 @@ jobs:
           # Unset it and this is an ordinary personal deploy: no custom domain,
           # no route, no pinned names. Production is exactly this variable.
           REEF_DOMAIN: ${{ vars.REEF_DOMAIN || 'reef.ramose.ai' }}
-          ALCHEMY_STATE: local
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "::error::Need CLOUDFLARE_API_TOKEN (secret) and CLOUDFLARE_ACCOUNT_ID (variable or secret) on the Development environment. See CONTRIBUTING.md."
@@ -114,18 +89,3 @@ jobs:
             *) echo "::error::/db/* served '$ct' — the peer route is not winning over the asset fallback"; fail=1 ;;
           esac
           exit $fail
-      - name: Encrypt stack state
-        if: always()
-        env:
-          REEF_STATE_KEY: ${{ secrets.REEF_STATE_KEY }}
-        run: |
-          if [ -d .alchemy ] && [ -n "$REEF_STATE_KEY" ]; then
-            tar -c .alchemy | openssl enc -aes-256-cbc -pbkdf2 \
-              -pass env:REEF_STATE_KEY -out .alchemy-state.enc
-          fi
-      - name: Save stack state
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .alchemy-state.enc
-          key: reef-prod-state-${{ github.run_id }}-${{ github.run_attempt }}
