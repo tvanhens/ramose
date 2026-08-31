@@ -1,4 +1,7 @@
-import { isCatalogDefinition, type CatalogDefinition } from "../Catalog.ts";
+import {
+  isSchemaDefinition,
+  type AnySchemaDefinition,
+} from "../db/Schema.ts";
 import {
   DEFAULT_REPLICA_DATABASE_NAME,
   IndexedDbReplicaStorage,
@@ -20,7 +23,6 @@ import {
 } from "../internal/replication/leadership.ts";
 import type { MutationEndpoint } from "../internal/replication/submission.ts";
 import { replicationActivationAddress } from "../internal/replication/transport.ts";
-import type { AnySchema } from "../db/Schema.ts";
 import { completeSchema } from "../internal/authorization/read-tables.ts";
 import { compositionFromSchema } from "../db/composition.ts";
 import type { CompositionIndex } from "../internal/core/composition.ts";
@@ -68,10 +70,10 @@ export type AuthCredential = {
 /** Called once per activation. May be synchronous or asynchronous. */
 export type AuthProvider = () => AuthCredential | Promise<AuthCredential>;
 
-export type ClientOptions<S extends AnySchema = AnySchema> = {
+export type ClientOptions<S extends AnySchemaDefinition = AnySchemaDefinition> = {
   readonly url: string;
   readonly root: string;
-  readonly catalog: CatalogDefinition<string, S>;
+  readonly catalog: S;
   readonly auth: AuthProvider;
   readonly storageName?: string;
 };
@@ -547,7 +549,7 @@ class RamoseClient implements Client {
  * @throws ClientConfigurationError when any of them cannot be bound. None of
  * these become valid later, so they fail here rather than at the first query.
  */
-export const createClient = <const S extends AnySchema>(
+export const createClient = <const S extends AnySchemaDefinition>(
   options: ClientOptions<S>,
 ): Client<DatabaseMutations<S>> => {
   if (!nonEmpty(options?.root)) {
@@ -555,9 +557,9 @@ export const createClient = <const S extends AnySchema>(
       message: "createClient needs a configured root route",
     });
   }
-  if (!isCatalogDefinition(options.catalog)) {
+  if (!isSchemaDefinition(options.catalog)) {
     throw new ClientConfigurationError({
-      message: "createClient needs an installed Ramose catalog",
+      message: "createClient needs a named Ramose schema",
     });
   }
   if (typeof options.auth !== "function") {

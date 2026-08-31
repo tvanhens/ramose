@@ -25,11 +25,11 @@ That order prevents hidden data from changing visible answers indirectly. A hidd
 
 Entity, trait, and field rules can each narrow access. A trait cannot grant a composer hidden by its concrete entity rule; a field cannot reopen a hidden parent. Deny rules override allows at the same focus.
 
-Rules may use stable principal classes, claims, subject identity, the current resource, the principal entity, and bounded relation paths. Policy is inert schema-checked data deployed with the catalog, not arbitrary request-time code.
+Read rules may use stable roles, claims, subject identity, the current resource, the principal entity, and bounded relation paths. Policy is inert schema-checked data applied to the named schema, not arbitrary request-time code.
 
 ## Operations have exact grants
 
-Read rules do not authorize mutations. Every owned operation has its own principal-only allow or deny decision. Targeted operations also require a visible compatible target in the current filtered database. The server repeats those checks at commit time; discovery and client method presence are not authority.
+Read rules do not authorize mutations. Every owned operation has its own session-only allow or deny decision. Targeted operations also require a visible compatible target in the current filtered database. The server repeats those checks at commit time; discovery and client method presence are not authority.
 
 ## Paths compose authorization
 

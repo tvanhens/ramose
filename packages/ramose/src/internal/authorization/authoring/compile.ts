@@ -46,7 +46,7 @@ import {
 } from "./types.ts";
 
 const SUPPORTED_EXPR_TAGS = new Set(["const", "hasClass", "and", "or", "not", "eq", "in"]);
-const SUPPORTED_OPERAND_TAGS = new Set(["me", "subject", "claim", "lit", "path"]);
+const SUPPORTED_OPERAND_TAGS = new Set(["me", "subject", "claim", "lit", "resource", "path"]);
 
 const invalid = (message: string): Result.Result<never, InvalidIR> =>
   Result.fail(new InvalidIR({ message }));
@@ -240,6 +240,12 @@ const lowerOperand = (
         }
         return { _tag: "lit" as const, value };
       }
+      case "resource":
+        return {
+          _tag: "ref" as const,
+          root: { _tag: "resource" as const },
+          steps: [],
+        };
       case "path":
         return yield* lowerPathSteps(schema, yield* readPathSteps(input), budget);
       default:

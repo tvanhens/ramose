@@ -1,6 +1,5 @@
 import { expect } from "vitest";
 import * as EffectSchema from "effect/Schema";
-import { Catalog } from "../../packages/ramose/src/Catalog.ts";
 import {
   Entity,
   Field,
@@ -10,7 +9,6 @@ import {
   string,
   type CodeDefinition,
 } from "../../packages/ramose/src/db/internal.ts";
-import { compileReadAuthorization } from "../../packages/ramose/src/internal/authorization/index.ts";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import { createClient, type Client } from "../../packages/ramose/src/client/index.ts";
 import { installClientCatalog } from "../../packages/ramose/src/client/catalog.ts";
@@ -27,7 +25,8 @@ import { Query as PortableQuery } from "../../packages/ramose/src/db/internal.ts
 import { browserTest } from "./fixtures.ts";
 import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
-const Child = { key: "child", schema: Schema({}) } satisfies CodeDefinition;
+const Child = Schema("child", {}) satisfies CodeDefinition;
+Child.applyPolicy(() => {});
 
 const Person = Entity("person", { name: string() });
 
@@ -65,15 +64,12 @@ const Organization = Entity("organization", {
   slug: Field.unique(string(), "strict"),
 }, { traits: [Graph(Child)] });
 
-const AppSchema = Schema({
+const AppSchema = Schema("client-mutate", {
   person: Person,
   issue: Issue,
   organization: Organization,
 });
-const AppCatalog = Catalog("client-mutate", {
-  schema: AppSchema,
-  policy: compileReadAuthorization({ schema: AppSchema, rules: [] }),
-});
+AppSchema.applyPolicy(() => {});
 
 const OFFLINE = "http://127.0.0.1:1";
 const ROOT = "app";
@@ -160,13 +156,13 @@ const client = (name: string): Client =>
   createClient({
     url: OFFLINE,
     root: ROOT,
-    catalog: AppCatalog,
+    catalog: AppSchema,
     auth: () => ({ token: TOKEN, cacheKey: CACHE_KEY }),
     storageName: name,
   });
 
 const seedRoot = async (name: string): Promise<ReplicationIdentity> => {
-  const installed = await installClientCatalog(AppCatalog);
+  const installed = await installClientCatalog(AppSchema);
   const identity: ReplicationIdentity = {
     version: 1,
     server: opaque("s"),
@@ -232,7 +228,7 @@ browserTest(
     const app = createClient({
       url: OFFLINE,
       root: ROOT,
-      catalog: AppCatalog,
+      catalog: AppSchema,
       auth: () => {
         throw new Error("refresh token expired");
       },
@@ -314,7 +310,7 @@ browserTest(
     const app = createClient({
       url: OFFLINE,
       root: ROOT,
-      catalog: AppCatalog,
+      catalog: AppSchema,
       auth: () => ({ token, cacheKey: CACHE_KEY }),
       storageName: name,
     });

@@ -54,7 +54,7 @@ const baseCatalog = () => {
     }),
   });
   const Note = Entity("note", { body: string() });
-  return CatalogSchema({ issue: Issue, note: Note });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note });
 };
 
 const documentedCatalog = () => {
@@ -73,7 +73,7 @@ const documentedCatalog = () => {
     }),
   });
   const Note = Entity("note", { body: string() });
-  return CatalogSchema({ issue: Issue, note: Note });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note });
 };
 
 const annotatedSchemaCatalog = () => {
@@ -98,7 +98,7 @@ const annotatedSchemaCatalog = () => {
     }),
   });
   const Note = Entity("note", { body: string() });
-  return CatalogSchema({ issue: Issue, note: Note });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note });
 };
 
 const aliasedSchemaCatalog = (alias: string) => () => {
@@ -119,7 +119,7 @@ const aliasedSchemaCatalog = (alias: string) => () => {
     }),
   });
   const Note = Entity("note", { body: string() });
-  return CatalogSchema({ issue: Issue, note: Note });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note });
 };
 
 const unrelatedCatalog = () => {
@@ -148,7 +148,7 @@ const unrelatedCatalog = () => {
       }),
     }),
   });
-  return CatalogSchema({ issue: Issue, note: Note, audit: Audit });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note, audit: Audit });
 };
 
 const revisedCatalog = () => {
@@ -167,7 +167,7 @@ const revisedCatalog = () => {
     }),
   });
   const Note = Entity("note", { body: string() });
-  return CatalogSchema({ issue: Issue, note: Note });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note });
 };
 
 const changedInputCatalog = () => {
@@ -185,7 +185,7 @@ const changedInputCatalog = () => {
     }),
   });
   const Note = Entity("note", { body: string() });
-  return CatalogSchema({ issue: Issue, note: Note });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note });
 };
 
 const changedOutputCatalog = () => {
@@ -203,7 +203,7 @@ const changedOutputCatalog = () => {
     }),
   });
   const Note = Entity("note", { body: string() });
-  return CatalogSchema({ issue: Issue, note: Note });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note });
 };
 
 const targetlessCatalog = () => {
@@ -222,7 +222,7 @@ const targetlessCatalog = () => {
     }),
   });
   const Note = Entity("note", { body: string() });
-  return CatalogSchema({ issue: Issue, note: Note });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note });
 };
 
 const writingCatalog = () => {
@@ -242,7 +242,7 @@ const writingCatalog = () => {
     }),
   });
   const Note = Entity("note", { body: string() });
-  return CatalogSchema({ issue: Issue, note: Note, audit: Audit });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note, audit: Audit });
 };
 
 const extraComposerCatalog = () => {
@@ -260,7 +260,7 @@ const extraComposerCatalog = () => {
     }),
   });
   const Note = Entity("note", { body: string() }, { traits: [taggable] });
-  return CatalogSchema({ issue: Issue, note: Note });
+  return CatalogSchema("operation-version", { issue: Issue, note: Note });
 };
 
 const versions = async (

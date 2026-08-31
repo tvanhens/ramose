@@ -40,7 +40,11 @@ export const Todo = Ramose.Entity("todo", {
   done: Ramose.boolean(),
 });
 
-export const Todos = Ramose.Schema({ todo: Todo });
+export const Todos = Ramose.Schema("todos", { todo: Todo });
+
+Todos.applyPolicy(({ policy }) => {
+  policy.todo.read.always();
+});
 ```
 
 ## Docs

@@ -3,13 +3,10 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as EffectSchema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
-import { Catalog } from "../../../src/Catalog.ts";
-import type { CatalogDefinition } from "../../../src/Catalog.ts";
 import {
   Entity,
   EntityId as OperationEntityId,
   Field,
-  OwnedOperations,
   Query,
   Ref,
   Schema,
@@ -28,25 +25,16 @@ import {
   CatalogId,
   DatabaseId,
   DigestHex,
-  $,
-  all,
-  any,
   assembleCatalogDefinitions,
   authorizeCatalogOperation,
   authorizeCatalogOperationReplay,
-  claim,
-  compileReadAuthorization,
-  contains,
   deployCatalogDefinitions,
   executeCatalogOperation,
-  eq,
-  hasClass,
-  invoke,
   OperationRuntimeFault,
-  read,
   type AuthenticatedCaller,
   type OperationInvocation,
 } from "../../../src/internal/authorization/index.ts";
+import { any } from "../../../src/internal/authorization/authoring/index.ts";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { restoreEngineTypeAssertions } from "../../../src/internal/core/tx-provenance.ts";
 
@@ -118,9 +106,9 @@ const FixedTenant = Trait("fixedTenant", { tenant: string() }, {
 const FixedLabels = Trait("fixedLabels", { labels: Field.many(string()) }, {
   bind: () => ({ values: { labels: ["z-last", "a-first"] } }),
 });
-let tenantCatalog!: CatalogDefinition;
-const TenantBinding = FixedTenant(() => tenantCatalog);
-const LabelsBinding = FixedLabels(() => tenantCatalog);
+let tenantSchema!: Schema.Any;
+const TenantBinding = FixedTenant(() => tenantSchema);
+const LabelsBinding = FixedLabels(() => tenantSchema);
 
 const RenamedRefOutput = EffectSchema.Struct({
   id: OperationEntityId,
@@ -384,7 +372,78 @@ const Backlink = Entity("backlink", {
 
 makeHiddenNamesQuery = () => Query.from(Hidden).select({ name: Hidden.name });
 
-const App = Schema({ good: Good, other: Other, hidden: Hidden, link: Link, item: Item, backlink: Backlink });
+const App = Schema("runtime", {
+  good: Good,
+  other: Other,
+  hidden: Hidden,
+  link: Link,
+  item: Item,
+  backlink: Backlink,
+});
+const TenantSchema = Schema("tenant-values", {});
+TenantSchema.applyPolicy(() => {});
+tenantSchema = TenantSchema;
+
+const teamsClaim = {
+  key: "teams",
+  optional: true,
+  shape: {
+    _tag: "array" as const,
+    items: { _tag: "scalar" as const, valueType: "string" as const },
+  },
+};
+
+App.applyPolicy(
+  {
+    roles: ["member", "reader", "operator"],
+    claims: [teamsClaim],
+  },
+  ({ policy, session }) => {
+    const memberOrReader = any(
+      session.hasRole("member"),
+      session.hasRole("reader"),
+    );
+    const memberOrOperator = any(
+      session.hasRole("member"),
+      session.hasRole("operator"),
+    );
+    for (const entity of [
+      policy.good,
+      policy.other,
+      policy.link,
+      policy.item,
+      policy.backlink,
+    ]) {
+      entity.read.where(memberOrReader);
+    }
+    policy.hidden.read.where(any(
+      session.hasRole("reader"),
+      session.claims.teams.contains("reader"),
+    ));
+    policy.tagged.operations.retag.where(memberOrOperator);
+    policy.tagged.operations.staticRetag.where(session.hasRole("member"));
+    policy.tagged.operations.staticDelete.where(session.hasRole("member"));
+    policy.fixedTenant.operations.rewriteTenant.where(session.hasRole("member"));
+    policy.fixedTenant.operations.createFixedLink.where(session.hasRole("member"));
+    policy.link.operations.create.where(session.hasRole("member"));
+    policy.item.operations.rename.where(memberOrOperator);
+    policy.item.operations.echoRef.where(session.hasRole("member"));
+    policy.item.operations.echoRenamedRef.where(session.hasRole("member"));
+    policy.item.operations.authoritativeReads.where(session.hasRole("member"));
+    policy.item.operations.deleteAndEchoTitle.where(session.hasRole("member"));
+    policy.item.operations.deleteHiddenInput.where(session.hasRole("member"));
+    policy.item.operations.deleteOnly.where(session.hasRole("member"));
+    policy.item.operations.renameAfterEffect.where(session.hasRole("member"));
+    policy.item.operations.crash.where(session.hasRole("member"));
+    policy.item.operations.inputCrash.where(session.hasRole("member"));
+    policy.item.operations.fieldCodec.where(session.hasRole("member"));
+    policy.item.operations.refFieldCodec.where(session.hasRole("member"));
+    policy.item.operations.returnUrl.where(session.hasRole("member"));
+    policy.item.operations.returnClass.where(session.hasRole("member"));
+    policy.item.operations.nativeTransport.where(session.hasRole("member"));
+    policy.item.operations.invalidTransport.where(session.hasRole("member"));
+  },
+);
 
 const SemanticsShared = Trait("semanticsShared", {
   key: Field.unique(string(), "upsert", { optional: true }),
@@ -538,68 +597,28 @@ const SemanticsOwner = Entity("semanticsOwner", { name: string() }, {
   }),
 });
 
-const SemanticsApp = Schema({
+const SemanticsApp = Schema("semantics-runtime", {
   semanticsOwner: SemanticsOwner,
   semanticsOther: SemanticsOther,
   semanticsHidden: SemanticsHidden,
   semanticsPlain: SemanticsPlain,
 });
+SemanticsApp.applyPolicy({ roles: ["member"] }, ({ policy, session }) => {
+  policy.semanticsOwner.read.where(session.hasRole("member"));
+  policy.semanticsOther.read.where(session.hasRole("member"));
+  policy.semanticsPlain.read.where(session.hasRole("member"));
+  policy.semanticsShared.operations.helper.where(session.hasRole("member"));
+  policy.semanticsOwner.operations.ownerHelper.where(session.hasRole("member"));
+  policy.semanticsOwner.operations.explicitHelper.where(session.hasRole("member"));
+  policy.semanticsOwner.operations.lookupHelper.where(session.hasRole("member"));
+  policy.semanticsOwner.operations.principalIdentity.where(session.hasRole("member"));
+});
 const semanticsDatabase = DatabaseId.make("operation-semantics");
 const semanticsArtifactHash = DigestHex.make("5".repeat(64));
 
-const memberOrReader = any(hasClass("member"), hasClass("reader"));
-const memberOrOperator = any(hasClass("member"), hasClass("operator"));
-
 const buildWorld = async () => {
-  const Empty = Schema({});
-  tenantCatalog = Catalog("tenant-values", {
-    schema: Empty,
-    policy: await Effect.runPromise(compileReadAuthorization({ schema: Empty, rules: [] })),
-  });
-  const policy = await Effect.runPromise(compileReadAuthorization({
-    schema: App,
-    classes: ["member", "reader", "operator"],
-    rules: [
-      read(Good).when(memberOrReader),
-      read(Other).when(memberOrReader),
-      read(Hidden).when(any(hasClass("reader"), contains(claim("teams"), "reader"))),
-      read(Link).when(memberOrReader),
-      read(Item).when(memberOrReader),
-      read(Backlink).when(memberOrReader),
-      invoke(Tagged[OwnedOperations].retag).when(memberOrOperator),
-      invoke(Tagged[OwnedOperations].staticRetag).when(hasClass("member")),
-      invoke(Tagged[OwnedOperations].staticDelete).when(hasClass("member")),
-      invoke(FixedTenant[OwnedOperations].rewriteTenant).when(hasClass("member")),
-      invoke(FixedTenant[OwnedOperations].createFixedLink).when(hasClass("member")),
-      invoke(Link[OwnedOperations].create).when(hasClass("member")),
-      invoke(Item[OwnedOperations].rename).when(memberOrOperator),
-      invoke(Item[OwnedOperations].echoRef).when(hasClass("member")),
-      invoke(Item[OwnedOperations].echoRenamedRef).when(hasClass("member")),
-      invoke(Item[OwnedOperations].authoritativeReads).when(hasClass("member")),
-      invoke(Item[OwnedOperations].deleteAndEchoTitle).when(hasClass("member")),
-      invoke(Item[OwnedOperations].deleteHiddenInput).when(hasClass("member")),
-      invoke(Item[OwnedOperations].deleteOnly).when(hasClass("member")),
-      invoke(Item[OwnedOperations].renameAfterEffect).when(hasClass("member")),
-      invoke(Item[OwnedOperations].crash).when(hasClass("member")),
-      invoke(Item[OwnedOperations].inputCrash).when(hasClass("member")),
-      invoke(Item[OwnedOperations].fieldCodec).when(hasClass("member")),
-      invoke(Item[OwnedOperations].refFieldCodec).when(hasClass("member")),
-      invoke(Item[OwnedOperations].returnUrl).when(hasClass("member")),
-      invoke(Item[OwnedOperations].returnClass).when(hasClass("member")),
-      invoke(Item[OwnedOperations].nativeTransport).when(hasClass("member")),
-      invoke(Item[OwnedOperations].invalidTransport).when(hasClass("member")),
-    ],
-    claims: [{
-      key: "teams",
-      optional: true,
-      shape: {
-        _tag: "array",
-        items: { _tag: "scalar", valueType: "string" },
-      },
-    }],
-  }));
   const definitions = await Effect.runPromise(assembleCatalogDefinitions({
-    root: Catalog("runtime", { schema: App, policy }),
+    root: App,
     artifactHash,
   }));
   const deployed = Result.getOrThrow(deployCatalogDefinitions(definitions, [{
@@ -689,35 +708,32 @@ const ReplayTarget = Entity("replayTarget", {
     }),
   }),
 });
-const ReplayApp = Schema({
+const ReplayApp = Schema("replay-fence", {
   replayGate: ReplayGate,
   replayNoise: ReplayNoise,
   replayTarget: ReplayTarget,
+});
+ReplayApp.applyPolicy({ roles: ["member"] }, ({ policy, session, allOf }) => {
+  policy.replayGate.read.where(session.hasRole("member"));
+  policy.replayNoise.read.where(session.hasRole("member"));
+  policy.replayTarget.read.where((target) =>
+    allOf(
+      session.hasRole("member"),
+      target.gate.name.eq("Good"),
+      target.title.eq("Before"),
+    )
+  );
+  policy.replayTarget.operations.deleteAndEcho.where(session.hasRole("member"));
+  policy.replayTarget.operations.deleteAndConsumeGate.where(session.hasRole("member"));
+  policy.replayTarget.operations.archive.where(session.hasRole("member"));
+  policy.replayTarget.operations.moveLookup.where(session.hasRole("member"));
 });
 const replayDatabase = DatabaseId.make("operation-replay-fence");
 const replayArtifactHash = DigestHex.make("6".repeat(64));
 
 const buildReplayFenceWorld = async () => {
-  const member = hasClass("member");
-  const policy = await Effect.runPromise(compileReadAuthorization({
-    schema: ReplayApp,
-    classes: ["member"],
-    rules: [
-      read(ReplayGate).when(member),
-      read(ReplayNoise).when(member),
-      read(ReplayTarget).when(all(
-        member,
-        $(ReplayTarget).gate.name.eq("Good"),
-        eq(ReplayTarget.title, "Before"),
-      )),
-      invoke(ReplayTarget[OwnedOperations].deleteAndEcho).when(member),
-      invoke(ReplayTarget[OwnedOperations].deleteAndConsumeGate).when(member),
-      invoke(ReplayTarget[OwnedOperations].archive).when(member),
-      invoke(ReplayTarget[OwnedOperations].moveLookup).when(member),
-    ],
-  }));
   const definitions = await Effect.runPromise(assembleCatalogDefinitions({
-    root: Catalog("replay-fence", { schema: ReplayApp, policy }),
+    root: ReplayApp,
     artifactHash: replayArtifactHash,
   }));
   const deployed = Result.getOrThrow(deployCatalogDefinitions(definitions, [{
@@ -807,24 +823,9 @@ const replayInvocation = (
   unitHash: world.installed.unitHash,
 });
 
-const buildSemanticsWorld = async (subjectClaim = "sub") => {
-  const policy = await Effect.runPromise(compileReadAuthorization({
-    schema: SemanticsApp,
-    classes: ["member"],
-    rules: [
-      read(SemanticsOwner).when(hasClass("member")),
-      read(SemanticsOther).when(hasClass("member")),
-      read(SemanticsPlain).when(hasClass("member")),
-      invoke(SemanticsShared[OwnedOperations].helper).when(hasClass("member")),
-      invoke(SemanticsOwner[OwnedOperations].ownerHelper).when(hasClass("member")),
-      invoke(SemanticsOwner[OwnedOperations].explicitHelper).when(hasClass("member")),
-      invoke(SemanticsOwner[OwnedOperations].lookupHelper).when(hasClass("member")),
-      invoke(SemanticsOwner[OwnedOperations].principalIdentity).when(hasClass("member")),
-    ],
-    principal: { subjectClaim },
-  }));
+const buildSemanticsWorld = async () => {
   const definitions = await Effect.runPromise(assembleCatalogDefinitions({
-    root: Catalog("semantics-runtime", { schema: SemanticsApp, policy }),
+    root: SemanticsApp,
     artifactHash: semanticsArtifactHash,
   }));
   const deployed = Result.getOrThrow(deployCatalogDefinitions(definitions, [{
@@ -1737,8 +1738,8 @@ describe("deployed operation runtime", () => {
     expect((await world.conn.db().entity(world.item))?.[":item/title"]).toBe("Before");
   });
 
-  test("keeps the JWT subject distinct from a configurable policy subject", async () => {
-    const world = await buildSemanticsWorld("email");
+  test("preserves the JWT subject and caller claims for operation code", async () => {
+    const world = await buildSemanticsWorld();
     const executed = await invokeSemanticsOperation(world, {
       owner: { kind: "entity", name: "semanticsOwner" },
       localName: "principalIdentity",

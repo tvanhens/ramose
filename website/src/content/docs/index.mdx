@@ -44,7 +44,7 @@ import HistoryRecoveryDemo from "../../components/HistoryRecoveryDemo.astro";
 ```ts
 const Project = Ramose.Entity("project", {
   fields: { slug: Ramose.string().unique() },
-  traits: [Ramose.Graph(ProjectCatalog)],
+  traits: [Ramose.Graph(ProjectSchema)],
 })
 ```
 
@@ -65,10 +65,14 @@ const tasks = useQuery(
       <p class="rg-console-label">policy.ts</p>
 
 ```ts
-const grants = [
-  P.read(Task).when(isMember),
-  P.invoke(Task.setDone).when(isMember),
-]
+ProjectSchema.applyPolicy(
+  { roles: ["member"] },
+  ({ policy, session }) => {
+    const isMember = session.hasRole("member")
+    policy.task.read.where(isMember)
+    policy.task.operations.setDone.where(isMember)
+  },
+)
 ```
 
     </div>

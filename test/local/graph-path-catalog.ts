@@ -1,14 +1,13 @@
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
 import * as Result from "effect/Result";
-import { Catalog, Policy } from "ramose";
 import {
   bytes,
+  type CodeDefinition,
   Entity,
   EntityId,
   Field,
   Graph,
-  OwnedOperations,
   Ref,
   Schema,
   Trait,
@@ -23,8 +22,8 @@ import {
 
 export const GRAPH_PATH_ROOT_DATABASE = "graph-path-root";
 
-let childCatalog!: ReturnType<typeof Catalog>;
-let leafCatalog!: ReturnType<typeof Catalog>;
+let childSchema!: CodeDefinition;
+let leafSchema!: CodeDefinition;
 
 export const GateTagged = Trait("localGateTagged", {
   label: string({ optional: true }),
@@ -151,7 +150,7 @@ export const GateLink = Entity("localGateLink", {
 });
 
 export const Workspace = Entity("localWorkspace", {}, {
-  traits: [Graph(() => childCatalog)],
+  traits: [Graph(() => childSchema)],
   operations: (Operation) => ({
     create: Operation({
       self: false,
@@ -195,7 +194,7 @@ export const Workspace = Entity("localWorkspace", {}, {
 });
 
 export const PrivateWorkspace = Entity("localPrivateWorkspace", {}, {
-  traits: [Graph(() => childCatalog)],
+  traits: [Graph(() => childSchema)],
   operations: (Operation) => ({
     create: Operation({
       self: false,
@@ -209,7 +208,7 @@ export const PrivateWorkspace = Entity("localPrivateWorkspace", {}, {
 });
 
 export const Project = Entity("localProject", {}, {
-  traits: [Graph(() => leafCatalog)],
+  traits: [Graph(() => leafSchema)],
   operations: (Operation) => ({
     create: Operation({
       self: false,
@@ -263,7 +262,7 @@ export const BulkValue = Entity("localBulkValue", {
   }),
 });
 
-export const GraphPathRootSchema = Schema({
+export const GraphPathRootSchema = Schema("local-graph-root", {
   localWorkspace: Workspace,
   localPrivateWorkspace: PrivateWorkspace,
   localGateVisible: GateVisible,
@@ -271,85 +270,96 @@ export const GraphPathRootSchema = Schema({
   localGatePlain: GatePlain,
   localGateLink: GateLink,
 });
-export const GraphPathChildSchema = Schema({ localProject: Project });
-export const GraphPathLeafSchema = Schema({
+export const GraphPathChildSchema = Schema("local-graph-child", {
+  localProject: Project,
+});
+export const GraphPathLeafSchema = Schema("local-graph-leaf", {
   localNestedNote: NestedNote,
   localBulkValue: BulkValue,
 });
+childSchema = GraphPathChildSchema;
+leafSchema = GraphPathLeafSchema;
 
-const member = Policy.hasClass("member");
-const rootReader = Policy.hasClass("root-reader");
-const admin = Policy.hasClass("admin");
-const rowOnly = Policy.hasClass("row-only");
-const fieldOnly = Policy.hasClass("field-only");
+GraphPathLeafSchema.applyPolicy(
+  { roles: ["member", "root-reader"] as const },
+  ({ policy, session }) => {
+    const member = session.roles.member;
+    policy.localNestedNote.read.where(member);
+    policy.localBulkValue.read.where(member);
+    policy.localNestedNote.operations.create.where(member);
+    policy.localBulkValue.operations.create.where(member);
+  },
+);
 
-leafCatalog = Catalog("local-graph-leaf", {
-  schema: GraphPathLeafSchema,
-  policy: await Effect.runPromise(Policy.compileReadAuthorization({
-    schema: GraphPathLeafSchema,
-    classes: ["member", "root-reader"],
-    rules: [
-      Policy.read(NestedNote).when(member),
-      Policy.read(BulkValue).when(member),
-      Policy.invoke(NestedNote[OwnedOperations].create).when(member),
-      Policy.invoke(BulkValue[OwnedOperations].create).when(member),
-    ],
-  })),
-});
+GraphPathChildSchema.applyPolicy(
+  { roles: ["member", "root-reader"] as const },
+  ({ policy, session }) => {
+    const member = session.roles.member;
+    policy.localProject.read.where(member);
+    policy.graph.read.where(member);
+    policy.graph.fields.catalog.read.denyWhere(member);
+    policy.localProject.operations.create.where(member);
+  },
+);
 
-childCatalog = Catalog("local-graph-child", {
-  schema: GraphPathChildSchema,
-  policy: await Effect.runPromise(Policy.compileReadAuthorization({
-    schema: GraphPathChildSchema,
-    classes: ["member", "root-reader"],
-    rules: [
-      Policy.read(Project).when(member),
-      Policy.read(Graph).when(member),
-      Policy.read(Graph.catalog).deny(member),
-      Policy.invoke(Project[OwnedOperations].create).when(member),
-    ],
-  })),
-});
+GraphPathRootSchema.applyPolicy(
+  {
+    roles: ["member", "root-reader", "admin", "row-only", "field-only"] as const,
+  },
+  ({ policy, session }) => {
+    const member = session.roles.member;
+    const rootReader = session.roles["root-reader"];
+    const admin = session.roles.admin;
+    const rowOnly = session.roles["row-only"];
+    const fieldOnly = session.roles["field-only"];
 
-export const graphPathCatalog = Catalog("local-graph-root", {
-  schema: GraphPathRootSchema,
-  policy: await Effect.runPromise(Policy.compileReadAuthorization({
-    schema: GraphPathRootSchema,
-    classes: ["member", "root-reader", "admin", "row-only", "field-only"],
-    rules: [
-      Policy.read(Workspace).when(Policy.any(member, rootReader)),
-      Policy.read(PrivateWorkspace).when(admin),
-      Policy.read(Graph).when(Policy.any(member, rootReader, admin)),
-      Policy.read(Graph.catalog).deny(Policy.any(member, rootReader, admin)),
-      Policy.invoke(Workspace[OwnedOperations].create).when(member),
-      Policy.invoke(Workspace[OwnedOperations].rename).when(member),
-      Policy.invoke(Workspace[OwnedOperations].recatalog).when(member),
-      Policy.invoke(Workspace[OwnedOperations].remove).when(member),
-      Policy.invoke(PrivateWorkspace[OwnedOperations].create).when(admin),
-      Policy.read(GateVisible).when(Policy.any(member, rowOnly, fieldOnly)),
-      Policy.read(GateHidden).when(admin),
-      Policy.read(GatePlain).when(member),
-      Policy.read(GateLink).when(Policy.any(member, rowOnly, fieldOnly)),
-      Policy.read(GateTagged).when(Policy.any(member, admin, fieldOnly)),
-      Policy.read(GateTagged.label).when(Policy.any(member, admin)),
-      Policy.read(GateTagged.label).deny(fieldOnly),
-      Policy.invoke(GateVisible[OwnedOperations].create).when(member),
-      Policy.invoke(GateHidden[OwnedOperations].create).when(admin),
-      Policy.invoke(GatePlain[OwnedOperations].create).when(member),
-      Policy.invoke(GateLink[OwnedOperations].create).when(member),
-      Policy.invoke(GateLink[OwnedOperations].deleteThenLink).when(member),
-      Policy.invoke(GateTagged[OwnedOperations].retag).when(member),
-    ],
-  })),
-});
+    policy.localWorkspace.read.where(member);
+    policy.localWorkspace.read.where(rootReader);
+    policy.localPrivateWorkspace.read.where(admin);
+    policy.graph.read.where(member);
+    policy.graph.read.where(rootReader);
+    policy.graph.read.where(admin);
+    policy.graph.fields.catalog.read.denyWhere(member);
+    policy.graph.fields.catalog.read.denyWhere(rootReader);
+    policy.graph.fields.catalog.read.denyWhere(admin);
+
+    policy.localWorkspace.operations.create.where(member);
+    policy.localWorkspace.operations.rename.where(member);
+    policy.localWorkspace.operations.recatalog.where(member);
+    policy.localWorkspace.operations.remove.where(member);
+    policy.localPrivateWorkspace.operations.create.where(admin);
+
+    policy.localGateVisible.read.where(member);
+    policy.localGateVisible.read.where(rowOnly);
+    policy.localGateVisible.read.where(fieldOnly);
+    policy.localGateHidden.read.where(admin);
+    policy.localGatePlain.read.where(member);
+    policy.localGateLink.read.where(member);
+    policy.localGateLink.read.where(rowOnly);
+    policy.localGateLink.read.where(fieldOnly);
+    policy.localGateTagged.read.where(member);
+    policy.localGateTagged.read.where(admin);
+    policy.localGateTagged.read.where(fieldOnly);
+    policy.localGateTagged.fields.label.read.where(member);
+    policy.localGateTagged.fields.label.read.where(admin);
+    policy.localGateTagged.fields.label.read.denyWhere(fieldOnly);
+
+    policy.localGateVisible.operations.create.where(member);
+    policy.localGateHidden.operations.create.where(admin);
+    policy.localGatePlain.operations.create.where(member);
+    policy.localGateLink.operations.create.where(member);
+    policy.localGateLink.operations.deleteThenLink.where(member);
+    policy.localGateTagged.operations.retag.where(member);
+  },
+);
 
 export const graphPathCatalogDeployment = Object.freeze({
-  root: graphPathCatalog,
+  root: GraphPathRootSchema,
   deployments: [{ database: GRAPH_PATH_ROOT_DATABASE }],
 });
 
 const compatibilityDefinitions = await Effect.runPromise(assembleCatalogDefinitions({
-  root: graphPathCatalog,
+  root: GraphPathRootSchema,
   artifactHash: DigestHex.make("0".repeat(64)),
 }));
 const compatibilityUnit = (id: string) =>

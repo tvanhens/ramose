@@ -1,58 +1,66 @@
 ---
 title: Policy
-description: Reference for compiling filtered read capabilities and exact invoke grants from the principal, catalog, and graph context.
+description: Reference for applying filtered read rules and exact operation rules to a named schema.
 ---
 import Next from "../../../components/Next.astro";
 
-Ramose policy has two public decisions: what facts a principal may read, and which exact operations the principal may invoke. Both compile against the catalog and run server-side.
+Ramose policy has two public decisions: what facts a principal may read, and which exact operations the principal may invoke. Both belong to a named schema and run server-side.
 
 *New here? Start with [Permissions](/guides/permissions/).*
 
-## Read policy
+## Apply policy
 
 ```ts
-const readPolicy = Ramose.Policy.compileReadAuthorization({
-  catalog: ProjectCatalog,
-  principal: Account.sub,
-  rules: {
-    task: Ramose.Policy.read.when(isProjectMember),
-    privateNote: Ramose.Policy.read.when(isOwner),
-  },
+const ProjectSchema = Ramose.Schema("project-v1", {
+  account: Account,
+  task: Task,
 })
+
+ProjectSchema.applyPolicy(
+  {
+    principal: Account.sub,
+    roles: ["member", "admin"],
+  },
+  ({ policy, actor, session }) => {
+    policy.task.read.where(session.hasRole("member"))
+    policy.task.read.where((task) => task.owner.eq(actor))
+    policy.task.fields.privateNote.read.where(session.hasRole("admin"))
+
+    policy.task.operations.setDone.where(session.hasRole("member"))
+    policy.task.operations.delete.where(session.hasRole("admin"))
+  },
+)
 ```
 
 Read authorization produces an immutable filtered database capability. All queries, relationship traversal, rule evaluation, counts, graph lookup, and target resolution run against it. The runtime does not query everything and filter the final rows.
 
 Entity-level rules govern facts for a type. Field rules may narrow especially sensitive attributes. A field rule cannot widen an entity rule.
 
-## Invoke policy
+Multiple `where` calls for one target combine with OR. `denyWhere` overrides allows for the same target. Use `always` or `never` for an unconditional decision.
+
+## Operation policy
 
 ```ts
-const invokePolicy = Ramose.Policy.compileInvocations({
-  catalog: ProjectCatalog,
-  grants: [
-    Ramose.Policy.invoke(Task.setDone).when(isProjectMember),
-    Ramose.Policy.invoke(Task.delete).when(isOwner),
-    Ramose.Policy.invoke(createTask).when(isProjectMember),
-  ],
-})
+policy.task.operations.createTask.where(session.hasRole("member"))
+policy.task.operations.setDone.where(session.hasRole("member"))
+policy.task.operations.delete.where(session.hasRole("admin"))
 ```
 
-Grants name operation definition values, not unchecked strings. A targeted call also requires a visible target compatible with the owner. A targetless call requires the exact grant only.
+Operation rules use names checked from the schema. They can depend on the session, but they cannot read the target resource. A targeted call also requires a visible target compatible with the owner. A targetless call requires the exact operation rule only.
 
 ## Principal
 
-The principal is derived from a verified token and matched through the configured catalog field. Token claims may supply stable identity and trusted coarse attributes; mutable membership and ownership normally belong in graph data so policy changes synchronize like other facts.
+The principal is derived from a verified token and matched through the configured schema field. Token claims may supply stable identity and trusted coarse attributes; mutable membership and ownership normally belong in graph data so policy changes synchronize like other facts.
 
 ## Graph context
 
-Policy is evaluated for one authorized graph. Traversing a child graph first resolves and authorizes every parent binding. The child then applies its own catalog and policy to reads and operations.
+Policy is evaluated for one authorized graph. Traversing a child graph first resolves and authorizes every parent binding. The child then applies its own schema policy to reads and operations.
 
 ## Composition
 
-Build small named rule fragments for roles, membership, ownership, relationships, and classes. Compose them with policy `and`, `or`, and `not` rather than duplicating logic across entities and operations.
+Build small named rule fragments for roles, membership, ownership, and relationships. Use `allOf` for conjunction. Use multiple `where` calls for alternatives.
 
-Recursive rules must be bounded and compile without access to fields the rule itself masks. Catalog compilation rejects unknown definitions, incompatible targets, and invalid dependency cycles before deployment.
+Relation traversal must be bounded and must not use fields that the rule itself masks. Schema policy validation rejects unknown definitions and incompatible targets before deployment.
 
 ## Failure behavior
 
@@ -61,6 +69,6 @@ Policy configuration fails closed. A missing or invalid policy does not fall bac
 Client-side role checks are presentation hints only. They may hide unavailable controls but never replace server enforcement.
 
 <Next links={[
-  { href: "/reference/operations/", label: "Operations reference", why: "see the exact capability each invoke grant protects" },
+  { href: "/reference/operations/", label: "Operations reference", why: "see the exact capability each operation rule protects" },
   { href: "/best-practices/security/", label: "Security checklist", why: "audit tokens, paths, filters, grants, and public errors" },
 ]} />

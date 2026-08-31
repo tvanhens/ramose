@@ -60,7 +60,7 @@ declare const boundInspectContext: Parameters<BoundInspect["run"]>[0];
 // @ts-expect-error
 boundInspectContext.self.set(BoundOperations.catalog, "forged");
 
-const definition = { key: "child", schema: CatalogSchema({}) };
+const definition = CatalogSchema("child", {});
 const BoundOperationsUse = BoundOperations(definition);
 const UnionBoundOperations = Trait(
   "unionBoundOperations",

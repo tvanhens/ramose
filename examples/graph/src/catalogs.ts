@@ -1,20 +1,17 @@
 // docs:graph-catalog
 import * as EffectSchema from "effect/Schema";
-import * as Effect from "effect/Effect";
-import { Catalog, Policy } from "ramose/client";
 import {
   Entity,
   EntityId,
   Field,
   Graph,
-  OwnedOperations,
   Schema,
   string,
 } from "ramose/db";
 
 export const ROOT_DATABASE = "example-graph";
 
-let appCatalog!: ReturnType<typeof Catalog>;
+let graphSchema!: Schema.Any;
 
 export const Issue = Entity("issue", {
   title: string(),
@@ -63,7 +60,7 @@ export const Issue = Entity("issue", {
 export const Board = Entity("board", {
   slug: Field.unique(string(), "strict"),
 }, {
-  traits: [Graph(() => appCatalog)],
+  traits: [Graph(() => graphSchema)],
   operations: (Operation) => ({
     createBoard: Operation({
       self: false,
@@ -91,7 +88,7 @@ export const Board = Entity("board", {
 export const Organization = Entity("organization", {
   slug: Field.unique(string(), "strict"),
 }, {
-  traits: [Graph(() => appCatalog)],
+  traits: [Graph(() => graphSchema)],
   operations: (Operation) => ({
     createOrganization: Operation({
       self: false,
@@ -116,40 +113,35 @@ export const Organization = Entity("organization", {
   }),
 });
 
-export const AppSchema = Schema({
+export const AppSchema = Schema("example-graph", {
   organization: Organization,
   board: Board,
   issue: Issue,
 });
 
-const member = Policy.hasClass("member");
+graphSchema = AppSchema;
 
-appCatalog = Catalog("example-graph", {
-  schema: AppSchema,
-  policy: await Effect.runPromise(Policy.compileReadAuthorization({
-    schema: AppSchema,
-    classes: ["member"],
-    rules: [
-      Policy.read(Organization).when(member),
-      Policy.read(Board).when(member),
-      Policy.read(Issue).when(member),
-      Policy.read(Graph).when(member),
-      Policy.read(Graph.catalog).deny(member),
-      Policy.invoke(Organization[OwnedOperations].createOrganization).when(member),
-      Policy.invoke(Organization[OwnedOperations].renameOrganization).when(member),
-      Policy.invoke(Board[OwnedOperations].createBoard).when(member),
-      Policy.invoke(Board[OwnedOperations].renameBoard).when(member),
-      Policy.invoke(Issue[OwnedOperations].createIssue).when(member),
-      Policy.invoke(Issue[OwnedOperations].rename).when(member),
-      Policy.invoke(Issue[OwnedOperations].close).when(member),
-    ],
-  })),
-});
-
-export const AppCatalog = appCatalog;
+AppSchema.applyPolicy(
+  { roles: ["member"] },
+  ({ policy, session }) => {
+    const member = session.hasRole("member");
+    policy.organization.read.where(member);
+    policy.board.read.where(member);
+    policy.issue.read.where(member);
+    policy.graph.read.where(member);
+    policy.graph.fields.catalog.read.denyWhere(member);
+    policy.organization.operations.createOrganization.where(member);
+    policy.organization.operations.renameOrganization.where(member);
+    policy.board.operations.createBoard.where(member);
+    policy.board.operations.renameBoard.where(member);
+    policy.issue.operations.createIssue.where(member);
+    policy.issue.operations.rename.where(member);
+    policy.issue.operations.close.where(member);
+  },
+);
 
 export const deployment = Object.freeze({
-  root: AppCatalog,
+  root: AppSchema,
   deployments: [{ database: ROOT_DATABASE }],
 });
 // enddocs:graph-catalog

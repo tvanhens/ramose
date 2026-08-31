@@ -26,6 +26,7 @@ export type BoxedOperand =
   | { readonly _tag: "subject" }
   | { readonly _tag: "claim"; readonly key: string }
   | { readonly _tag: "lit"; readonly value: JsonScalar }
+  | { readonly _tag: "resource" }
   | { readonly _tag: "path"; readonly steps: readonly AuthPathStep[] };
 
 export type AuthExpr =

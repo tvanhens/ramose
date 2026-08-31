@@ -94,7 +94,7 @@ const createVersionAtRevision = async (revision: number): Promise<string> => {
   });
   const lowered = await Effect.runPromise(lowerOwnedOperations(
     CatalogId.make("local-native-operations"),
-    Schema({ nativeItem: Replica }),
+    Schema("local-native-create-revision", { nativeItem: Replica }),
     DigestHex.make("7d".repeat(32)),
   ));
   return lowered.descriptors[0]!.version as string;
@@ -114,7 +114,7 @@ const targetedCreateVersion = async (): Promise<string> => {
   });
   const lowered = await Effect.runPromise(lowerOwnedOperations(
     CatalogId.make("local-native-operations"),
-    Schema({ nativeItem: Replica }),
+    Schema("local-native-targeted-create", { nativeItem: Replica }),
     DigestHex.make("7d".repeat(32)),
   ));
   return lowered.descriptors[0]!.version as string;
@@ -143,7 +143,7 @@ const stringItemRetitleVersion = async (): Promise<string> => {
   });
   const lowered = await Effect.runPromise(lowerOwnedOperations(
     CatalogId.make("local-native-operations"),
-    Schema({ nativeItem: Replica }),
+    Schema("local-native-string-retitle", { nativeItem: Replica }),
     DigestHex.make("7d".repeat(32)),
   ));
   return lowered.descriptors[0]!.version as string;

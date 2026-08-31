@@ -41,10 +41,14 @@ export const not = (expr: AuthExpr): AuthExpr => ({
   expr,
 });
 
-const knownOperandTags = new Set(["me", "subject", "claim", "lit", "path"]);
+const knownOperandTags = new Set(["me", "subject", "claim", "lit", "resource", "path"]);
 
 export const boxOperand = (input: AuthOperandInput | unknown): unknown => {
-  if (isAuthPath(input)) return { _tag: "path" as const, steps: input.steps };
+  if (isAuthPath(input)) {
+    return input.steps.length === 0
+      ? { _tag: "resource" as const }
+      : { _tag: "path" as const, steps: input.steps };
+  }
   if (isPathCarrier(input)) return { _tag: "path" as const, steps: [stepFromCarrier(input)] };
   if (isJsonScalar(input)) return { _tag: "lit" as const, value: input };
   if (

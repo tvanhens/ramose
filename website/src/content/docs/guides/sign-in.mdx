@@ -13,8 +13,8 @@ Ramose verifies identities; it does not manage passwords or issue user sessions.
 
 ```ts
 const server = Ramose.Server("App", {
-  root: AppCatalog,
-  mcp: true,
+  main: import.meta.resolve("./peer.ts"),
+  storage: Store,
   auth: {
     jwksUrl: "https://auth.example.com/.well-known/jwks.json",
     issuers: ["https://auth.example.com/"],
@@ -23,6 +23,27 @@ const server = Ramose.Server("App", {
     allowedOrigins: ["https://app.example.com"],
   },
 })
+```
+
+The Worker entry installs the schema separately:
+
+```ts title="peer.ts"
+import * as Effect from "effect/Effect"
+import {
+  QueryReplicaDO,
+  createServer,
+  createTransactorDO,
+  deployOperationCatalogs,
+} from "ramose/worker"
+import { deployment } from "./domain"
+
+const operationCatalogs = await Effect.runPromise(
+  deployOperationCatalogs(deployment),
+)
+
+export default createServer({ operationCatalogs })
+export { QueryReplicaDO }
+export const TransactorDO = createTransactorDO(operationCatalogs)
 ```
 
 Ramose verifies signature, issuer, audience, expiry, and configured maximum lifetime. The subject identifies the principal deployment-wide. Authentication alone grants access to nothing.
@@ -34,13 +55,21 @@ Use `jwksJson` for a pinned local or isolated environment. Use `jwksService` whe
 ```ts
 const client = createClient({
   url: "https://api.example.com",
-  token: () => auth.getAccessToken({ audience: "https://api.example.com" }),
+  root: ROOT_DATABASE,
+  catalog: AppSchema,
+  auth: async () => {
+    const session = await auth.getSession()
+    return {
+      token: await auth.getAccessToken({ audience: "https://api.example.com" }),
+      cacheKey: session.user.id,
+    }
+  },
 })
 ```
 
 The callback may refresh a short-lived token. When the principal changes, Ramose closes the previous synchronization scope and purges or quarantines its browser partition before rendering the next principal's data.
 
-## Map the principal into catalog data
+## Map the principal into schema data
 
 Policies can use `subject` directly or resolve `me` through a unique field:
 
@@ -50,11 +79,23 @@ const User = Ramose.Entity("user", {
   name: Ramose.string({ optional: true }),
 })
 
-P.compileReadAuthorization({
-  schema: AppSchema,
-  principal: { entity: User.authId },
-  rules: [P.read(Task).when((task) => task.owner.eq(P.me))],
+const AppSchema = Ramose.Schema("app-v1", {
+  user: User,
+  task: Task,
 })
+const ROOT_DATABASE = "app"
+
+AppSchema.applyPolicy(
+  { principal: User.authId },
+  ({ policy, actor }) => {
+    policy.task.read.where((task) => task.owner.eq(actor))
+  },
+)
+
+export const deployment = {
+  root: AppSchema,
+  deployments: [{ database: ROOT_DATABASE }],
+}
 ```
 
 Create or update principal rows through explicit authorized operations. Do not depend on token payload fields being silently copied into application data.
@@ -69,7 +110,7 @@ With MCP enabled, `POST /mcp` publishes protected-resource metadata and standard
 
 ## Service and agent principals
 
-Represent agents and backend jobs as ordinary signed principals with narrow classes and grants. Prefer short-lived delegated tokens over deployment-wide shared secrets. Give the agent only the root and operations its job requires; discovery automatically reflects that view.
+Represent agents and backend jobs as ordinary signed principals with narrow roles and operation rules. Prefer short-lived delegated tokens over deployment-wide shared secrets. Give the agent only the root and operations its job requires; discovery automatically reflects that view.
 
 ## Local development
 

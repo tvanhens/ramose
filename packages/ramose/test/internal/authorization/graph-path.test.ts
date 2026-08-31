@@ -7,12 +7,10 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as EffectSchema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { Catalog, type CatalogDefinition } from "../../../src/Catalog.ts";
 import {
   Entity,
   EntityId as OperationEntityId,
   Graph,
-  OwnedOperations,
   Schema,
   schemaTx,
   string,
@@ -24,10 +22,8 @@ import {
   DigestHex,
   DynamicCatalogDefinitionMissing,
   GraphPathSegmentInaccessible,
-  any,
   assembleCatalogDefinitions,
   catalogProvisioningAttributes,
-  compileReadAuthorization,
   deployCatalogDefinitions,
   deployDatabaseCatalogBindings,
   deriveResolvedDatabaseRoute,
@@ -35,9 +31,6 @@ import {
   executeAuthorizedGraphPath,
   executeAuthorizedGraphPathLive,
   graphPathLeaseIdentity,
-  hasClass,
-  invoke,
-  read,
   resolveAuthorizedGraphPath,
   resolveBoundCatalogDefinition,
   sameGraphPathLeaseIdentity,
@@ -56,17 +49,17 @@ const nestedNotesQuery = {
   query: `[:find [?text ...] :where [?e :pathNote/text ?text]]`,
 };
 
-let childCatalog!: CatalogDefinition;
-let leafCatalog!: CatalogDefinition;
+let childSchema!: Schema.Any;
+let leafSchema!: Schema.Any;
 
 const RootGraph = Entity("pathWorkspace", {}, {
-  traits: [Graph(() => childCatalog)],
+  traits: [Graph(() => childSchema)],
 });
 const OtherRootGraph = Entity("pathTeam", {}, {
-  traits: [Graph(() => childCatalog)],
+  traits: [Graph(() => childSchema)],
 });
 const ChildGraph = Entity("pathProject", {}, {
-  traits: [Graph(() => leafCatalog)],
+  traits: [Graph(() => leafSchema)],
 });
 const LeafNote = Entity("pathNote", { text: string() }, {
   operations: (Operation) => ({
@@ -81,9 +74,40 @@ const LeafNote = Entity("pathNote", { text: string() }, {
   }),
 });
 
-const RootSchema = Schema({ pathWorkspace: RootGraph, pathTeam: OtherRootGraph });
-const ChildSchema = Schema({ pathProject: ChildGraph });
-const LeafSchema = Schema({ pathNote: LeafNote });
+const RootSchema = Schema("path-root", { pathWorkspace: RootGraph, pathTeam: OtherRootGraph });
+const ChildSchema = Schema("path-child", { pathProject: ChildGraph });
+const LeafSchema = Schema("path-leaf", { pathNote: LeafNote });
+
+LeafSchema.applyPolicy(
+  { roles: ["member", "root-reader"] },
+  ({ policy, session }) => {
+    policy.pathNote.read.where(session.hasRole("member"));
+    policy.pathNote.operations.create.where(session.hasRole("member"));
+  },
+);
+leafSchema = LeafSchema;
+ChildSchema.applyPolicy(
+  { roles: ["member", "root-reader"] },
+  ({ policy, session }) => {
+    policy.pathProject.read.where(session.hasRole("member"));
+    policy.graph.read.where(session.hasRole("member"));
+    policy.graph.fields.catalog.read.denyWhere(session.hasRole("member"));
+  },
+);
+childSchema = ChildSchema;
+RootSchema.applyPolicy(
+  { roles: ["member", "root-reader", "row-only"] },
+  ({ policy, session }) => {
+    policy.pathWorkspace.read.where(session.hasRole("member"));
+    policy.pathWorkspace.read.where(session.hasRole("root-reader"));
+    policy.pathWorkspace.read.where(session.hasRole("row-only"));
+    policy.pathTeam.read.where(session.hasRole("member"));
+    policy.graph.read.where(session.hasRole("member"));
+    policy.graph.read.where(session.hasRole("root-reader"));
+    policy.graph.fields.catalog.read.denyWhere(session.hasRole("member"));
+    policy.graph.fields.catalog.read.denyWhere(session.hasRole("root-reader"));
+  },
+);
 
 const caller = (classes: readonly string[]): AuthenticatedCaller => ({
   claims: { sub: "same-deployment-subject" },
@@ -100,53 +124,13 @@ const routeDefinition = (route: ResolvedDatabaseRoute) =>
   route.deployed.composition;
 
 async function buildWorld() {
-  leafCatalog = Catalog("path-leaf", {
-    schema: LeafSchema,
-    policy: await Effect.runPromise(compileReadAuthorization({
-      schema: LeafSchema,
-      classes: ["member", "root-reader"],
-      rules: [
-        read(LeafNote).when(hasClass("member")),
-        invoke(LeafNote[OwnedOperations].create).when(hasClass("member")),
-      ],
-    })),
-  });
-  childCatalog = Catalog("path-child", {
-    schema: ChildSchema,
-    policy: await Effect.runPromise(compileReadAuthorization({
-      schema: ChildSchema,
-      classes: ["member", "root-reader"],
-      rules: [
-        read(ChildGraph).when(hasClass("member")),
-        read(Graph).when(hasClass("member")),
-        read(Graph.catalog).deny(hasClass("member")),
-      ],
-    })),
-  });
-  const rootCatalog = Catalog("path-root", {
-    schema: RootSchema,
-    policy: await Effect.runPromise(compileReadAuthorization({
-      schema: RootSchema,
-      classes: ["member", "root-reader", "row-only"],
-      rules: [
-        read(RootGraph).when(any(
-          hasClass("member"),
-          hasClass("root-reader"),
-          hasClass("row-only"),
-        )),
-        read(OtherRootGraph).when(hasClass("member")),
-        read(Graph).when(any(hasClass("member"), hasClass("root-reader"))),
-        read(Graph.catalog).deny(any(hasClass("member"), hasClass("root-reader"))),
-      ],
-    })),
-  });
   const definitions = await Effect.runPromise(assembleCatalogDefinitions({
-    root: rootCatalog,
+    root: RootSchema,
     artifactHash,
   }));
   const roots = Result.getOrThrow(deployCatalogDefinitions(definitions, [{
     database: rootDatabase,
-    catalogKey: CatalogId.make(rootCatalog.key),
+    catalogKey: CatalogId.make(RootSchema.key),
   }]));
   const bindings = Result.getOrThrow(
     deployDatabaseCatalogBindings(definitions, roots),

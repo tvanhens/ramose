@@ -1,8 +1,7 @@
 import * as Effect from "effect/Effect";
-import type { CatalogDefinition } from "../Catalog.ts";
 import { compositionFromSchema } from "../db/composition.ts";
 import { schemaTx } from "../db/ensure.ts";
-import type { AnySchema } from "../db/Schema.ts";
+import type { AnySchema, AnySchemaDefinition } from "../db/Schema.ts";
 import type { ReadCompatibilityHash } from "../internal/authorization/identities.ts";
 import { hashReadCompatibility } from "../internal/authorization/read-compatibility.ts";
 import {
@@ -64,7 +63,7 @@ export type ClientCatalog = {
 };
 
 export const installClientCatalog = async (
-  definition: CatalogDefinition,
+  definition: AnySchemaDefinition,
   projections: readonly InstalledProjection[] = [],
 ): Promise<ClientCatalog> => {
   const schema = completeSchema(definition);

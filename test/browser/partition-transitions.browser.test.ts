@@ -14,7 +14,7 @@ import {
   CHILD_PATH,
   identityFor,
   Note,
-  NotesCatalog,
+  NotesSchema,
   noteDatoms,
   observeChildRoute,
   opaque,
@@ -404,7 +404,7 @@ browserTest(
     const client = createClient({
       url: globalThis.location.origin,
       root: "refuses-credentials",
-      catalog: NotesCatalog,
+      catalog: NotesSchema,
       auth: () => {
         presented++;
         return { token: bearer, cacheKey: CACHE_KEY };
@@ -446,7 +446,7 @@ browserTest(
   async ({ browser }) => {
     const name = `ramose-partition-refused-child-${browser.uniqueId}`;
     const storage = await IndexedDbReplicaStorage.open(name);
-    const catalog = await installClientCatalog(NotesCatalog);
+    const catalog = await installClientCatalog(NotesSchema);
     let presented = 0;
     const registry = new GraphRegistry(() => {
       throw new Error("this child resolves no children of its own");
@@ -521,7 +521,7 @@ browserTest(
   async ({ browser }) => {
     const name = `ramose-partition-awaited-route-${browser.uniqueId}`;
     const storage = await IndexedDbReplicaStorage.open(name);
-    const catalog = await installClientCatalog(NotesCatalog);
+    const catalog = await installClientCatalog(NotesSchema);
     const registry = new GraphRegistry(() => {
       throw new Error("this child resolves no children of its own");
     }, () => undefined);

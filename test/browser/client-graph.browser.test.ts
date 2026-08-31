@@ -1,6 +1,4 @@
 import { expect } from "vitest";
-import { compileReadAuthorization } from "../../packages/ramose/src/internal/authorization/index.ts";
-import { Catalog } from "../../packages/ramose/src/Catalog.ts";
 import {
   Entity,
   Field,
@@ -36,7 +34,8 @@ import {
 import { browserTest } from "./fixtures.ts";
 import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
-const Child = { key: "child", schema: Schema({}) } satisfies CodeDefinition;
+const Child = Schema("child", {}) satisfies CodeDefinition;
+Child.applyPolicy(() => {});
 
 const Organization = Entity("organization", {
   slug: Field.unique(string(), "strict"),
@@ -52,12 +51,12 @@ const Issue = Entity("issue", {
   rank: string(),
 });
 
-const AppSchema = Schema({ organization: Organization, board: Board, issue: Issue });
-
-const AppCatalog = Catalog("client-graph", {
-  schema: AppSchema,
-  policy: compileReadAuthorization({ schema: AppSchema, rules: [] }),
+const AppSchema = Schema("client-graph", {
+  organization: Organization,
+  board: Board,
+  issue: Issue,
 });
+AppSchema.applyPolicy(() => {});
 
 const OFFLINE = "http://127.0.0.1:1";
 const ROOT = "app";
@@ -132,7 +131,7 @@ const slotFor = (seed: Seed): Promise<ReplicaRouteSlot> =>
     : stableReplicaRouteSlot(seed.identity.graphLineage);
 
 const seed = async (name: string, seeds: readonly Seed[]): Promise<void> => {
-  const installed = await installClientCatalog(AppCatalog);
+  const installed = await installClientCatalog(AppSchema);
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
     for (const entry of seeds) {
@@ -211,7 +210,7 @@ const offlineClient = (
   createClient({
     url: OFFLINE,
     root: ROOT,
-    catalog: AppCatalog,
+    catalog: AppSchema,
     auth: () => credential,
     storageName: name,
   });
@@ -223,7 +222,7 @@ const nested = async (
   name: string,
   options: { readonly boards?: boolean } = {},
 ): Promise<void> => {
-  const installed = await installClientCatalog(AppCatalog);
+  const installed = await installClientCatalog(AppSchema);
   const hash = installed.readCompatibilityHash;
   await seed(name, [
     {
@@ -306,7 +305,7 @@ browserTest("activates a nested path ancestor by ancestor, offline", async ({ br
 browserTest("keeps a cold nested query pending, never partial", async ({ browser }) => {
   const name = `ramose-graph-cold-${browser.uniqueId}`;
 
-  const installed = await installClientCatalog(AppCatalog);
+  const installed = await installClientCatalog(AppSchema);
   await seed(name, [{
     graphPath: [],
     identity: identityFor(opaque("R"), [], installed.readCompatibilityHash),
@@ -368,7 +367,7 @@ browserTest("collapses zero and hidden matches into one opaque unavailable resul
 
 browserTest("reports multiple matches as an ambiguity and never picks one", async ({ browser }) => {
   const name = `ramose-graph-ambiguous-${browser.uniqueId}`;
-  const installed = await installClientCatalog(AppCatalog);
+  const installed = await installClientCatalog(AppSchema);
   await seed(name, [{
     graphPath: [],
     identity: identityFor(opaque("R"), [], installed.readCompatibilityHash),
@@ -409,7 +408,7 @@ browserTest("reports multiple matches as an ambiguity and never picks one", asyn
 
 browserTest("reuses child storage only for a path an authenticated response confirmed", async ({ browser }) => {
   const name = `ramose-graph-stable-${browser.uniqueId}`;
-  const installed = await installClientCatalog(AppCatalog);
+  const installed = await installClientCatalog(AppSchema);
   const hash = installed.readCompatibilityHash;
 
   await seed(name, [
@@ -471,7 +470,7 @@ browserTest("reuses child storage only for a path an authenticated response conf
 
 browserTest("does not read a predecessor Graph's replica through a rotated read view", async ({ browser }) => {
   const name = `ramose-graph-recreate-${browser.uniqueId}`;
-  const installed = await installClientCatalog(AppCatalog);
+  const installed = await installClientCatalog(AppSchema);
   const hash = installed.readCompatibilityHash;
 
   await seed(name, [
@@ -547,7 +546,7 @@ browserTest("does not read a predecessor Graph's replica through a rotated read 
 browserTest("stops resolving a path whose ancestor authorization was withdrawn", async ({ browser }) => {
   const name = `ramose-graph-revoked-${browser.uniqueId}`;
   await nested(name);
-  const installed = await installClientCatalog(AppCatalog);
+  const installed = await installClientCatalog(AppSchema);
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
     await storage.unbindCredential(await replicationCredentialFingerprint(
@@ -589,7 +588,7 @@ browserTest("stops resolving a path whose ancestor authorization was withdrawn",
 
 browserTest("never renders child storage whose read view this build cannot read", async ({ browser }) => {
   const name = `ramose-graph-readview-${browser.uniqueId}`;
-  const installed = await installClientCatalog(AppCatalog);
+  const installed = await installClientCatalog(AppSchema);
   await seed(name, [
     {
       graphPath: [],

@@ -14,10 +14,10 @@ import {
 } from "../../src/db/internal.ts";
 
 describe("Graph", () => {
-  const Child = { key: "workspace", schema: Schema({}) } satisfies CodeDefinition;
+  const Child = Schema("workspace", {}) satisfies CodeDefinition;
   const Workspace = Entity("workspace", {}, { traits: [Graph(Child)] });
   const Project = Entity("project", {}, { traits: [Graph(Child)] });
-  const App = Schema({ workspace: Workspace, project: Project });
+  const App = Schema("graph-app", { workspace: Workspace, project: Project });
 
   test("is one stable bindable trait with canonical fields", () => {
     expect(Graph._tag).toBe("Trait");
@@ -63,10 +63,9 @@ describe("Graph", () => {
     expect(metadata.fixed.get(":graph/catalog")?.value).toBe("workspace");
     expect(metadata.bindings[0]!.binding.dependencies).toEqual([Child]);
 
-    const Root = { key: "root", schema: App } satisfies CodeDefinition;
-    const reachable = collectCodeReachability(Root);
+    const reachable = collectCodeReachability(App);
     expect(reachable.definitions.map(({ key }) => key)).toEqual([
-      "root",
+      "graph-app",
       "workspace",
     ]);
     expect(reachable.bindings).toHaveLength(2);

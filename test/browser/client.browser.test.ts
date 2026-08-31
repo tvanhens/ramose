@@ -1,6 +1,4 @@
 import { expect } from "vitest";
-import { compileReadAuthorization } from "../../packages/ramose/src/internal/authorization/index.ts";
-import { Catalog } from "../../packages/ramose/src/Catalog.ts";
 import {
   Entity,
   Field,
@@ -38,12 +36,8 @@ const Note = Entity("note", {
   title: Field.unique(string(), "strict"),
   rank: string(),
 });
-const Notes = Schema({ note: Note });
-
-const NotesCatalog = Catalog("client-notes", {
-  schema: Notes,
-  policy: compileReadAuthorization({ schema: Notes, rules: [] }),
-});
+const Notes = Schema("client-notes", { note: Note });
+Notes.applyPolicy(() => {});
 
 const OFFLINE = "http://127.0.0.1:1";
 const ROOT = "app";
@@ -89,7 +83,7 @@ const seed = async (
   notes: readonly SeededNote[],
   options: { readonly token?: string; readonly cacheKey?: string } = {},
 ): Promise<ReplicationIdentity> => {
-  const installed = await installClientCatalog(NotesCatalog);
+  const installed = await installClientCatalog(Notes);
   const identity: ReplicationIdentity = {
     version: 1,
     server: opaque("s"),
@@ -147,7 +141,7 @@ const offlineClient = (name: string, credential = { token: TOKEN, cacheKey: CACH
   createClient({
     url: OFFLINE,
     root: ROOT,
-    catalog: NotesCatalog,
+    catalog: Notes,
     auth: () => credential,
     storageName: name,
   });
@@ -204,7 +198,7 @@ browserTest("renders an exact bearer binding's replica offline and closes determ
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
     const address = replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] });
-    const installed = await installClientCatalog(NotesCatalog);
+    const installed = await installClientCatalog(Notes);
     const restored = await storage.restoreBound(
       await replicationCredentialFingerprint(TOKEN, address, await rootReplicaRouteSlot()),
       installed.attributes,
@@ -242,7 +236,7 @@ browserTest("retains no observation until something subscribes", async ({ browse
 browserTest("a withdrawn binding stops selecting the replica it named", async ({ browser }) => {
   const name = `ramose-client-withdrawn-${browser.uniqueId}`;
   await seed(name, [{ entity: opaque("e"), title: "revoked", rank: "a" }]);
-  const installed = await installClientCatalog(NotesCatalog);
+  const installed = await installClientCatalog(Notes);
   const fingerprint = await replicationCredentialFingerprint(
     TOKEN,
     replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] }),
@@ -491,7 +485,7 @@ browserTest("clearLocalData deletes only a confirmed scope and is terminal", asy
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
     const address = replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] });
-    const installed = await installClientCatalog(NotesCatalog);
+    const installed = await installClientCatalog(Notes);
     expect(await storage.restoreBound(
       await replicationCredentialFingerprint(TOKEN, address, await rootReplicaRouteSlot()),
       installed.attributes,
@@ -542,17 +536,14 @@ const ConformanceIssue = Entity("conformanceIssue", {
   parent: Field(Ref.self, { optional: true }),
   audit: string({ optional: true }),
 });
-const ConformanceSchema = Schema({
+const ConformanceSchema = Schema("local-conformance", {
   conformanceUser: ConformanceUser,
   conformanceIssue: ConformanceIssue,
 });
-const ConformanceCatalog = Catalog("local-conformance", {
-  schema: ConformanceSchema,
-  policy: compileReadAuthorization({ schema: ConformanceSchema, rules: [] }),
-});
+ConformanceSchema.applyPolicy(() => {});
 
 browserTest("derives the read compatibility the recorded Worker authenticated", async () => {
-  const installed = await installClientCatalog(ConformanceCatalog);
+  const installed = await installClientCatalog(ConformanceSchema);
   expect(installed.readCompatibilityHash).toBe(recorded.identity.readCompatibilityHash);
 });
 
@@ -562,7 +553,7 @@ browserTest("a committed value enters a query already being observed", async ({ 
     url: globalThis.location.origin,
 
     root: "optimistic-fence",
-    catalog: ConformanceCatalog,
+    catalog: ConformanceSchema,
     auth: () => Promise.resolve({ token: "session-credential", cacheKey: "recorded" }),
     storageName: name,
   });
@@ -594,7 +585,7 @@ browserTest("a committed value enters a query already being observed", async ({ 
 
 browserTest("fences a replaced principal before any of its data can be read", async ({ browser }) => {
   const name = `ramose-client-transition-${browser.uniqueId}`;
-  const installed = await installClientCatalog(ConformanceCatalog);
+  const installed = await installClientCatalog(ConformanceSchema);
 
   const prior: ReplicationIdentity = {
     ...(recorded.identity as unknown as ReplicationIdentity),
@@ -636,7 +627,7 @@ browserTest("fences a replaced principal before any of its data can be read", as
   const client = createClient({
     url: globalThis.location.origin,
     root: "optimistic-fence",
-    catalog: ConformanceCatalog,
+    catalog: ConformanceSchema,
     auth: () => ({ token: "session-credential", cacheKey: "recorded" }),
     storageName: name,
   });

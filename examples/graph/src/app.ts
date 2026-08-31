@@ -1,6 +1,6 @@
 // docs:graph-client
 import { createClient, type Client, type ClientDatabase } from "ramose/client";
-import { AppCatalog, Board, Issue, Organization, ROOT_DATABASE } from "./catalogs.ts";
+import { AppSchema, Board, Issue, Organization, ROOT_DATABASE } from "./catalogs.ts";
 
 export type Session = {
   readonly token: string;
@@ -17,7 +17,7 @@ export const openApp = (options: AppOptions): Client =>
   createClient({
     url: options.url,
     root: ROOT_DATABASE,
-    catalog: AppCatalog,
+    catalog: AppSchema,
     auth: options.session,
     ...(options.storageName === undefined
       ? {}

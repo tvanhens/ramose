@@ -49,7 +49,12 @@ export const Issue = Entity(
   },
   { traits: [Taggable] },
 );
-export const App = Schema({ user: User, workspace: Workspace, tag: Tag, issue: Issue });
+export const App = Schema("semantic-app", {
+  user: User,
+  workspace: Workspace,
+  tag: Tag,
+  issue: Issue,
+});
 
 export const orgClaim = {
   key: "org",
@@ -213,7 +218,7 @@ const appReject = (
 
 const Labeled = Trait("labeled", { labels: Field.many(Ref(Tag)) });
 const Note = Entity("note", { title: string() }, { traits: [Labeled] });
-const LabeledApp = Schema({ user: User, tag: Tag, note: Note });
+const LabeledApp = Schema("semantic-labeled", { user: User, tag: Tag, note: Note });
 
 const labeledDescriptor = (): CatalogDescriptor => ({
   id: catalog,
@@ -243,7 +248,7 @@ const Linkable = Trait("linkable", {
   label: string(),
 });
 const LinkedIssue = Entity("issue", { owner: Ref(User) }, { traits: [Linkable] });
-const LinkedApp = Schema({ user: User, issue: LinkedIssue });
+const LinkedApp = Schema("semantic-linked", { user: User, issue: LinkedIssue });
 
 const linkedDescriptor = (): CatalogDescriptor => ({
   id: catalog,
@@ -280,7 +285,7 @@ const Bag = Entity("bag", {
   base: Ref(Base),
   extra: Ref(Extra),
 });
-const Bags = Schema({ person: Person, guest: Guest, holder: Holder, bag: Bag });
+const Bags = Schema("semantic-bags", { person: Person, guest: Guest, holder: Holder, bag: Bag });
 
 const bagsDescriptor = (): CatalogDescriptor => ({
   id: catalog,
@@ -328,7 +333,11 @@ const ActorResource = Entity("resource", {
   manyActorRefs: Field.many(Ref(Actor)),
   strangerRef: Ref(Stranger),
 });
-const ActorResources = Schema({ user: ActorUser, stranger: Stranger, resource: ActorResource });
+const ActorResources = Schema("semantic-actor-resources", {
+  user: ActorUser,
+  stranger: Stranger,
+  resource: ActorResource,
+});
 
 const actorDescriptor = (): CatalogDescriptor => ({
   id: catalog,
@@ -360,7 +369,7 @@ const LooseResource = Entity("resource", {
   looseRef: Field(Ref),
   otherLoose: Field(Ref),
 });
-const LooseResources = Schema({ user: User, resource: LooseResource });
+const LooseResources = Schema("semantic-loose-resources", { user: User, resource: LooseResource });
 
 const looseDescriptor = (): CatalogDescriptor => ({
   id: catalog,
@@ -392,7 +401,10 @@ const OrphanResource = Entity("resource", {
   looseRef: Field(Ref),
   parent: Ref.self,
 });
-const OrphanResources = Schema({ user: User, resource: OrphanResource });
+const OrphanResources = Schema("semantic-orphan-resources", {
+  user: User,
+  resource: OrphanResource,
+});
 
 const orphanResourceBase = (): Omit<CatalogDescriptor, "fields"> => ({
   id: catalog,

@@ -22,7 +22,7 @@ export const Movie = Ramose.Entity("movie", {
   title: Ramose.Field(Ramose.string(), { index: true }),
 });
 
-export const Movies = Ramose.Schema({ user: User, movie: Movie });
+export const Movies = Ramose.Schema("local-movies", { user: User, movie: Movie });
 
 export const setTitle = Ramose.Operation(
   "movie/set-title",

@@ -23,9 +23,9 @@ const Bound = Trait("typedBound", {
   }),
 });
 
-const child = { key: "child", schema: Schema({}) };
+const child = Schema("child", {});
 const Node = Entity("typedNode", { title: string() }, { traits: [Bound(child)] });
-const Catalog = Schema({ typedNode: Node });
+const Catalog = Schema("typed-nodes", { typedNode: Node });
 const tx = txBuilder(Catalog);
 
 tx.put(Node, { title: "ok" });
@@ -60,7 +60,7 @@ const widenedBind: (
 });
 const Widened = Trait("widenedBinding", annotatedFields, { bind: widenedBind });
 const WidenedEntity = Entity("widenedEntity", {}, { traits: [Widened(child)] });
-const WidenedSchema = Schema({ widenedEntity: WidenedEntity });
+const WidenedSchema = Schema("widened", { widenedEntity: WidenedEntity });
 const widenedTx = txBuilder(WidenedSchema);
 
 // @ts-expect-error

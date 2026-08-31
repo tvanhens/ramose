@@ -43,7 +43,7 @@ const Issue = Entity("issue", {
   author: Ref(User),
 });
 
-const Catalog = DbSchema({ user: User, label: Label, issue: Issue });
+const Catalog = DbSchema("shorthands", { user: User, label: Label, issue: Issue });
 
 describe("shorthand schemaTx", () => {
   test("lowers branded shorthands to :db.type/*", () => {
@@ -139,7 +139,7 @@ describe("advanced Field(schema)", () => {
       n: Field(Schema.Finite),
       ok: Field(Schema.Boolean),
     });
-    expect(schemaTx(DbSchema({ note: Note }))).toEqual([
+    expect(schemaTx(DbSchema("shorthand-note", { note: Note }))).toEqual([
       {
         ":db/ident": ":note/body",
         ":db/valueType": ":db.type/string",
@@ -162,7 +162,7 @@ describe("advanced Field(schema)", () => {
     const Flag = Entity("flag", {
       state: Field(stored(Schema.Literals(["on", "off"]), "string")),
     });
-    expect(schemaTx(DbSchema({ flag: Flag }))[0]).toMatchObject({
+    expect(schemaTx(DbSchema("shorthand-flag", { flag: Flag }))[0]).toMatchObject({
       ":db/ident": ":flag/state",
       ":db/valueType": ":db.type/string",
     });
@@ -172,7 +172,7 @@ describe("advanced Field(schema)", () => {
     const Bad = Entity("bad", {
       state: Field(Schema.Literals(["on", "off"]) as never),
     });
-    expect(() => schemaTx(DbSchema({ bad: Bad }))).toThrow(
+    expect(() => schemaTx(DbSchema("shorthand-bad", { bad: Bad }))).toThrow(
       /cannot infer value type from this Schema \(ast\._tag=Union\)/,
     );
   });

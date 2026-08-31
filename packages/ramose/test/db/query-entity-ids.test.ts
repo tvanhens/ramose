@@ -29,7 +29,7 @@ const Node = Entity("node", {
   name: string(),
   children: Field.many(Ref.self),
 });
-const AppSchema = Schema({ author: Author, issue: Issue, node: Node });
+const AppSchema = Schema("query-entity-ids", { author: Author, issue: Issue, node: Node });
 
 let db: Db;
 let ids: Record<string, number>;

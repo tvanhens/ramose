@@ -98,7 +98,7 @@ describe("compile common rules", () => {
         }),
       },
     );
-    const OperatedSchema = Schema({ operated: Operated });
+    const OperatedSchema = Schema("authoring-operated", { operated: Operated });
     const rename = Operated[OwnedOperations].rename;
     const template = Result.getOrThrow(
       compileReadAuthorizationResult({
@@ -433,7 +433,7 @@ describe("schema field names reserved by $()", () => {
     then: string(),
     toJSON: string(),
   });
-  const Things = Schema({ thing: Thing });
+  const Things = Schema("authoring-things", { thing: Thing });
   const compileThing = (rules: readonly ReadRule[]) =>
     compileReadAuthorizationResult({
       schema: Things,
@@ -674,16 +674,12 @@ describe("expression-size bounds before iterating", () => {
 });
 
 describe("public barrels stay closed", () => {
-  test("authoring is root-only behind the Policy namespace", async () => {
+  test("authoring is schema-owned and the compiler stays internal", async () => {
     const root = await import("../../../src/index.ts");
     const db = await import("../../../src/db/index.ts");
-    expect("Policy" in root).toBe(true);
-    expect("compileReadAuthorization" in root.Policy).toBe(true);
-    expect("invoke" in root.Policy).toBe(true);
-    expect("compileReadAuthorizationResult" in root.Policy).toBe(false);
-    expect("seededPath" in root.Policy).toBe(false);
-    expect("lowerOwnedOperations" in root.Policy).toBe(false);
-    expect("lowerOperationSchema" in root.Policy).toBe(false);
+    expect("Schema" in root).toBe(true);
+    expect("Schema" in db).toBe(true);
+    expect("Policy" in root).toBe(false);
     expect("compileReadAuthorization" in root).toBe(false);
     expect("compileReadAuthorizationResult" in root).toBe(false);
     expect("Policy" in db).toBe(false);

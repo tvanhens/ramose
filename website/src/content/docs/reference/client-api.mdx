@@ -4,7 +4,7 @@ description: Reference for creating a client, opening graphs, observing queries,
 ---
 import Next from "../../../components/Next.astro";
 
-`ramose/client` owns authorized browser replicas, graph handles, local query execution, synchronization, the durable outbox, optimistic layers, and receipts. It re-exports `Catalog` and `Policy`, so one import covers authoring and running.
+`ramose/client` owns authorized browser replicas, graph handles, local query execution, synchronization, the durable outbox, optimistic layers, and receipts. Author the named schema through `ramose/db`, then pass that shared value to the client.
 
 *New here? Start with [Build your first Ramose web app](/getting-started/quickstart/).*
 
@@ -16,7 +16,7 @@ import { createClient } from "ramose/client"
 const client = createClient({
   url: "https://data.example.com",
   root: "app",
-  catalog: AppCatalog,
+  catalog: AppSchema,
   auth: () => ({ token: session.accessToken, cacheKey: session.user.id }),
 })
 ```

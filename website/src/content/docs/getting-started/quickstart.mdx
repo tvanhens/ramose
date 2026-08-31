@@ -62,43 +62,58 @@ export const Task = Ramose.Entity(
   },
 )
 
-export const AppSchema = Ramose.Schema({ task: Task })
+export const ROOT_DATABASE = "tasks"
+export const App = Ramose.Schema("task-starter", { task: Task })
+
+App.applyPolicy(
+  { roles: ["member"] },
+  ({ policy, session }) => {
+    const isMember = session.hasRole("member")
+
+    policy.task.read.where(isMember)
+    policy.task.operations.createTask.where(isMember)
+    policy.task.operations.setDone.where(isMember)
+  },
+)
+
+export const deployment = {
+  root: App,
+  deployments: [{ database: ROOT_DATABASE }],
+}
 ```
 
 Entity and operation names are durable public identities. Treat renaming them as an API migration, not a display-copy change.
 
-## 3. Declare the policy and catalog
+## 3. Review the policy
 
-Create `src/catalog.ts`. This starter admits the `member` class to read tasks and invoke both operations:
-
-```ts
-import * as Ramose from "ramose"
-import { AppSchema, Task } from "./domain"
-
-const P = Ramose.Policy
-const operations = Task[Ramose.OwnedOperations]
-
-const policy = P.compileReadAuthorization({
-  schema: AppSchema,
-  classes: ["member"],
-  rules: [
-    P.read(Task).when(P.hasClass("member")),
-    P.invoke(operations.createTask).when(P.hasClass("member")),
-    P.invoke(operations.setDone).when(P.hasClass("member")),
-  ],
-})
-
-export const AppCatalog = Ramose.Catalog("task-starter", {
-  schema: AppSchema,
-  policy,
-})
-```
+The `applyPolicy` statement in `src/domain.ts` permits the `member` role to read tasks and invoke both operations. A schema accepts one policy statement.
 
 Read permission and operation permission are separate. A caller who can see a task cannot mutate it unless the exact operation is also granted.
 
 ## 4. Deploy the authoritative server
 
-Create `alchemy.run.ts`:
+Create `peer.ts`. This Worker entry installs the named schema and policy:
+
+```ts
+import * as Effect from "effect/Effect"
+import {
+  QueryReplicaDO,
+  createServer,
+  createTransactorDO,
+  deployOperationCatalogs,
+} from "ramose/worker"
+import { deployment } from "./src/domain"
+
+const operationCatalogs = await Effect.runPromise(
+  deployOperationCatalogs(deployment),
+)
+
+export default createServer({ operationCatalogs })
+export { QueryReplicaDO }
+export const TransactorDO = createTransactorDO(operationCatalogs)
+```
+
+Then create `alchemy.run.ts` to provision the Worker and storage:
 
 ```ts
 import * as Alchemy from "alchemy"
@@ -106,11 +121,13 @@ import * as Cloudflare from "alchemy/Cloudflare"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Ramose from "ramose"
-import { AppCatalog } from "./src/catalog"
 
+const Store = Cloudflare.R2.Bucket("TasksStore", {
+  name: "ramose-tasks-store",
+})
 const server = Ramose.Server("Tasks", {
-  root: AppCatalog,
-  mcp: true,
+  main: import.meta.resolve("./peer.ts"),
+  storage: Store,
   auth: {
     jwksUrl: process.env.RAMOSE_JWKS_URL!,
     issuers: [process.env.RAMOSE_JWT_ISS!],
@@ -147,17 +164,20 @@ Create `src/ramose.ts`:
 
 ```ts
 import { createClient } from "ramose/client"
-import { getAccessToken } from "./auth"
+import { getSession } from "./auth"
+import { App, ROOT_DATABASE } from "./domain"
 
 export const client = createClient({
   url: import.meta.env.VITE_RAMOSE_URL,
-  token: getAccessToken,
+  root: ROOT_DATABASE,
+  catalog: App,
+  auth: getSession,
 })
 
 export const rootDb = client.open()
 ```
 
-`client.open()` constructs a handle; it does not fetch the database. The root activates when the first observed query or mutation needs it.
+`getSession` returns `{ token, cacheKey }`. The stable `cacheKey` identifies the signed-in account across token renewal. `client.open()` constructs a handle; it does not fetch the database. The root activates when the first observed query or mutation needs it.
 
 ## 6. Build the React screen
 

@@ -1,7 +1,7 @@
 # Todos
 
-The smallest Ramose peer example: a catalog, typed operations, and a local
-Alchemy stack. No auth and no policy.
+The smallest Ramose peer example: a named schema, typed operations, an open
+read policy, and a local Alchemy stack. It does not configure authentication.
 
 ## Run it
 

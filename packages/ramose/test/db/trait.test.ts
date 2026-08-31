@@ -56,7 +56,7 @@ const Diamond = Entity(
   { traits: [Taggable, Annotated] },
 );
 
-const Board = Schema({ issue: Issue, note: Note, diamond: Diamond });
+const Board = Schema("trait-board", { issue: Issue, note: Note, diamond: Diamond });
 
 describe("Trait() / Entity() composition", () => {
   test("entity, trait, and defining field docs remain distinct through composition", () => {
@@ -151,7 +151,7 @@ describe("Trait() / Entity() composition", () => {
 
   test("entity and trait names cannot collide in a schema", () => {
     const Ghost = Entity("taggable", { title: string() });
-    expect(() => Schema({ taggable: Ghost, issue: Issue })).toThrow(
+    expect(() => Schema("invalid-trait-name", { taggable: Ghost, issue: Issue })).toThrow(
       /"taggable" is both an entity and a trait/,
     );
   });
@@ -160,7 +160,7 @@ describe("Trait() / Entity() composition", () => {
 describe("schemaTx", () => {
   test("entity-only catalogs emit only attribute maps", () => {
     const Todo = Entity("todo", { title: string() }, { doc: "A todo entity." });
-    expect(schemaTx(Schema({ todo: Todo }))).toEqual([
+    expect(schemaTx(Schema("trait-schema-tx", { todo: Todo }))).toEqual([
       {
         ":db/ident": ":todo/title",
         ":db/valueType": ":db.type/string",
@@ -272,7 +272,7 @@ describe("typed create", () => {
 
   test("put stamps type on a traitless entity", () => {
     const Todo = Entity("todo", { title: string() });
-    const Todos = Schema({ todo: Todo });
+    const Todos = Schema("trait-todos", { todo: Todo });
     const tx = txBuilder(Todos);
     Effect.runSync(tx.put(Todo, { title: "x" }));
     expect(txOps(tx)).toEqual([
@@ -384,7 +384,7 @@ describe("processTx membership and required trait fields", () => {
 
   test("forged or conflicting type evidence fails closed", async () => {
     const Todo = Entity("todo", { title: string() });
-    const Mixed = Schema({
+    const Mixed = Schema("mixed-traits", {
       issue: Issue,
       note: Note,
       diamond: Diamond,
@@ -416,7 +416,7 @@ describe("processTx membership and required trait fields", () => {
 
   test("Query.entities membership is the type fact, not a shared trait field", async () => {
     const Task = Entity("task", { title: string() }, { traits: [Taggable] });
-    const Mixed = Schema({
+    const Mixed = Schema("mixed-trait-composition", {
       issue: Issue,
       note: Note,
       diamond: Diamond,
@@ -452,7 +452,11 @@ describe("processTx membership and required trait fields", () => {
     const Marked = Entity("marked", { title: string() }, { traits: [Marker] });
     const AlsoMarked = Entity("alsoMarked", { title: string() }, { traits: [Marker] });
     const Plain = Entity("plain", { title: string() });
-    const Mixed = Schema({ marked: Marked, alsoMarked: AlsoMarked, plain: Plain });
+    const Mixed = Schema("mixed-marker-traits", {
+      marked: Marked,
+      alsoMarked: AlsoMarked,
+      plain: Plain,
+    });
     const conn = await setup(Mixed);
     const tx = txBuilder(Mixed);
     Effect.runSync(tx.put(Marked, { title: "empty many" }));
@@ -482,7 +486,7 @@ describe("processTx membership and required trait fields", () => {
 
   test("two composed entity namespaces on one id are tx/wrong-entity", async () => {
     const Task = Entity("task", { title: string() }, { traits: [Taggable] });
-    const Mixed = Schema({ issue: Issue, task: Task });
+    const Mixed = Schema("mixed-task-traits", { issue: Issue, task: Task });
     const conn = await setup(Mixed);
 
     await expect(
@@ -511,7 +515,7 @@ describe("processTx membership and required trait fields", () => {
   test("a write of only trait attributes is tx/wrong-entity", async () => {
     const Two = Trait("two", { a: string(), b: string() });
     const Doc = Entity("doc", { title: string() }, { traits: [Two] });
-    const Catalog = Schema({ doc: Doc });
+    const Catalog = Schema("strict-trait-doc", { doc: Doc });
     const conn = await setup(Catalog);
     await expect(
       conn.transact([{ ":db/id": "tmp-1", ":two/a": "x" }]),
@@ -530,7 +534,7 @@ describe("processTx membership and required trait fields", () => {
       { traits: [Taggable] },
     );
     const Bare = Entity("bare", {}, { traits: [Taggable] });
-    const Catalog = Schema({ issue: SoftIssue, bare: Bare });
+    const Catalog = Schema("soft-trait-membership", { issue: SoftIssue, bare: Bare });
     const conn = await setup(Catalog);
 
     const viaPut = txBuilder(Catalog);
@@ -568,7 +572,7 @@ describe("processTx membership and required trait fields", () => {
 
   test("two concrete entity types on one id fail closed", async () => {
     const Todo = Entity("todo", { title: string(), body: string() });
-    const Mixed = Schema({ issue: Issue, todo: Todo });
+    const Mixed = Schema("mixed-transitive-traits", { issue: Issue, todo: Todo });
     const conn = await setup(Mixed);
     await expect(
       conn.transact([
@@ -591,7 +595,7 @@ describe("processTx membership and required trait fields", () => {
     const Two = Trait("two", { a: string(), b: string() });
     const Doc = Entity("doc", { title: string() }, { traits: [Two] });
     const Other = Entity("other", { title: string() }, { traits: [Taggable] });
-    const Catalog = Schema({ doc: Doc, other: Other });
+    const Catalog = Schema("trait-doc-other", { doc: Doc, other: Other });
     const conn = await setup(Catalog);
 
     await expect(
@@ -635,7 +639,7 @@ describe("processTx membership and required trait fields", () => {
     const Solo = Trait("solo", { note: string({ optional: true }) });
     const Other = Entity("other", { title: string() }, { traits: [Taggable] });
     const Holder = Entity("holder", { title: string() }, { traits: [Solo] });
-    const Catalog = Schema({ other: Other, holder: Holder });
+    const Catalog = Schema("trait-holder", { other: Other, holder: Holder });
     const conn = await setup(Catalog);
     await expect(
       conn.transact([
@@ -654,7 +658,7 @@ describe("processTx membership and required trait fields", () => {
 
   test("a traitless entity receives exactly one protected concrete type fact", async () => {
     const Todo = Entity("todo", { title: string() });
-    const Todos = Schema({ todo: Todo });
+    const Todos = Schema("trait-query-todos", { todo: Todo });
     const conn = await setup(Todos);
     const tx = txBuilder(Todos);
     Effect.runSync(tx.put(Todo, { title: "x" }));
@@ -674,7 +678,7 @@ describe("processTx membership and required trait fields", () => {
       email: Field.unique(string(), "upsert"),
       name: string(),
     });
-    const Contacts = Schema({ contact: Contact });
+    const Contacts = Schema("trait-contacts", { contact: Contact });
     const conn = await setup(Contacts);
 
     const first = txBuilder(Contacts);

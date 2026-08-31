@@ -14,17 +14,17 @@ Most databases give you one global namespace and ask you to simulate boundaries 
 
 ## A graph is an ordinary row and a separate database
 
-An entity composes `Ramose.Graph(childCatalog)`. That binding adds graph metadata and fixes the child catalog in deployed code. Creating the entity creates the parent row atomically; child storage is acquired only after a caller authorizes the complete path.
+An entity composes `Ramose.Graph(childSchema)`. That binding adds graph metadata and fixes the child schema in deployed code. Creating the entity creates the parent row atomically; child storage is acquired only after a caller authorizes the complete path.
 
 ```ts
 export const Project = Ramose.Entity(
   "project",
   { title: Ramose.string() },
-  { traits: [Ramose.Graph(ProjectCatalog)] },
+  { traits: [Ramose.Graph(ProjectSchema)] },
 )
 ```
 
-Many `Project` rows can use `ProjectCatalog`. They still open distinct child databases.
+Many `Project` rows can use `ProjectSchema`. They still open distinct child databases.
 
 ## Address and identity are different
 

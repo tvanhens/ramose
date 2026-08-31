@@ -28,10 +28,18 @@ export const Task = Ramose.Entity("task", {
   assignee: Ramose.Ref(User, { optional: true }),
 })
 
-export const ProjectSchema = Ramose.Schema({ user: User, task: Task })
+export const ProjectSchema = Ramose.Schema("project-v1", {
+  user: User,
+  task: Task,
+})
+
+ProjectSchema.applyPolicy(({ policy }) => {
+  policy.user.read.never()
+  policy.task.read.never()
+})
 ```
 
-The object key in `Schema` matches the entity name. Each entity also exposes `id` for query shapes.
+The first argument is the permanent schema key. Each object key matches the entity name. Each entity also exposes `id` for query shapes.
 
 ## Value types
 

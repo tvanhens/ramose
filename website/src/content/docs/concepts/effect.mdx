@@ -21,12 +21,28 @@ export default Alchemy.Stack(
     state: Cloudflare.state(),
   },
   Effect.gen(function* () {
-    yield* Ramose.Server("App", { root: AppCatalog, auth })
+    yield* Ramose.Server("App", {
+      main: import.meta.resolve("./peer.ts"),
+      storage: Store,
+      auth,
+    })
   }),
 )
 ```
 
 Provide shared Layers once at the stack boundary. Keep parameterized Layer instances in constants when several resources reuse them.
+
+Effect also runs the one-time schema assembly in the Worker entry:
+
+```ts
+const operationCatalogs = await Effect.runPromise(
+  deployOperationCatalogs(deployment),
+)
+
+export default createServer({ operationCatalogs })
+export { QueryReplicaDO }
+export const TransactorDO = createTransactorDO(operationCatalogs)
+```
 
 ## What is deliberately not Effect
 

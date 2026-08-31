@@ -16,6 +16,7 @@ export { $, path, seededPath } from "./path.ts";
 export { read, type ReadBuilder } from "./read.ts";
 export { invoke, type InvokeBuilder } from "./invoke.ts";
 export { compileReadAuthorization, compileReadAuthorizationResult } from "./compile.ts";
+export { collectSchemaPolicy } from "./policy.ts";
 export {
   lowerOperationSchema,
   lowerOperationWireShape,
@@ -37,3 +38,15 @@ export type {
   InvokeRule,
   ReadTarget,
 } from "./types.ts";
+export type {
+  ApplyPolicy,
+  PolicyContext,
+  PolicyDefinition,
+  PolicyOperand,
+  PolicyOperationMethods,
+  PolicyReadMethods,
+  PolicySession,
+  SchemaPolicy,
+  SchemaPolicyConfig,
+  SchemaPrincipalField,
+} from "./policy.ts";

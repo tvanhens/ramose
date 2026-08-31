@@ -38,11 +38,16 @@ const Note = Entity(
   { traits: [Soft] },
 );
 
-const Board = Schema({ issue: Issue, note: Note });
+const Board = Schema("trait-types-board", { issue: Issue, note: Note });
 
 const Link = Entity("link", { target: Ref(Taggable) });
 const Plain = Entity("plain", { title: string() });
-const TraitRefs = Schema({ issue: Issue, note: Note, link: Link, plain: Plain });
+const TraitRefs = Schema("trait-types-refs", {
+  issue: Issue,
+  note: Note,
+  link: Link,
+  plain: Plain,
+});
 export type _traitRefTarget = Expect<
   Equal<RefWriteTarget<typeof TraitRefs, ":link/target">, typeof Issue>
 >;
@@ -108,7 +113,11 @@ export type _diamondCreated = Expect<
   Equal<(typeof Diamond)["createdAt"]["ident"], ":timestamped/createdAt">
 >;
 const TransitiveLink = Entity("transitiveLink", { target: Ref(Taggable) });
-const TransitiveRefs = Schema({ issue: Issue, diamond: Diamond, transitiveLink: TransitiveLink });
+const TransitiveRefs = Schema("trait-types-transitive", {
+  issue: Issue,
+  diamond: Diamond,
+  transitiveLink: TransitiveLink,
+});
 export type _transitiveTraitRefTarget = Expect<
   Equal<
     RefWriteTarget<typeof TransitiveRefs, ":transitiveLink/target">,

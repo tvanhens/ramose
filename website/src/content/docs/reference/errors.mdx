@@ -35,7 +35,7 @@ Ramose errors are tagged and safe to branch on. Public errors explain what a cal
 | `operation_rejected` | The authoritative operation refused the intent | Present the public reason; retry only after a meaningful change |
 | `invocation_conflict` | An invocation id identifies a different prior intent | Fix caller state; never silently repeat as new work |
 
-`inaccessible` intentionally covers missing and unauthorized cases when distinguishing them would disclose information. `.one()` may also produce `NotOne`; catalog policy compilation may produce `PolicyError` before deployment.
+`inaccessible` intentionally covers missing and unauthorized cases when distinguishing them would disclose information. `.one()` may also produce `NotOne`; schema policy validation may fail before deployment.
 
 A rejected receipt rolls back that optimistic layer and reapplies later layers. Preserve user-authored input when the UI offers a corrected new invocation.
 

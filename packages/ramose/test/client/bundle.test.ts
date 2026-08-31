@@ -3,8 +3,15 @@ import { describe, expect, test } from "bun:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import "../../src/client/client.ts";
-import "../../src/Catalog.ts";
-import "../../src/Policy.ts";
+import { Entity, Schema, string } from "../../src/db/index.ts";
+
+const BrowserTask = Entity("browserBundleTask", { title: string() });
+const BrowserApp = Schema("browser-bundle", {
+  browserBundleTask: BrowserTask,
+});
+BrowserApp.applyPolicy(({ policy }) => {
+  policy.browserBundleTask.read.always();
+});
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -26,11 +33,10 @@ describe("the ramose/client bundle", () => {
     for (const excluded of DEPLOY_ONLY) expect(client).not.toContain(excluded);
   });
 
-  test("still carries none when the application also authors its catalog", async () => {
+  test("still carries none when the application also authors a named schema", async () => {
     const application = await bundled(
       "../../src/client/client.ts",
-      "../../src/Catalog.ts",
-      "../../src/Policy.ts",
+      "../../src/db/Schema.ts",
     );
     for (const excluded of DEPLOY_ONLY) expect(application).not.toContain(excluded);
   });

@@ -1,5 +1,4 @@
 import * as EffectSchema from "effect/Schema";
-import { Catalog } from "../../src/Catalog.ts";
 import {
   Entity,
   Field,
@@ -14,7 +13,6 @@ import {
 import { EntityId } from "../../src/db/Operation.ts";
 import { Ref } from "../../src/db/valueTypes.ts";
 import type { MutationRef } from "../../src/db/refs.ts";
-import { compileReadAuthorization } from "../../src/internal/authorization/index.ts";
 import { createClient } from "../../src/client/index.ts";
 import type {
   ClientDatabase,
@@ -26,7 +24,8 @@ import type {
 } from "../../src/client/index.ts";
 import { useDb, useQuery } from "../../src/react/index.ts";
 
-const Child = { key: "child", schema: Schema({}) } satisfies CodeDefinition;
+const Child = Schema("child", {}) satisfies CodeDefinition;
+Child.applyPolicy(() => {});
 
 declare const computedPlacement: boolean;
 
@@ -118,22 +117,19 @@ const Organization = Entity("organization", {
   slug: Field.unique(string(), "strict"),
 }, { traits: [Graph(Child)] });
 
-const AppSchema = Schema({
+const AppSchema = Schema("typed-mutations", {
   person: Person,
   issue: Issue,
   note: Note,
   organization: Organization,
 });
 
-const AppCatalog = Catalog("typed-mutations", {
-  schema: AppSchema,
-  policy: compileReadAuthorization({ schema: AppSchema, rules: [] }),
-});
+AppSchema.applyPolicy(() => {});
 
 const client = createClient({
   url: "https://data.example.com",
   root: "app",
-  catalog: AppCatalog,
+  catalog: AppSchema,
   auth: () => ({ token: "bearer", cacheKey: "account" }),
 });
 

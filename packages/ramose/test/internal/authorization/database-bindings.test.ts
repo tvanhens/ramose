@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
-import { Catalog, type CatalogDefinition } from "../../../src/Catalog.ts";
 import {
   Entity,
   Graph,
@@ -20,13 +19,10 @@ import {
   InvalidResolvedDatabaseRoute,
   acquireResolvedDatabase,
   assembleCatalogDefinitions,
-  compileReadAuthorization,
   deployCatalogDefinitions,
   deployDatabaseCatalogBindings,
   executeAuthorizedResolvedRequest,
-  hasClass,
   opaqueDatabaseBindingDenial,
-  read,
   resolveBoundCatalogDefinition,
   type AuthenticatedCaller,
   type DatabaseCatalogBindings,
@@ -43,47 +39,34 @@ const RootNote = Entity("bindingRootNote", { text: string() });
 const ChildNote = Entity("bindingChildNote", { text: string() });
 const OtherNote = Entity("bindingOtherNote", { text: string() });
 
-let childCatalog!: CatalogDefinition;
-let otherCatalog!: CatalogDefinition;
+let childSchema!: Schema.Any;
+let otherSchema!: Schema.Any;
 
 const Workspace = Entity("bindingWorkspace", {}, {
-  traits: [Graph(() => childCatalog)],
+  traits: [Graph(() => childSchema)],
 });
 const Project = Entity("bindingProject", {}, {
-  traits: [Graph(() => otherCatalog)],
+  traits: [Graph(() => otherSchema)],
 });
 
-const RootSchema = Schema({
+const RootSchema = Schema("binding-root", {
   bindingWorkspace: Workspace,
   bindingProject: Project,
   bindingRootNote: RootNote,
 });
-const ChildSchema = Schema({ bindingChildNote: ChildNote });
-const OtherSchema = Schema({ bindingOtherNote: OtherNote });
+const ChildSchema = Schema("binding-child", { bindingChildNote: ChildNote });
+const OtherSchema = Schema("binding-other", { bindingOtherNote: OtherNote });
 
-childCatalog = Catalog("binding-child", {
-  schema: ChildSchema,
-  policy: compileReadAuthorization({
-    schema: ChildSchema,
-    classes: ["child-reader"],
-    rules: [read(ChildNote).when(hasClass("child-reader"))],
-  }),
+ChildSchema.applyPolicy({ roles: ["child-reader"] }, ({ policy, session }) => {
+  policy.bindingChildNote.read.where(session.hasRole("child-reader"));
 });
-otherCatalog = Catalog("binding-other", {
-  schema: OtherSchema,
-  policy: compileReadAuthorization({
-    schema: OtherSchema,
-    classes: ["other-reader"],
-    rules: [read(OtherNote).when(hasClass("other-reader"))],
-  }),
+childSchema = ChildSchema;
+OtherSchema.applyPolicy({ roles: ["other-reader"] }, ({ policy, session }) => {
+  policy.bindingOtherNote.read.where(session.hasRole("other-reader"));
 });
-const rootCatalog = Catalog("binding-root", {
-  schema: RootSchema,
-  policy: compileReadAuthorization({
-    schema: RootSchema,
-    classes: ["root-reader"],
-    rules: [read(RootNote).when(hasClass("root-reader"))],
-  }),
+otherSchema = OtherSchema;
+RootSchema.applyPolicy({ roles: ["root-reader"] }, ({ policy, session }) => {
+  policy.bindingRootNote.read.where(session.hasRole("root-reader"));
 });
 
 const typedTx = <T extends unknown[]>(tx: T): T => {
@@ -93,12 +76,12 @@ const typedTx = <T extends unknown[]>(tx: T): T => {
 
 const deploy = async (artifact = "9") => {
   const definitions = await Effect.runPromise(assembleCatalogDefinitions({
-    root: rootCatalog,
+    root: RootSchema,
     artifactHash: DigestHex.make(artifact.repeat(64)),
   }));
   const roots = Result.getOrThrow(deployCatalogDefinitions(definitions, [{
     database: rootDatabase,
-    catalogKey: CatalogId.make(rootCatalog.key),
+    catalogKey: CatalogId.make(RootSchema.key),
   }]));
   const bindings = Result.getOrThrow(
     deployDatabaseCatalogBindings(definitions, roots),
@@ -114,7 +97,7 @@ const childRoute = (
   bindings: DatabaseCatalogBindings,
   parent: ResolvedDatabaseRoute,
   graphEntity: number,
-  catalogKey = CatalogId.make(childCatalog.key),
+  catalogKey = CatalogId.make(childSchema.key),
 ) => Effect.runPromise(bindings.child(parent, { graphEntity, catalogKey }));
 
 const failChildRoute = (

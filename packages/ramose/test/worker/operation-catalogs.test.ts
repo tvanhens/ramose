@@ -1,10 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
-import { Catalog } from "../../src/Catalog.ts";
 import { Entity } from "../../src/db/Entity.ts";
 import { Graph } from "../../src/db/Graph.ts";
 import { Schema } from "../../src/db/Schema.ts";
-import { compileReadAuthorization } from "../../src/internal/authorization/authoring/compile.ts";
 import { CatalogId, DatabaseId } from "../../src/internal/authorization/identities.ts";
 import {
   deployedDatabaseCatalogBindings,
@@ -12,11 +10,9 @@ import {
   OperationCatalogDeploymentError,
 } from "../../src/worker/operation-catalogs.ts";
 
-const Empty = Schema({});
-const root = Catalog("public-operations", {
-  schema: Empty,
-  policy: compileReadAuthorization({ schema: Empty, rules: [] }),
-});
+const Empty = Schema("public-operations", {});
+Empty.applyPolicy(() => {});
+const root = Empty;
 
 describe("public operation catalog startup", () => {
   test("assembles an opaque registry and exposes only the request proof", async () => {
@@ -64,20 +60,14 @@ describe("public operation catalog startup", () => {
   });
 
   test("retains reachable dynamic definitions without exposing child proofs", async () => {
-    const ChildSchema = Schema({});
-    const child = Catalog("public-child", {
-      schema: ChildSchema,
-      policy: compileReadAuthorization({ schema: ChildSchema, rules: [] }),
+    const ChildSchema = Schema("public-child", {});
+    ChildSchema.applyPolicy(() => {});
+    const RootSchema = Schema("public-root", {
+      publicGraph: Entity("publicGraph", {}, { traits: [Graph(ChildSchema)] }),
     });
-    const RootSchema = Schema({
-      publicGraph: Entity("publicGraph", {}, { traits: [Graph(child)] }),
-    });
-    const graphRoot = Catalog("public-root", {
-      schema: RootSchema,
-      policy: compileReadAuthorization({ schema: RootSchema, rules: [] }),
-    });
+    RootSchema.applyPolicy(() => {});
     const deployed = await Effect.runPromise(deployOperationCatalogsForVersion({
-      root: graphRoot,
+      root: RootSchema,
       deployments: [{ database: "root" }],
     }, { id: "deployment-graph" }));
     const bindings = deployedDatabaseCatalogBindings(deployed);

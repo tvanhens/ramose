@@ -1,5 +1,4 @@
 import * as Effect from "effect/Effect";
-import { Catalog, Policy } from "ramose";
 import { Schema } from "ramose/db";
 import {
   createServer,
@@ -10,11 +9,8 @@ import {
   type OperationCatalogs,
 } from "ramose/worker";
 
-const Empty = Schema({});
-const root = Catalog("consumer-operations", {
-  schema: Empty,
-  policy: Policy.compileReadAuthorization({ schema: Empty, rules: [] }),
-});
+const Empty = Schema("consumer-operations", {});
+Empty.applyPolicy(() => {});
 
 type CallerArtifactHashIsNotPublic = "artifactHash" extends
   keyof DeployOperationCatalogsInput ? never : true;
@@ -24,7 +20,7 @@ export const consumerOperationCatalogs: Effect.Effect<
   OperationCatalogs,
   OperationCatalogDeploymentError
 > = deployOperationCatalogs({
-    root,
+    root: Empty,
     deployments: [{ database: "consumer-db" }],
   });
 

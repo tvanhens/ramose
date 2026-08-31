@@ -7,5 +7,9 @@ export const Todo = Ramose.Entity("todo", {
   createdAt: Ramose.timestamp(),
 });
 
-export const Todos = Ramose.Schema({ todo: Todo });
+export const Todos = Ramose.Schema("todos", { todo: Todo });
+
+Todos.applyPolicy(({ policy }) => {
+  policy.todo.read.always();
+});
 // enddocs:todo-schema

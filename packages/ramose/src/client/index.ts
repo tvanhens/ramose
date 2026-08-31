@@ -1,6 +1,3 @@
-export { Catalog, type CatalogDefinition, type CatalogProps } from "../Catalog.ts";
-export * as Policy from "../Policy.ts";
-
 export { createClient } from "./client.ts";
 export type {
   AuthCredential,

@@ -8,7 +8,6 @@ import {
   Schema,
   string,
 } from "../../src/db/internal.ts";
-import { compileReadAuthorization } from "../../src/internal/authorization/index.ts";
 
 const Issue = Entity("issue", { title: Field.unique(string(), "strict") }, {
   operations: (Operation) => ({
@@ -19,12 +18,12 @@ const Issue = Entity("issue", { title: Field.unique(string(), "strict") }, {
     }),
   }),
 });
-const AppSchema = Schema({ issue: Issue });
+const AppSchema = Schema("client-contract", { issue: Issue });
+AppSchema.applyPolicy(() => {});
 
 describe("the ramose/client surface", () => {
   test("exports exactly the client, its authoring surface, and its errors", () => {
     expect(Object.keys(Client).sort()).toEqual([
-      "Catalog",
       "ClientClosedError",
       "ClientConfigurationError",
       "ClientLocalDataError",
@@ -32,30 +31,19 @@ describe("the ramose/client surface", () => {
       "GraphPathError",
       "GraphReceiverError",
       "MutationRejectedError",
-      "Policy",
       "createClient",
     ]);
   });
 
-  test("authors a catalog without reaching the deploy package", () => {
-    const catalog = Client.Catalog("app", {
-      schema: AppSchema,
-      policy: Client.Policy.compileReadAuthorization({
-        schema: AppSchema,
-        rules: [],
-      }),
-    });
-    expect(catalog.key).toBe("app");
+  test("uses a named schema without reaching the deploy package", () => {
+    expect(AppSchema.key).toBe("client-contract");
   });
 
   test("constructing a client and a handle is inert", () => {
     const client = Client.createClient({
       url: "https://data.example.com",
       root: "app",
-      catalog: Client.Catalog("app", {
-        schema: AppSchema,
-        policy: compileReadAuthorization({ schema: AppSchema, rules: [] }),
-      }),
+      catalog: AppSchema,
       auth: () => {
         throw new Error("auth must not be called before an observation");
       },
@@ -69,10 +57,6 @@ describe("the ramose/client surface", () => {
   });
 
   test("refuses a configuration that cannot name exactly one root", () => {
-    const catalog = Client.Catalog("app", {
-      schema: AppSchema,
-      policy: compileReadAuthorization({ schema: AppSchema, rules: [] }),
-    });
     for (
       const options of [
         { url: "", root: "app" },
@@ -83,7 +67,7 @@ describe("the ramose/client surface", () => {
       expect(() =>
         Client.createClient({
           ...options,
-          catalog,
+          catalog: AppSchema,
           auth: () => ({ token: "t", cacheKey: "c" }),
         })
       ).toThrow();

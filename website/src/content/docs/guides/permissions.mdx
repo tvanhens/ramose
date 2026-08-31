@@ -5,63 +5,62 @@ description: Author deny-by-default read rules and exact operation grants over e
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Policy is deployed with each catalog and denies by default. Read rules decide which facts exist in a principal's filtered database. Invoke rules decide which exact operations the principal may attempt.
+Policy is deployed with each named schema and denies by default. Read rules decide which facts exist in a principal's filtered database. Operation rules decide which exact operations the principal may attempt.
 
-<Learn learn={["How entity, trait, and field rules narrow one another", "How to use principal classes, subject, claims, and relation paths", "How operation grants compose with target visibility"]} before={[{ href: "/concepts/authorization/", label: "Authorization" }]} minutes={14} />
+<Learn learn={["How entity, trait, and field rules narrow one another", "How to use roles, the subject, the actor, and relation paths", "How operation rules compose with target visibility"]} before={[{ href: "/concepts/authorization/", label: "Authorization" }]} minutes={14} />
 
-## Compile policy with the catalog
+## Apply policy to the schema
 
 ```ts
-import * as Ramose from "ramose"
-
-const P = Ramose.Policy
-
-export const policy = P.compileReadAuthorization({
-  schema: ProjectSchema,
-  classes: ["member", "admin"],
-  claims: ["org"],
-  principal: { entity: User.authId },
-  rules: [
-    P.read(Task).when(P.hasClass("member")),
-  ],
+export const ProjectSchema = Ramose.Schema("project-v1", {
+  user: User,
+  task: Task,
 })
+
+ProjectSchema.applyPolicy(
+  {
+    principal: User.authId,
+    roles: ["member", "admin", "suspended"],
+  },
+  ({ policy, session }) => {
+    policy.task.read.where(session.hasRole("member"))
+    policy.task.read.where(session.hasRole("admin"))
+    policy.task.read.denyWhere(session.hasRole("suspended"))
+  },
+)
 ```
 
-The compiler produces inert schema-checked policy data. Deployment binds it to the exact catalog and rejects unknown fields, invalid paths, incompatible targets, unbounded structures, and undeclared claims.
+`applyPolicy` records inert schema-checked policy data. Deployment rejects unknown fields, invalid paths, incompatible targets, and unbounded structures.
 
 ## Allow an entity
 
 ```ts
-P.read(Task).when(P.hasClass("member"))
+policy.task.read.where(session.hasRole("member"))
 ```
 
 Multiple allows for the same focus combine with OR. A deny overrides allows at that focus:
 
 ```ts
-P.read(Task).deny(P.hasClass("suspended"))
+policy.task.read.denyWhere(session.hasRole("suspended"))
 ```
 
 ## Use the resource and principal
 
 ```ts
-P.read(Task).when((task) =>
-  P.any(
-    task.owner.eq(P.me),
-    task.project.members.contains(P.me),
-    P.hasClass("admin"),
-  ),
-)
+policy.task.read.where((task) => task.owner.eq(actor))
+policy.task.read.where((task) => task.project.members.contains(actor))
+policy.task.read.where(session.hasRole("admin"))
 ```
 
-`me` is the principal entity resolved through the configured unique field. `subject` is the JWT subject string. `claim(name)` reads a declared stable claim. Resource relation traversal is bounded and must remain within the catalog.
+`actor` is the principal entity resolved through the configured unique field. `session.subject` is the JWT subject string. Resource relation traversal is bounded and must remain within the schema.
 
-Prefer database-backed membership for rapidly changing access and claims for stable deployment-wide context. A token is identity input, not a database selector.
+Prefer database-backed membership for rapidly changing access. A token is identity input, not a database selector.
 
 ## Narrow a field
 
 ```ts
-P.read(Task).when(P.hasClass("member")),
-P.read(Task.privateNote).when(P.hasClass("admin")),
+policy.task.read.where(session.hasRole("member"))
+policy.task.fields.privateNote.read.where(session.hasRole("admin"))
 ```
 
 The field rule narrows its parent. A client asking for `privateNote` receives it only for admins; the field is absent for others. Hidden refs hide the whole edge rather than revealing an inaccessible target id.
@@ -69,7 +68,7 @@ The field rule narrows its parent. A client asking for `privateNote` receives it
 ## Author trait rules
 
 ```ts
-P.read(Commentable).when(P.hasClass("member"))
+policy.commentable.read.where(session.hasRole("member"))
 ```
 
 Trait rules apply to the trait fields on readable composers. They do not reopen an entity hidden by its concrete rule. This makes reusable capability policy possible without weakening concrete domains.
@@ -77,14 +76,12 @@ Trait rules apply to the trait fields on readable composers. They do not reopen 
 ## Grant exact operations
 
 ```ts
-const ops = Task[Ramose.OwnedOperations]
-
-P.invoke(ops.createTask).when(P.hasClass("member"))
-P.invoke(ops.setDone).when(P.hasClass("member"))
-P.invoke(ops.delete).when(P.hasClass("admin"))
+policy.task.operations.createTask.where(session.hasRole("member"))
+policy.task.operations.setDone.where(session.hasRole("member"))
+policy.task.operations.delete.where(session.hasRole("admin"))
 ```
 
-Invoke expressions are principal-only: classes, subject, and claims. Targeted operations separately require a visible compatible target. If an update is only valid for a resource owner, express that invariant as a narrower domain operation until target-aware grant predicates exist; do not expose a broad generated update.
+Operation expressions are session-only. They can use roles, the subject, and declared claims. They cannot read the target resource. A targeted operation also requires a visible compatible target.
 
 ## Graph access needs no enter rule
 

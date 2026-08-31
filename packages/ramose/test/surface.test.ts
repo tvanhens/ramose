@@ -1,11 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 const ADDS = [
-
   "Server",
   "Database",
-  "Catalog",
-  "Policy",
 
   "PEER_COMPAT",
 
@@ -22,6 +19,8 @@ const ADDS = [
 ];
 
 const KILLED = [
+  "Catalog",
+  "Policy",
   "System",
   "SystemProps",
   "SystemPeer",
@@ -126,5 +125,19 @@ describe("the `ramose` barrel", () => {
   test("the kill-list is gone", async () => {
     const alchemy = await import("../src/index.ts");
     expect(KILLED.filter((name) => name in alchemy)).toEqual([]);
+  });
+
+  test("authors policy through a named schema", async () => {
+    const Ramose = await import("../src/index.ts");
+    const Task = Ramose.Entity("surfaceTask", { title: Ramose.string() });
+    const App = Ramose.Schema("surface-app", { surfaceTask: Task });
+
+    expect(App.key).toBe("surface-app");
+    expect(App.schema).toBe(App);
+    expect(
+      App.applyPolicy(({ policy }) => {
+        policy.surfaceTask.read.always();
+      }),
+    ).toBeUndefined();
   });
 });

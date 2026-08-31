@@ -1,5 +1,4 @@
 import * as EffectSchema from "effect/Schema";
-import { Catalog } from "../../packages/ramose/src/Catalog.ts";
 import {
   Entity,
   Field,
@@ -8,7 +7,6 @@ import {
   string,
   type CodeDefinition,
 } from "../../packages/ramose/src/db/internal.ts";
-import { compileReadAuthorization } from "../../packages/ramose/src/internal/authorization/index.ts";
 import {
   createClient,
   type Client,
@@ -72,18 +70,15 @@ export const Note = Entity("note", {
   }),
 });
 
-const Child = { key: "child", schema: Schema({}) } satisfies CodeDefinition;
+const Child = Schema("child", {}) satisfies CodeDefinition;
+Child.applyPolicy(() => {});
 
 export const Workspace = Entity("workspace", {
   slug: Field.unique(string(), "strict"),
 }, { traits: [Graph(Child)] });
 
-const Notes = Schema({ note: Note, workspace: Workspace });
-
-export const NotesCatalog = Catalog("propagation-notes", {
-  schema: Notes,
-  policy: compileReadAuthorization({ schema: Notes, rules: [] }),
-});
+export const NotesSchema = Schema("propagation-notes", { note: Note, workspace: Workspace });
+NotesSchema.applyPolicy(() => {});
 
 export const CHILD_PATH = ["acme-workspace"] as const;
 
@@ -108,7 +103,7 @@ export const identityFor = async (
   database,
   catalog: opaque("c"),
   readView: opaque("v"),
-  readCompatibilityHash: (await installClientCatalog(NotesCatalog))
+  readCompatibilityHash: (await installClientCatalog(NotesSchema))
     .readCompatibilityHash,
   graphLineage,
   authenticator: opaque("a"),
@@ -191,7 +186,7 @@ export const seedDatabases = async (
   name: string,
   entries: readonly SeededDatabase[],
 ): Promise<void> => {
-  const installed = await installClientCatalog(NotesCatalog);
+  const installed = await installClientCatalog(NotesSchema);
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
     for (const entry of entries) {
@@ -336,7 +331,7 @@ const open = (storageName: string): ClientDatabase => {
   client = createClient({
     url: OFFLINE,
     root: ROOT,
-    catalog: NotesCatalog,
+    catalog: NotesSchema,
     auth: () => {
       presented++;
       if (token === undefined) throw new Error("the application has no session");
@@ -497,7 +492,7 @@ export const serve = (id: string): void =>
         }), { lease: held });
         (await store.commitSnapshot({
           type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
-        }, (await installClientCatalog(NotesCatalog)).attributes, {
+        }, (await installClientCatalog(NotesSchema)).attributes, {
           lease: held,
         }))?.release();
       });
@@ -528,7 +523,7 @@ export const serve = (id: string): void =>
       },
     ): Promise<number> => {
       const store = await heldStorage(storageName);
-      const installed = await installClientCatalog(NotesCatalog);
+      const installed = await installClientCatalog(NotesSchema);
       const restored = await store.restore(
         await identityFor(id, lineage ?? []),
         installed.attributes,
@@ -546,7 +541,7 @@ export const serve = (id: string): void =>
       },
     ): Promise<readonly number[]> => {
       const store = await heldStorage(storageName);
-      const installed = await installClientCatalog(NotesCatalog);
+      const installed = await installClientCatalog(NotesSchema);
       const identity = await identityFor(id, lineage ?? []);
       const found: number[] = [];
       const deadline = performance.now() + 4_000;

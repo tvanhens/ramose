@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { Catalog } from "../../src/Catalog.ts";
-import { compileReadAuthorization } from "../../src/internal/authorization/index.ts";
 import {
   Entity,
   Field,
@@ -33,30 +31,32 @@ import type { ClientDatabase } from "../../src/client/index.ts";
 import type { ReplicationIdentity } from "../../src/internal/replication/protocol.ts";
 import { sealedHandle } from "../replication-fixtures.ts";
 
-const BoardCatalog = { key: "board", schema: Schema({}) } satisfies CodeDefinition;
+const BoardSchema = Schema("board", {}) satisfies CodeDefinition;
+BoardSchema.applyPolicy(() => {});
 
 const Organization = Entity("organization", {
   slug: Field.unique(string(), "strict"),
   region: string(),
-}, { traits: [Graph(BoardCatalog)] });
+}, { traits: [Graph(BoardSchema)] });
 
 const Board = Entity("board", {
   slug: Field.unique(string(), "strict"),
-}, { traits: [Graph(BoardCatalog)] });
+}, { traits: [Graph(BoardSchema)] });
 
 const Member = Entity("member", { handle: Field.unique(string(), "strict") });
 
-const AppSchema = Schema({ organization: Organization, board: Board, member: Member });
-const AppCatalog = Catalog("client-graph", {
-  schema: AppSchema,
-  policy: compileReadAuthorization({ schema: AppSchema, rules: [] }),
+const AppSchema = Schema("client-graph", {
+  organization: Organization,
+  board: Board,
+  member: Member,
 });
+AppSchema.applyPolicy(() => {});
 
 const client = () =>
   createClient({
     url: "https://data.example.com",
     root: "app",
-    catalog: AppCatalog,
+    catalog: AppSchema,
     auth: () => ({ token: "bearer", cacheKey: "account" }),
     storageName: "ramose-graph-pure-never-opened",
   });

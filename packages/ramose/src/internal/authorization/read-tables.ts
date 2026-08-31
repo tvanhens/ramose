@@ -1,4 +1,5 @@
 import { traitDefinitionOf, type TraitLike } from "../../db/Binding.ts";
+import type { CodeDefinition } from "../../db/Binding.ts";
 import type { AnyEntity } from "../../db/Entity.ts";
 import { documentationOf } from "../../db/documentation.ts";
 import type { AnyField } from "../../db/Field.ts";
@@ -7,7 +8,6 @@ import { schemaTraits, type AnySchema } from "../../db/Schema.ts";
 import { traitsOf, walkTraits, type ComposerLike } from "../../db/compose.ts";
 import type { AnyTrait } from "../../db/Trait.ts";
 import { isSelfRefSchema, refTargetOf } from "../../db/valueTypes.ts";
-import type { CatalogDefinition } from "../../Catalog.ts";
 import type { CatalogDescriptor, FieldRefTarget } from "./catalog.ts";
 import { InvalidIR } from "./failures.ts";
 import { CatalogId, EntityId, FieldId, type OwnerRef, TraitId } from "./identities.ts";
@@ -96,7 +96,7 @@ const ownFields = (
   return fields;
 };
 
-export const completeSchema = (definition: CatalogDefinition): AnySchema => {
+export const completeSchema = (definition: CodeDefinition): AnySchema => {
   const entities: Record<string, AnyEntity> = {};
   for (const reachable of collectDefinitionEntities(definition)) {
     entities[reachable.entity.ns] = reachable.entity;
@@ -160,7 +160,7 @@ export const descriptorTables = (
 };
 
 export const catalogReadTables = (
-  definition: CatalogDefinition,
+  definition: CodeDefinition,
 ): CatalogReadTables =>
   descriptorTables(
     CatalogId.make(definition.key),

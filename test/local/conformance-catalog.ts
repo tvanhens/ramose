@@ -1,12 +1,10 @@
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
 import * as Result from "effect/Result";
-import { Catalog, Policy } from "ramose";
 import {
   Entity,
   EntityId,
   Field,
-  OwnedOperations,
   Ref,
   Schema,
   string,
@@ -168,74 +166,61 @@ export const ConformanceIssue = Entity("conformanceIssue", {
   }),
 });
 
-export const ConformanceSchema = Schema({
+export const ConformanceSchema = Schema("local-conformance", {
   conformanceUser: ConformanceUser,
   conformanceIssue: ConformanceIssue,
 });
 
-const member = Policy.hasClass("member");
-const admin = Policy.hasClass("admin");
+const organizationClaim = {
+  key: "org",
+  optional: false,
+  shape: { _tag: "scalar" as const, valueType: "string" as const },
+} as const;
 
-const policy = await Effect.runPromise(Policy.compileReadAuthorization({
-  schema: ConformanceSchema,
-  classes: ["member", "admin"],
-  claims: [{
-    key: "org",
-    optional: false,
-    shape: { _tag: "scalar", valueType: "string" },
-  }],
-  principal: { entity: ConformanceUser.sub },
-  rules: [
-    Policy.read(ConformanceUser).when(
-      Policy.any(admin, Policy.eq(ConformanceUser.sub, Policy.subject)),
-    ),
-    Policy.read(ConformanceIssue).when(
-      Policy.any(
-        admin,
-        Policy.all(
-          Policy.eq(
-            Policy.path(ConformanceIssue.owner, ConformanceUser.access),
-            Policy.lit("enabled"),
-          ),
-          Policy.eq(ConformanceIssue.owner, Policy.me),
-        ),
-        Policy.eq(ConformanceIssue.org, Policy.claim("org")),
-      ),
-    ),
-    Policy.read(ConformanceIssue.audit).when(admin),
-    Policy.invoke(ConformanceUser[OwnedOperations].create).when(admin),
-    Policy.invoke(ConformanceUser[OwnedOperations].setAccess).when(admin),
-    Policy.invoke(ConformanceIssue[OwnedOperations].create).when(admin),
-    Policy.invoke(ConformanceIssue[OwnedOperations].rename).when(
-      Policy.any(member, admin),
-    ),
-    Policy.invoke(ConformanceIssue[OwnedOperations].deleteAndEchoTitle).when(
-      Policy.any(member, admin),
-    ),
-    Policy.invoke(ConformanceIssue[OwnedOperations].archive).when(
-      Policy.any(member, admin),
-    ),
-    Policy.invoke(ConformanceIssue[OwnedOperations].transfer).when(
-      Policy.any(member, admin),
-    ),
-    Policy.invoke(ConformanceIssue[OwnedOperations].moveLookup).when(
-      Policy.any(member, admin),
-    ),
-  ],
-}));
+ConformanceSchema.applyPolicy(
+  {
+    principal: ConformanceUser.sub,
+    roles: ["member", "admin"] as const,
+    claims: [organizationClaim] as const,
+  },
+  ({ policy, actor, session, allOf }) => {
+    const member = session.roles.member;
+    const admin = session.roles.admin;
 
-export const conformanceCatalog = Catalog("local-conformance", {
-  schema: ConformanceSchema,
-  policy,
-});
+    policy.conformanceUser.read.where(admin);
+    policy.conformanceUser.read.where((user) => user.sub.eq(session.subject));
+
+    policy.conformanceIssue.read.where(admin);
+    policy.conformanceIssue.read.where((issue) =>
+      allOf(issue.owner.access.eq("enabled"), issue.owner.eq(actor))
+    );
+    policy.conformanceIssue.read.where((issue) => issue.org.eq(session.claims.org));
+    policy.conformanceIssue.fields.audit.read.where(admin);
+
+    policy.conformanceUser.operations.create.where(admin);
+    policy.conformanceUser.operations.setAccess.where(admin);
+    policy.conformanceIssue.operations.create.where(admin);
+
+    policy.conformanceIssue.operations.rename.where(member);
+    policy.conformanceIssue.operations.rename.where(admin);
+    policy.conformanceIssue.operations.deleteAndEchoTitle.where(member);
+    policy.conformanceIssue.operations.deleteAndEchoTitle.where(admin);
+    policy.conformanceIssue.operations.archive.where(member);
+    policy.conformanceIssue.operations.archive.where(admin);
+    policy.conformanceIssue.operations.transfer.where(member);
+    policy.conformanceIssue.operations.transfer.where(admin);
+    policy.conformanceIssue.operations.moveLookup.where(member);
+    policy.conformanceIssue.operations.moveLookup.where(admin);
+  },
+);
 
 export const conformanceCatalogDeployment = Object.freeze({
-  root: conformanceCatalog,
+  root: ConformanceSchema,
   deployments: CONFORMANCE_DATABASES.map((database) => ({ database })),
 });
 
 const compatibilityDefinitions = await Effect.runPromise(assembleCatalogDefinitions({
-  root: conformanceCatalog,
+  root: ConformanceSchema,
   artifactHash: DigestHex.make("0".repeat(64)),
 }));
 const compatibilityUnit = Result.getOrThrow(

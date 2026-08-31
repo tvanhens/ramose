@@ -2,8 +2,6 @@ import { act, memo, StrictMode, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { expect } from "vitest";
 import * as EffectSchema from "effect/Schema";
-import { compileReadAuthorization } from "../../packages/ramose/src/internal/authorization/index.ts";
-import { Catalog } from "../../packages/ramose/src/Catalog.ts";
 import {
   Entity,
   Field,
@@ -64,11 +62,8 @@ const Note = Entity("note", {
     }),
   }),
 });
-const Notes = Schema({ note: Note });
-const NotesCatalog = Catalog("react-notes", {
-  schema: Notes,
-  policy: compileReadAuthorization({ schema: Notes, rules: [] }),
-});
+const Notes = Schema("react-notes", { note: Note });
+Notes.applyPolicy(() => {});
 
 const OFFLINE = "http://127.0.0.1:1";
 const ROOT = "app";
@@ -90,7 +85,7 @@ const seed = async (
   name: string,
   notes: readonly SeededNote[],
 ): Promise<ReplicationIdentity> => {
-  const installed = await installClientCatalog(NotesCatalog);
+  const installed = await installClientCatalog(Notes);
   const identity: ReplicationIdentity = {
     version: 1,
     server: opaque("s"),
@@ -145,7 +140,7 @@ const offlineClient = (name: string): Client =>
   createClient({
     url: OFFLINE,
     root: ROOT,
-    catalog: NotesCatalog,
+    catalog: Notes,
     auth: () => ({ token: TOKEN, cacheKey: CACHE_KEY }),
     storageName: name,
   });
@@ -426,21 +421,18 @@ const ConformanceIssue = Entity("conformanceIssue", {
   parent: Field(Ref.self, { optional: true }),
   audit: string({ optional: true }),
 });
-const ConformanceSchema = Schema({
+const ConformanceSchema = Schema("local-conformance", {
   conformanceUser: ConformanceUser,
   conformanceIssue: ConformanceIssue,
 });
-const ConformanceCatalog = Catalog("local-conformance", {
-  schema: ConformanceSchema,
-  policy: compileReadAuthorization({ schema: ConformanceSchema, rules: [] }),
-});
+ConformanceSchema.applyPolicy(() => {});
 
 const recordedClient = (name: string): Client =>
   createClient({
     url: globalThis.location.origin,
 
     root: "optimistic-fence",
-    catalog: ConformanceCatalog,
+    catalog: ConformanceSchema,
     auth: () => ({ token: "session-credential", cacheKey: "recorded" }),
     storageName: name,
   });
@@ -480,7 +472,7 @@ browserTest("a committed value arriving over the session re-renders a mounted co
 
 browserTest("a stale→ready confirmation does not re-render a child memoized on data", async ({ browser }) => {
   const name = `ramose-react-memo-${browser.uniqueId}`;
-  const installed = await installClientCatalog(ConformanceCatalog);
+  const installed = await installClientCatalog(ConformanceSchema);
 
   const identity = recorded.identity as unknown as ReplicationIdentity;
   const storage = await IndexedDbReplicaStorage.open(name);
@@ -709,7 +701,7 @@ browserTest(
     const client = createClient({
       url: OFFLINE,
       root: ROOT,
-      catalog: NotesCatalog,
+      catalog: Notes,
       auth: () => {
         throw new Error("refresh token expired");
       },

@@ -2,7 +2,7 @@ import {
   Entity,
   Schema,
   string,
-  type AnySchema,
+  type CodeDefinition,
   type Equal,
   type Expect,
 } from "../../src/db/internal.ts";
@@ -11,8 +11,13 @@ import { merge } from "../../src/db/internal.ts";
 const Todo = Entity("todo", { title: string(), createdAt: string() });
 const Label = Entity("label", { name: string() });
 
-const ByObject = Schema({ todo: Todo, label: Label });
-const ByArray = Schema([Todo, Label]);
+const ByObject = Schema("by-object", { todo: Todo, label: Label });
+const ByArray = Schema("by-array", [Todo, Label]);
+export const _definition: CodeDefinition = ByObject;
+export type _key = Expect<Equal<typeof ByObject.key, "by-object">>;
+export type _applyPolicyReturn = Expect<
+  Equal<ReturnType<typeof ByObject.applyPolicy>, void>
+>;
 export type _arrayKeys = Expect<
   Equal<keyof (typeof ByArray)["entities"], "todo" | "label">
 >;
@@ -48,22 +53,26 @@ Entity("todo", { "a b": string() });
 Entity("todo", { "has/slash": string() });
 
 // @ts-expect-error
-Schema({ todos: Todo });
+Schema("drifted", { todos: Todo });
+// @ts-expect-error
+Schema({ todo: Todo });
 
 const OtherTodo = Entity("todo", { done: string() });
 // @ts-expect-error
-Schema([Todo, OtherTodo]);
+Schema("duplicate-todos", [Todo, OtherTodo]);
 
 // @ts-expect-error
-merge(ByObject, Schema({ todo: OtherTodo }));
+merge("duplicate-merge", ByObject, Schema("other-todo", { todo: OtherTodo }));
+// @ts-expect-error
+merge(ByObject, ByArray);
 
-declare const anyLeft: AnySchema;
-declare const anyRight: AnySchema;
-const _wideMerge = merge(anyLeft, anyRight);
-export type _wideMergeOk = Expect<Equal<typeof _wideMerge, AnySchema>>;
+declare const anyLeft: Schema.Any;
+declare const anyRight: Schema.Any;
+const _wideMerge = merge("wide", anyLeft, anyRight);
+export type _wideMergeKey = Expect<Equal<typeof _wideMerge.key, "wide">>;
 
 const Ctor = Entity("constructor", { title: string() });
-const CtorSchema = Schema([Ctor]);
+const CtorSchema = Schema("constructors", [Ctor]);
 export type _ctorKey = Expect<
   Equal<keyof (typeof CtorSchema)["entities"], "constructor">
 >;

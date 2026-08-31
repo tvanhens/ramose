@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as Effect from "effect/Effect";
-import { Catalog } from "../../src/Catalog.ts";
 import {
   Entity,
   Field,
@@ -10,7 +8,6 @@ import {
   Schema,
   string,
 } from "../../src/db/internal.ts";
-import { compileReadAuthorization } from "../../src/internal/authorization/index.ts";
 import { queryObservationKey } from "../../src/client/database.ts";
 import {
   ClientClosedError,
@@ -21,18 +18,15 @@ import {
 } from "../../src/client/index.ts";
 
 const Note = Entity("note", { title: Field.unique(string(), "strict") });
-const Notes = Schema({ note: Note });
-const NotesCatalog = Catalog("client-notes", {
-  schema: Notes,
-  policy: await Effect.runPromise(compileReadAuthorization({ schema: Notes, rules: [] })),
-});
+const Notes = Schema("client-notes", { note: Note });
+Notes.applyPolicy(() => {});
 
 const auth = () => ({ token: "bearer-a", cacheKey: "account-a" });
 
 const options = (overrides: Partial<ClientOptions> = {}): ClientOptions => ({
   url: "https://data.example.com",
   root: "app",
-  catalog: NotesCatalog,
+  catalog: Notes,
   auth,
   ...overrides,
 });

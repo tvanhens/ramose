@@ -3,10 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as EffectSchema from "effect/Schema";
 import {
-  Catalog,
-  type CatalogDefinition,
-} from "../../../src/Catalog.ts";
-import {
+  appliedPolicyOf,
   Entity,
   Field,
   OwnedOperations,
@@ -23,7 +20,7 @@ import {
   stored,
   string,
   timestamp,
-  type AnySchema,
+  type AnySchemaDefinition,
   type CodeDefinition,
 } from "../../../src/db/internal.ts";
 import { DOCUMENTATION } from "../../../src/db/documentation.ts";
@@ -34,50 +31,44 @@ import {
   CatalogVersionMismatch,
   DigestHex,
   InvalidIR,
-  allow,
   assembleCatalogDefinitions,
-  compileReadAuthorization,
+  eq,
   opaqueCatalogDenial,
-  read,
   resolveCatalogDefinition,
 } from "../../../src/internal/authorization/index.ts";
 
 const artifactHash = DigestHex.make("a".repeat(64));
 
-const policy = (
-  schema: AnySchema,
-  rules: Parameters<typeof compileReadAuthorization>[0]["rules"] = [],
-) => Effect.runPromise(compileReadAuthorization({ schema, rules }));
+const runnable = <S extends AnySchemaDefinition>(schema: S): S => {
+  schema.applyPolicy(() => {});
+  return schema;
+};
 
-const assemble = (root: CatalogDefinition, hash = artifactHash) =>
+const assemble = (root: AnySchemaDefinition, hash = artifactHash) =>
   Effect.runPromise(assembleCatalogDefinitions({ root, artifactHash: hash }));
 
-const assembleFailure = (root: CatalogDefinition) =>
+const assembleFailure = (root: AnySchemaDefinition) =>
   Effect.runPromise(Effect.flip(assembleCatalogDefinitions({ root, artifactHash })));
 
-describe("Catalog", () => {
+describe("Schema", () => {
   test("constructs one frozen permanently keyed runnable definition", async () => {
-    const App = Schema({});
-    const definition = Catalog("app", { schema: App, policy: await policy(App) });
+    const definition = runnable(Schema("app", {}));
 
     expect(definition).toEqual({
-      _tag: "Catalog",
+      _tag: "Schema",
       key: "app",
-      schema: App,
-      policy: definition.policy,
+      schema: definition,
+      entities: {},
+      applyPolicy: definition.applyPolicy,
     });
     expect(Object.isFrozen(definition)).toBe(true);
-    expect(() => Catalog("", { schema: App, policy: definition.policy })).toThrow(
+    expect(() => Schema("", {})).toThrow(
       /permanent key must not be empty/,
     );
   });
 
-  test("accepts the supported root Policy compiler Effect directly", async () => {
-    const App = Schema({});
-    const definition = Catalog("effect-policy", {
-      schema: App,
-      policy: compileReadAuthorization({ schema: App, rules: [] }),
-    });
+  test("accepts an applied root policy directly", async () => {
+    const definition = runnable(Schema("effect-policy", {}));
 
     const registry = await assemble(definition);
     expect(registry.keys().map(String)).toEqual(["effect-policy"]);
@@ -107,8 +98,8 @@ describe("catalog definition assembly", () => {
       },
     );
 
-    let root!: CatalogDefinition;
-    let child!: CatalogDefinition;
+    let root!: AnySchemaDefinition;
+    let child!: AnySchemaDefinition;
     const RootNode = Entity(
       "rootNode",
       { title: string() },
@@ -130,10 +121,10 @@ describe("catalog definition assembly", () => {
     const ChildNode = Entity("childNode", {}, {
       traits: [Graph(() => root)],
     });
-    const RootSchema = Schema({ rootNode: RootNode });
-    const ChildSchema = Schema({ childNode: ChildNode });
-    root = Catalog("root", { schema: RootSchema, policy: await policy(RootSchema) });
-    child = Catalog("child", { schema: ChildSchema, policy: await policy(ChildSchema) });
+    root = Schema("root", { rootNode: RootNode });
+    child = Schema("child", { childNode: ChildNode });
+    root.applyPolicy(() => {});
+    child.applyPolicy(() => {});
 
     const first = await assemble(root);
     const second = await assemble(root);
@@ -175,10 +166,9 @@ describe("catalog definition assembly", () => {
   });
 
   test("binds native default implementation identity to the deployed artifact", async () => {
-    const App = Schema({ item: Entity("item", {
+    const definition = runnable(Schema("app", { item: Entity("item", {
       name: string({ default: () => "native" }),
-    }) });
-    const definition = Catalog("app", { schema: App, policy: await policy(App) });
+    }) }));
     const first = await assemble(definition);
     const second = await assemble(
       definition,
@@ -243,15 +233,15 @@ describe("catalog definition assembly", () => {
           ...(docs.entity === undefined ? {} : { doc: docs.entity }),
         },
       );
-      return Schema({ docAuthor: Author, docArticle: Article });
+      return runnable(Schema("documented", {
+        docAuthor: Author,
+        docArticle: Article,
+      }));
     };
     const assembleDocs = async (docs: Parameters<typeof schemaWithDocs>[0]) => {
       const schema = schemaWithDocs(docs);
       return Result.getOrThrow(
-        (await assemble(Catalog("documented", {
-          schema,
-          policy: await policy(schema),
-        }))).require(CatalogId.make("documented")),
+        (await assemble(schema)).require(CatalogId.make("documented")),
       );
     };
     const original = await assembleDocs({
@@ -312,19 +302,15 @@ describe("catalog definition assembly", () => {
     const Fixed = Trait("fixed", { value: string() }, {
       bind: (definition) => ({ values: { value: definition.key } }),
     });
-    const Empty = Schema({});
+    const Empty = Schema("fixed-constraint-value", {});
     const leftValue: CodeDefinition = { key: "left", schema: Empty };
     const rightValue: CodeDefinition = { key: "right", schema: Empty };
-    const LeftSchema = Schema({ item: Entity("item", {}, { traits: [Fixed(leftValue)] }) });
-    const RightSchema = Schema({ item: Entity("item", {}, { traits: [Fixed(rightValue)] }) });
-    const left = Catalog("app", {
-      schema: LeftSchema,
-      policy: await policy(LeftSchema),
-    });
-    const right = Catalog("app", {
-      schema: RightSchema,
-      policy: await policy(RightSchema),
-    });
+    const left = runnable(Schema("app", {
+      item: Entity("item", {}, { traits: [Fixed(leftValue)] }),
+    }));
+    const right = runnable(Schema("app", {
+      item: Entity("item", {}, { traits: [Fixed(rightValue)] }),
+    }));
 
     const leftUnit = Result.getOrThrow(
       (await assemble(left)).require(CatalogId.make("app")),
@@ -337,11 +323,7 @@ describe("catalog definition assembly", () => {
   });
 
   test("resolves every binding once and retains it for authoritative creation", async () => {
-    const ChildSchema = Schema({});
-    const child = Catalog("binding-child", {
-      schema: ChildSchema,
-      policy: await policy(ChildSchema),
-    });
+    const child = runnable(Schema("binding-child", {}));
     let calls = 0;
     const Bound = Trait("singleBind", { value: string() }, {
       bind: (definition) => {
@@ -352,13 +334,9 @@ describe("catalog definition assembly", () => {
         };
       },
     });
-    const RootSchema = Schema({
+    const root = runnable(Schema("single-bind-root", {
       singleRoot: Entity("singleRoot", {}, { traits: [Bound(child)] }),
-    });
-    const root = Catalog("single-bind-root", {
-      schema: RootSchema,
-      policy: await policy(RootSchema),
-    });
+    }));
 
     const installed = Result.getOrThrow(
       (await assemble(root)).require(CatalogId.make("single-bind-root")),
@@ -383,14 +361,13 @@ describe("catalog definition assembly", () => {
         values: { at: originalDate, data: originalBytes },
       }),
     });
-    const App = Schema({
-      item: Entity("item", {}, { traits: [Fixed({ key: "fixed", schema: Schema({}) })] }),
-    });
+    const App = runnable(Schema("fixed-snapshot", {
+      item: Entity("item", {}, {
+        traits: [Fixed({ key: "fixed", schema: Schema("fixed-value-schema", {}) })],
+      }),
+    }));
     const installed = Result.getOrThrow(
-      (await assemble(Catalog("fixed-snapshot", {
-        schema: App,
-        policy: await policy(App),
-      }))).require(CatalogId.make("fixed-snapshot")),
+      (await assemble(App)).require(CatalogId.make("fixed-snapshot")),
     );
 
     originalDate.setUTCFullYear(2030);
@@ -415,12 +392,9 @@ describe("catalog definition assembly", () => {
         default: creationDefault({ value: "sealed" }, (inputs) => inputs.value),
       }),
     });
-    const App = Schema({ item: Item });
+    const App = runnable(Schema("frozen-authoring", { item: Item }));
     const installed = Result.getOrThrow(
-      (await assemble(Catalog("frozen-authoring", {
-        schema: App,
-        policy: await policy(App),
-      }))).require(CatalogId.make("frozen-authoring")),
+      (await assemble(App)).require(CatalogId.make("frozen-authoring")),
     );
 
     expect(Object.isFrozen(Item)).toBe(false);
@@ -439,12 +413,9 @@ describe("catalog definition assembly", () => {
       identifier: "mutable-string",
     });
     const Item = Entity("item", { value: Field(MutableString) });
-    const App = Schema({ item: Item });
+    const App = runnable(Schema("codec-snapshot", { item: Item }));
     const installed = Result.getOrThrow(
-      (await assemble(Catalog("codec-snapshot", {
-        schema: App,
-        policy: await policy(App),
-      }))).require(CatalogId.make("codec-snapshot")),
+      (await assemble(App)).require(CatalogId.make("codec-snapshot")),
     );
 
     expect(Reflect.set(
@@ -465,24 +436,19 @@ describe("catalog definition assembly", () => {
   });
 
   test("binds inert field schema projections into the unit hash", async () => {
-    const schemaFor = (values: readonly [string, ...string[]]) => Schema({
-      item: Entity("item", {
-        value: Field(stored(EffectSchema.Literals(values), "string")),
-      }),
-    });
+    const schemaFor = (values: readonly [string, ...string[]]) =>
+      runnable(Schema("configured-codec", {
+        item: Entity("item", {
+          value: Field(stored(EffectSchema.Literals(values), "string")),
+        }),
+      }));
     const LeftSchema = schemaFor(["left"]);
     const RightSchema = schemaFor(["right"]);
     const left = Result.getOrThrow(
-      (await assemble(Catalog("configured-codec", {
-        schema: LeftSchema,
-        policy: await policy(LeftSchema),
-      }))).require(CatalogId.make("configured-codec")),
+      (await assemble(LeftSchema)).require(CatalogId.make("configured-codec")),
     );
     const right = Result.getOrThrow(
-      (await assemble(Catalog("configured-codec", {
-        schema: RightSchema,
-        policy: await policy(RightSchema),
-      }))).require(CatalogId.make("configured-codec")),
+      (await assemble(RightSchema)).require(CatalogId.make("configured-codec")),
     );
 
     expect(left.unitHash).not.toBe(right.unitHash);
@@ -508,13 +474,9 @@ describe("catalog definition assembly", () => {
     const Captured = EffectSchema.String.check(EffectSchema.makeFilter((value) =>
       value.startsWith(trustedPrefix) ? true : "blocked"
     ));
-    const App = Schema({
+    const definition = runnable(Schema("callback-field", {
       item: Entity("item", { value: Field(Captured) }),
-    });
-    const definition = Catalog("callback-field", {
-      schema: App,
-      policy: await policy(App),
-    });
+    }));
 
     const installed = Result.getOrThrow(
       (await assemble(definition)).require(CatalogId.make("callback-field")),
@@ -548,11 +510,7 @@ describe("catalog definition assembly", () => {
     });
     const Input = EffectSchema.Struct({ value: EffectSchema.String });
     const Output = EffectSchema.Struct({ ok: EffectSchema.Boolean });
-    const ChildSchema = Schema({});
-    const child = Catalog("boundary-child", {
-      schema: ChildSchema,
-      policy: await policy(ChildSchema),
-    });
+    const child = runnable(Schema("boundary-child", {}));
     const dependencyRefs: CodeDefinition[] = [child];
     const bindingValues = {
       at: fixedDate,
@@ -613,12 +571,9 @@ describe("catalog definition assembly", () => {
         }),
       }),
     });
-    const App = Schema({ boundaryItem: Item });
-    const authoredPolicy = await policy(App);
-    const definition = Catalog("boundary-root", {
-      schema: App,
-      policy: authoredPolicy,
-    });
+    const App = runnable(Schema("boundary-root", { boundaryItem: Item }));
+    const authoredPolicy = appliedPolicyOf(App)!;
+    const definition = App;
     const registry = await assemble(definition);
     const installed = Result.getOrThrow(
       registry.require(CatalogId.make("boundary-root")),
@@ -719,9 +674,8 @@ describe("catalog definition assembly", () => {
   });
 
   test("deduplicates stable trait IDs while retaining every bound dependency", async () => {
-    const Empty = Schema({});
-    const left = Catalog("left-child", { schema: Empty, policy: await policy(Empty) });
-    const right = Catalog("right-child", { schema: Empty, policy: await policy(Empty) });
+    const left = runnable(Schema("left-child", {}));
+    const right = runnable(Schema("right-child", {}));
     const Graph = Trait("multiGraph", { catalog: string() }, {
       bind: (catalog) => ({
         values: { catalog: "shared" },
@@ -731,11 +685,7 @@ describe("catalog definition assembly", () => {
     const Root = Entity("multiRoot", {}, {
       traits: [Graph(left), Graph(right)],
     });
-    const RootSchema = Schema({ multiRoot: Root });
-    const root = Catalog("multi-root", {
-      schema: RootSchema,
-      policy: await policy(RootSchema),
-    });
+    const root = runnable(Schema("multi-root", { multiRoot: Root }));
 
     const registry = await assemble(root);
     expect(registry.keys().map(String)).toEqual([
@@ -755,20 +705,12 @@ describe("catalog definition assembly", () => {
         const decoded = EffectSchema.decodeSync(EffectSchema.String)(inputs.value);
         return decoded.toUpperCase().toLowerCase();
       });
-    const LeftSchema = Schema({ item: Entity("item", {
+    const left = runnable(Schema("defaults", { item: Entity("item", {
       value: string({ default: make("left") }),
-    }) });
-    const RightSchema = Schema({ item: Entity("item", {
+    }) }));
+    const right = runnable(Schema("defaults", { item: Entity("item", {
       value: string({ default: make("right") }),
-    }) });
-    const left = Catalog("defaults", {
-      schema: LeftSchema,
-      policy: await policy(LeftSchema),
-    });
-    const right = Catalog("defaults", {
-      schema: RightSchema,
-      policy: await policy(RightSchema),
-    });
+    }) }));
     const leftUnit = Result.getOrThrow(
       (await assemble(left)).require(CatalogId.make("defaults")),
     );
@@ -778,15 +720,12 @@ describe("catalog definition assembly", () => {
     expect(rightUnit.unitHash).not.toBe(leftUnit.unitHash);
 
     const mutable = { value: "snapshot" };
-    const SnapshotSchema = Schema({ item: Entity("item", {
+    const SnapshotSchema = runnable(Schema("snapshot-default", { item: Entity("item", {
       value: string({
         default: creationDefault(mutable, (inputs) => inputs.value),
       }),
-    }) });
-    const snapshot = Catalog("snapshot-default", {
-      schema: SnapshotSchema,
-      policy: await policy(SnapshotSchema),
-    });
+    }) }));
+    const snapshot = SnapshotSchema;
     const installedSnapshot = Result.getOrThrow(
       (await assemble(snapshot)).require(CatalogId.make("snapshot-default")),
     );
@@ -810,7 +749,7 @@ describe("catalog definition assembly", () => {
         },
       }),
     });
-    const NativeSchema = Schema({ nativeItem: Entity("nativeItem", {
+    const NativeSchema = runnable(Schema("native-default", { nativeItem: Entity("nativeItem", {
       label: string({ default: ({ now }) => {
         const imported = EffectSchema.decodeSync(EffectSchema.String)(trustedPrefix);
         return [imported, now.toISOString()].join(":");
@@ -821,12 +760,11 @@ describe("catalog definition assembly", () => {
       data: bytes({
         default: () => Uint8Array.from([1, 2, 3].map((value) => value * 2)),
       }),
-    }, { traits: [Bound({ key: "native", schema: Schema({}) })] }) });
+    }, {
+      traits: [Bound({ key: "native", schema: Schema("native-bound-schema", {}) })],
+    }) }));
     const native = Result.getOrThrow(
-      (await assemble(Catalog("native-default", {
-        schema: NativeSchema,
-        policy: await policy(NativeSchema),
-      }))).require(CatalogId.make("native-default")),
+      (await assemble(NativeSchema)).require(CatalogId.make("native-default")),
     );
     const now = new Date("2026-08-28T12:34:56.000Z");
     expect(native.resolveCreationValues("nativeItem", {}, { now })).toEqual({
@@ -884,22 +822,16 @@ describe("catalog definition assembly", () => {
       JSON.parse(`{"__proto__":{"value":${JSON.stringify(value)}}}`) as DangerousInputs,
       (inputs) => inputs.__proto__.value,
     );
-    const schemaFor = (value: string) => Schema({
+    const schemaFor = (value: string) => runnable(Schema("proto", {
       item: Entity("item", { value: string({ default: make(value) }) }),
-    });
+    }));
     const LeftSchema = schemaFor("left");
     const RightSchema = schemaFor("right");
     const left = Result.getOrThrow(
-      (await assemble(Catalog("proto", {
-        schema: LeftSchema,
-        policy: await policy(LeftSchema),
-      }))).require(CatalogId.make("proto")),
+      (await assemble(LeftSchema)).require(CatalogId.make("proto")),
     );
     const right = Result.getOrThrow(
-      (await assemble(Catalog("proto", {
-        schema: RightSchema,
-        policy: await policy(RightSchema),
-      }))).require(CatalogId.make("proto")),
+      (await assemble(RightSchema)).require(CatalogId.make("proto")),
     );
 
     expect(left.resolveCreationValues("item", {}, { now: new Date(0) }))
@@ -913,9 +845,9 @@ describe("catalog definition assembly", () => {
     ) => creationDefault({ value }, () => "same");
     const schemaFor = (
       value: Date | { readonly _tag: string; readonly value: string },
-    ) => Schema({
+    ) => runnable(Schema("typed-input", {
       item: Entity("item", { value: string({ default: make(value) }) }),
-    });
+    }));
     const instant = new Date("2024-01-02T03:04:05.000Z");
     const lookalike = {
       _tag: "instant",
@@ -924,23 +856,17 @@ describe("catalog definition assembly", () => {
     const TypedSchema = schemaFor(instant);
     const JsonSchema = schemaFor(lookalike);
     const typed = Result.getOrThrow(
-      (await assemble(Catalog("typed-input", {
-        schema: TypedSchema,
-        policy: await policy(TypedSchema),
-      }))).require(CatalogId.make("typed-input")),
+      (await assemble(TypedSchema)).require(CatalogId.make("typed-input")),
     );
     const json = Result.getOrThrow(
-      (await assemble(Catalog("typed-input", {
-        schema: JsonSchema,
-        policy: await policy(JsonSchema),
-      }))).require(CatalogId.make("typed-input")),
+      (await assemble(JsonSchema)).require(CatalogId.make("typed-input")),
     );
 
     expect(typed.unitHash).not.toBe(json.unitHash);
   });
 
   test("normalizes negative zero in defaults and fixed bindings", async () => {
-    const defaultSchema = (value: number) => Schema({
+    const defaultSchema = (value: number) => runnable(Schema("zero", {
       item: Entity("item", {
         sign: string({
           default: creationDefault(
@@ -949,20 +875,14 @@ describe("catalog definition assembly", () => {
           ),
         }),
       }),
-    });
+    }));
     const NegativeSchema = defaultSchema(-0);
     const PositiveSchema = defaultSchema(0);
     const negative = Result.getOrThrow(
-      (await assemble(Catalog("zero", {
-        schema: NegativeSchema,
-        policy: await policy(NegativeSchema),
-      }))).require(CatalogId.make("zero")),
+      (await assemble(NegativeSchema)).require(CatalogId.make("zero")),
     );
     const positive = Result.getOrThrow(
-      (await assemble(Catalog("zero", {
-        schema: PositiveSchema,
-        policy: await policy(PositiveSchema),
-      }))).require(CatalogId.make("zero")),
+      (await assemble(PositiveSchema)).require(CatalogId.make("zero")),
     );
     expect(negative.unitHash).toBe(positive.unitHash);
     expect(negative.resolveCreationValues("item", {}, { now: new Date(0) }))
@@ -971,16 +891,13 @@ describe("catalog definition assembly", () => {
     const Fixed = Trait("zeroFixed", { value: float() }, {
       bind: () => ({ values: { value: -0 } }),
     });
-    const FixedSchema = Schema({
+    const FixedSchema = runnable(Schema("fixed-zero", {
       fixed: Entity("fixed", {}, {
-        traits: [Fixed({ key: "zero-fixed", schema: Schema({}) })],
+        traits: [Fixed({ key: "zero-fixed", schema: Schema("zero-fixed-schema", {}) })],
       }),
-    });
+    }));
     const fixed = Result.getOrThrow(
-      (await assemble(Catalog("fixed-zero", {
-        schema: FixedSchema,
-        policy: await policy(FixedSchema),
-      }))).require(CatalogId.make("fixed-zero")),
+      (await assemble(FixedSchema)).require(CatalogId.make("fixed-zero")),
     );
     expect(fixed.resolveCreationValues("fixed", {}, { now: new Date(0) }))
       .toEqual({ value: 0 });
@@ -991,9 +908,8 @@ describe("catalog definition assembly", () => {
   });
 
   test("rejects duplicate permanent keys with both internal reachability paths", async () => {
-    const Empty = Schema({});
-    const left = Catalog("duplicate", { schema: Empty, policy: await policy(Empty) });
-    const right = Catalog("duplicate", { schema: Empty, policy: await policy(Empty) });
+    const left = runnable(Schema("duplicate", {}));
+    const right = runnable(Schema("duplicate", {}));
     const Graph = Trait("duplicateGraph", { catalog: string() }, {
       bind: (catalog) => ({
         values: { catalog: catalog.key },
@@ -1002,11 +918,7 @@ describe("catalog definition assembly", () => {
     });
     const Left = Entity("left", {}, { traits: [Graph(left)] });
     const Right = Entity("right", {}, { traits: [Graph(right)] });
-    const RootSchema = Schema({ left: Left, right: Right });
-    const root = Catalog("root", {
-      schema: RootSchema,
-      policy: await policy(RootSchema),
-    });
+    const root = runnable(Schema("root", { left: Left, right: Right }));
 
     const failure = await assembleFailure(root);
     expect(failure).toBeInstanceOf(InvalidIR);
@@ -1016,41 +928,33 @@ describe("catalog definition assembly", () => {
   });
 
   test("rejects reachable non-runnable definitions and ignores unreachable imports", async () => {
-    const Empty = Schema({});
-    const plain: CodeDefinition = { key: "plain", schema: Empty };
+    const PlainSchema = Schema("plain-schema", {});
+    const plain: CodeDefinition = { key: "plain", schema: PlainSchema };
     const Graph = Trait("plainGraph", { catalog: string() }, {
       bind: (catalog) => ({ dependencies: [catalog] }),
     });
     const RootEntity = Entity("root", {}, { traits: [Graph(plain)] });
-    const RootSchema = Schema({ root: RootEntity });
-    const root = Catalog("root", {
-      schema: RootSchema,
-      policy: await policy(RootSchema),
-    });
-    const unused = Catalog("unused", { schema: Empty, policy: await policy(Empty) });
+    const root = runnable(Schema("root", { root: RootEntity }));
+    const unused = runnable(Schema("unused", {}));
 
     const failure = await assembleFailure(root);
-    expect(failure.message).toMatch(/key 'plain' has no runnable Catalog definition/);
+    expect(failure.message).toMatch(/key 'plain' has no runnable Schema definition/);
 
-    const isolated = Catalog("isolated", { schema: Empty, policy: await policy(Empty) });
+    const isolated = runnable(Schema("isolated", {}));
     const registry = await assemble(isolated);
     expect(registry.keys().map(String)).toEqual(["isolated"]);
     expect(registry.keys().map(String)).not.toContain(unused.key);
   });
 
-  test("admits policy identities only when an explicit operation write contributes them", async () => {
+  test("rejects out-of-schema policy identities and retains explicit operation writes", async () => {
     const Outside = Entity("outside", { name: string() });
     const RootOnly = Entity("rootOnly", {});
-    const RootOnlySchema = Schema({ rootOnly: RootOnly });
-    const PolicySchema = Schema({ rootOnly: RootOnly, outside: Outside });
-    const outsidePolicy = await policy(PolicySchema, [read(Outside).when(allow)]);
-    const invalidDefinition = Catalog("invalid", {
-      schema: RootOnlySchema,
-      policy: outsidePolicy,
-    });
-
-    const invalidFailure = await assembleFailure(invalidDefinition);
-    expect(invalidFailure.message).toMatch(/missing entity 'outside'/);
+    const invalidDefinition = Schema("invalid", { rootOnly: RootOnly });
+    expect(() =>
+      invalidDefinition.applyPolicy(({ policy }) => {
+        policy.rootOnly.read.where(eq(Outside.name, "outside"));
+      })
+    ).toThrow(/'outside' is not in this catalog/);
 
     const RootWithWrite = Entity("rootWithWrite", {}, {
       operations: (Operation) => ({
@@ -1065,12 +969,9 @@ describe("catalog definition assembly", () => {
         }),
       }),
     });
-    const RootWithWriteSchema = Schema({ rootWithWrite: RootWithWrite });
-    const FullSchema = Schema({ rootWithWrite: RootWithWrite, outside: Outside });
-    const validDefinition = Catalog("valid", {
-      schema: RootWithWriteSchema,
-      policy: await policy(FullSchema, [read(Outside).when(allow)]),
-    });
+    const validDefinition = runnable(Schema("valid", {
+      rootWithWrite: RootWithWrite,
+    }));
     const registry = await assemble(validDefinition);
     const installed = Result.getOrThrow(registry.require(CatalogId.make("valid")));
     expect(installed.unit.catalog.entities.map((entry) => entry.id.name)).toEqual([
@@ -1080,8 +981,7 @@ describe("catalog definition assembly", () => {
   });
 
   test("missing definitions and mixed hashes fail closed at lookup", async () => {
-    const App = Schema({});
-    const definition = Catalog("app", { schema: App, policy: await policy(App) });
+    const definition = runnable(Schema("app", {}));
     const registry = await assemble(definition);
 
     const missing = registry.require(CatalogId.make("missing"));

@@ -1,9 +1,10 @@
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
-  isCatalogDefinition,
-  type CatalogDefinition,
-} from "../../Catalog.ts";
+  appliedPolicyOf,
+  isSchemaDefinition,
+  type AnySchemaDefinition,
+} from "../../db/Schema.ts";
 import { cloneBindingValue } from "../../db/Binding.ts";
 import {
   compileCreationPlan,
@@ -56,6 +57,8 @@ import {
   type DeployedOperationBinding,
   type OwnedOperationSnapshot,
 } from "./authoring/operations.ts";
+import { compileReadAuthorization } from "./authoring/compile.ts";
+import type { CompileReadAuthorizationInput } from "./authoring/types.ts";
 import {
   requireCatalogKey,
   requireUnitHash,
@@ -127,7 +130,7 @@ export type CatalogDefinitionBoundRef = {
 };
 
 export type AssembleCatalogDefinitionsInput = {
-  readonly root: CatalogDefinition;
+  readonly root: AnySchemaDefinition;
   readonly artifactHash: DigestHex;
 };
 
@@ -141,7 +144,7 @@ type NormalizedDefinitionSnapshot = {
   readonly catalog: CatalogId;
   readonly key: string;
   readonly path: readonly string[];
-  readonly policy: CatalogDefinition["policy"];
+  readonly policy: CompileReadAuthorizationInput;
   readonly descriptorTables: Omit<
     CatalogDescriptor,
     "database" | "version" | "fingerprint"
@@ -272,9 +275,15 @@ const normalizeDefinitionSnapshot = (
   artifactHash: DigestHex,
   metadataByEntity: ReadonlyMap<string, CompositionValueMetadata>,
 ): NormalizedDefinitionSnapshot => {
-  if (!isCatalogDefinition(reachable.definition)) {
+  if (!isSchemaDefinition(reachable.definition)) {
     throw invalid(
-      `reachable key '${reachable.key}' has no runnable Catalog definition (path: ${reachable.path.join(" → ")})`,
+      `reachable key '${reachable.key}' has no runnable Schema definition (path: ${reachable.path.join(" → ")})`,
+    );
+  }
+  const policy = appliedPolicyOf(reachable.definition);
+  if (policy === undefined) {
+    throw invalid(
+      `reachable schema '${reachable.key}' has no applied policy (path: ${reachable.path.join(" → ")})`,
     );
   }
   const catalog = CatalogId.make(reachable.definition.key);
@@ -303,7 +312,7 @@ const normalizeDefinitionSnapshot = (
     catalog,
     key: reachable.definition.key,
     path: Object.freeze([...reachable.path]),
-    policy: reachable.definition.policy,
+    policy,
     descriptorTables: Object.freeze(descriptorTables(catalog, schema, [])),
     creationPlans,
     creationDefaultBindings,
@@ -318,9 +327,7 @@ const assembleOne = Effect.fn("Authorization.assembleCatalogDefinition")(
   function* (
     snapshot: NormalizedDefinitionSnapshot,
   ): Effect.fn.Return<InstalledCatalogDefinition, AssemblyFailure> {
-    const authoredPolicy = Effect.isEffect(snapshot.policy)
-      ? yield* snapshot.policy
-      : snapshot.policy;
+    const authoredPolicy = yield* compileReadAuthorization(snapshot.policy);
     const template = yield* Effect.fromResult(
       decodePolicyTemplateResult(authoredPolicy),
     );

@@ -11,7 +11,7 @@ import {
   type CodeDefinition,
 } from "../../src/db/internal.ts";
 
-const Child = { key: "graph-types-child", schema: Schema({}) } satisfies CodeDefinition;
+const Child = Schema("graph-types-child", {}) satisfies CodeDefinition;
 
 const Workspace = Entity("graphTypesWorkspace", {}, {
   traits: [Graph(Child)],
@@ -37,7 +37,7 @@ const Workspace = Entity("graphTypesWorkspace", {}, {
 });
 
 const Project = Entity("graphTypesProject", {}, { traits: [Graph(Child)] });
-const App = Schema({
+const App = Schema("graph-types-app", {
   graphTypesWorkspace: Workspace,
   graphTypesProject: Project,
 });

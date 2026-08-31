@@ -1,6 +1,5 @@
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
-import type { CatalogDefinition } from "../Catalog.ts";
 import type {
   AllocationPathSegment,
   AllocationSlots,
@@ -11,7 +10,7 @@ import {
   OwnedOperations,
   type AnyOwnedOperation,
 } from "../db/Operation.ts";
-import type { AnySchema } from "../db/Schema.ts";
+import type { AnySchema, AnySchemaDefinition } from "../db/Schema.ts";
 import {
   normalizeProjectionRevision,
   type AnyOptimisticProjection,
@@ -171,7 +170,7 @@ const clientOperation = (
 };
 
 export const installClientOperations = (
-  definition: CatalogDefinition,
+  definition: AnySchemaDefinition,
   schema: AnySchema,
 ): ClientOperations => {
   const catalog = CatalogId.make(definition.key);

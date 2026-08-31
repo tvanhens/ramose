@@ -1,13 +1,10 @@
-import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
-import { Catalog, Policy } from "ramose";
 import {
   Entity,
   EntityId as OperationEntityId,
   Field,
   OperationRejected,
-  OwnedOperations,
   Ref,
   Schema,
   Trait,
@@ -376,63 +373,67 @@ export const Encoded = Entity("nativeEncoded", {
   }),
 });
 
-export const OperationSchema = Schema({
+export const OperationSchema = Schema("local-native-operations", {
   nativeItem: Item,
   nativeOther: Other,
   nativeEncoded: Encoded,
 });
 
-const policy = await Effect.runPromise(Policy.compileReadAuthorization({
-  schema: OperationSchema,
-  classes: ["member", "reader", "operator"],
-  claims: [{ key: "tenant", optional: true, shape: { _tag: "scalar", valueType: "string" } }],
-  rules: [
-    Policy.read(Item).when(Policy.any(Policy.hasClass("member"), Policy.hasClass("reader"))),
-    Policy.read(Other).when(Policy.hasClass("reader")),
-    Policy.invoke(Item[OwnedOperations].create).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].createAllocating).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].misallocating).when(Policy.hasClass("member")),
-    Policy.invoke(Other[OwnedOperations].createAllocating).when(Policy.hasClass("member")),
-    Policy.invoke(Other[OwnedOperations].rename).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].rename).when(Policy.any(
-      Policy.hasClass("member"),
-      Policy.hasClass("operator"),
-    )),
-    Policy.invoke(Item[OwnedOperations].retitleByRef).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].retitleByRenamedRef).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].deleteAndEchoTitle).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].deleteHiddenOther).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].crash).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].inputCrash).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].fieldCodec).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].refFieldCodec).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].echoTransportTagInput).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].returnTransportTag).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].echoExactWireValues).when(Policy.hasClass("member")),
-    Policy.invoke(Item[OwnedOperations].reject).when(Policy.hasClass("member")),
-    Policy.invoke(Other[OwnedOperations].create).when(Policy.hasClass("member")),
-    Policy.read(Encoded).when(Policy.hasClass("member")),
-    Policy.read(Encoded.secret).deny(Policy.hasClass("member")),
+const tenantClaim = {
+  key: "tenant",
+  optional: true,
+  shape: { _tag: "scalar" as const, valueType: "string" as const },
+} as const;
 
-    Policy.read(Encoded.tenantOnly).when(
-      Policy.eq(Policy.claim("tenant"), "acme"),
-    ),
+OperationSchema.applyPolicy(
+  {
+    roles: ["member", "reader", "operator"] as const,
+    claims: [tenantClaim] as const,
+  },
+  ({ policy, session }) => {
+    const member = session.roles.member;
+    const reader = session.roles.reader;
+    const operator = session.roles.operator;
 
-    Policy.read(Encoded.rowScoped).when(
-      Policy.eq(Encoded.label, Policy.claim("tenant")),
-    ),
-    Policy.invoke(Encoded[OwnedOperations].create).when(Policy.hasClass("member")),
-    Policy.invoke(Encoded[OwnedOperations].createRenamed).when(Policy.hasClass("member")),
-    Policy.invoke(Encoded[OwnedOperations].opaqueOutcome).when(Policy.hasClass("member")),
-  ],
-}));
+    policy.nativeItem.read.where(member);
+    policy.nativeItem.read.where(reader);
+    policy.nativeOther.read.where(reader);
+    policy.nativeItem.operations.create.where(member);
+    policy.nativeItem.operations.createAllocating.where(member);
+    policy.nativeItem.operations.misallocating.where(member);
+    policy.nativeOther.operations.createAllocating.where(member);
+    policy.nativeOther.operations.rename.where(member);
+    policy.nativeItem.operations.rename.where(member);
+    policy.nativeItem.operations.rename.where(operator);
+    policy.nativeItem.operations.retitleByRef.where(member);
+    policy.nativeItem.operations.retitleByRenamedRef.where(member);
+    policy.nativeItem.operations.deleteAndEchoTitle.where(member);
+    policy.nativeItem.operations.deleteHiddenOther.where(member);
+    policy.nativeItem.operations.crash.where(member);
+    policy.nativeItem.operations.inputCrash.where(member);
+    policy.nativeItem.operations.fieldCodec.where(member);
+    policy.nativeItem.operations.refFieldCodec.where(member);
+    policy.nativeItem.operations.echoTransportTagInput.where(member);
+    policy.nativeItem.operations.returnTransportTag.where(member);
+    policy.nativeItem.operations.echoExactWireValues.where(member);
+    policy.nativeItem.operations.reject.where(member);
+    policy.nativeOther.operations.create.where(member);
 
-export const operationCatalog = Catalog("local-native-operations", {
-  schema: OperationSchema,
-  policy,
-});
+    policy.nativeEncoded.read.where(member);
+    policy.nativeEncoded.fields.secret.read.denyWhere(member);
+    policy.nativeEncoded.fields.tenantOnly.read.where(
+      session.claims.tenant.eq("acme"),
+    );
+    policy.nativeEncoded.fields.rowScoped.read.where((row) =>
+      row.label.eq(session.claims.tenant)
+    );
+    policy.nativeEncoded.operations.create.where(member);
+    policy.nativeEncoded.operations.createRenamed.where(member);
+    policy.nativeEncoded.operations.opaqueOutcome.where(member);
+  },
+);
 
 export const operationCatalogDeployment = Object.freeze({
-  root: operationCatalog,
+  root: OperationSchema,
   deployments: OPERATION_DATABASES.map((database) => ({ database })),
 });

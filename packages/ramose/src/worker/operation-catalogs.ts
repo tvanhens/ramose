@@ -1,7 +1,7 @@
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
-import type { CatalogDefinition } from "../Catalog.ts";
+import type { AnySchemaDefinition } from "../db/Schema.ts";
 import {
   assembleCatalogDefinitions,
   deployCatalogDefinitions,
@@ -37,7 +37,7 @@ export interface OperationCatalogDeployment {
 }
 
 export interface DeployOperationCatalogsInput {
-  readonly root: CatalogDefinition;
+  readonly root: AnySchemaDefinition;
   readonly deployments: readonly OperationCatalogDeployment[];
 }
 

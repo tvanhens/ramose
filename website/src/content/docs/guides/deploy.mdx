@@ -13,26 +13,56 @@ Ramose deploys as a Cloudflare data plane declared in the same TypeScript stack 
 
 ```ts title="alchemy.run.ts"
 import * as Alchemy from "alchemy"
+import * as Cloudflare from "alchemy/Cloudflare"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Ramose from "ramose"
-import { AppCatalog } from "./src/domain.ts"
 import { auth } from "./src/auth.ts"
 
-const program = Effect.gen(function* () {
-  const server = yield* Ramose.Server("Tasks", {
-    root: AppCatalog,
-    auth,
-    mcp: true,
-  })
-
-  return { url: server.url }
+const Store = Cloudflare.R2.Bucket("TasksStore", {
+  name: "ramose-tasks-store",
 })
 
-await Alchemy.run(program.pipe(Effect.provide(Layer.mergeAll(Ramose.layer))))
+const Server = Ramose.Server("Tasks", {
+  main: import.meta.resolve("./peer.ts"),
+  storage: Store,
+  auth,
+})
+
+export default Alchemy.Stack(
+  "ramose-tasks",
+  {
+    providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
+    state: Alchemy.localState(),
+  },
+  Effect.gen(function* () {
+    yield* Server
+  }),
+)
 ```
 
-`Ramose.Server` owns the public Worker, graph execution, Durable Objects, object storage, synchronization, catalog installation, and optional MCP route. Keep the catalog import shared with the web application so both ends compile against the same definition identities.
+`Ramose.Server` provisions the public Worker, Durable Objects, object storage, synchronization, and MCP route. The Worker entry installs the application definition:
+
+```ts title="peer.ts"
+import * as Effect from "effect/Effect"
+import {
+  QueryReplicaDO,
+  createServer,
+  createTransactorDO,
+  deployOperationCatalogs,
+} from "ramose/worker"
+import { deployment } from "./src/domain.ts"
+
+const operationCatalogs = await Effect.runPromise(
+  deployOperationCatalogs(deployment),
+)
+
+export default createServer({ operationCatalogs })
+export { QueryReplicaDO }
+export const TransactorDO = createTransactorDO(operationCatalogs)
+```
+
+The domain module exports `deployment` with the named schema as `root` and an explicit database deployment. Keep that module shared with the web application so both ends use the same definition identities.
 
 ## Run a local stage
 

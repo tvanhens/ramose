@@ -327,7 +327,7 @@ describe("compileReadFilter lattice and fail-closed", () => {
   });
 
   test("type ident not in catalog denies", async () => {
-    const Mixed = Schema({ ...App.entities, extra: Extra });
+    const Mixed = Schema("read-filter-mixed", { ...App.entities, extra: Extra });
     const { conn, aliceEid } = await seedApp(Mixed);
     const extra = await conn.transact(typedTx([
       { ":db/id": "ex", ":ramose/type": ":extra", ":extra/name": "nope" },

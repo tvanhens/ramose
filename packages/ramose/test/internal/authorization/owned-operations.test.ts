@@ -103,7 +103,12 @@ const fixture = () => {
     },
   );
   const Doc = Entity("doc", { body: string() }, { traits: [Slugged] });
-  const App = CatalogSchema({ user: User, audit: Audit, issue: Issue, doc: Doc });
+  const App = CatalogSchema("owned-operations", {
+    user: User,
+    audit: Audit,
+    issue: Issue,
+    doc: Doc,
+  });
   return { Slugged, Taggable, User, Audit, Issue, Doc, App };
 };
 
@@ -139,7 +144,7 @@ describe("owned operation authoring", () => {
     expect(Bound[OwnedOperations].inspect.owner.ns).toBe("bound");
     expect(Bound[OwnedOperations].inspect.localName).toBe("inspect");
     expect(
-      Bound({ key: "child", schema: CatalogSchema({}) })[OwnedOperations]
+      Bound(CatalogSchema("child", {}))[OwnedOperations]
         .inspect,
     ).toBe(Bound[OwnedOperations].inspect);
   });
@@ -249,7 +254,7 @@ describe("owned operation lowering", () => {
     const lowered = await Effect.runPromise(
       lowerOwnedOperations(
         catalog,
-        CatalogSchema({ worker: Worker }),
+        CatalogSchema("compiled-codecs", { worker: Worker }),
         artifactHash,
       ),
     );
@@ -301,7 +306,7 @@ describe("owned operation lowering", () => {
     const lowered = await Effect.runPromise(
       lowerOwnedOperations(
         catalog,
-        CatalogSchema({ callbackWorker: Worker }),
+        CatalogSchema("callback-codecs", { callbackWorker: Worker }),
         artifactHash,
       ),
     );
@@ -338,7 +343,7 @@ describe("owned operation lowering", () => {
     const lowered = await Effect.runPromise(
       lowerOwnedOperations(
         catalog,
-        CatalogSchema({ nativeWorker: Worker }),
+        CatalogSchema("native-operation", { nativeWorker: Worker }),
         artifactHash,
       ),
     );
@@ -377,7 +382,7 @@ describe("owned operation lowering", () => {
     const failure = await Effect.runPromise(Effect.flip(
       lowerOwnedOperations(
         catalog,
-        CatalogSchema({ opaqueWorker: Worker }),
+        CatalogSchema("opaque-operation", { opaqueWorker: Worker }),
         artifactHash,
       ),
     ));
@@ -656,7 +661,7 @@ describe("owned operation lowering", () => {
       Effect.flip(
         lowerOwnedOperations(
           catalog,
-          CatalogSchema({ invalidNestedRef: Invalid }),
+          CatalogSchema("invalid-nested-ref", { invalidNestedRef: Invalid }),
           artifactHash,
         ),
       ),
@@ -687,7 +692,7 @@ describe("owned operation lowering", () => {
       Effect.flip(
         lowerOwnedOperations(
           catalog,
-          CatalogSchema({ invalidSuspendedRef: Invalid }),
+          CatalogSchema("invalid-suspended-ref", { invalidSuspendedRef: Invalid }),
           artifactHash,
         ),
       ),
@@ -720,7 +725,7 @@ describe("owned operation lowering", () => {
         }),
       },
     );
-    const conflicting = CatalogSchema({ issue: OtherIssue });
+    const conflicting = CatalogSchema("conflicting-issue", { issue: OtherIssue });
     const failure = await Effect.runPromise(
       Effect.flip(lowerOwnedOperations(catalog, [App, conflicting], artifactHash)),
     );
@@ -750,7 +755,10 @@ describe("owned operation lowering", () => {
       Effect.flip(
         lowerOwnedOperations(
           catalog,
-          CatalogSchema({ conflictingAudit: CanonicalAudit, writeOwner: Owner }),
+          CatalogSchema("conflicting-write", {
+            conflictingAudit: CanonicalAudit,
+            writeOwner: Owner,
+          }),
           artifactHash,
         ),
       ),
@@ -781,7 +789,7 @@ describe("owned operation lowering", () => {
       Effect.flip(
         lowerOwnedOperations(
           catalog,
-          CatalogSchema({ invalid: Invalid }),
+          CatalogSchema("invalid-targetless-ref", { invalid: Invalid }),
           artifactHash,
         ),
       ),
@@ -799,7 +807,10 @@ describe("owned operation lowering", () => {
       Effect.flip(
         lowerOwnedOperations(
           catalog,
-          [CatalogSchema({ foo: FooEntity }), CatalogSchema({ bar: BarEntity })],
+          [
+            CatalogSchema("foo-schema", { foo: FooEntity }),
+            CatalogSchema("bar-schema", { bar: BarEntity }),
+          ],
           artifactHash,
         ),
       ),

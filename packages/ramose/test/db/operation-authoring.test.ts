@@ -11,12 +11,12 @@ import {
   operationCards,
   operationNames,
   OperationsCoverageError,
-  Schema as Catalog,
+  Schema as DbSchema,
   string,
 } from "../../src/db/internal.ts";
 
 const Todo = Entity("todo", { title: string(), rank: int() });
-const Todos = Catalog({ todo: Todo });
+const Todos = DbSchema("operation-authoring", { todo: Todo });
 const Op = Operation.for(Todos);
 
 const rename = Op(

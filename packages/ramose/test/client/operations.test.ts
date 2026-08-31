@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as EffectSchema from "effect/Schema";
-import { Catalog } from "../../src/Catalog.ts";
 import {
   Entity,
   Field,
@@ -11,7 +10,6 @@ import {
 } from "../../src/db/internal.ts";
 import { compositionFromSchema } from "../../src/db/composition.ts";
 import { EntityId } from "../../src/db/Operation.ts";
-import { compileReadAuthorization } from "../../src/internal/authorization/index.ts";
 import { inputEntityRefHandles } from "../../src/internal/authorization/entity-targets.ts";
 import { lowerOwnedOperations } from "../../src/internal/authorization/authoring/index.ts";
 import {
@@ -95,32 +93,20 @@ const Relocated = Entity("relocated", { name: string() }, {
   }),
 });
 
-const RelocatingSchema = Schema({ relocated: Relocated });
+const RelocatingSchema = Schema("relocating", { relocated: Relocated });
+RelocatingSchema.applyPolicy(() => {});
 
-const RelocatingCatalog = Catalog("relocating", {
-  schema: RelocatingSchema,
-  policy: compileReadAuthorization({ schema: RelocatingSchema, rules: [] }),
-});
+const BoardSchema = Schema("boards", { board: Board });
+BoardSchema.applyPolicy(() => {});
 
-const BoardSchema = Schema({ board: Board });
-
-const BoardCatalog = Catalog("boards", {
-  schema: BoardSchema,
-  policy: compileReadAuthorization({ schema: BoardSchema, rules: [] }),
-});
-
-const AppSchema = Schema({ issue: Issue, note: Note });
-
-const AppCatalog = Catalog("app", {
-  schema: AppSchema,
-  policy: compileReadAuthorization({ schema: AppSchema, rules: [] }),
-});
+const AppSchema = Schema("app", { issue: Issue, note: Note });
+AppSchema.applyPolicy(() => {});
 
 const installed = () =>
-  installClientOperations(AppCatalog, completeSchema(AppCatalog));
+  installClientOperations(AppSchema, completeSchema(AppSchema));
 
 const createCard = () =>
-  installClientOperations(BoardCatalog, completeSchema(BoardCatalog))
+  installClientOperations(BoardSchema, completeSchema(BoardSchema))
     .database.get("createCard")!;
 
 describe("the installed client mutation surface", () => {
@@ -128,7 +114,7 @@ describe("the installed client mutation surface", () => {
     const operations = installed();
     const deployed = await Effect.runPromise(lowerOwnedOperations(
       CatalogId.make("app"),
-      [completeSchema(AppCatalog)],
+      [completeSchema(AppSchema)],
       DigestHex.make("a".repeat(64)),
     ));
     const byName = new Map(deployed.descriptors.map((descriptor) =>
@@ -140,7 +126,7 @@ describe("the installed client mutation surface", () => {
     expect(
       await selfOperationsFor(
         operations,
-        compositionFromSchema(completeSchema(AppCatalog)),
+        compositionFromSchema(completeSchema(AppSchema)),
         { kind: "entity", name: "issue" },
       ).get("close")!.version(),
     ).toBe(byName.get("issue.close")!);
@@ -148,7 +134,7 @@ describe("the installed client mutation surface", () => {
 
   test("separates targetless from targeted, and reaches trait operations through composition", async () => {
     const operations = installed();
-    const composition = compositionFromSchema(completeSchema(AppCatalog));
+    const composition = compositionFromSchema(completeSchema(AppSchema));
 
     expect([...operations.database.keys()]).toEqual(["createIssue"]);
     expect(operations.database.get("createIssue")?.self).toBe(false);
@@ -222,8 +208,8 @@ describe("the installed client mutation surface", () => {
 
   test("refuses to encode a reference the codec would move", () => {
     const relocating = installClientOperations(
-      RelocatingCatalog,
-      completeSchema(RelocatingCatalog),
+      RelocatingSchema,
+      completeSchema(RelocatingSchema),
     ).database.get("createRelocated")!;
     expect(() =>
       relocating.encode({ author: "e".repeat(55), title: "Offline" })

@@ -53,7 +53,7 @@ export const Comment = Ramose.Entity("comment", {
   issue: Ramose.Ref(Issue),
 });
 
-export const Reef = Ramose.Schema({
+export const Reef = Ramose.Schema("reef", {
   user: User,
   label: Label,
   issue: Issue,

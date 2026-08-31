@@ -1089,11 +1089,11 @@ test("authorization type fixtures compile", () => {
 });
 
 describe("legacy authorization names cannot be imported", () => {
-  test("root exports only the new Policy namespace, not old wire helpers", async () => {
+  test("root exports schema authoring without old policy helpers", async () => {
     const root = await import("../../../src/index.ts");
     const db = await import("../../../src/db/index.ts");
     expect("policy" in root).toBe(false);
-    expect("Policy" in root).toBe(true);
+    expect("Policy" in root).toBe(false);
     expect("Policy" in db).toBe(false);
     expect("PolicyError" in db).toBe(false);
     expect("filterDb" in root).toBe(false);

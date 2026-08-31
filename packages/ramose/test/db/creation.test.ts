@@ -42,7 +42,7 @@ describe("creation defaults", () => {
         }),
       },
     );
-    const child = { key: "child", schema: Schema({}) };
+    const child = Schema("child", {});
     const Node = Entity("node", { title: string() }, { traits: [Bound(child)] });
 
     expect(
@@ -122,7 +122,7 @@ describe("creation defaults", () => {
     const Bound = Trait("boundValue", { catalog: string() }, {
       bind: () => ({ values: { catalog: 42 as unknown as string } }),
     });
-    const child = { key: "child", schema: Schema({}) };
+    const child = Schema("child", {});
     const Item = Entity("item", { title: string() }, { traits: [Bound(child)] });
     expect(() =>
       resolveCreationValues(Item, { title: "ok" }, { now: fixedNow }),
@@ -138,7 +138,7 @@ describe("creation defaults", () => {
     const Bound = Trait("protected", { catalog: string() }, {
       bind: (catalog) => ({ values: { catalog: catalog.key } }),
     });
-    const child = { key: "child", schema: Schema({}) };
+    const child = Schema("child", {});
     const Node = Entity("protectedNode", {}, { traits: [Bound(child)] });
 
     expect(() =>
@@ -163,7 +163,7 @@ describe("creation defaults", () => {
       } } }),
     });
     const Node = Entity("lazyNode", {}, {
-      traits: [Bound({ key: "child", schema: Schema({}) })],
+      traits: [Bound(Schema("child", {}))],
     });
     compositionValueMetadata(Node);
     expect(calls).toBe(0);
@@ -178,7 +178,7 @@ describe("trait binding values", () => {
         dependencies: [catalog],
       }),
     });
-    const child = { key: "workspace", schema: Schema({}) };
+    const child = Schema("workspace", {});
     const Workspace = Entity("workspace", {}, { traits: [Graph(child)] });
 
     expect(Object.is(Workspace.catalog, Graph.catalog)).toBe(true);
@@ -203,8 +203,8 @@ describe("trait binding values", () => {
     const Graph = Trait("graphConflict", { catalog: string() }, {
       bind: (catalog) => ({ values: { catalog: catalog.key } }),
     });
-    const left = { key: "left", schema: Schema({}) };
-    const right = { key: "right", schema: Schema({}) };
+    const left = Schema("left", {});
+    const right = Schema("right", {});
     const Broken = Entity("broken", {}, {
       traits: [Graph(left), Graph(right)],
     });
@@ -229,7 +229,7 @@ describe("code reachability", () => {
     const Graph = Trait("writeGraph", { catalog: string() }, {
       bind: (catalog) => ({ dependencies: [catalog] }),
     });
-    const child: CodeDefinition = { key: "child", schema: Schema({}) };
+    const child: CodeDefinition = Schema("child", {});
     const Audit = Entity("writeAudit", {}, { traits: [Graph(child)] });
     const Root = Entity("writeRoot", {}, {
       operations: (Operation) => ({
@@ -244,10 +244,7 @@ describe("code reachability", () => {
         }),
       }),
     });
-    const root: CodeDefinition = {
-      key: "root",
-      schema: Schema({ writeRoot: Root }),
-    };
+    const root: CodeDefinition = Schema("root", { writeRoot: Root });
 
     const reachable = collectCodeReachability(root);
     expect(reachable.definitions.map((item) => item.key)).toEqual(["root", "child"]);
@@ -271,11 +268,8 @@ describe("code reachability", () => {
       traits: [Graph(() => child)],
     });
     const ChildNode = Entity("childNode", {}, { traits: [Graph(() => root)] });
-    root = {
-      key: "root",
-      schema: Schema({ rootNode: RootNode, secondRootNode: SecondRootNode }),
-    };
-    child = { key: "child", schema: Schema({ childNode: ChildNode }) };
+    root = Schema("root", { rootNode: RootNode, secondRootNode: SecondRootNode });
+    child = Schema("child", { childNode: ChildNode });
 
     const reachable = collectCodeReachability(root);
     expect(reachable.definitions.map((item) => item.key)).toEqual(["root", "child"]);
@@ -289,14 +283,11 @@ describe("code reachability", () => {
         dependencies: [catalog],
       }),
     });
-    const first = { key: "duplicate", schema: Schema({}) };
-    const second = { key: "duplicate", schema: Schema({}) };
+    const first = Schema("duplicate", {});
+    const second = Schema("duplicate", {});
     const Left = Entity("leftNode", {}, { traits: [Graph(first)] });
     const Right = Entity("rightNode", {}, { traits: [Graph(second)] });
-    const root = {
-      key: "root",
-      schema: Schema({ leftNode: Left, rightNode: Right }),
-    };
+    const root = Schema("root", { leftNode: Left, rightNode: Right });
 
     expect(() => collectCodeReachability(root)).toThrow(ReachabilityConflictError);
     expect(() => collectCodeReachability(root)).toThrow(

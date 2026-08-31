@@ -2,12 +2,10 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as EffectSchema from "effect/Schema";
-import { Catalog, type CatalogDefinition } from "../../../src/Catalog.ts";
 import {
   Entity,
   EntityId as OperationEntityId,
   Graph,
-  OwnedOperations,
   Query,
   Ref,
   Schema,
@@ -20,15 +18,10 @@ import {
   CatalogId,
   DatabaseId,
   DigestHex,
-  any,
   assembleCatalogDefinitions,
-  compileReadAuthorization,
   compileReadFilter,
   deployCatalogDefinitions,
   executeCatalogOperation,
-  hasClass,
-  invoke,
-  read,
   type AuthenticatedCaller,
   type OperationInvocation,
 } from "../../../src/internal/authorization/index.ts";
@@ -44,10 +37,10 @@ const Membership = Entity("graphMembership", {
   role: string(),
 });
 
-let childCatalog!: CatalogDefinition;
+let childSchema!: Schema.Any;
 
 const Workspace = Entity("graphWorkspace", {}, {
-  traits: [Graph(() => childCatalog)],
+  traits: [Graph(() => childSchema)],
   operations: (Operation) => ({
     create: Operation({
       self: false,
@@ -88,7 +81,7 @@ const Workspace = Entity("graphWorkspace", {}, {
 });
 
 const Project = Entity("graphProject", {}, {
-  traits: [Graph(() => childCatalog)],
+  traits: [Graph(() => childSchema)],
   operations: (Operation) => ({
     create: Operation({
       self: false,
@@ -104,11 +97,30 @@ const Project = Entity("graphProject", {}, {
   }),
 });
 
-const App = Schema({
+const App = Schema("graph-root", {
   graphWorkspace: Workspace,
   graphProject: Project,
   graphMembership: Membership,
 });
+const ChildSchema = Schema("graph-child", {});
+ChildSchema.applyPolicy(() => {});
+childSchema = ChildSchema;
+App.applyPolicy(
+  { roles: ["member", "rowOnly", "refReader"] },
+  ({ policy, session }) => {
+    policy.graphWorkspace.read.where(session.hasRole("member"));
+    policy.graphWorkspace.read.where(session.hasRole("rowOnly"));
+    policy.graphWorkspace.read.where(session.hasRole("refReader"));
+    policy.graphProject.read.where(session.hasRole("member"));
+    policy.graphMembership.read.where(session.hasRole("member"));
+    policy.graphMembership.read.where(session.hasRole("refReader"));
+    policy.graph.read.where(session.hasRole("member"));
+    policy.graph.fields.catalog.read.denyWhere(session.hasRole("member"));
+    policy.graphWorkspace.operations.create.where(session.hasRole("member"));
+    policy.graphWorkspace.operations.recatalog.where(session.hasRole("member"));
+    policy.graphProject.operations.create.where(session.hasRole("member"));
+  },
+);
 
 const caller = (className: "member" | "rowOnly" | "refReader"): AuthenticatedCaller => ({
   claims: { sub: `${className}-subject` },
@@ -117,33 +129,8 @@ const caller = (className: "member" | "rowOnly" | "refReader"): AuthenticatedCal
 });
 
 const buildWorld = async () => {
-  const Empty = Schema({});
-  childCatalog = Catalog("graph-child", {
-    schema: Empty,
-    policy: await Effect.runPromise(
-      compileReadAuthorization({ schema: Empty, rules: [] }),
-    ),
-  });
-  const policy = await Effect.runPromise(compileReadAuthorization({
-    schema: App,
-    classes: ["member", "rowOnly", "refReader"],
-    rules: [
-      read(Workspace).when(any(
-        hasClass("member"),
-        hasClass("rowOnly"),
-        hasClass("refReader"),
-      )),
-      read(Project).when(hasClass("member")),
-      read(Membership).when(any(hasClass("member"), hasClass("refReader"))),
-      read(Graph).when(hasClass("member")),
-      read(Graph.catalog).deny(hasClass("member")),
-      invoke(Workspace[OwnedOperations].create).when(hasClass("member")),
-      invoke(Workspace[OwnedOperations].recatalog).when(hasClass("member")),
-      invoke(Project[OwnedOperations].create).when(hasClass("member")),
-    ],
-  }));
   const definitions = await Effect.runPromise(assembleCatalogDefinitions({
-    root: Catalog("graph-root", { schema: App, policy }),
+    root: App,
     artifactHash,
   }));
   const deployed = Result.getOrThrow(deployCatalogDefinitions(definitions, [{

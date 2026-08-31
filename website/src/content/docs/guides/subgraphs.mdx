@@ -27,18 +27,25 @@ Keep entities together when they are queried together, changed atomically, and s
 
 Avoid a subgraph when common screens join across the proposed boundary, one user action must commit on both sides, or every active session would open thousands of tiny children.
 
-## Define the child catalog first
+## Define the child schema first
 
 ```ts
-const ProjectSchema = Ramose.Schema({ task: Task, member: Member })
-
-export const ProjectCatalog = Ramose.Catalog("project-v1", {
-  schema: ProjectSchema,
-  policy: projectPolicy,
+export const ProjectSchema = Ramose.Schema("project-v1", {
+  task: Task,
+  member: Member,
 })
+
+ProjectSchema.applyPolicy(
+  { roles: ["member"] },
+  ({ policy, session }) => {
+    const isMember = session.hasRole("member")
+    policy.task.read.where(isMember)
+    policy.member.read.where(isMember)
+  },
+)
 ```
 
-The catalog definition is reusable code. Creating a Project graph does not clone or modify it.
+The named schema is reusable code. Creating a Project graph does not clone or modify it.
 
 ## Bind a parent entity to the child
 
@@ -47,7 +54,7 @@ export const Project = Ramose.Entity(
   "project",
   { title: Ramose.string() },
   {
-    traits: [Ramose.Graph(ProjectCatalog)],
+    traits: [Ramose.Graph(ProjectSchema)],
     operations: (Operation) => ({
       createProject: Operation({
         self: false,
