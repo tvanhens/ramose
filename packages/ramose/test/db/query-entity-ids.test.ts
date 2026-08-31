@@ -350,6 +350,26 @@ describe("entity identities at a filter position", () => {
     expect(await rows(listing, bind({}))).toEqual([]);
   });
 
+  test("an unplaceable identity inside or / not is one arm that fails, not a broken query", async () => {
+    const either = Query.from(Issue).where(
+      Query.any(
+        Query.is(Issue.author, `handle:${ids.author}` as never),
+        Query.is(Issue.author, sealed("q") as never),
+      ),
+    );
+    expect(await rows(either, binding())).toHaveLength(1);
+
+    const notStranger = Query.from(Issue).where(
+      Query.not(Query.is(Issue.author, sealed("q") as never)),
+    );
+    expect(await rows(notStranger, binding())).toHaveLength(1);
+
+    const notAda = Query.from(Issue).where(
+      Query.not(Query.is(Issue.author, `handle:${ids.author}` as never)),
+    );
+    expect(await rows(notAda, binding())).toEqual([]);
+  });
+
   test("a lowering reports whether it read the binding at all", () => {
     const plain = lowerQueryObject(
       Query.from(Issue).where({ title: "Offline" }) as never,

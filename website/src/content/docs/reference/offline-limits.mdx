@@ -53,7 +53,7 @@ Sign-out is therefore explicit: **call `clearLocalData()` before dropping the cl
 
 **Local ids are never public.** Every id an application sees is an `EntityId` the server issued or a `ClientRef` this device minted. The numeric id inside the local store is meaningless off the device and is reassigned by a delete and recreate, so it is never handed out.
 
-**A pull-phase filter cannot name an entity.** `where({ author })` takes an `EntityId` or a `ClientRef` wherever a reference is, but the `where` inside a `select(…)` collection is compiled into the query value itself, before any replica binding exists. One there is refused when the query is built. Constrain the entity in the query's own `where`.
+**A nested filter cannot name an entity.** `where({ author })` takes an `EntityId`, but the `where` inside a `select(…)` collection compiles into the query value before any binding exists, so one there is refused.
 
 **No Suspense.** The React adapter reports `pending` as a state to render, not by suspending. A Suspense mode is additive and is tracked separately.
 
