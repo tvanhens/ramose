@@ -1,4 +1,6 @@
 import { expect } from "vitest";
+import { replicaLeaderKey } from "../../packages/ramose/src/internal/replication/leadership.ts";
+import { replicaDatabaseScopeOf } from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
 import { browserTest } from "./fixtures.ts";
 import { openTab, type TabHandle } from "./tab-harness.ts";
 import {
@@ -35,6 +37,25 @@ const deleteDatabase = (name: string): Promise<void> =>
     request.addEventListener("error", () => resolve(), { once: true });
     request.addEventListener("blocked", () => resolve(), { once: true });
   });
+
+/** Whether some other browsing context is holding this scope's leadership. */
+const lockHeld = async (key: string): Promise<boolean> => {
+  let granted = false;
+  await navigator.locks.request(key, { ifAvailable: true }, (lock) => {
+    granted = lock !== null;
+  });
+  return !granted;
+};
+
+const leaderKey = async (
+  storageName: string,
+  database: string,
+  principal?: string,
+): Promise<string> =>
+  replicaLeaderKey(
+    replicaDatabaseScopeOf(await identityFor(database, [], principal)),
+    storageName,
+  );
 
 /** A database id of the shape the protocol uses, unique to one test. */
 const databaseOf = (uniqueId: string): string =>
@@ -125,12 +146,18 @@ browserTest(
     try {
       expect((await started(clearing, name, database)).titles)
         .toEqual(["first", "second"]);
+      const leadership = await leaderKey(name, database);
+      expect(await lockHeld(leadership)).toBe(true);
 
       // The second holder is activating: it has read the barrier and has no
       // authenticated identity yet, so it is not enrolled in the scope at all.
       expect(await activating.call<number>("admit", { storageName: name })).toBe(0);
 
       expect(await clearing.call<string>("clearLocal")).toBe("closed");
+
+      // Clearing awaits the shutdown it started, so the leadership this tab
+      // held is given up by the time the call returns.
+      expect(await lockHeld(leadership)).toBe(false);
 
       // The identity it goes on to authenticate is the one the clear removed,
       // and the install transaction is where that is found out.
@@ -259,6 +286,16 @@ browserTest(
         "the reading tab to rebind to the replacement principal",
       );
       expect(settled.titles).toEqual(["successor"]);
+
+      // A confirmation that names another scope elects for that one and gives
+      // the leadership of the scope before it back.
+      const successorLeadership = await leaderKey(name, database, REPLACEMENT);
+      await until(
+        () => lockHeld(successorLeadership),
+        (held) => held,
+        "the reading tab to stand for the replacement principal",
+      );
+      expect(await lockHeld(await leaderKey(name, database))).toBe(false);
 
       const published = await reader.call<readonly QueryReport[]>("published");
       const rebound = published.findIndex(
