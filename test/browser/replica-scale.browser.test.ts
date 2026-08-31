@@ -487,8 +487,10 @@ browserTest(
       expect(afterRestore.manifest).toBe(installed.manifest);
       budgetHeadroom("100k persisted restore", restore.ms, BUDGET_100K_RESTORE_MS);
 
-      const target = datoms[0];
+      const target = datoms[0]!;
       expect(target.field).toBe(":item/name");
+      expect(target.value.type).toBe("string");
+      const targetName = (target.value as { readonly value: string }).value;
       const change = await timed(async () =>
         await withStorage(name, async (storage) => {
           storage.resetWriteCounts();
@@ -501,15 +503,24 @@ browserTest(
             datoms: [{
               entity: target.entity,
               field: ":item/name",
+              value: { type: "string", value: targetName },
+              op: "retract",
+            }, {
+              entity: target.entity,
+              field: ":item/name",
               value: { type: "string", value: "one changed datom" },
               op: "add",
             }],
           }));
           expect(applied).toBeDefined();
 
+          const subject = applied!.handles.get(sealedHandle(target.entity));
+          expect(subject).toBeDefined();
+          const facts = await applied!.db.datomsArray(Index.EAVT, { e: subject! });
+          expect(facts).toHaveLength(FIELDS_PER_ENTITY);
           const nameAttribute = applied!.db.requireAttr(":item/name");
-          const changed = await applied!.db.datomsArray(Index.AEVT, { a: nameAttribute.id });
-          expect(changed.some((datom) => datom.v === "one changed datom")).toBe(true);
+          expect(facts.find((fact) => fact.a === nameAttribute.id)?.v)
+            .toBe("one changed datom");
           const query = await representativeQuery(applied!.db);
           return { matched: query.matched, writes: storage.writeCounts() };
         })
