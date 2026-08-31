@@ -8,6 +8,7 @@ import {
 } from "../internal/replication/replica-lifecycle.ts";
 import {
   runSubmissionPass,
+  type InterruptedReason,
   type MutationEndpoint,
   type QueueProgress,
 } from "../internal/replication/submission.ts";
@@ -23,13 +24,38 @@ const fenced = (
 ): boolean =>
   entry.state._tag === "Interrupted" && entry.state.reason === reason;
 
+const UNREPLAYABLE: ReadonlySet<InterruptedReason> = new Set<InterruptedReason>([
+  "record-invalid",
+  "invocation-conflict",
+  "mapping-refused",
+]);
+
+const unreplayable = (entry: QueueProgress): boolean =>
+  entry.state._tag === "Interrupted" && UNREPLAYABLE.has(entry.state.reason);
+
 const transient = (entry: QueueProgress): boolean =>
   entry.state._tag === "Retry" ||
   (entry.state._tag === "Interrupted" &&
     entry.state.reason !== "scope-fenced" &&
-    entry.state.reason !== "leadership-fenced");
+    entry.state.reason !== "leadership-fenced" &&
+    !UNREPLAYABLE.has(entry.state.reason));
 
-export type PassOutcome = "withdraw" | "stand-down" | "again" | "later" | "settled";
+export const queueUnreplayable = (
+  progress: readonly QueueProgress[],
+  database: string,
+): boolean =>
+  progress.some((entry) =>
+    replicaDatabaseKey(entry.receiver) === database &&
+    (entry.state._tag === "UpdateRequired" || unreplayable(entry))
+  );
+
+export type PassOutcome =
+  | "withdraw"
+  | "stand-down"
+  | "again"
+  | "later"
+  | "obstructed"
+  | "settled";
 
 export const passOutcome = (
   progress: readonly QueueProgress[],
@@ -39,7 +65,8 @@ export const passOutcome = (
     return "stand-down";
   }
   if (progress.some(advanced)) return "again";
-  return progress.some(transient) ? "later" : "settled";
+  if (progress.some(transient)) return "later";
+  return progress.some(unreplayable) ? "obstructed" : "settled";
 };
 
 const RETRY_DELAY_MS = 1_000;
@@ -86,6 +113,10 @@ export class SubmissionLoop {
 
   track(receiver: ReplicaDatabaseScope, driver: ReceiptDriver): void {
     this.receipts.set(driver.receipt.invocation, { receiver, driver });
+  }
+
+  untrack(invocation: InvocationId): void {
+    this.receipts.delete(invocation);
   }
 
   async settleFromDurable(): Promise<void> {
@@ -155,6 +186,7 @@ export class SubmissionLoop {
       case "later":
         this.later(scope);
         return;
+      case "obstructed":
       case "settled":
         return;
     }

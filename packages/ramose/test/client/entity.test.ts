@@ -21,6 +21,7 @@ const context: MutationContext = {
   submit: () => undefined,
   applied: () => undefined,
   track: () => undefined,
+  untrack: () => undefined,
 };
 
 const operation = (name: string): ClientOperation =>

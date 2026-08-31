@@ -26,6 +26,7 @@ export type MutationContext = {
     receiver: ReplicaDatabaseScope,
     driver: ReceiptDriver,
   ) => void;
+  readonly untrack: (driver: ReceiptDriver) => void;
 };
 
 export type {
@@ -91,15 +92,20 @@ const enqueue = async (
     enqueuedAt: Date.now(),
   };
   context.track(receiver, driver);
-  await storage.outbox().enqueue(draft, {
-    scope: { server: receiver.server, principal: receiver.principal },
-    ...(operation.optimistic === undefined ? {} : {
-      projection: projectionIdentity(
-        catalog.projections.build,
-        operation.optimistic.revision,
-      ),
-    }),
-  });
+  try {
+    await storage.outbox().enqueue(draft, {
+      scope: { server: receiver.server, principal: receiver.principal },
+      ...(operation.optimistic === undefined ? {} : {
+        projection: projectionIdentity(
+          catalog.projections.build,
+          operation.optimistic.revision,
+        ),
+      }),
+    });
+  } catch (cause) {
+    context.untrack(driver);
+    throw cause;
+  }
   driver.queue();
   context.applied(receiver);
   context.submit(receiver);

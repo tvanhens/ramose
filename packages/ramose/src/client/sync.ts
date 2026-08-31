@@ -13,10 +13,11 @@
  *   new build. Two causes, and they differ in what stays readable. The server
  *   rotated the authorized view (a schema, trait, read-policy, or graph-read
  *   change): nothing is published, because this build cannot read what the
- *   server now serves. Or this build cannot replay its own durable optimistic
- *   layers: those layers are withheld, but the committed replica is untouched
- *   and stays readable, so queries keep answering from it without the pending
- *   work folded in.
+ *   server now serves. Or this build cannot replay its own durable queued work
+ *   — a record, an acknowledgement or an allocation it cannot read or apply:
+ *   that work is withheld, but the committed replica is untouched and stays
+ *   readable, so queries keep answering from it without the pending work folded
+ *   in. Nothing queued is discarded either way.
  * - `authentication-required` — the credential was refused, or the principal
  *   behind it was replaced. There is no anonymous fallback and no other
  *   candidate: the prior partition is fenced and publishes nothing.
