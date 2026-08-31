@@ -74,23 +74,30 @@ const partition = async (subject: string, offline: boolean): Promise<void> => {
 class Wallet {
   minted = 0;
   private held: { readonly token: string; readonly cacheKey: string } | undefined;
+  private expiresAt = 0;
 
   constructor(private readonly subject: string) {}
 
+  /** Sign out and back in: the next activation presents a different bearer. */
   rotate(): void {
     this.held = undefined;
   }
 
   readonly session = async (): Promise<{ token: string; cacheKey: string }> => {
-    if (this.held !== undefined) return this.held;
+    // A held bearer is presented again while it is comfortably valid, which is
+    // what makes an exact prior binding reachable; a nearly expired one is
+    // renewed, as an application's own token client would renew it.
+    if (this.held !== undefined && Date.now() < this.expiresAt) return this.held;
     const answered = await fetch(
       `${TOKEN_PATH}?sub=${encodeURIComponent(this.subject)}`,
     );
     const body = await answered.json() as {
       readonly token: string;
       readonly account: string;
+      readonly expiresIn: number;
     };
     this.minted += 1;
+    this.expiresAt = Date.now() + Math.max(body.expiresIn - 15, 5) * 1_000;
     this.held = { token: body.token, cacheKey: body.account };
     return this.held;
   };

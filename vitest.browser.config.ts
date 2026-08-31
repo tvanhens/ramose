@@ -84,10 +84,29 @@ const bearerSubject = (request: IncomingMessage): string => {
  * what the browser sends is what a deployed peer answers.
  */
 const exampleStack = (): Plugin => {
+  /** The connections each principal currently holds, so a cut can take them. */
+  const held = new Map<string, Set<AbortController>>();
+
+  const hold = (subject: string, connection: AbortController): (() => void) => {
+    const open = held.get(subject) ?? new Set<AbortController>();
+    open.add(connection);
+    held.set(subject, open);
+    return () => {
+      open.delete(connection);
+      if (open.size === 0) held.delete(subject);
+    };
+  };
+
+  const cut = (subject: string): void => {
+    for (const connection of held.get(subject) ?? []) connection.abort();
+    held.delete(subject);
+  };
+
   const forward = async (
     request: IncomingMessage,
     response: ServerResponse,
     target: string,
+    subject: string,
   ): Promise<void> => {
     const body = request.method === "GET" || request.method === "HEAD"
       ? undefined
@@ -102,30 +121,34 @@ const exampleStack = (): Plugin => {
       if (value === undefined || name === "host" || name === "origin") continue;
       headers.set(name, Array.isArray(value) ? value.join(", ") : value);
     }
-    const answered = await fetch(target, {
-      method: request.method ?? "GET",
-      headers,
-      ...(body === undefined || body.length === 0
-        ? {}
-        : { body: new Uint8Array(body) }),
-    });
-    response.statusCode = answered.status;
-    const type = answered.headers.get("content-type");
-    if (type !== null) response.setHeader("content-type", type);
-    response.setHeader("cache-control", "no-store");
-    if (answered.body === null) {
-      response.end();
-      return;
-    }
+    const connection = new AbortController();
+    const release = hold(subject, connection);
     try {
-      for await (const chunk of answered.body) {
-        if (response.writableEnded) break;
-        response.write(chunk);
+      const answered = await fetch(target, {
+        method: request.method ?? "GET",
+        headers,
+        signal: connection.signal,
+        ...(body === undefined || body.length === 0
+          ? {}
+          : { body: new Uint8Array(body) }),
+      });
+      response.statusCode = answered.status;
+      const type = answered.headers.get("content-type");
+      if (type !== null) response.setHeader("content-type", type);
+      response.setHeader("cache-control", "no-store");
+      if (answered.body !== null) {
+        for await (const chunk of answered.body) {
+          if (response.writableEnded) break;
+          response.write(chunk);
+        }
       }
     } catch {
-      // A client that closed a long-lived replication stream aborts the read.
+      // Either the browser closed a long-lived stream, or a partition cut it.
+      response.destroy();
+    } finally {
+      release();
+      if (!response.writableEnded && !response.destroyed) response.end();
     }
-    if (!response.writableEnded) response.end();
   };
 
   const partitioned = new Set<string>();
@@ -139,8 +162,12 @@ const exampleStack = (): Plugin => {
         if (path === PARTITION_PATH) {
           const query = new URLSearchParams(url.slice(path.length + 1));
           const subject = query.get("sub") ?? "";
-          if (query.get("offline") === "1") partitioned.add(subject);
-          else partitioned.delete(subject);
+          if (query.get("offline") === "1") {
+            partitioned.add(subject);
+            cut(subject);
+          } else {
+            partitioned.delete(subject);
+          }
           response.statusCode = 204;
           response.end();
           return;
@@ -151,12 +178,13 @@ const exampleStack = (): Plugin => {
           ? `${PEER_ORIGIN}${url}`
           : undefined;
         if (target === undefined) return next();
-        if (partitioned.size > 0 && partitioned.has(bearerSubject(request))) {
+        const subject = bearerSubject(request);
+        if (partitioned.has(subject)) {
           request.destroy();
           response.destroy();
           return;
         }
-        forward(request, response, target).catch(next);
+        forward(request, response, target, subject).catch(next);
       });
     },
   };
