@@ -103,7 +103,7 @@ class RamoseClient implements Client {
   private releaseInvalidation: (() => void) | undefined;
   private releaseNotices: (() => void) | undefined;
   private releaseActivation: (() => void) | undefined;
-  private readonly receivers = new Set<string>();
+  private readonly receivers = new Map<string, ClientDatabaseHandle | undefined>();
   private terminal: "closed" | "cleared" | "fenced" | undefined;
   private termination: Promise<void> | undefined;
   private clearing = false;
@@ -343,7 +343,7 @@ class RamoseClient implements Client {
     const key = replicaDatabaseKey(receiver);
     if (this.terminal !== undefined || this.receivers.has(key)) return;
     if (this.databaseFor(receiver) !== undefined) return;
-    this.receivers.add(key);
+    this.receivers.set(key, undefined);
     void this.storage().then(
       async (storage) => {
         const record = await storage.graphReceiver(receiver);
@@ -351,9 +351,10 @@ class RamoseClient implements Client {
           this.receivers.delete(key);
           return;
         }
-        this.graphRegistry()
-          .acquire(receiverStableKey(receiver), record.graphPath, this)
-          .activateGraph();
+        const handle = this.graphRegistry()
+          .acquire(receiverStableKey(receiver), record.graphPath, this);
+        this.receivers.set(key, handle);
+        handle.activateGraph();
       },
       () => {
         this.receivers.delete(key);
@@ -458,14 +459,28 @@ class RamoseClient implements Client {
     return { token: credential.token, cacheKey: credential.cacheKey };
   }
 
+  /**
+   * Report the synchronization state of the databases this application
+   * opened.
+   *
+   * A database opened only to drain a queue is not one of them: it is this
+   * client's own errand, and letting a receiver it cannot reach report
+   * `offline` — or a recorded path the server no longer authorizes report
+   * `authentication-required` — would answer for databases the application is
+   * reading perfectly well. What became of that queued work is its receipt's
+   * answer to give.
+   */
   private refreshSync(): void {
     if (this.terminal !== undefined) {
       this.syncStore.publish(syncState("closed"));
       return;
     }
+    const errands = new Set(this.receivers.values());
     const statuses = [
       ...(this.root === undefined ? [] : [this.root.syncStatus()]),
-      ...(this.graph?.statuses() ?? []),
+      ...(this.graph?.handles() ?? [])
+        .filter((handle) => !errands.has(handle))
+        .map((handle) => handle.syncStatus()),
     ];
     this.syncStore.publish(syncState(aggregateSyncStatus(statuses)));
   }

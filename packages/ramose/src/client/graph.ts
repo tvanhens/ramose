@@ -369,10 +369,6 @@ export class GraphRegistry {
     this.membershipChanged();
   }
 
-  statuses(): readonly SyncStatus[] {
-    return [...this.databases.values()].map(({ handle }) => handle.syncStatus());
-  }
-
   handles(): readonly ClientDatabaseHandle[] {
     return [...this.databases.values()].map(({ handle }) => handle);
   }

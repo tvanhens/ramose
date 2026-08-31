@@ -306,13 +306,13 @@ describe("the resolved-database registry", () => {
 
     expect(changes).toHaveLength(1);
     local.retire("stable", one);
-    expect(local.statuses()).toHaveLength(1);
+    expect(local.handles()).toHaveLength(1);
     expect(changes).toHaveLength(1);
     expect(local.acquire("stable", ["acme"], one)).toBe(database);
 
     local.retire("stable", one);
     local.retire("stable", two);
-    expect(local.statuses()).toHaveLength(0);
+    expect(local.handles()).toHaveLength(0);
 
     expect(changes).toHaveLength(2);
 
