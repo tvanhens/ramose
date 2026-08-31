@@ -40,6 +40,7 @@ import {
   OperationDescriptor,
   type FieldRefTarget,
   type OperationInputShape,
+  type OperationWireShape,
   type OperationDescriptor as OperationDescriptorType,
 } from "../catalog.ts";
 import {
@@ -81,6 +82,7 @@ export type DeployedOperationDefinition = {
   readonly writes: readonly EntityId[];
   readonly input: DeployedOperationCodec;
   readonly output: DeployedOperationCodec;
+  readonly inputWireShape: OperationWireShape;
   readonly inputSchemaHash: DigestHex;
   readonly outputSchemaHash: DigestHex;
   readonly doc: string | undefined;
@@ -93,6 +95,7 @@ export type DeployedOperationBinding = {
   readonly descriptor: OperationDescriptorType;
   readonly input: DeployedOperationCodec;
   readonly output: DeployedOperationCodec;
+  readonly inputWireShape: OperationWireShape;
   readonly run: DeployedOperationRun;
   readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
 };
@@ -118,6 +121,7 @@ export type OwnedOperationSnapshot = {
   readonly writes: readonly EntityId[];
   readonly composers: readonly EntityId[];
   readonly inputShape: OperationInputShape;
+  readonly inputWireShape: OperationWireShape;
   readonly outputShape: OperationInputShape;
   readonly inputSchemaMaterial: JsonValue;
   readonly outputSchemaMaterial: JsonValue;
@@ -226,6 +230,7 @@ export const pairDeployedOperations = (
         descriptor,
         input: definition.input,
         output: definition.output,
+        inputWireShape: definition.inputWireShape,
         run: definition.run,
         entityDefinitions: definition.entityDefinitions,
       }));
@@ -587,6 +592,90 @@ export const lowerOperationSchema = (
   return primitiveShape(schema.ast) ?? { _tag: "opaque" };
 };
 
+const refDepths = (
+  shape: OperationInputShape | OperationWireShape,
+  prefix: string,
+  into: string[],
+): readonly string[] => {
+  switch (shape._tag) {
+    case "ref":
+      into.push(prefix);
+      break;
+    case "array":
+      refDepths(shape.items, `${prefix}[]`, into);
+      break;
+    case "struct":
+      for (const field of shape.fields) refDepths(field.shape, `${prefix}*`, into);
+      break;
+    default:
+      break;
+  }
+  return into;
+};
+
+const wireRefsAreDeclared = (
+  wire: OperationWireShape,
+  decoded: OperationInputShape,
+): boolean => {
+  const declared = [...refDepths(decoded, "", [])];
+  for (const depth of refDepths(wire, "", [])) {
+    const at = declared.indexOf(depth);
+    if (at < 0) return false;
+    declared.splice(at, 1);
+  }
+  return true;
+};
+
+export const lowerOperationWireShape = (
+  catalog: CatalogId,
+  schema: Schema.Top,
+  active: ReadonlySet<Schema.Top> = new Set(),
+): OperationWireShape => {
+  schema = unwrapPropertySchema(schema);
+  if (active.has(schema)) return { _tag: "opaque" };
+  const next = new Set(active).add(schema);
+  if (
+    tryInferDbValueType(schema) === "ref" || astHasRamoseRefMarker(schema.ast)
+  ) return { _tag: "ref" };
+
+  const record = schema as Schema.Top & {
+    readonly fields?: Readonly<Record<PropertyKey, Schema.Top>>;
+    readonly value?: Schema.Top;
+    readonly from?: Schema.Top;
+    readonly to?: Schema.Top;
+  };
+  if (record.fields !== undefined) {
+    const keys = Reflect.ownKeys(record.fields);
+    if (keys.some((key) => typeof key !== "string")) return { _tag: "opaque" };
+    return {
+      _tag: "struct",
+      fields: (keys as string[]).sort(compareText).map((key) => ({
+        key,
+        shape: lowerOperationWireShape(catalog, record.fields![key]!, next),
+      })),
+    };
+  }
+  if (record.value !== undefined && SchemaAST.toType(schema.ast)._tag === "Arrays") {
+    return {
+      _tag: "array",
+      items: lowerOperationWireShape(catalog, record.value, next),
+    };
+  }
+  if (record.from !== undefined && record.to !== undefined && record.to !== schema) {
+    const wire = lowerOperationWireShape(catalog, record.from, next);
+    let decoded: OperationInputShape;
+    try {
+      decoded = lowerOperationSchema(catalog, record.to, next);
+    } catch {
+      return { _tag: "opaque" };
+    }
+    return wireRefsAreDeclared(wire, decoded) ? wire : { _tag: "opaque" };
+  }
+  return primitiveShape(schema.ast) === undefined
+    ? { _tag: "opaque" }
+    : { _tag: "scalar" };
+};
+
 const shapeContainsSelf = (shape: OperationInputShape): boolean => {
   switch (shape._tag) {
     case "scalar":
@@ -758,6 +847,9 @@ export const snapshotOwnedOperations = (
           allocations: operation.allocations ?? [],
         }) as OperationVersionDescriptor,
         inputShape: deepFreeze(inputShape),
+        inputWireShape: deepFreeze(
+          lowerOperationWireShape(catalog, operation.input),
+        ),
         outputShape: deepFreeze(outputShape),
         inputSchemaMaterial: deepFreeze(inputSchemaMaterial),
         outputSchemaMaterial: deepFreeze(outputSchemaMaterial),
@@ -829,6 +921,7 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
           writes: snapshot.writes,
           input: snapshot.inputCodec,
           output: snapshot.outputCodec,
+          inputWireShape: snapshot.inputWireShape,
           inputSchemaHash,
           outputSchemaHash,
           doc: snapshot.doc,

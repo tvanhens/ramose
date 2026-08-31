@@ -120,6 +120,35 @@ const targetedCreateVersion = async (): Promise<string> => {
   return lowered.descriptors[0]!.version as string;
 };
 
+const stringItemRetitleVersion = async (): Promise<string> => {
+  const Replica = Entity("nativeItem", { title: string() }, {
+    operations: (Operation) => ({
+      retitleByRef: Operation({
+        self: false,
+        input: EffectSchema.Struct({
+          item: EffectSchema.String,
+          title: EffectSchema.String,
+          note: EffectSchema.String,
+        }),
+        output: EffectSchema.Struct({
+          item: OperationEntityId,
+          title: EffectSchema.String,
+          note: EffectSchema.String,
+        }),
+        run(_op, input) {
+          return { item: 1, title: input.title, note: input.note };
+        },
+      }),
+    }),
+  });
+  const lowered = await Effect.runPromise(lowerOwnedOperations(
+    CatalogId.make("local-native-operations"),
+    Schema({ nativeItem: Replica }),
+    DigestHex.make("7d".repeat(32)),
+  ));
+  return lowered.descriptors[0]!.version as string;
+};
+
 const invokeWith = async (
   base: string,
   database: string,
@@ -1831,6 +1860,142 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           query: '[:find ?e :where [?e :nativeItem/title "Should never land"]]',
         });
         expect(rows.body.result).toEqual([]);
+      });
+
+      test("a stale pin is decided before the new input shape reads its value", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-input-pinned";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_sealed_input_pin");
+        const stale = await stringItemRetitleVersion();
+        const receiptsBefore = await operationReceiptCount(base, database);
+
+        const refused = await invokeWith(base, database, token, {
+          invocationId: "sealed-input-pinned-01",
+          operationVersion: stale,
+          operation: retitleByRef,
+          input: { item: "a plain string", title: "Must not execute", note: "" },
+        });
+        expect(refused.status).toBe(409);
+        expect(refused.body).toEqual({
+          error: "request rejected",
+          code: "operation_changed",
+        });
+
+        const reader = await signToken(
+          database,
+          "reader",
+          "user_sealed_input_pin_reader",
+        );
+        const denied = await invokeWith(base, database, reader, {
+          invocationId: "sealed-input-pinned-02",
+          operationVersion: stale,
+          operation: retitleByRef,
+          input: { item: "a plain string", title: "Must not execute", note: "" },
+        });
+        expect(denied.status).toBe(403);
+
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const absent = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Must not execute"]]',
+        });
+        expect(absent.body.result).toEqual([]);
+      });
+
+      test("a sealed handle under a key-renaming input codec resolves at its wire position", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-sealed-input-renamed";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_input_renamed");
+        const retitleByRenamedRef = {
+          owner: { kind: "entity" as const, name: "nativeItem" },
+          localName: "retitleByRenamedRef",
+        };
+        const created = await invokeWith(base, database, token, {
+          invocationId: "input-renamed-create-01",
+          operation: createItem,
+          input: { title: "Renamed dependency" },
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect(created.status).toBe(200);
+        const entityId = created.body.mappings[0].entityId as string;
+        const eid = await openEntityHandle(base, database, token, entityId);
+
+        const retitled = await invokeWith(base, database, token, {
+          invocationId: "input-renamed-01",
+          operation: retitleByRenamedRef,
+          input: {
+            item_id: entityId,
+            title: "Retitled through a renamed handle",
+            wire_note: entityId,
+          },
+        });
+        expect(retitled.status).toBe(200);
+        expect(retitled.body.result).toEqual({
+          item: entityId,
+          title: "Retitled through a renamed handle",
+          note: entityId,
+        });
+
+        const rows = await testAdmin(base, database, "/query", {
+          query:
+            '[:find ?e :where [?e :nativeItem/title "Retitled through a renamed handle"]]',
+        });
+        expect(rows.body.result.length).toBe(1);
+
+        const receiptsBefore = await operationReceiptCount(base, database);
+        const numeric = await invokeWith(base, database, token, {
+          invocationId: "input-renamed-01",
+          operation: retitleByRenamedRef,
+          input: {
+            item_id: eid,
+            title: "Retitled through a renamed handle",
+            wire_note: entityId,
+          },
+        });
+        expect(numeric.status).toBe(200);
+        expect(numeric.body).toEqual(retitled.body);
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+
+        for (
+          const [kind, handle, status, code] of [
+            [
+              "codec-version",
+              unreadableEntityId("codec-version"),
+              409,
+              "invocation_update_required",
+            ],
+            ["key-epoch", unreadableEntityId("key-epoch"), 409, "invocation_update_required"],
+            [
+              "tampered",
+              `${entityId.slice(0, 30)}${entityId[30] === "A" ? "B" : "A"}${
+                entityId.slice(31)
+              }`,
+              403,
+              undefined,
+            ],
+          ] as const
+        ) {
+          const refused = await invokeWith(base, database, token, {
+            invocationId: `input-renamed-${kind}`,
+            operation: retitleByRenamedRef,
+            input: {
+              item_id: handle,
+              title: "Must not execute",
+              wire_note: "",
+            },
+          });
+          expect([kind, refused.status]).toEqual([kind, status]);
+          if (code !== undefined) {
+            expect(refused.body).toEqual({ error: "request rejected", code });
+          }
+        }
+
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const absent = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Must not execute"]]',
+        });
+        expect(absent.body.result).toEqual([]);
       });
 
       test("an undeclared slot is refused before the operation body runs", async () => {

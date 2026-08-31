@@ -125,6 +125,18 @@ export type OperationInputShapeEncoded =
   | { readonly _tag: "struct"; readonly fields: ReadonlyArray<OperationInputFieldDescriptorEncoded> }
   | { readonly _tag: "array"; readonly items: OperationInputShapeEncoded };
 
+export type OperationWireFieldShape = {
+  readonly key: string;
+  readonly shape: OperationWireShape;
+};
+
+export type OperationWireShape =
+  | { readonly _tag: "scalar" }
+  | { readonly _tag: "ref" }
+  | { readonly _tag: "opaque" }
+  | { readonly _tag: "struct"; readonly fields: ReadonlyArray<OperationWireFieldShape> }
+  | { readonly _tag: "array"; readonly items: OperationWireShape };
+
 const uniqueInputKeys = Schema.makeFilter(
   (fields: ReadonlyArray<{ readonly key: string }>) => {
     const seen = new Set<string>();

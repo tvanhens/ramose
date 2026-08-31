@@ -50,7 +50,7 @@ import {
   catalogProvisioningAttributes,
   decideEpoch,
   decideInvocationReceipt,
-  deployedOperationInputShape,
+  deployedOperationInputWireShape,
   deployedOperationOutputShape,
   deployedOperationVersion,
   executeCatalogOperation,
@@ -772,14 +772,14 @@ export class Transactor {
                 p.operation.localName,
               );
               if (operationVersion === undefined) throw opaqueOperationDenial();
-              const inputShape = deployedOperationInputShape(
+              const inputWireShape = deployedOperationInputWireShape(
                 resolved,
                 p.operation.owner,
                 p.operation.localName,
               );
-              if (inputShape === undefined) throw opaqueOperationDenial();
+              if (inputWireShape === undefined) throw opaqueOperationDenial();
               const inputHandles = inputEntityRefHandles(
-                inputShape,
+                inputWireShape,
                 p.operation.input,
               );
               const outputShape = deployedOperationOutputShape(
@@ -815,6 +815,10 @@ export class Transactor {
                 this.stats.rejected++;
                 p.resolve({ _tag: tag });
               };
+              if (supplied !== undefined && supplied !== operationVersion) {
+                await resolveCompatibility("OperationChanged");
+                continue;
+              }
               const epoch = this.decideInvocationEpoch(p, inputHandles);
               if (epoch._tag === "UpdateRequired") {
                 await resolveCompatibility("UpdateRequired");
@@ -841,10 +845,6 @@ export class Transactor {
               const prepared = await Effect.runPromise(
                 prepareInvocationReceipt(operation, operationVersion),
               );
-              if (supplied !== undefined && supplied !== operationVersion) {
-                await resolveCompatibility("OperationChanged");
-                continue;
-              }
               const inspected = this.inspectInvocationReceipt(prepared);
               if (
                 inspected._tag === "OperationChanged" ||

@@ -41,6 +41,7 @@ import type {
   FieldRefTarget,
   OperationDescriptor,
   OperationInputShape,
+  OperationWireShape,
 } from "./catalog.ts";
 import {
   requireCatalogKey,
@@ -312,12 +313,12 @@ export const deployedOperationOutputShape = (
 ): OperationInputShape | undefined =>
   bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.output;
 
-export const deployedOperationInputShape = (
+export const deployedOperationInputWireShape = (
   resolved: ResolvedOperationCatalog,
   owner: OwnerRef,
   localName: string,
-): OperationInputShape | undefined =>
-  bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.input;
+): OperationWireShape | undefined =>
+  bindingFor(resolved.deployed.definition, owner, localName)?.inputWireShape;
 
 const fieldIdent = (field: FieldDescriptor): string =>
   `:${field.id.owner.name}/${field.id.localName}`;

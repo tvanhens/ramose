@@ -18,6 +18,7 @@ export { invoke, type InvokeBuilder } from "./invoke.ts";
 export { compileReadAuthorization, compileReadAuthorizationResult } from "./compile.ts";
 export {
   lowerOperationSchema,
+  lowerOperationWireShape,
   lowerOwnedOperations,
   pairDeployedOperations,
   type DeployedOperationBinding,

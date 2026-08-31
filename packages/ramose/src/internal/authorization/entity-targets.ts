@@ -12,7 +12,11 @@ import {
   type SealedEntityId,
 } from "../replication/entity-id.ts";
 import type { ServerSealingKey } from "../replication/server-identity.ts";
-import type { AllocationSlotDescriptor, OperationInputShape } from "./catalog.ts";
+import type {
+  AllocationSlotDescriptor,
+  OperationInputShape,
+  OperationWireShape,
+} from "./catalog.ts";
 
 export type InvocationAllocation = {
   readonly slot: string;
@@ -319,12 +323,12 @@ export const mayCarrySealedEntityId = (input: unknown): boolean => {
 };
 
 export const inputEntityRefHandles = (
-  shape: OperationInputShape,
+  shape: OperationWireShape,
   input: unknown,
 ): readonly (readonly AllocationPathSegment[])[] => {
   const paths: (readonly AllocationPathSegment[])[] = [];
   const walk = (
-    current: OperationInputShape,
+    current: OperationWireShape,
     value: unknown,
     path: readonly AllocationPathSegment[],
   ): void => {

@@ -16,6 +16,7 @@ import {
 import { Ref as RefSchema } from "../../../src/db/valueTypes.ts";
 import {
   lowerOperationSchema,
+  lowerOperationWireShape,
   lowerOwnedOperations,
   pairDeployedOperations,
 } from "../../../src/internal/authorization/authoring/index.ts";
@@ -522,6 +523,64 @@ describe("owned operation lowering", () => {
         },
       ],
     });
+  });
+
+  test("lowers the wire shape at the keys a renaming codec puts on the wire", () => {
+    const { User } = fixture();
+    const declared = Schema.Struct({
+      assignee: RefSchema(User),
+      labels: Schema.Array(RefSchema(User)),
+      note: Schema.String,
+    });
+    expect(lowerOperationWireShape(catalog, declared)).toEqual({
+      _tag: "struct",
+      fields: [
+        { key: "assignee", shape: { _tag: "ref" } },
+        { key: "labels", shape: { _tag: "array", items: { _tag: "ref" } } },
+        { key: "note", shape: { _tag: "scalar" } },
+      ],
+    });
+
+    const renamed = declared.pipe(
+      Schema.encodeKeys({ assignee: "assignee_id", note: "wire_note" }),
+    );
+    expect(lowerOperationWireShape(catalog, renamed)).toEqual({
+      _tag: "struct",
+      fields: [
+        { key: "assignee_id", shape: { _tag: "ref" } },
+        { key: "labels", shape: { _tag: "opaque" } },
+        { key: "wire_note", shape: { _tag: "scalar" } },
+      ],
+    });
+    expect(
+      (lowerOperationSchema(catalog, renamed) as unknown as {
+        fields: { key: string }[];
+      }).fields.map((field) => field.key),
+    ).toEqual(["assignee", "labels", "note"]);
+  });
+
+  test("leaves a wire reference the decoded contract does not declare opaque", () => {
+    const { User } = fixture();
+    const restated = Schema.Struct({ assignee: RefSchema(User) }).pipe(
+      Schema.decodeTo(
+        Schema.Struct({ assignee: Schema.String }),
+        {
+          decode: SchemaGetter.transform((value: { assignee: number }) => ({
+            assignee: String(value.assignee),
+          })),
+          encode: SchemaGetter.transform((value: { assignee: string }) => ({
+            assignee: Number(value.assignee),
+          })),
+        },
+      ),
+    );
+    expect(lowerOperationSchema(catalog, restated)).toEqual({
+      _tag: "struct",
+      fields: [
+        { key: "assignee", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+      ],
+    });
+    expect(lowerOperationWireShape(catalog, restated)).toEqual({ _tag: "opaque" });
   });
 
   test("rejects refs hidden in unsupported union, tuple, and refinement schemas", () => {
