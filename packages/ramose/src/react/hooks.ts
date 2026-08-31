@@ -90,7 +90,6 @@ type Observation<Out> = {
   readonly store: QueryStore<ClientValue<Out>>;
 };
 
-/** The database, key and interned store one query hook reads. */
 const observation = <Out>(
   query: QueryObject<unknown, Out>,
   database: ClientDatabase | undefined,

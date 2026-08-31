@@ -1,76 +1,20 @@
 import type { ClientDatabase, SyncStatus } from "../client/index.ts";
 import { reviewUnclaimed, type QueryStore, type StoreHold } from "./store.ts";
 
-/**
- * Whether a session in this state could still produce a first local value.
- *
- * `idle` and `connecting` are on their way to one, and `live` and `stale` have
- * one. An offline session does not, and a query with no local answer would
- * wait on it forever. That is not a failure — offline with nothing cached is a
- * steady state Ramose is built to sit in — so it is reported as `pending` for
- * the component to render rather than suspended on.
- */
 const delivers = (status: SyncStatus): boolean =>
   status === "idle" || status === "connecting" || carries(status);
 
-/**
- * Whether a session in this state says a local value for its scope exists.
- *
- * `live` and `stale` are both published over a value the session has; `stale`
- * is a restored replica this session has not confirmed.
- */
 const carries = (status: SyncStatus): boolean =>
   status === "live" || status === "stale";
 
-/**
- * Whether no later session state could change what this scope can answer.
- *
- * A closed handle, a refused credential and a build the queue is ahead of are
- * all decided: an application recovers by signing in again, reloading, or
- * constructing another client, not by this query waiting longer.
- */
 const decided = (status: SyncStatus): boolean =>
   status === "closed" || status === "authentication-required" ||
   status === "update-required";
 
-/**
- * The databases whose session has reported a local value at least once.
- *
- * A connection that drops after that says nothing about whether a query's
- * first answer is coming: what an unanswered query is then waiting for is a
- * local computation over a value that is already here, which always publishes
- * something. Without this, a restored replica whose session fails a moment
- * before the query finishes running would be read as "offline and nothing
- * cached" and flash an empty scope over data that was about to arrive.
- *
- * `connecting` withdraws it, because that is the one status published exactly
- * where nothing is readable: a fence and a failed activation both go back
- * through it, and a graph child republishes its parent's. Without the
- * withdrawal a scope whose value was taken away would be remembered as having
- * one forever, and a reactivation that then failed would leave a fallback
- * waiting on connectivity with nothing to wait for.
- */
 const LOCAL = new WeakSet<ClientDatabase>();
 
 const WATCHED = new WeakSet<ClientDatabase>();
 
-/**
- * Follow one database's session, so that what it reports is never missed.
- *
- * This has to be observed rather than sampled. A replica warmed through
- * `useQuery` alone passes through `live` or `stale` between renders, with no
- * suspense hook running to notice; the first `useSuspenseQuery` after that
- * connection drops would then read "offline and nothing cached" over a replica
- * that is fully loaded, and render an empty scope one tick before the data.
- * Every query hook starts this watch for the same reason: the database to
- * follow is the one an application reads, not the one it happens to suspend
- * on.
- *
- * The subscription is deliberately never released. It is one listener per
- * database, on a store the client owns for its own lifetime, and there is no
- * later moment at which forgetting what a session reported would be correct:
- * the fact this records outlives every component that could have released it.
- */
 export const watchLocal = (database: ClientDatabase): void => {
   if (WATCHED.has(database)) return;
   WATCHED.add(database);
@@ -89,17 +33,6 @@ const reads = (database: ClientDatabase): boolean => {
   return !decided(status) && (LOCAL.has(database) || delivers(status));
 };
 
-/**
- * The wait one suspended component is doing, held where React cannot discard
- * it.
- *
- * React throws away the component that suspends, so nothing in its own
- * lifetime is left observing the query it suspended for and the value would
- * never be computed. This observes in its place, from the render that suspends
- * until the commit that replaces it — or until the cache evicts it, which is
- * what bounds a wait whose component was unmounted while its fallback was on
- * screen.
- */
 class QuerySuspension implements StoreHold {
   readonly promise: Promise<void>;
   private resolve!: () => void;
@@ -129,7 +62,6 @@ class QuerySuspension implements StoreHold {
     return this.done;
   }
 
-  /** Whether this has already let go of its observation. */
   gone(): boolean {
     return this.released;
   }
@@ -145,19 +77,11 @@ class QuerySuspension implements StoreHold {
     else reviewUnclaimed(this.database);
   }
 
-  /**
-   * React committed a subscription of its own.
-   *
-   * The observation is only handed over once the wait is over: releasing it
-   * while a component is still suspended would leave that component waiting
-   * for a value nothing is computing.
-   */
   onClaimed(): void {
     this.claimed = true;
     if (this.done) this.stop();
   }
 
-  /** The cache dropped this entry; the observation goes with it. */
   onEvicted(): void {
     this.stop();
   }
@@ -179,13 +103,6 @@ class QuerySuspension implements StoreHold {
 
 const SUSPENSIONS = new WeakMap<ClientDatabase, Map<string, QuerySuspension>>();
 
-/**
- * What a component with no local answer should wait on, or nothing.
- *
- * `undefined` means do not suspend: either the session cannot produce a first
- * value right now, or the wait for this query is already over and the render
- * that resumes it reads the store directly.
- */
 export const suspend = (
   database: ClientDatabase,
   key: string,
