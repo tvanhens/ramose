@@ -22,7 +22,8 @@ import type {
 } from "../client/index.ts";
 import { PENDING, type QueryState } from "./query-state.ts";
 import { IDLE, type ReceiptView } from "./receipt-state.ts";
-import { queryStore } from "./store.ts";
+import { queryStore, type QueryStore } from "./store.ts";
+import { suspend } from "./suspense.ts";
 
 const ClientContext = createContext<Client | undefined>(undefined);
 
@@ -81,6 +82,35 @@ export const useDb = <Mutations = MutationNamespace>(): ClientDatabase<
 
 const pendingOnServer = (): QueryState<never> => PENDING;
 
+const IN_BROWSER = typeof document !== "undefined";
+
+type Observation<Out> = {
+  readonly db: ClientDatabase;
+  readonly key: string;
+  readonly store: QueryStore<ClientValue<Out>>;
+};
+
+/** The database, key and interned store one query hook reads. */
+const observation = <Out>(
+  query: QueryObject<unknown, Out>,
+  database: ClientDatabase | undefined,
+  provided: Client | undefined,
+  hook: string,
+): Observation<Out> => {
+  const db = database ?? provided?.open();
+  if (db === undefined) {
+    throw new Error(
+      `ramose/react: ${hook} needs a <RamoseProvider> or an explicit database`,
+    );
+  }
+  const key = queryObservationKey(query);
+  return {
+    db,
+    key,
+    store: queryStore<ClientValue<Out>>(db, key, () => db.observe(query)),
+  };
+};
+
 /**
  * Observe one query and re-render when its answer changes.
  *
@@ -116,16 +146,84 @@ export function useQuery<Row, Out>(
   query: QueryObject<Row, Out>,
   database?: ClientDatabase,
 ): QueryState<ClientValue<Out>> {
-  const provided = useContext(ClientContext);
-  const db = database ?? provided?.open();
-  if (db === undefined) {
-    throw new Error(
-      "ramose/react: useQuery needs a <RamoseProvider> or an explicit database",
-    );
+  const observed = observation<Out>(
+    query,
+    database,
+    useContext(ClientContext),
+    "useQuery",
+  );
+  return useSyncExternalStore(
+    observed.store.subscribe,
+    observed.store.getSnapshot,
+    pendingOnServer,
+  );
+}
+
+/**
+ * Observe one query and wait, under the nearest `<Suspense>`, for its first
+ * local answer.
+ *
+ * ```tsx
+ * const issues = useSuspenseQuery(db.query.from(Issue));
+ * if (issues.status === "pending") return <NothingCachedYet />;
+ * return <List rows={issues.data} stale={issues.status === "stale"} />;
+ * ```
+ *
+ * This waits for *loading*, never for connectivity. It suspends only while
+ * this query has no local answer at all **and** the session could still
+ * produce one — a cold start, or a scope this replica has not covered yet. It
+ * does not suspend when a local answer exists: a restored replica with an
+ * unreachable server renders `stale` immediately, which is the case Ramose
+ * exists for and the one a spinner would be wrong about.
+ *
+ * `pending` therefore still reaches the component, and means something
+ * narrower than it does in {@link useQuery}: there is no local answer *and*
+ * the session cannot currently produce one, because it is offline, fenced,
+ * unauthorized, or closed. Render what an empty offline scope should look
+ * like; a fallback would be a wait with no end. The component re-renders with
+ * the answer if the session later delivers one.
+ *
+ * The observation this waits on is held outside the component, because React
+ * discards a component that suspends and nothing in its lifetime would be left
+ * to compute the value. It is handed to the component's own subscription at
+ * the commit that resumes it, and released with the query's cache entry if no
+ * commit ever comes.
+ *
+ * Errors are returned, not thrown: a query that cannot be answered against the
+ * local view is a state this adapter reports the same way in both hooks,
+ * rather than a second failure channel that only one of them uses.
+ *
+ * Server rendering: this never suspends outside a browser. A server render has
+ * no local replica to wait for, so it reads `pending` exactly as
+ * {@link useQuery} does.
+ */
+export function useSuspenseQuery<N extends AnyComposer, Row, Out>(
+  query: EntityFocused<N, Row, Out>,
+  database?: ClientDatabase,
+): QueryState<EntityResult<N, Row, Out>>;
+export function useSuspenseQuery<Row, Out>(
+  query: QueryObject<Row, Out>,
+  database?: ClientDatabase,
+): QueryState<ClientValue<Out>>;
+export function useSuspenseQuery<Row, Out>(
+  query: QueryObject<Row, Out>,
+  database?: ClientDatabase,
+): QueryState<ClientValue<Out>> {
+  const observed = observation<Out>(
+    query,
+    database,
+    useContext(ClientContext),
+    "useSuspenseQuery",
+  );
+  if (IN_BROWSER && observed.store.getSnapshot().status === "pending") {
+    const waiting = suspend(observed.db, observed.key, observed.store);
+    if (waiting !== undefined) throw waiting;
   }
-  const key = queryObservationKey(query);
-  const store = queryStore<ClientValue<Out>>(db, key, () => db.observe(query));
-  return useSyncExternalStore(store.subscribe, store.getSnapshot, pendingOnServer);
+  return useSyncExternalStore(
+    observed.store.subscribe,
+    observed.store.getSnapshot,
+    pendingOnServer,
+  );
 }
 
 const stopNothing = (): void => undefined;

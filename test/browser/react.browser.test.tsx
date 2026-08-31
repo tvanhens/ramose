@@ -1,4 +1,11 @@
-import { act, memo, StrictMode, useState, type ReactNode } from "react";
+import {
+  act,
+  memo,
+  StrictMode,
+  Suspense,
+  useState,
+  type ReactNode,
+} from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { expect } from "vitest";
 import * as EffectSchema from "effect/Schema";
@@ -23,11 +30,16 @@ import {
   useDb,
   useQuery,
   useReceipt,
+  useSuspenseQuery,
   useSyncState,
   type QueryState,
   type ReceiptView,
 } from "../../packages/ramose/src/react/index.ts";
-import { heldStoreCount } from "../../packages/ramose/src/react/store.ts";
+import {
+  heldStoreCount,
+  UNCLAIMED_LIMIT,
+} from "../../packages/ramose/src/react/store.ts";
+import { suspendedQueryCount } from "../../packages/ramose/src/react/suspense.ts";
 import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
 import type {
   ReplicationIdentity,
@@ -820,6 +832,298 @@ browserTest(
 
       await unmount(root);
       expect(heldStoreCount(db)).toBe(0);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+const SuspendedTitles = (
+  { seen, where }: {
+    readonly seen: Rows[];
+    readonly where?: string | undefined;
+  },
+): ReactNode => {
+  const all = useDb().query.from(Note).orderBy(Note.rank);
+  const state = useSuspenseQuery(
+    (where === undefined ? all : all.where({ title: where }))
+      .select({ title: Note.title }),
+  ) as Rows;
+  seen.push(state);
+  if (state.status === "pending") return <p>nothing-cached</p>;
+  if (state.status === "error") return <p>error</p>;
+  return (
+    <ul>
+      {state.data.map((row) => <li key={row.title}>{row.title}</li>)}
+    </ul>
+  );
+};
+
+const Waiting = (
+  { client, seen, where }: {
+    readonly client: Client;
+    readonly seen: Rows[];
+    readonly where?: string | undefined;
+  },
+): ReactNode => (
+  <RamoseProvider client={client}>
+    <Suspense fallback={<p>loading</p>}>
+      <SuspendedTitles seen={seen} where={where} />
+    </Suspense>
+  </RamoseProvider>
+);
+
+browserTest(
+  "useSuspenseQuery waits for the first local answer and then renders it",
+  async ({ browser }) => {
+    const name = `ramose-react-suspense-${browser.uniqueId}`;
+    await seed(name, [
+      { entity: opaque("e"), title: "second", rank: "b" },
+      { entity: opaque("f"), title: "first", rank: "a" },
+    ]);
+    const client = offlineClient(name);
+    const db = client.open();
+    try {
+      const seen: Rows[] = [];
+      const root = await mount(browser.root, <Waiting client={client} seen={seen} />);
+
+      expect(text(browser.root)).toBe("loading");
+      expect(seen).toHaveLength(0);
+
+      await until(() => text(browser.root) !== "loading", "the restored replica");
+
+      expect(text(browser.root)).toBe("firstsecond");
+      expect(seen.at(-1)!.status).toBe("stale");
+      expect(heldStoreCount(db)).toBe(1);
+      expect(suspendedQueryCount(db)).toBe(0);
+
+      await unmount(root);
+      expect(heldStoreCount(db)).toBe(0);
+      expect(suspendedQueryCount(db)).toBe(0);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "an offline replica that already answered renders stale without suspending",
+  async ({ browser }) => {
+    const name = `ramose-react-suspense-warm-${browser.uniqueId}`;
+    await seed(name, [{ entity: opaque("e"), title: "cached", rank: "a" }]);
+    const client = offlineClient(name);
+    const db = client.open();
+    try {
+      const warming: Rows[] = [];
+      const warm = await mount(browser.root, <Waiting client={client} seen={warming} />);
+      await until(() => text(browser.root) === "cached", "the restored replica");
+      await unmount(warm);
+      await until(
+        () => client.sync.getSnapshot().status === "offline",
+        "an unreachable server",
+      );
+
+      const seen: Rows[] = [];
+      const again = await mount(browser.root, <Waiting client={client} seen={seen} />);
+
+      expect(text(browser.root)).toBe("cached");
+      expect(seen[0]!.status).toBe("stale");
+      expect(seen.every((state) => state.status === "stale")).toBe(true);
+      expect(suspendedQueryCount(db)).toBe(0);
+
+      await unmount(again);
+      expect(heldStoreCount(db)).toBe(0);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "an offline scope with nothing cached renders pending rather than waiting forever",
+  async ({ browser }) => {
+    const name = `ramose-react-suspense-cold-${browser.uniqueId}`;
+    const client = offlineClient(name);
+    const db = client.open();
+    try {
+      const seen: Rows[] = [];
+      const root = await mount(browser.root, <Waiting client={client} seen={seen} />);
+      expect(text(browser.root)).toBe("loading");
+
+      await until(() => text(browser.root) === "nothing-cached", "the offline answer");
+
+      expect(client.sync.getSnapshot().status).toBe("offline");
+      expect(seen.at(-1)!.status).toBe("pending");
+      expect(suspendedQueryCount(db)).toBe(0);
+
+      await unmount(root);
+      expect(heldStoreCount(db)).toBe(0);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "unmounting while suspended leaves nothing growing",
+  async ({ browser }) => {
+    const name = `ramose-react-suspense-abandon-${browser.uniqueId}`;
+    const client = offlineClient(name);
+    const db = client.open();
+    try {
+      for (let index = 0; index < UNCLAIMED_LIMIT + 8; index++) {
+        const root = await mount(
+          browser.root,
+          <Waiting client={client} seen={[]} where={`gone-${index}`} />,
+        );
+        if (index === 0) expect(text(browser.root)).toBe("loading");
+        await unmount(root);
+      }
+      await until(
+        () => client.sync.getSnapshot().status === "offline",
+        "an unreachable server",
+      );
+      await until(
+        () => suspendedQueryCount(db) <= UNCLAIMED_LIMIT,
+        "the abandoned waits to settle",
+      );
+
+      expect(heldStoreCount(db)).toBeLessThanOrEqual(UNCLAIMED_LIMIT);
+      expect(suspendedQueryCount(db)).toBeLessThanOrEqual(UNCLAIMED_LIMIT);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+const NEVER: Promise<void> = new Promise<void>(() => undefined);
+
+const Blocked = (): ReactNode => {
+  throw NEVER;
+};
+
+const Typed = ({ term }: { readonly term: string }): ReactNode => {
+  useQuery(
+    useDb().query.from(Note).where({ title: term }).select({ title: Note.title }),
+  );
+  return <p>{term}</p>;
+};
+
+browserTest(
+  "abandoned renders under a suspended sibling do not grow the store cache",
+  async ({ browser }) => {
+    const name = `ramose-react-abandoned-${browser.uniqueId}`;
+    await seed(name, [{ entity: opaque("e"), title: "typed", rank: "a" }]);
+    const client = offlineClient(name);
+    const db = client.open();
+    try {
+      let type: (term: string) => void = () => undefined;
+      const Search = (): ReactNode => {
+        const [term, setTerm] = useState("");
+        type = setTerm;
+        return (
+          <Suspense fallback={<p>loading</p>}>
+            <Typed term={term} />
+            <Blocked />
+          </Suspense>
+        );
+      };
+      const root = await mount(
+        browser.root,
+        <RamoseProvider client={client}><Search /></RamoseProvider>,
+      );
+      expect(text(browser.root)).toBe("loading");
+
+      for (let keystroke = 0; keystroke < UNCLAIMED_LIMIT + 8; keystroke++) {
+        await act(async () => {
+          type(`typed-${keystroke}`);
+        });
+      }
+
+      expect(text(browser.root)).toBe("loading");
+      expect(heldStoreCount(db)).toBeLessThanOrEqual(UNCLAIMED_LIMIT);
+
+      await unmount(root);
+      expect(heldStoreCount(db)).toBeLessThanOrEqual(UNCLAIMED_LIMIT);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "Strict Mode suspends once and resumes into one observation",
+  async ({ browser }) => {
+    const name = `ramose-react-suspense-strict-${browser.uniqueId}`;
+    await seed(name, [{ entity: opaque("e"), title: "strict", rank: "a" }]);
+    const client = offlineClient(name);
+    const db = client.open();
+    try {
+      const seen: Rows[] = [];
+      const root = await mount(
+        browser.root,
+        <StrictMode><Waiting client={client} seen={seen} /></StrictMode>,
+      );
+      expect(text(browser.root)).toBe("loading");
+
+      await until(() => text(browser.root) === "strict", "the restored replica");
+
+      expect(seen.every((state) => state.status === "stale")).toBe(true);
+      expect(heldStoreCount(db)).toBe(1);
+      expect(suspendedQueryCount(db)).toBe(0);
+
+      await unmount(root);
+      expect(heldStoreCount(db)).toBe(0);
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a committed value arriving over the session resolves a suspended component",
+  async ({ browser }) => {
+    const name = `ramose-react-suspense-live-${browser.uniqueId}`;
+    const client = recordedClient(name);
+    const db = client.open();
+    try {
+      const seen: QueryState<readonly unknown[]>[] = [];
+      const Issues = (): ReactNode => {
+        const state = useSuspenseQuery(
+          useDb().query.from(ConformanceIssue).select({ title: ConformanceIssue.title }),
+        ) as QueryState<readonly unknown[]>;
+        seen.push(state);
+        return (
+          <span>
+            {state.status === "ready" ? String(state.data.length) : state.status}
+          </span>
+        );
+      };
+      const root = await mount(
+        browser.root,
+        <RamoseProvider client={client}>
+          <Suspense fallback={<p>loading</p>}><Issues /></Suspense>
+        </RamoseProvider>,
+      );
+      expect(text(browser.root)).toBe("loading");
+
+      await until(() => seen.at(-1)?.status === "ready", "the committed value");
+
+      expect(seen.every((state) => state.status !== "pending")).toBe(true);
+      expect(text(browser.root)).not.toBe("loading");
+      expect((seen.at(-1) as { readonly data: readonly unknown[] }).data.length)
+        .toBeGreaterThan(0);
+
+      await unmount(root);
+      expect(heldStoreCount(db)).toBe(0);
+      expect(suspendedQueryCount(db)).toBe(0);
     } finally {
       await client.close();
       await deleteDatabase(name);

@@ -8,19 +8,18 @@ import Next from "../../../components/Next.astro";
 
 *New here? Start with [React and offline UX](/guides/react/).*
 
-:::note[Available today]
-`RamoseProvider`, `useDb`, `useQuery`, `useReceipt`, and `useSyncState` ship now. A Suspense-compatible option does not: on React 19, `receipt.committed` is a promise `use()` already suspends on, and React 18 has no `use()`.
-:::
-
 ```tsx
 import {
   RamoseProvider,
   useDb,
   useQuery,
   useReceipt,
+  useSuspenseQuery,
   useSyncState,
 } from "ramose/react"
 ```
+
+`QueryState`, `ReceiptView`, and `ReceiptState` are exported here too.
 
 ## RamoseProvider
 
@@ -68,6 +67,26 @@ Snapshots are stable under concurrent rendering. Strict Mode does not duplicate 
 
 `pending` has no complete local answer. `stale` preserves a complete cached answer while synchronization is behind. Terminal invalid or unauthorized queries use `error`; transient connectivity is represented by sync state and normally keeps prior data.
 
+## useSuspenseQuery
+
+```tsx
+<Suspense fallback={<Skeleton />}>
+  <Board />
+</Suspense>
+
+const Board = () => {
+  const tasks = useSuspenseQuery(db.query.from(Task))
+  if (tasks.status === "pending") return <NothingCachedOffline />
+  return <List rows={tasks.data} />
+}
+```
+
+Same arguments and same `QueryState<A>` as `useQuery`; the difference is when it waits. It suspends only while this query has no local answer **and** the session could still produce one, so a restored replica renders `stale` rather than replacing cached data with a fallback.
+
+`pending` still reaches the component, and means something narrower here: no local answer *and* no session that can currently produce one — offline with nothing cached, or a fenced, unauthorized, or closed client. Render what an empty offline scope should look like; a fallback there would be a wait with no end. The component rerenders if the session later delivers an answer.
+
+Errors are returned, not thrown to an error boundary. `useQuery` is unchanged; adopt Suspense per component.
+
 ## Entity handles in React
 
 Entity results expose `.data`, `.local`, and `.mutate`. Components rerender when selected entity data or local pending metadata changes.
@@ -110,6 +129,10 @@ Every member but `idle` is the client's `ReceiptState`, unchanged: React adds no
 Hold the receipt in state: rebuilding it during render would invoke once per render. Unmounting cancels nothing — a queued invocation is durable and proceeds without an observer.
 
 Use this hook when output or rejection drives UI; use `entity.local.pending` for quiet row feedback.
+
+### Suspending on one invocation
+
+A receipt carries `queued` and `committed` promises, so React 19 needs no adapter for this — `use(receipt.committed)` suspends until the server accepts the invocation and throws its refusal to the nearest error boundary. Hold the receipt in state so the promise is the same one on every render. React 18 has no `use()`; branch on `useReceipt`'s status instead.
 
 ## useSyncState
 
