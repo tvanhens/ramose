@@ -51,7 +51,7 @@ import {
   decideEpoch,
   decideInvocationReceipt,
   deployedOperationInputWireShape,
-  deployedOperationOutputShape,
+  deployedOperationOutputWireShape,
   deployedOperationVersion,
   executeCatalogOperation,
   inputEntityRefHandles,
@@ -782,7 +782,7 @@ export class Transactor {
                 inputWireShape,
                 p.operation.input,
               );
-              const outputShape = deployedOperationOutputShape(
+              const outputWireShape = deployedOperationOutputWireShape(
                 resolved,
                 p.operation.owner,
                 p.operation.localName,
@@ -791,11 +791,13 @@ export class Transactor {
                 receipt: TerminalInvocationReceipt,
               ): InvocationReceiptOutcome => {
                 const outcome = invocationReceiptOutcome(receipt);
-                if (outcome._tag !== "Completed" || outputShape === undefined) {
+                if (
+                  outcome._tag !== "Completed" || outputWireShape === undefined
+                ) {
                   return outcome;
                 }
                 const outputRefPaths = outputEntityRefPaths(
-                  outputShape,
+                  outputWireShape,
                   outcome.output,
                 );
                 return outputRefPaths.length === 0

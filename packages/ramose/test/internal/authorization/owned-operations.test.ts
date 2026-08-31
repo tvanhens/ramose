@@ -25,7 +25,10 @@ import {
   DigestHex,
   EntityId,
 } from "../../../src/internal/authorization/identities.ts";
-import { inputEntityRefHandles } from "../../../src/internal/authorization/entity-targets.ts";
+import {
+  inputEntityRefHandles,
+  outputEntityRefPaths,
+} from "../../../src/internal/authorization/entity-targets.ts";
 import { formatNativeOperation } from "./native-operation-helper.ts";
 
 const catalog = CatalogId.make("app");
@@ -614,6 +617,112 @@ describe("owned operation lowering", () => {
       ],
     });
     expect(lowerOperationWireShape(catalog, restated)).toEqual(declared);
+  });
+
+  test("carries the output wire shape on the binding, never on the descriptor", async () => {
+    const declaredOutput = Schema.Struct({
+      item: OperationEntityId,
+      title: Schema.String,
+    });
+    const renamedOutput = declaredOutput.pipe(
+      Schema.encodeKeys({ item: "item_id" }),
+    );
+    const declaredCatalog = CatalogSchema("renaming-declared", {
+      renaming: Entity("renaming", { title: string() }, {
+        operations: (Operation) => ({
+          rename: Operation({
+            self: false,
+            input: Schema.Struct({ title: Schema.String }),
+            output: declaredOutput,
+            run() {
+              return { item: 1, title: "t" };
+            },
+          }),
+        }),
+      }),
+    });
+    const renamedCatalog = CatalogSchema("renaming-encoded", {
+      renaming: Entity("renaming", { title: string() }, {
+        operations: (Operation) => ({
+          rename: Operation({
+            self: false,
+            input: Schema.Struct({ title: Schema.String }),
+            output: renamedOutput,
+            run() {
+              return { item: 1, title: "t" };
+            },
+          }),
+        }),
+      }),
+    });
+    const declared = await Effect.runPromise(
+      lowerOwnedOperations(catalog, declaredCatalog, artifactHash),
+    );
+    const renamed = await Effect.runPromise(
+      lowerOwnedOperations(catalog, renamedCatalog, artifactHash),
+    );
+
+    expect(declared.definitions[0]!.outputWireShape).toEqual({
+      _tag: "struct",
+      fields: [
+        { key: "item", shape: { _tag: "ref" } },
+        { key: "title", shape: { _tag: "scalar" } },
+      ],
+    });
+    expect(renamed.definitions[0]!.outputWireShape).toEqual({
+      _tag: "struct",
+      fields: [
+        { key: "item_id", shape: { _tag: "ref" } },
+        { key: "title", shape: { _tag: "scalar" } },
+      ],
+    });
+    expect(renamed.descriptors[0]!.output).toEqual(
+      declared.descriptors[0]!.output,
+    );
+    expect(JSON.stringify(renamed.descriptors[0])).not.toContain("item_id");
+
+    expect(declared.descriptors[0]!.version as string).toBe(
+      "756d0bb1fd2182c3065f909e2692e6507c28ca50df977c0c7b050025d0cb72cb",
+    );
+    expect(declared.descriptors[0]!.outputSchemaHash).toBe(
+      "88976aa267763b038f48adee9f138ef00bab757f0277b101c604ebb7ae0ca1d5",
+    );
+    expect(renamed.descriptors[0]!.version).not.toBe(
+      declared.descriptors[0]!.version,
+    );
+  });
+
+  test("finds the reference the encoded output carries under a renamed key", async () => {
+    const renamedOutput = Schema.Struct({
+      item: OperationEntityId,
+      title: Schema.String,
+    }).pipe(Schema.encodeKeys({ item: "item_id" }));
+    const lowered = await Effect.runPromise(lowerOwnedOperations(
+      catalog,
+      CatalogSchema("renamed-output", {
+        renamed: Entity("renamed", { title: string() }, {
+          operations: (Operation) => ({
+            rename: Operation({
+              self: false,
+              input: Schema.Struct({ title: Schema.String }),
+              output: renamedOutput,
+              run() {
+                return { item: 1, title: "t" };
+              },
+            }),
+          }),
+        }),
+      }),
+      artifactHash,
+    ));
+    const definition = lowered.definitions[0]!;
+    const encoded = definition.output.encode({ item: 4242, title: "t" });
+    expect(encoded).toEqual({ item_id: 4242, title: "t" });
+
+    expect(outputEntityRefPaths(definition.outputWireShape, encoded))
+      .toEqual([["item_id"]]);
+    expect(outputEntityRefPaths(lowered.descriptors[0]!.output, encoded))
+      .toEqual([]);
   });
 
   test("rejects refs hidden in unsupported union, tuple, and refinement schemas", () => {

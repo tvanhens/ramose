@@ -200,40 +200,35 @@ export const extractAllocations = (
   return Object.freeze({ _tag: "Allocated", slots: Object.freeze(slots) });
 };
 
-export const outputEntityRefPaths = (
-  shape: OperationInputShape,
-  output: unknown,
+export const wireEntityRefPaths = (
+  shape: OperationWireShape,
+  value: unknown,
+  holds: (candidate: unknown) => boolean,
 ): readonly (readonly AllocationPathSegment[])[] => {
   const paths: (readonly AllocationPathSegment[])[] = [];
   const walk = (
-    current: OperationInputShape,
-    value: unknown,
+    current: OperationWireShape,
+    node: unknown,
     path: readonly AllocationPathSegment[],
   ): void => {
     switch (current._tag) {
       case "ref":
-        if (
-          typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-        ) {
-          paths.push(Object.freeze([...path]));
-        }
+        if (holds(node)) paths.push(Object.freeze([...path]));
         return;
       case "array":
-        if (Array.isArray(value)) {
-          for (let index = 0; index < value.length; index++) {
-            walk(current.items, value[index], [...path, index]);
+        if (Array.isArray(node)) {
+          for (let index = 0; index < node.length; index++) {
+            walk(current.items, node[index], [...path, index]);
           }
         }
         return;
       case "struct":
-        if (
-          typeof value === "object" && value !== null && !Array.isArray(value)
-        ) {
+        if (typeof node === "object" && node !== null && !Array.isArray(node)) {
           for (const field of current.fields) {
-            if (!Object.hasOwn(value, field.key)) continue;
+            if (!Object.hasOwn(node, field.key)) continue;
             walk(
               field.shape,
-              (value as Record<string, unknown>)[field.key],
+              (node as Record<string, unknown>)[field.key],
               [...path, field.key],
             );
           }
@@ -244,9 +239,19 @@ export const outputEntityRefPaths = (
         return;
     }
   };
-  walk(shape, output, []);
+  walk(shape, value, []);
   return Object.freeze(paths);
 };
+
+const isResolvedEid = (candidate: unknown): boolean =>
+  typeof candidate === "number" && Number.isSafeInteger(candidate) &&
+  candidate >= 0;
+
+export const outputEntityRefPaths = (
+  shape: OperationWireShape,
+  output: unknown,
+): readonly (readonly AllocationPathSegment[])[] =>
+  wireEntityRefPaths(shape, output, isResolvedEid);
 
 const replaceAt = (
   value: unknown,
@@ -325,46 +330,8 @@ export const mayCarrySealedEntityId = (input: unknown): boolean => {
 export const inputEntityRefHandles = (
   shape: OperationWireShape,
   input: unknown,
-): readonly (readonly AllocationPathSegment[])[] => {
-  const paths: (readonly AllocationPathSegment[])[] = [];
-  const walk = (
-    current: OperationWireShape,
-    value: unknown,
-    path: readonly AllocationPathSegment[],
-  ): void => {
-    switch (current._tag) {
-      case "ref":
-        if (typeof value === "string") paths.push(Object.freeze([...path]));
-        return;
-      case "array":
-        if (Array.isArray(value)) {
-          for (let index = 0; index < value.length; index++) {
-            walk(current.items, value[index], [...path, index]);
-          }
-        }
-        return;
-      case "struct":
-        if (
-          typeof value === "object" && value !== null && !Array.isArray(value)
-        ) {
-          for (const field of current.fields) {
-            if (!Object.hasOwn(value, field.key)) continue;
-            walk(
-              field.shape,
-              (value as Record<string, unknown>)[field.key],
-              [...path, field.key],
-            );
-          }
-        }
-        return;
-      case "scalar":
-      case "opaque":
-        return;
-    }
-  };
-  walk(shape, input, []);
-  return Object.freeze(paths);
-};
+): readonly (readonly AllocationPathSegment[])[] =>
+  wireEntityRefPaths(shape, input, (candidate) => typeof candidate === "string");
 
 export type SealedInputResolution =
   | { readonly _tag: "Resolved"; readonly input: unknown }

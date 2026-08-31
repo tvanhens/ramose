@@ -30,6 +30,8 @@ export type EntityRefPath<OCodec, Depth extends number = 5> = [Depth] extends
         ? readonly [Key, ...Tail]
         : never;
     }[keyof Fields & string]
+  : OCodec extends { readonly to: infer Decoded }
+    ? EntityRefPath<Decoded, Decrement[Depth]>
   : never;
 
 /**

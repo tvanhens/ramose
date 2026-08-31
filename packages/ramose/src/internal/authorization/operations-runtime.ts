@@ -306,12 +306,12 @@ export const deployedOperationVersion = (
 ): OperationVersion | undefined =>
   bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.version;
 
-export const deployedOperationOutputShape = (
+export const deployedOperationOutputWireShape = (
   resolved: ResolvedOperationCatalog,
   owner: OwnerRef,
   localName: string,
-): OperationInputShape | undefined =>
-  bindingFor(resolved.deployed.definition, owner, localName)?.descriptor.output;
+): OperationWireShape | undefined =>
+  bindingFor(resolved.deployed.definition, owner, localName)?.outputWireShape;
 
 export const deployedOperationInputWireShape = (
   resolved: ResolvedOperationCatalog,
@@ -1840,7 +1840,7 @@ export const executeCatalogOperation = async (
       const extraction = extractAllocations(
         descriptor.allocations ?? [],
         descriptor.output,
-        encoded,
+        resolved,
         requested,
         allocatedEids(report.tempids),
       );

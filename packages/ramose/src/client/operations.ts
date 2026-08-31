@@ -5,6 +5,7 @@ import type {
   AllocationSlots,
 } from "../db/allocations.ts";
 import { reachableTraits, type ComposerLike } from "../db/compose.ts";
+import type { MutationRef } from "../db/refs.ts";
 import {
   isOwnedOperation,
   OwnedOperations,
@@ -19,8 +20,14 @@ import {
   snapshotOwnedOperations,
   type OwnedOperationSnapshot,
 } from "../internal/authorization/authoring/operations.ts";
-import type { OperationInputShape } from "../internal/authorization/catalog.ts";
-import { inputEntityRefHandles } from "../internal/authorization/entity-targets.ts";
+import type {
+  OperationInputShape,
+  OperationWireShape,
+} from "../internal/authorization/catalog.ts";
+import {
+  inputEntityRefHandles,
+  wireEntityRefPaths,
+} from "../internal/authorization/entity-targets.ts";
 import {
   CatalogId,
   DigestHex,
@@ -41,6 +48,7 @@ export type ClientOperation = {
   readonly allocations: AllocationSlots;
   readonly composers: readonly string[];
   readonly input: OperationInputShape;
+  readonly inputWire: OperationWireShape;
   readonly encode: (input: unknown) => unknown;
   readonly optimistic:
     | { readonly revision: number; readonly run: AnyOptimisticProjection }
@@ -84,7 +92,10 @@ const authoredOperations = (
   return authored;
 };
 
-const maskedRef = (index: number): number => -(index + 1);
+const MASK_ROUND_STRIDE = 1_000_000;
+
+const maskedRef = (round: number, index: number): number =>
+  Number.MIN_SAFE_INTEGER + round * MASK_ROUND_STRIDE + index;
 
 const readPath = (
   value: unknown,
@@ -118,26 +129,95 @@ const writePath = (
   return { ...(value as Record<string, unknown>), [segment]: child };
 };
 
+const maskedRefWirePaths = (
+  snapshot: OwnedOperationSnapshot,
+  encoded: unknown,
+  round: number,
+  issued: number,
+): ReadonlyMap<number, readonly AllocationPathSegment[]> => {
+  const positions = new Map<number, readonly AllocationPathSegment[]>();
+  const repeated = new Set<number>();
+  const holds = (candidate: unknown): boolean =>
+    typeof candidate === "number" && Number.isSafeInteger(candidate) &&
+    candidate >= maskedRef(round, 0) && candidate < maskedRef(round, issued);
+  for (
+    const path of wireEntityRefPaths(snapshot.inputWireShape, encoded, holds)
+  ) {
+    const mask = readPath(encoded, path) as number;
+    if (positions.has(mask)) repeated.add(mask);
+    positions.set(mask, path);
+  }
+  for (const mask of repeated) positions.delete(mask);
+  return positions;
+};
+
+const encodeMasked = (
+  snapshot: OwnedOperationSnapshot,
+  input: unknown,
+  handles: readonly (readonly AllocationPathSegment[])[],
+  round: number,
+): {
+  readonly encoded: unknown;
+  readonly at: (index: number) => readonly AllocationPathSegment[] | undefined;
+} => {
+  const encoded = snapshot.inputCodec.encode(
+    handles.reduce<unknown>(
+      (value, path, index) => writePath(value, path, maskedRef(round, index)),
+      input,
+    ),
+  );
+  const positions = maskedRefWirePaths(snapshot, encoded, round, handles.length);
+  return {
+    encoded,
+    at: (index) =>
+      positions.get(maskedRef(round, index)) ??
+        (readPath(encoded, handles[index]!) === maskedRef(round, index)
+          ? handles[index]!
+          : undefined),
+  };
+};
+
+const samePosition = (
+  left: readonly AllocationPathSegment[],
+  right: readonly AllocationPathSegment[],
+): boolean =>
+  left.length === right.length &&
+  left.every((segment, index) => segment === right[index]);
+
 const encodeInput = (
   snapshot: OwnedOperationSnapshot,
   input: unknown,
 ): unknown => {
   const handles = inputEntityRefHandles(snapshot.inputShape, input);
   if (handles.length === 0) return snapshot.inputCodec.encode(input);
-  const masked = handles.reduce<unknown>(
-    (value, path, index) => writePath(value, path, maskedRef(index)),
-    input,
-  );
+  const first = encodeMasked(snapshot, input, handles, 0);
+  const second = encodeMasked(snapshot, input, handles, 1);
   return handles.reduce<unknown>((value, path, index) => {
-    if (readPath(value, path) !== maskedRef(index)) {
-      invalid(
+    const at = first.at(index);
+    const again = second.at(index);
+    if (at === undefined || again === undefined || !samePosition(at, again)) {
+      return invalid(
         `${snapshot.owner.name}.${snapshot.localName} moved the entity ` +
           `reference at '${path.join(".")}' while encoding`,
       );
     }
-    return writePath(value, path, readPath(input, path));
-  }, snapshot.inputCodec.encode(masked));
+    return writePath(value, at, readPath(input, path));
+  }, first.encoded);
 };
+
+export const encodedInputRefs = (
+  operation: ClientOperation,
+  encoded: unknown,
+): readonly {
+  readonly path: readonly AllocationPathSegment[];
+  readonly ref: MutationRef;
+}[] =>
+  inputEntityRefHandles(operation.inputWire, encoded).flatMap((path) => {
+    const ref = readPath(encoded, path);
+    return typeof ref === "string"
+      ? [{ path, ref: ref as MutationRef }]
+      : [];
+  });
 
 const clientOperation = (
   snapshot: OwnedOperationSnapshot,
@@ -161,6 +241,7 @@ const clientOperation = (
     allocations: snapshot.versionDescriptor.allocations,
     composers: snapshot.composers.map((entity) => entity.name),
     input: snapshot.inputShape,
+    inputWire: snapshot.inputWireShape,
     encode: (input) => encodeInput(snapshot, input),
     optimistic: projection === undefined ? undefined : {
       revision: normalizeProjectionRevision(declaration?.optimisticRevision),

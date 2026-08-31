@@ -83,6 +83,7 @@ export type DeployedOperationDefinition = {
   readonly input: DeployedOperationCodec;
   readonly output: DeployedOperationCodec;
   readonly inputWireShape: OperationWireShape;
+  readonly outputWireShape: OperationWireShape;
   readonly inputSchemaHash: DigestHex;
   readonly outputSchemaHash: DigestHex;
   readonly doc: string | undefined;
@@ -96,6 +97,7 @@ export type DeployedOperationBinding = {
   readonly input: DeployedOperationCodec;
   readonly output: DeployedOperationCodec;
   readonly inputWireShape: OperationWireShape;
+  readonly outputWireShape: OperationWireShape;
   readonly run: DeployedOperationRun;
   readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
 };
@@ -123,6 +125,7 @@ export type OwnedOperationSnapshot = {
   readonly inputShape: OperationInputShape;
   readonly inputWireShape: OperationWireShape;
   readonly outputShape: OperationInputShape;
+  readonly outputWireShape: OperationWireShape;
   readonly inputSchemaMaterial: JsonValue;
   readonly outputSchemaMaterial: JsonValue;
   readonly inputCodec: DeployedOperationCodec;
@@ -231,6 +234,7 @@ export const pairDeployedOperations = (
         input: definition.input,
         output: definition.output,
         inputWireShape: definition.inputWireShape,
+        outputWireShape: definition.outputWireShape,
         run: definition.run,
         entityDefinitions: definition.entityDefinitions,
       }));
@@ -854,6 +858,9 @@ export const snapshotOwnedOperations = (
           lowerOperationWireShape(catalog, operation.input),
         ),
         outputShape: deepFreeze(outputShape),
+        outputWireShape: deepFreeze(
+          lowerOperationWireShape(catalog, operation.output),
+        ),
         inputSchemaMaterial: deepFreeze(inputSchemaMaterial),
         outputSchemaMaterial: deepFreeze(outputSchemaMaterial),
         inputCodec: deepFreeze(inputSchemaBinding.codec),
@@ -925,6 +932,7 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
           input: snapshot.inputCodec,
           output: snapshot.outputCodec,
           inputWireShape: snapshot.inputWireShape,
+          outputWireShape: snapshot.outputWireShape,
           inputSchemaHash,
           outputSchemaHash,
           doc: snapshot.doc,
