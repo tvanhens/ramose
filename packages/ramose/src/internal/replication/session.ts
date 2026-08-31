@@ -94,6 +94,45 @@ export const classifyReplicationChange = (
   return prior.revision === frame.from ? "apply" : "gap";
 };
 
+export type ReplicationPublication = {
+  readonly identity: ReplicationIdentity;
+  readonly revision: string;
+  readonly superseded: ReadonlySet<string>;
+};
+
+export const REPLICATION_SUPERSEDED_MEMORY = 64;
+
+export const classifyReplicationAdoption = (
+  published: ReplicationPublication | undefined,
+  candidate: Pick<ReplicationSessionValue, "identity" | "revision">,
+): "adopt" | "refuse" =>
+  published !== undefined &&
+    sameReplicationIdentity(published.identity, candidate.identity) &&
+    published.superseded.has(candidate.revision)
+    ? "refuse"
+    : "adopt";
+
+export const replicationPublicationAfter = (
+  published: ReplicationPublication | undefined,
+  value: Pick<ReplicationSessionValue, "identity" | "revision">,
+): ReplicationPublication => {
+  const continues = published !== undefined &&
+    sameReplicationIdentity(published.identity, value.identity);
+  const superseded = new Set(continues ? published.superseded : []);
+  if (continues && published.revision !== value.revision) {
+    superseded.add(published.revision);
+  }
+  superseded.delete(value.revision);
+  while (superseded.size > REPLICATION_SUPERSEDED_MEMORY) {
+    superseded.delete(superseded.values().next().value!);
+  }
+  return Object.freeze({
+    identity: value.identity,
+    revision: value.revision,
+    superseded,
+  });
+};
+
 export const classifyReplicationCandidateFrame = (
   prior: Pick<ReplicaCacheCandidate, "identity" | "revision"> | undefined,
   frame: ReplicationFrame,
@@ -184,6 +223,7 @@ export class ReplicationSession {
   private trackedDatabase: string | undefined;
   private releaseRetention: (() => void) | undefined;
   private retainedDb: Db | undefined;
+  private publication: ReplicationPublication | undefined;
   private confirmedIdentity: ReplicationIdentity | undefined;
   private bound: string | undefined;
   private refreshing: Promise<void> = Promise.resolve();
@@ -212,6 +252,9 @@ export class ReplicationSession {
         ? {}
         : { value: valueFrom(initial.identity, initial, true) }),
     });
+    if (this.state.value !== undefined) {
+      this.publication = replicationPublicationAfter(undefined, this.state.value);
+    }
     if (registration !== undefined) {
       this.trackedDatabase = registration.database;
       this.tracking = registration.releases;
@@ -250,7 +293,8 @@ export class ReplicationSession {
     if (
       !this.current(generation) ||
       (restored.revision === published?.revision &&
-        sameReplicationIdentity(identity, published.identity))
+        sameReplicationIdentity(identity, published.identity)) ||
+      !this.admits(identity, restored.revision)
     ) {
       restored.release();
       return false;
@@ -532,9 +576,19 @@ export class ReplicationSession {
   }
 
   private publish(snapshot: ReplicationSessionSnapshot): void {
-    if (snapshot.value === undefined) this.release();
+    if (snapshot.value === undefined) {
+      this.release();
+      this.publication = undefined;
+    } else {
+      this.publication = replicationPublicationAfter(this.publication, snapshot.value);
+    }
     this.state = Object.freeze(snapshot);
     for (const observer of this.observers) this.notify(observer);
+  }
+
+  private admits(identity: ReplicationIdentity, revision: string): boolean {
+    return classifyReplicationAdoption(this.publication, { identity, revision }) ===
+      "adopt";
   }
 
   private adopt(replica: RestoredReplica): void {
@@ -586,7 +640,7 @@ export class ReplicationSession {
     stale: boolean,
     generation: number,
   ): void {
-    if (!this.current(generation)) {
+    if (!this.current(generation) || !this.admits(identity, replica.revision)) {
       replica.release();
       return;
     }
@@ -599,7 +653,7 @@ export class ReplicationSession {
     replica: RestoredReplica,
     generation: number,
   ): void {
-    if (!this.current(generation)) {
+    if (!this.current(generation) || !this.admits(identity, replica.revision)) {
       replica.release();
       return;
     }

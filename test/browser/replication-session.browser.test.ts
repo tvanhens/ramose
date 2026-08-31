@@ -1,5 +1,7 @@
 import { expect } from "vitest";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
+import { Index } from "../../packages/ramose/src/internal/core/datom.ts";
+import type { Db } from "../../packages/ramose/src/internal/core/db.ts";
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
 import {
   IndexedDbReplicaStorage,
@@ -226,6 +228,120 @@ browserTest("restores only an exact credential binding and isolates observer fai
     )).toBe(true);
     await unknown.close();
     expect((await storage.restore(selected, attributes, selected.readCompatibilityHash))?.revision).toBe(opaque("r"));
+  } finally {
+    await session?.close();
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a follower never re-renders a committed revision it has already left behind", async ({ browser }) => {
+  const name = `ramose-session-monotonic-${browser.uniqueId}`;
+  const storage = await IndexedDbReplicaStorage.open(name);
+  const entity = opaque("e");
+  const installed = opaque("r");
+  const committed = opaque("2");
+  const current = opaque("3");
+  const named = async (db: Db): Promise<string[]> => {
+    const attribute = db.attr(":item/name")!;
+    return (await db.datomsArray(Index.AEVT, { a: attribute.id }))
+      .map((datom) => datom.v as string);
+  };
+  const fact = <Op extends "add" | "retract">(value: string, op: Op) => ({
+    entity,
+    field: ":item/name",
+    value: { type: "string" as const, value },
+    op,
+  });
+  const rename = async (
+    from: string,
+    revision: string,
+    before: string,
+    after: string,
+  ): Promise<void> => {
+    (await storage.applyChange(changeFrame({
+      type: "Change",
+      protocol: 1,
+      identity: selected,
+      from,
+      revision,
+      datoms: [fact(before, "retract"), fact(after, "add")],
+    })))?.release();
+  };
+  let session: ReplicationSession | undefined;
+  try {
+    await install(storage);
+    const fingerprint = await replicationCredentialFingerprint(
+      "follower-credential",
+      replicationActivationAddress(activation),
+      await rootReplicaRouteSlot(),
+    );
+    await storage.bindCredential(fingerprint, selected);
+    session = await ReplicationSession.open({
+      activation,
+      credential: "follower-credential",
+      attributes,
+      readCompatibilityHash: selected.readCompatibilityHash,
+      storage,
+    });
+    const rendered: string[] = [];
+    const failed = new Promise<void>((resolve) => {
+      session!.observe((snapshot) => {
+        const revision = snapshot.value?.revision;
+        if (revision !== undefined && rendered.at(-1) !== revision) rendered.push(revision);
+        if (snapshot.status === "failed") resolve();
+      });
+    });
+    await failed;
+    expect(session.snapshot().value?.revision).toBe(installed);
+
+    await rename(installed, committed, "persisted", "committed");
+    expect(await session.refreshFromDurable()).toBe(true);
+    expect(session.snapshot().value?.revision).toBe(committed);
+    expect(await named(session.snapshot().value!.db)).toEqual(["committed"]);
+
+    await storage.startSnapshot({
+      type: "SnapshotStart",
+      protocol: 1,
+      identity: selected,
+      snapshot: opaque("p"),
+      revision: installed,
+    });
+    await storage.stageSnapshotChunk(snapshotChunk({
+      type: "SnapshotChunk",
+      protocol: 1,
+      identity: selected,
+      snapshot: opaque("p"),
+      index: 0,
+      datoms: [fact("persisted", "add")],
+    }));
+    (await storage.commitSnapshot({
+      type: "SnapshotCommit",
+      protocol: 1,
+      identity: selected,
+      snapshot: opaque("p"),
+      revision: installed,
+      chunks: 1,
+    }, attributes))?.release();
+    const regressed = await storage.restore(
+      selected,
+      attributes,
+      selected.readCompatibilityHash,
+    );
+    expect(regressed?.revision).toBe(installed);
+    expect(await named(regressed!.db)).toEqual(["persisted"]);
+    regressed!.release();
+
+    expect(await session.refreshFromDurable()).toBe(false);
+    expect(session.snapshot().value?.revision).toBe(committed);
+    expect(await named(session.snapshot().value!.db)).toEqual(["committed"]);
+
+    await rename(installed, current, "persisted", "current");
+    expect(await session.refreshFromDurable()).toBe(true);
+    expect(session.snapshot().value?.revision).toBe(current);
+    expect(await named(session.snapshot().value!.db)).toEqual(["current"]);
+
+    expect(rendered).toEqual([installed, committed, current]);
   } finally {
     await session?.close();
     storage.close();

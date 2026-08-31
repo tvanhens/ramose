@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { ReadCompatibilityHash } from "../../../src/internal/authorization/identities.ts";
 import type { ReplicationIdentity } from "../../../src/internal/replication/protocol.ts";
 import {
+  classifyReplicationAdoption,
   classifyReplicationCandidateFrame,
   classifyReplicationChange,
+  REPLICATION_SUPERSEDED_MEMORY,
+  replicationPublicationAfter,
   replicationTerminalSnapshot,
 } from "../../../src/internal/replication/session.ts";
 import { snapshotChunk, changeFrame } from "../../replication-fixtures.ts";
@@ -38,6 +41,58 @@ describe("replication change sequencing", () => {
       .toBe("gap");
     expect(classifyReplicationChange(prior, change(opaque("1"), opaque("2"))))
       .toBe("apply");
+  });
+});
+
+describe("committed publication monotonicity", () => {
+  const numbered = (index: number): string => String(index).padStart(43, "0");
+  const rotated: ReplicationIdentity = { ...identity, readView: opaque("w") };
+  const advanced = replicationPublicationAfter(
+    replicationPublicationAfter(undefined, { identity, revision: opaque("1") }),
+    { identity, revision: opaque("2") },
+  );
+
+  test("refuses only a revision this partition already left behind", () => {
+    expect(classifyReplicationAdoption(undefined, { identity, revision: opaque("1") }))
+      .toBe("adopt");
+    expect(classifyReplicationAdoption(advanced, { identity, revision: opaque("1") }))
+      .toBe("refuse");
+    expect(classifyReplicationAdoption(advanced, { identity, revision: opaque("2") }))
+      .toBe("adopt");
+    expect(classifyReplicationAdoption(advanced, { identity, revision: opaque("3") }))
+      .toBe("adopt");
+    expect(classifyReplicationAdoption(advanced, {
+      identity: rotated,
+      revision: opaque("1"),
+    })).toBe("adopt");
+  });
+
+  test("a rotated read view starts a new lineage and remembered revisions stay bounded", () => {
+    const rotation = replicationPublicationAfter(advanced, {
+      identity: rotated,
+      revision: opaque("1"),
+    });
+    expect(rotation.superseded.size).toBe(0);
+    expect(classifyReplicationAdoption(rotation, { identity, revision: opaque("1") }))
+      .toBe("adopt");
+
+    let publication = replicationPublicationAfter(undefined, {
+      identity,
+      revision: numbered(0),
+    });
+    for (let index = 1; index <= REPLICATION_SUPERSEDED_MEMORY + 4; index++) {
+      publication = replicationPublicationAfter(publication, {
+        identity,
+        revision: numbered(index),
+      });
+    }
+    expect(publication.superseded.size).toBe(REPLICATION_SUPERSEDED_MEMORY);
+    expect(classifyReplicationAdoption(publication, { identity, revision: numbered(0) }))
+      .toBe("adopt");
+    expect(classifyReplicationAdoption(publication, {
+      identity,
+      revision: numbered(REPLICATION_SUPERSEDED_MEMORY),
+    })).toBe("refuse");
   });
 });
 
