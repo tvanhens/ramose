@@ -35,7 +35,7 @@ const BUDGETS = {
   "concepts/data-model": 700,
   "concepts/queries": 600,
   "concepts/operations": 600,
-  "concepts/offline": 610,
+  "concepts/offline": 630,
   "concepts/authorization": 600,
   "concepts/time-travel": 500,
   "concepts/architecture": 600,

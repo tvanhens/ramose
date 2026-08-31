@@ -36,7 +36,7 @@ A stored replica becomes visible in exactly two ways.
 | Documentation, defaults, an operation body, a deployment | Nothing. The replica is reused with no reset and no download. |
 | Field schema, entity or trait composition, read policy, graph-read semantics | The replica's representation is quarantined and replaced. Queued work, receipts and reference mappings survive. |
 | The graph path was renamed | Nothing, if it is the same graph entity. A same-named graph that was deleted and recreated is a different one, and is not reused. |
-| A different principal was authenticated under the *same* `cacheKey` | Every tab holding the previous principal is fenced through storage before the replacement renders, then its data is removed or quarantined. |
+| A different principal was authenticated under the *same* `cacheKey` | Every tab holding the previous principal is fenced through storage before the replacement renders. It is fenced, not deleted: the previous principal's own bearer can still restore it in a later session. |
 | The application signed out, or signed in under a different `cacheKey` | Nothing. There is no authentication to carry the replacement, so the previous account's data stays until it is cleared. |
 | Storage pressure | Stored content nothing reaches any more is reclaimed and the write is retried. If that is not enough the write fails with a typed quota error: no graph is discarded to make room for another. |
 | `await client.clearLocalData()` | Everything for the confirmed account, across every tab. The client is terminal afterwards; construct a new one. |
