@@ -1,106 +1,104 @@
 # Reef
 
-The flagship Ramose demo stack: a Linear-style, multi-tenant issue tracker
-where **every workspace is its own Ramose database**. Better Auth
-(organizations + JWKS-published JWTs) is the identity plane, and the
-compiled policy on the peer enforces admin / member / viewer per datom.
+The flagship Ramose demo: a Linear-style, multi-tenant issue tracker where
+**every workspace is its own Ramose database**, reached by walking a deployed
+graph from one configured root. Better Auth is the identity plane; membership
+data in the root database is the tenancy boundary; the offline-first
+`ramose/client` and `ramose/react` render the board.
 
 ## Run it
 
-From the repo root:
+From the repo root, in two terminals:
 
 ```sh
-bun run dev:reef
+bun run dev:reef      # the peer (:1337) and the auth Worker (:1338)
+bun run dev:reef:ui   # the SPA dev server (:5173), proxying /api and /db
 ```
 
-That brings up the peer (`:1337`) and the auth Worker (`:1338`). It is
-shorthand for
-
-```sh
-CI=1 ALCHEMY_STATE=local \
-  CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
-  CLOUDFLARE_API_TOKEN=x \
-  bun alchemy dev examples/reef/alchemy.run.ts
-```
-
-with each variable only defaulted when you have not set it yourself (see
-`.cursor/CLOUD.md` for why miniflare wants them).
+Then open <http://localhost:5173>, create an account, and make a workspace.
+The dev server serves the same same-origin shape production uses, so no
+CORS or baked URLs are involved.
 
 ## The architecture
 
 ```
-auth Worker (:1338)   BetterAuth on D1: sign-in, orgs, JWKS,
-                      POST /api/auth/ramose/token
-        │
+auth Worker (:1338)   Better Auth on D1: sign-in, JWKS,
+                      POST /api/auth/ramose/token → 15-minute JWT
+        │                  (class "user", attrs { name, email })
         └── JWKS ──► Ramose peer (:1337)
-                     RAMOSE_POLICY + JWKS verify,
+                     one deployed catalog, root database "reef",
                      Transactor/QueryReplica DOs, R2
 ```
 
-The auth Worker never talks to the peer, so the resource graph is a DAG:
-the peer's env needs the auth Worker's URL (for `RAMOSE_JWKS_URL`), and
-the auth Worker needs nothing back.
+The auth Worker never talks to the peer, so the resource graph is a DAG: the
+peer's env needs the auth Worker's JWKS (a service binding deployed, a URL in
+dev), and the auth Worker needs nothing back.
 
-A workspace is a Better Auth org whose slug is the Ramose database name.
-`POST /api/auth/ramose/token` (the `ramose/better-auth` mint plugin) mints
-a 15-minute JWT with `ramose: { db: <slug>, class: <role> }`.
+Identity is deployment-global: every signed-in account mints the same class
+(`user`), and the JWT carries no database or role. What a principal can reach
+is data:
+
+- The root database holds `person` rows (the directory, upserted from the
+  JWT by operations) and `workspace` rows. A workspace composes the `Graph`
+  trait, so it *is* a child database.
+- `policy.workspace.read.where((ws) => ws.members.contains(actor))` is the
+  tenancy rule. The graph walk resolves a workspace through the filtered
+  database, so a non-member cannot see the workspace, its name, or activate
+  its child database — that is the read policy, not a UI filter.
+- Inside a workspace database the walk itself is the boundary; issues,
+  comments and labels are readable by any activated principal, and
+  `issue.privateNote` shows a field-level rule (creator only).
+- Writes are catalog-bound operations. `createIssue` declares an optimistic
+  projection, so an offline device renders its own writes until the server
+  commits and converges without a rollback flash.
 
 ## The shape
 
-```
-examples/reef/
-  alchemy.run.ts        the stack: peer + auth Worker
-  src/
-    domain/             catalog, policy, queries, ranking, roles, constants, operations
-    infra/              the peer resources and the auth Worker entry
-  test/                 policy compilation and ranking — unit tests
-```
-
 | file | what it is |
 |---|---|
-| `src/domain/schema.ts` | the schema: `user`, `issue`, `comment`, `label` namespaces |
-| `src/domain/policy.ts` | `Ramose.Policy.policy` — classes `owner`/`member`/`viewer`, per-datom read masks, per-operation write arms |
-| `src/domain/queries.ts` | every navigational query and pull shape; compiled against the policy in tests |
+| `src/domain/schema.ts` | the catalog: `person`, `workspace`, `label`, `issue`, `comment`, their operations, and the applied policy |
+| `src/domain/queries.ts` | the queries the app and tests share |
 | `src/domain/rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |
-| `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers share |
-| `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `ramose/better-auth` mint plugins) on D1 |
-| `src/infra/resources.ts` / `alchemy.run.ts` | the peer (`Ramose.Server` owns it: `auth` is the source of truth) and the stack wiring both Workers |
-| `src/domain/operations.ts` | typed operations imported by infra and policy tests |
-| `test/` | policy compilation + masked-pull checks, role→class mapping, ranking |
+| `src/domain/shared.ts` | auth config, ports, and the workspace slug rules |
+| `src/infra/api.ts` | the auth Worker: Better Auth (jwt + `ramose/better-auth` mint plugins) on D1, serving the built SPA as assets |
+| `src/infra/resources.ts` / `peer.ts` | the Ramose peer with the catalog deployed onto it |
+| `src/infra/domain.ts` | `REEF_DOMAIN` — production naming and routing |
+| `src/app/` | the React SPA on `ramose/react` |
+| `dev.ts` | the SPA dev server: Bun serve + `/api` and `/db` proxies |
+| `test/` | policy and catalog shape, slug rules, ranking — unit tests |
 
 ## Deploying to real Cloudflare
 
-The live demo is **https://reef.ramose.ai**. One hostname serves both
-Workers:
+The live demo is **https://reef.ramose.ai**, published by
+`.github/workflows/reef-publish.yml` on every merge to master. One hostname
+serves both Workers:
 
 | path | Worker | how |
 |---|---|---|
 | `/db/*` | the Ramose peer | a zone route (`src/infra/resources.ts`) |
-| everything else | the auth Worker | a custom domain (`src/infra/api.ts`) |
+| everything else | the auth Worker | a custom domain (`src/infra/api.ts`), assets-first |
 
-`REEF_DOMAIN` is what turns all of that on (see `src/infra/domain.ts`).
-Set, it attaches the domain and the route and pins the physical names of
-the Workers, the D1 database and the R2 bucket; unset, a deploy is
-exactly what it always was.
+`REEF_DOMAIN` is what turns all of that on (see `src/infra/domain.ts`). Set,
+it attaches the domain and the route and pins the physical names of the
+Workers, the D1 database and the R2 bucket; unset, a deploy is an ordinary
+personal stage with generated names.
 
 ```sh
-REEF_DOMAIN=reef.ramose.ai
-bun run scripts/build-packages.ts
-REEF_DOMAIN=$REEF_DOMAIN bun alchemy deploy examples/reef/alchemy.run.ts --stage prod --adopt
+bun run build:reef
+REEF_DOMAIN=reef.ramose.ai bun alchemy deploy examples/reef/alchemy.run.ts --stage prod --adopt
 ```
 
-The API token needs the `todos` e2e permissions (Workers Scripts, R2 —
-see CONTRIBUTING.md) **plus `Account / D1 / Edit`** for the Better Auth
-database.
+Without `REEF_DOMAIN` the SPA needs the peer's origin baked in, because the
+auth Worker and the peer sit on different `workers.dev` hosts: deploy once,
+then rebuild with `BUN_PUBLIC_PEER_ORIGIN=<peerUrl>` and deploy again —
+`.github/workflows/reef-preview.yml` does exactly this for every PR.
 
-Two things the local run cannot show you, both handled in
-`src/infra/resources.ts`:
+The API token needs the `todos` e2e permissions (Workers Scripts, R2 — see
+CONTRIBUTING.md) **plus `Account / D1 / Edit`** for the Better Auth database,
+plus zone access for the hostname.
 
-- The peer reaches the auth Worker's JWKS through the `AUTH` **service
-  binding** (`RAMOSE_JWKS_SERVICE`), not its public URL. Deployed, both
-  Workers sit on `*.workers.dev`, and Cloudflare answers a Worker→Worker
-  subrequest there with error 1042 instead of the key set — every token
-  would 401.
-- `RAMOSE_POLICY` is a plain-text binding, capped at 5.1 kB. The compiled
-  policy is namespace-shaped for that reason (`test/policy.test.ts` pins
-  the size); miniflare enforces no such limit.
+One thing the local run cannot show you, handled in `src/infra/resources.ts`:
+deployed, the peer reaches the auth Worker's JWKS through the `AUTH`
+**service binding** (`jwksService`), not its public URL — Cloudflare answers
+a Worker→Worker subrequest on `workers.dev` with error 1042 instead of the
+key set, and every token would 401.

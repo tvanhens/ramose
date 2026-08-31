@@ -8,6 +8,7 @@ export const REEF_AUTH: AuthConfig = {
 };
 
 export const AUTH_BASE_PATH = "/api/auth";
+export const MINT_PATH = `${AUTH_BASE_PATH}/ramose/token`;
 
 export const DEV_PEER_PORT = 1337;
 export const DEV_API_PORT = 1338;
@@ -15,7 +16,7 @@ export const DEV_UI_ORIGIN = "http://localhost:5173";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
 
-const RESERVED_SLUGS: ReadonlySet<string> = new Set(["api", "db"]);
+const RESERVED_SLUGS: ReadonlySet<string> = new Set(["api", "db", "reef"]);
 
 export const isWorkspaceSlug = (slug: string): boolean =>
   isDatabaseName(slug) && SLUG_RE.test(slug) && !RESERVED_SLUGS.has(slug);

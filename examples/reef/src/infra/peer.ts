@@ -1,5 +1,16 @@
-import { createServer } from "ramose/worker";
-import { operations } from "../domain/operations.ts";
+import * as Effect from "effect/Effect";
+import {
+  QueryReplicaDO,
+  createServer,
+  createTransactorDO,
+  deployOperationCatalogs,
+} from "ramose/worker";
+import { deployment } from "../domain/schema.ts";
 
-export default createServer({ operations });
-export { QueryReplicaDO, TransactorDO } from "ramose/worker";
+const operationCatalogs = await Effect.runPromise(
+  deployOperationCatalogs(deployment),
+);
+
+export default createServer({ operationCatalogs });
+export { QueryReplicaDO };
+export const TransactorDO = createTransactorDO(operationCatalogs);

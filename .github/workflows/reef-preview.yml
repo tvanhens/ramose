@@ -1,0 +1,198 @@
+# Per-PR preview of the Reef demo (examples/reef/): deploy an isolated Alchemy
+# stage `pr-<number>` on PRs that change what Reef is, post/update a PR
+# comment with the SPA URL, and destroy the stage when the PR closes.
+#
+# Isolation from production is the whole point. `REEF_DOMAIN` is production
+# (see reef-publish.yml + examples/reef/src/infra/domain.ts): set, it pins
+# D1 / R2 / Worker names to `ramose-reef-*` and attaches reef.ramose.ai.
+# This workflow never sets it. Preview gets Alchemy-generated names that
+# embed the `pr-<n>` stage, and teardown destroys that stage only.
+#
+# URL shape: without a pinned hostname the peer URL exists only *after* a
+# deploy, so previews are two passes — deploy once, bake
+# `BUN_PUBLIC_PEER_ORIGIN=<peerUrl>` into the SPA, deploy again so the built
+# assets ship on the auth Worker. The human-facing URL is that auth Worker
+# (workers.dev). The peer's CORS allowlist already carries the auth Worker's
+# origin (examples/reef/src/infra/resources.ts).
+#
+# State: ALCHEMY_STATE=local, `.alchemy/` via the Actions cache — same as
+# docs-preview.yml and reef-publish.yml.
+#
+# Credentials: GitHub Environment "Development". The token also needs
+# Account / D1 / Edit (Better Auth's database).
+name: Reef preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - "examples/reef/**"
+      - "packages/ramose/**"
+      - ".github/workflows/reef-preview.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Serialize per PR: a deploy and a teardown must never race on stack state.
+concurrency:
+  group: reef-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy-preview
+    # Forks have no access to the Development environment secrets; skip cleanly.
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: Development
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Restore stack state
+        uses: actions/cache/restore@v4
+        with:
+          path: .alchemy
+          key: reef-preview-state-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
+          restore-keys: |
+            reef-preview-state-pr-${{ github.event.pull_request.number }}-
+      - name: Deploy pr-${{ github.event.pull_request.number }} stage
+        id: deploy
+        env:
+          CI: "1"
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ALCHEMY_STATE: local
+          # Production-only. Must stay unset: a preview that inherits it would
+          # adopt reef.ramose.ai and the pinned prod D1 / R2 / Workers.
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Need CLOUDFLARE_API_TOKEN (secret) and CLOUDFLARE_ACCOUNT_ID (variable or secret) on the Development environment. See CONTRIBUTING.md."
+            exit 1
+          fi
+          unset REEF_DOMAIN
+          STAGE="pr-${{ github.event.pull_request.number }}"
+
+          extract_url() {
+            local key="$1"
+            grep -oE "${key}: \"https://[^\"]+\"" deploy.log | head -1 \
+              | sed -E "s/^${key}: \"//; s/\"$//"
+          }
+
+          bun run scripts/build-packages.ts
+
+          # Pass 1: mint (or update) the isolated Workers + D1 + R2. The peer
+          # URL is only knowable after this.
+          bun alchemy deploy examples/reef/alchemy.run.ts \
+            --stage "$STAGE" --yes | tee deploy.log
+
+          PEER_URL="$(extract_url peerUrl)"
+          API_URL="$(extract_url apiUrl)"
+          if [ -z "$PEER_URL" ] || [ -z "$API_URL" ]; then
+            echo "::error::Deploy finished without peerUrl/apiUrl in the output."
+            exit 1
+          fi
+
+          # Pass 2: bake the peer origin into the SPA and ship it as the
+          # auth Worker's assets.
+          BUN_PUBLIC_PEER_ORIGIN="$PEER_URL" \
+            bun build examples/reef/index.html --outdir examples/reef/dist \
+            --minify --env='BUN_PUBLIC_*'
+          bun alchemy deploy examples/reef/alchemy.run.ts \
+            --stage "$STAGE" --yes | tee deploy.log
+
+          echo "url=$API_URL" >> "$GITHUB_OUTPUT"
+          echo "peer_url=$PEER_URL" >> "$GITHUB_OUTPUT"
+          echo "### Reef preview" >> "$GITHUB_STEP_SUMMARY"
+          echo "$API_URL" >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke-test the preview
+        env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.url }}
+          PEER_URL: ${{ steps.deploy.outputs.peer_url }}
+        run: |
+          # Fresh workers.dev hosts are eventually consistent; retry briefly.
+          probe() {
+            local url="$1" want="$2" tries=10 code
+            while [ $tries -gt 0 ]; do
+              code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$url" || echo 000)
+              [ "$code" = "$want" ] && return 0
+              tries=$((tries - 1)); sleep 6
+            done
+            echo "::error::$url returned $code (wanted $want)"
+            return 1
+          }
+          probe "$PREVIEW_URL/" 200
+          probe "$PREVIEW_URL/api/auth/jwks" 200
+          probe "$PEER_URL/health" 200
+      - name: Comment the preview URL
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.url }}
+        with:
+          script: |
+            const marker = "<!-- reef-preview -->";
+            const body = `${marker}\n**Reef preview**: ${process.env.PREVIEW_URL}\n\nDeployed from ${context.payload.pull_request.head.sha} as stage \`pr-${context.issue.number}\`. Torn down when this PR closes.`;
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(
+              (comment) => comment.body?.includes(marker),
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+      - name: Save stack state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .alchemy
+          key: reef-preview-state-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  teardown:
+    name: destroy-preview
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: Development
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Restore stack state
+        id: state
+        uses: actions/cache/restore@v4
+        with:
+          path: .alchemy
+          key: reef-preview-state-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
+          restore-keys: |
+            reef-preview-state-pr-${{ github.event.pull_request.number }}-
+      - name: Destroy pr-${{ github.event.pull_request.number }} stage
+        env:
+          CI: "1"
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ALCHEMY_STATE: local
+        run: |
+          if [ ! -d .alchemy ]; then
+            echo "::warning::No cached stack state for this PR — nothing to destroy (or the cache was evicted; check the Cloudflare dashboard for stray pr-${{ github.event.pull_request.number }} resources)."
+            exit 0
+          fi
+          bun run scripts/build-packages.ts
+          bun alchemy destroy examples/reef/alchemy.run.ts \
+            --stage "pr-${{ github.event.pull_request.number }}" --yes
