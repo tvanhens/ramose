@@ -11,7 +11,7 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
 ---
 
 <figure
-  class:list={["rg-animation-demo", `rg-animation-demo--${variant}`]}
+  class:list={["not-content", "rg-animation-demo", `rg-animation-demo--${variant}`]}
   data-animation-demo
   data-animation-variant={variant}
   data-animation-duration={cycleMs}
