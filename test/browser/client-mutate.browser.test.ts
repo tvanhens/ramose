@@ -644,7 +644,10 @@ browserTest(
       }]);
 
       watchSync();
-      expect(seen).toContain("connecting");
+      // The reopen is a reconnect over a value this handle is still
+      // publishing — the same held row the assertions below read — which is
+      // what `stale` means and what `connecting` denies.
+      expect(seen).toContain("stale");
 
       await receipt.committed;
       expect(receipt.getSnapshot().status).toBe("committed");

@@ -346,6 +346,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private queueUpdateRequired = false;
   private closed = false;
   private refused = false;
+  private wakePending = false;
   private awaitedRoute = false;
   private generation = 0;
 
@@ -542,7 +543,9 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     // beside a first.
     this.opening = opening;
     void opening.then(() => {
-      if (this.opening === opening) this.opening = undefined;
+      if (this.opening !== opening) return;
+      this.opening = undefined;
+      this.answerWake();
     });
     return this.activation;
   }
@@ -592,6 +595,25 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
 
   /**
+   * Whether this handle's own read stream is merely unreachable.
+   *
+   * Read from the session that produced the disposition rather than from the
+   * status the handle publishes, because the published status is an aggregate:
+   * a queue this build cannot replay reports `update-required` over a
+   * committed replica that is readable and a read stream that was perfectly
+   * compatible, and admitting on that aggregate would leave exactly that
+   * database never reading again after a cut. Every disposition that must stay
+   * fenced — a rotated view, a refused credential, a fence — is still excluded,
+   * now by the session that decided it.
+   */
+  private unreachable(): boolean {
+    const snapshot = this.session?.snapshot();
+    return snapshot === undefined
+      ? this.syncStatus() === "offline"
+      : readSessionSnapshot(snapshot).status === "offline";
+  }
+
+  /**
    * Activate again after an activation that could not reach the server.
    *
    * A connection that dies is not a refusal and not a fence. It publishes
@@ -602,12 +624,12 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
    * for a child that has none of its own. Neither describes a device that just
    * came back, so this is the path it comes back on.
    *
-   * `offline` is the whole admission test, and deliberately so: every fenced
-   * disposition publishes some other status — a build that is behind publishes
-   * `update-required`, a refused credential `authentication-required`, a closed
-   * handle `closed` — so the statuses that must stay fenced are excluded by
-   * what they publish rather than by a list here that could fall behind them.
-   * A refusal is excluded twice over, because it is the other path's to answer.
+   * A wake this handle cannot answer yet is remembered rather than dropped.
+   * `online` fires on a transition and a foreground tab that never loses focus
+   * regains it never, so a wake that lands while an activation is still opening
+   * — or while a stream that is already dead has not published its failure yet
+   * — is the only one this device is going to send. `answerWake()` asks it
+   * again the moment the disposition is known.
    *
    * The session this was holding is closed before another opens: a transport
    * failure has already ended its stream, and leaving it attached would leave
@@ -615,8 +637,11 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
    */
   reactivateOffline(): void {
     if (!this.live() || this.refused) return;
-    if (this.opening !== undefined) return;
-    if (this.syncStatus() !== "offline") return;
+    if (this.opening !== undefined || !this.unreachable()) {
+      this.wakePending = true;
+      return;
+    }
+    this.wakePending = false;
     const session = this.session;
     this.releaseSession?.();
     this.releaseSession = undefined;
@@ -625,8 +650,36 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     void this.restart();
   }
 
+  /**
+   * Ask a remembered wake again now that this handle's disposition is known.
+   *
+   * Called where a disposition becomes known: when an activation settles, and
+   * when the session publishes. A handle that reached the server has answered
+   * the wake and forgets it; one that is fenced has nothing to answer and
+   * forgets it too; one still opening keeps it for the next settlement.
+   */
+  private answerWake(): void {
+    if (!this.wakePending || !this.live()) return;
+    if (this.opening !== undefined) return;
+    if (this.unreachable() && !this.refused) {
+      this.reactivateOffline();
+      return;
+    }
+    if (this.syncStatus() !== "connecting") this.wakePending = false;
+  }
+
   private async open(): Promise<void> {
-    this.publishStatus("connecting");
+    // `connecting` says nothing is readable and `stale` says something is,
+    // unconfirmed — so a reactivation over a value this handle is still
+    // publishing is `stale`, and a build that is behind keeps saying so rather
+    // than being talked over by an activation that cannot change it.
+    this.publishStatus(
+      this.updateRequired || this.queueUpdateRequired
+        ? "update-required"
+        : this.committed === undefined
+        ? "connecting"
+        : "stale",
+    );
     const [catalog, storage] = await activationStep(
       "closed",
       () => Promise.all([this.context.catalog(), this.context.storage()]),
@@ -789,6 +842,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.publishStatus(this.statusOf(snapshot));
     this.spawn(this.recompute());
     this.retryAwaitedRoute();
+    this.answerWake();
   }
 
   /**

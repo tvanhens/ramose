@@ -79,4 +79,41 @@ describe("readSessionSnapshot", () => {
     expect(read({ status: "closed", value: value(false) }))
       .toEqual({ status: "closed", publishes: false });
   });
+
+  /**
+   * The client retries an activation on exactly the dispositions this reports
+   * as `offline`, read from the session rather than from the status the handle
+   * publishes — a queue this build cannot replay reports `update-required` over
+   * a read stream that was perfectly reachable, and admitting on that aggregate
+   * would leave that database never reading again after a cut.
+   */
+  test("`offline` names every disposition a later activation can recover, and no other", () => {
+    const dispositions: readonly ReplicationSessionSnapshot[] = [
+      { status: "connecting" },
+      { status: "connecting", value: value(true) },
+      { status: "open", value: value(false) },
+      { status: "open", value: value(true) },
+      { status: "failed", failure: "transport" },
+      { status: "failed", failure: "transport", value: value(false) },
+      { status: "failed", failure: "unauthorized", value: value(false) },
+      { status: "failed", failure: "fenced", value: value(false) },
+      { status: "terminal" },
+      { status: "terminal", terminalCode: "closed", value: value(false) },
+      { status: "terminal", terminalCode: "update-required", value: value(false) },
+      { status: "terminal", terminalCode: "incompatible-version", value: value(false) },
+      { status: "closed", value: value(false) },
+    ];
+    const offline = dispositions.filter((snapshot) => read(snapshot).status === "offline");
+    // An unreachable server, and a stream that ended without saying why.
+    // Nothing the server decided, and nothing this build cannot read.
+    expect(offline).toEqual([
+      { status: "failed", failure: "transport" },
+      { status: "failed", failure: "transport", value: value(false) },
+      { status: "terminal" },
+      { status: "terminal", terminalCode: "closed", value: value(false) },
+    ]);
+    // And every one of them keeps its value readable, which is why retrying
+    // one is a reconnect rather than a reset.
+    for (const snapshot of offline) expect(read(snapshot).publishes).toBe(true);
+  });
 });

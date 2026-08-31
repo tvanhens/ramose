@@ -479,6 +479,12 @@ browserTest(
         "the committed issue",
       );
       const minted = wallet.minted;
+      // Every status this board publishes from the cut to the recovery, so the
+      // reconnect can be held to the contract those statuses carry.
+      const published: string[] = [];
+      const record = boardHandle.sync.subscribe(() => {
+        published.push(boardHandle.sync.getSnapshot().status);
+      });
 
       await partition(subject, true);
       await awake(
@@ -497,10 +503,18 @@ browserTest(
       await awake(root, (status) => status === "live", "the root resuming");
       await awake(boardHandle, (status) => status === "live", "the board resuming");
 
+      record();
       // A resume, not a reset: the value was never withdrawn, and the bearer
       // presented again is the one the session was already bound to.
       expect(titles(view.read())).toContain("Held across the cut");
       expect(wallet.minted).toBe(minted);
+      // And it says so the whole way. `connecting` means nothing is readable;
+      // this board was readable at every moment, so each attempt to reach the
+      // server again is `stale` — a rendered view is never told to empty
+      // itself while the client is only reconnecting behind it.
+      expect(published).toContain("stale");
+      expect(published).toContain("live");
+      expect(published).not.toContain("connecting");
       await settled(boardHandle.mutate.createIssue({ title: "Written after resuming" }));
       await until(
         () => titles(view.read()),
