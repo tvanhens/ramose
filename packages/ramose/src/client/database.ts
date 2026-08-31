@@ -532,9 +532,14 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
    * from `auth()` itself, which leaves no session behind, or from the server
    * answering the activation, which leaves one holding the refusal; either way
    * the next activation starts from nothing.
+   *
+   * An activation already opening is that next activation: it will present
+   * whatever `auth()` answers now, and starting a second one beside it would
+   * leave the first holding a session nothing closes.
    */
   reactivateRefused(): void {
     if (!this.live() || !this.refused) return;
+    if (this.session === undefined && this.activation !== undefined) return;
     this.refused = false;
     this.releaseSession?.();
     this.releaseSession = undefined;

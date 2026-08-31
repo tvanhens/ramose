@@ -2,6 +2,10 @@ import { expect } from "vitest";
 import { replicaLeaderKey } from "../../packages/ramose/src/internal/replication/leadership.ts";
 import { replicaDatabaseScopeOf } from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
 import { createClient } from "../../packages/ramose/src/client/index.ts";
+import { installClientCatalog } from "../../packages/ramose/src/client/catalog.ts";
+import { ClientDatabaseHandle } from "../../packages/ramose/src/client/database.ts";
+import { GraphRegistry } from "../../packages/ramose/src/client/graph.ts";
+import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
 import { browserTest } from "./fixtures.ts";
 import { openTab, type TabHandle } from "./tab-harness.ts";
 import {
@@ -462,6 +466,83 @@ browserTest(
       }
     } finally {
       await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a wake-up starts one activation for a graph child the server refused",
+  async ({ browser }) => {
+    const name = `ramose-partition-refused-child-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(name);
+    const catalog = await installClientCatalog(NotesCatalog);
+    let presented = 0;
+    const registry = new GraphRegistry(() => {
+      throw new Error("this child resolves no children of its own");
+    }, () => undefined);
+    const handle = new ClientDatabaseHandle({
+      server: globalThis.location.origin,
+      root: "refuses-children",
+      graphPath: CHILD_PATH,
+      graph: () => registry,
+      catalog: () => Promise.resolve(catalog),
+      storage: () => Promise.resolve(storage),
+      credential: () => {
+        presented++;
+        return Promise.resolve({ token: "bearer-a", cacheKey: CACHE_KEY });
+      },
+      mutations: {
+        databaseOperations: () => new Map(),
+        selfOperations: () => new Map(),
+        catalog: () => Promise.resolve(catalog),
+        storage: () => Promise.resolve(storage),
+        assertLive: () => undefined,
+        submit: () => undefined,
+        track: () => undefined,
+      },
+      assertLive: () => undefined,
+      live: () => true,
+      onSyncChange: () => undefined,
+      onConfirmed: () => undefined,
+      onFenced: () => undefined,
+    });
+    try {
+      void handle.activate();
+      await until(
+        () => Promise.resolve(handle.syncStatus()),
+        (status) => status === "authentication-required",
+        "the server to refuse the graph child",
+      );
+      expect(presented).toBe(1);
+
+      // The order a wake-up calls these in: restarting the unconfirmed child
+      // is the activation that presents the refreshed credential, and a second
+      // one beside it would leave the first holding a session nothing closes.
+      for (let wakes = 0; wakes < 3; wakes++) {
+        const before = presented;
+        handle.reactivateUnconfirmed();
+        handle.reactivateRefused();
+        expect(presented).toBe(before);
+        await until(
+          () => Promise.resolve(presented),
+          (calls) => calls > before,
+          "the child to activate again",
+        );
+        await steady(
+          () => Promise.resolve(presented),
+          (calls) => calls === before + 1,
+          "the activations one wake-up starts",
+        );
+        await until(
+          () => Promise.resolve(handle.syncStatus()),
+          (status) => status === "authentication-required",
+          "the server to refuse the child again",
+        );
+      }
+    } finally {
+      await handle.close();
+      storage.close();
       await deleteDatabase(name);
     }
   },

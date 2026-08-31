@@ -303,6 +303,7 @@ type LoopReport = {
 };
 
 let token: string | undefined = TOKEN;
+let presented = 0;
 let held: ReplicaLease | undefined;
 let published: QueryReport[] = [];
 let client: Client | undefined;
@@ -345,6 +346,7 @@ const open = (storageName: string): ClientDatabase => {
     root: ROOT,
     catalog: NotesCatalog,
     auth: () => {
+      presented++;
       if (token === undefined) throw new Error("the application has no session");
       return { token, cacheKey: CACHE_KEY };
     },
@@ -430,6 +432,9 @@ export const serve = (id: string): void =>
 
     /** Every value this tab's observers have published, in order. */
     published: (): readonly QueryReport[] => published,
+
+    /** How many times this client has asked the application for a credential. */
+    presented: (): number => presented,
 
     sync: (): string => client?.sync.getSnapshot().status ?? "absent",
 

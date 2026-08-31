@@ -18,6 +18,25 @@ const replicationFrameFixtures = (root: string): Plugin => ({
         response.end();
         return;
       }
+      // The same status for graph paths only, which leaves a root activation
+      // to fail as an unreachable one and its restored value on screen.
+      if (match[1] === "refuses-children") {
+        const body: Buffer[] = [];
+        request.on("data", (chunk: Buffer) => body.push(chunk));
+        request.on("end", () => {
+          let path: unknown;
+          try {
+            path = (JSON.parse(Buffer.concat(body).toString()) as {
+              readonly graphPath?: unknown;
+            }).graphPath;
+          } catch {
+            path = undefined;
+          }
+          response.statusCode = Array.isArray(path) && path.length > 0 ? 401 : 404;
+          response.end();
+        });
+        return;
+      }
       const file = join(root, "test/browser/frames", `${match[1]!}.ndjson`);
       if (!existsSync(file)) return next();
       response.statusCode = 200;
