@@ -181,6 +181,7 @@ const steps = [
   .history-column {
     position: relative;
     min-width: 0;
+    margin: 0;
     padding: 0.6rem;
     border: 1px solid #241f1c;
     border-radius: 0.6rem;
@@ -510,6 +511,14 @@ const steps = [
   :global([data-animation-phase="continue"]) {
     .history-timeline > header span:first-child {
       color: #d49570;
+    }
+  }
+
+  :global([data-animation-phase="reset"]) {
+    .history-card:not(.is-static),
+    .history-empty {
+      transition: none;
+      transition-delay: 0s;
     }
   }
 

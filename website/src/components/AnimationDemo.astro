@@ -132,6 +132,7 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
     const command = "Complete every launch task assigned to me";
     const typed = Math.max(0, Math.min(1, (progress - 0.015) / 0.12));
     text(demo, "[data-agent-command]", live ? command.slice(0, Math.round(typed * command.length)) : "");
+    state(demo, "[data-agent-command]", "is-submitted", !live || progress >= 0.15);
     demo.querySelectorAll<HTMLElement>("[data-agent-log]").forEach((line) => {
       const threshold = Number(line.dataset.agentLog);
       line.classList.toggle("is-visible", live && progress >= threshold);
@@ -193,11 +194,10 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
     };
     const clock = timeAt(position);
     const cards = [68, 73, 78];
-    const deleteAt = [0.9, 0.925, 0.95];
-    const revealed = (at: number, index: number) => looping ? progress < deleteAt[index] : adopted || position <= at;
+    const revealed = (at: number) => !looping && (adopted || position <= at);
     let visible = 0;
     demo.querySelectorAll<HTMLElement>("[data-history-card]").forEach((card, index) => {
-      const shown = revealed(cards[index], index);
+      const shown = revealed(cards[index]);
       const fresh = shown && !adopted && !looping && position > cards[index] - 4;
       card.classList.toggle("is-visible", shown);
       card.classList.toggle("is-fresh", fresh);
@@ -211,11 +211,8 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
     text(demo, "[data-history-window-start]", timeAt(0));
     text(demo, "[data-history-live]", inPast && !adopted ? `History · ${clock}` : "Live");
     text(demo, "[data-history-view]", inPast && !adopted ? `Viewing ${clock}` : "Viewing now");
-    const deletedAt = timeAt(cards[2]);
     const status = looping
-      ? visible > 0
-        ? `Deleting · ${3 - visible} of 3 issues removed at ${deletedAt}`
-        : "Now · after deletion"
+      ? "Now · after deletion"
       : adopted
         ? "Continuing from 12:40:52 · nothing was lost"
         : visible === 3
@@ -227,7 +224,7 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
               : "Now · after deletion";
     text(demo, "[data-history-status]", status);
     demo.querySelectorAll<HTMLElement>("[data-history-event]").forEach((event, index) => {
-      const firing = looping && progress >= deleteAt[index] && progress < deleteAt[index] + 0.035;
+      const firing = looping && progress < reset + 0.05;
       event.classList.toggle("is-passed", firing || (!looping && position <= cards[index]));
     });
     stepStates(demo, [
@@ -259,7 +256,7 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
       alignInstantDrop(demo);
       instantResize.observe(demo);
     }
-    let elapsed = variant === "agents" ? duration * 0.24 : 0;
+    let elapsed = 0;
     let previous = performance.now();
     let frame = 0;
     let visible = false;
@@ -282,9 +279,9 @@ const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
       frame = 0;
     };
     const observer = new IntersectionObserver(([entry]) => {
-      visible = entry.isIntersecting;
+      visible = entry.isIntersecting && entry.intersectionRatio >= 0.15;
       if (visible) start(); else stop();
-    }, { rootMargin: "160px" });
+    }, { rootMargin: "0px", threshold: [0, 0.15] });
     observer.observe(demo);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) stop(); else start();

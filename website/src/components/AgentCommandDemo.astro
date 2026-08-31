@@ -17,7 +17,7 @@ const steps = [
 <AnimationDemo
   variant="agents"
   title="An agent discovering, querying, and mutating through Ramose"
-  cycleMs={11000}
+  cycleMs={9000}
   initialTitle="describe"
   initialMeta="graph, catalog, and what this caller may call"
 >
@@ -150,6 +150,11 @@ const steps = [
     background: #ff5b0a;
     animation: agent-caret 1.04s step-end infinite;
     content: "";
+  }
+
+  .agent-command [data-agent-command].is-submitted::after {
+    opacity: 0;
+    animation: none;
   }
 
   .agent-log {

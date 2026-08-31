@@ -206,11 +206,15 @@ const steps = [
     position: relative;
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: stretch;
     gap: 0.55rem;
   }
 
   .instant-column {
+    box-sizing: border-box;
     min-width: 0;
+    height: 100%;
+    margin: 0;
     padding: 0.6rem;
     border: 1px solid #241f1c;
     border-radius: 0.6rem;
