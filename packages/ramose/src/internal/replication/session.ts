@@ -678,11 +678,14 @@ export class ReplicationSession {
           throw new Error("authenticated resume has no cached replica candidate");
         }
         if (frame.type === "ResumeReady") {
-          await this.storage.acknowledgeResume(frame, {
+          const acknowledged = await this.storage.acknowledgeResume(frame, {
             signal: this.controller.signal,
             lease: this.lease,
           });
           if (!this.current(generation)) return false;
+          if (acknowledged === undefined) {
+            throw new Error("resume acknowledgement does not match the durable replica");
+          }
         }
         const restored = await this.confirmedCandidate(prior);
         this.publishReplica(restored.identity, restored, false, generation);
@@ -822,13 +825,12 @@ export class ReplicationSession {
           signal: this.controller.signal,
           lease: this.lease,
         });
-        if (installed === undefined) return false;
-        if (installed.revision === frame.revision) {
-          this.publishReplica(frame.identity, installed, false, generation);
-          await this.settled(frame, generation);
-        } else {
-          installed.release();
+        if (installed === undefined || installed.revision !== frame.revision) {
+          installed?.release();
+          throw new Error("replication change does not continue the durable revision");
         }
+        this.publishReplica(frame.identity, installed, false, generation);
+        await this.settled(frame, generation);
         return false;
       }
       case "ResumeReady": {
@@ -845,11 +847,15 @@ export class ReplicationSession {
           lease: this.lease,
         });
         if (!this.current(generation)) return true;
+        if (acknowledged === undefined) {
+          this.quarantine(generation);
+          throw new Error("resume acknowledgement does not match the durable replica");
+        }
         this.publish({
           status: "open",
           value: Object.freeze({
             ...prior,
-            ordinal: Math.max(prior.ordinal, acknowledged ?? prior.ordinal),
+            ordinal: Math.max(prior.ordinal, acknowledged),
             stale: false,
           }),
         });

@@ -2466,6 +2466,7 @@ export class IndexedDbReplicaStorage {
     const partition = replicaPartitionKey(frame.identity);
     const sweep = await this.sweepGeneration(partition);
     options.signal?.throwIfAborted();
+    await this.boundaries.checkpoint("replica.installing");
     const write = this.database.transaction(
       [COMMITTED, COMMITTED_HEADS, GENERATIONS],
       "readwrite",
