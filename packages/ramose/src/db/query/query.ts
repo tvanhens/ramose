@@ -1425,13 +1425,12 @@ export const lowerQueryObject = (
     };
     if (op === "in") {
       const [subject, list] = args;
-      const values = (operand(list) as unknown[]).filter(
-        (value) => value !== UNRESOLVED,
-      );
-      if (Array.isArray(values) && values.length === 0) return [neverClause()];
       if (!isVar(subject)) {
         throw new Error("ramose/query: Q.in's first argument is a bound var");
       }
+      const values = (operand(list) as unknown[]).filter(
+        (value) => value !== UNRESOLVED,
+      );
       return [[["ground", values], [nameOf(subject), "..."]]];
     }
     if (ignoreCase) {
