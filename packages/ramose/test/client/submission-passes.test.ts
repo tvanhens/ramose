@@ -1,11 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { passOutcome, type PassOutcome } from "../../src/client/submission.ts";
+import {
+  passOutcome,
+  queueUnreplayable,
+  type PassOutcome,
+} from "../../src/client/submission.ts";
 import { invocationId } from "../../src/db/refs.ts";
 import type {
   InterruptedReason,
   QueueProgress,
 } from "../../src/internal/replication/submission.ts";
-import type { ReplicaDatabaseScope } from "../../src/internal/replication/replica-lifecycle.ts";
+import {
+  replicaDatabaseKey,
+  type ReplicaDatabaseScope,
+} from "../../src/internal/replication/replica-lifecycle.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 
@@ -44,7 +51,9 @@ describe("what a submission pass does next", () => {
       ["later", [interrupted("aborted")]],
       ["later", [interrupted("storage")]],
       ["later", [interrupted("scope-unconfirmed")]],
-      ["later", [interrupted("invocation-conflict")]],
+      ["obstructed", [interrupted("invocation-conflict")]],
+      ["obstructed", [interrupted("record-invalid")]],
+      ["obstructed", [interrupted("mapping-refused")]],
       ["stand-down", [interrupted("leadership-fenced")]],
       ["withdraw", [interrupted("scope-fenced")]],
     ];
@@ -73,5 +82,50 @@ describe("what a submission pass does next", () => {
   test("work that advanced is drained before a transient failure waits", () => {
     expect(passOutcome([committed(), retry()])).toBe("again");
     expect(passOutcome([committed(), interrupted("storage")])).toBe("again");
+  });
+
+  test("a queue this build cannot replay never asks for another attempt", () => {
+    expect(passOutcome([interrupted("record-invalid"), retry()])).toBe("later");
+    expect(passOutcome([interrupted("record-invalid"), committed()])).toBe("again");
+    expect(passOutcome([interrupted("record-invalid"), interrupted("scope-fenced")]))
+      .toBe("withdraw");
+    expect(
+      passOutcome([interrupted("mapping-refused"), interrupted("leadership-fenced")]),
+    ).toBe("stand-down");
+    expect(passOutcome([entry({ _tag: "Offline" }), interrupted("mapping-refused")]))
+      .toBe("obstructed");
+  });
+});
+
+describe("what a database learns from a pass over its own queue", () => {
+  const key = replicaDatabaseKey(receiver);
+  const elsewhere = replicaDatabaseKey({ ...receiver, database: opaque("e") });
+
+  test("a queue this build cannot replay reports where its receiver can see it", () => {
+    for (const reason of ["record-invalid", "invocation-conflict", "mapping-refused"] as const) {
+      expect([reason, queueUnreplayable([interrupted(reason)], key)])
+        .toEqual([reason, true]);
+      expect([reason, queueUnreplayable([interrupted(reason)], elsewhere)])
+        .toEqual([reason, false]);
+    }
+    expect(
+      queueUnreplayable(
+        [entry({
+          _tag: "UpdateRequired",
+          invocation: invocationId(),
+          reason: "operation-changed",
+        })],
+        key,
+      ),
+    ).toBe(true);
+  });
+
+  test("a queue that may still advance reports nothing", () => {
+    for (const reason of ["storage", "scope-unconfirmed", "aborted", "scope-fenced"] as const) {
+      expect([reason, queueUnreplayable([interrupted(reason)], key)])
+        .toEqual([reason, false]);
+    }
+    expect(queueUnreplayable([retry(), committed(), entry({ _tag: "Offline" })], key))
+      .toBe(false);
   });
 });

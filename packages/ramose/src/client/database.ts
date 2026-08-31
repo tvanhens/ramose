@@ -48,6 +48,7 @@ import {
   rowIdentity,
   type EntityHandle,
 } from "./entity.ts";
+import { queueUnreplayable } from "./submission.ts";
 import { Store, sameResult, type Subscription } from "./subscription.ts";
 import { syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -287,6 +288,8 @@ class ActivationFailed extends Error {
   }
 }
 
+let confirmations = 0;
+
 const activationStep = async <A>(
   status: SyncStatus,
   run: () => Promise<A>,
@@ -348,6 +351,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private wakePending = false;
   private awaitedRoute = false;
   private generation = 0;
+  private confirmation = 0;
 
   constructor(private readonly context: DatabaseContext) {}
 
@@ -681,10 +685,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     const mine = scope === undefined ? undefined : replicaDatabaseKey(scope);
     if (
       !this.queueUpdateRequired && mine !== undefined &&
-      progress.some((entry) =>
-        entry.state._tag === "UpdateRequired" &&
-        replicaDatabaseKey(entry.receiver) === mine
-      )
+      queueUnreplayable(progress, mine)
     ) {
       this.queueUpdateRequired = true;
       this.publishStatus("update-required");
@@ -731,6 +732,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
         this.transition();
       }
       this.identity = identity;
+      this.confirmation = ++confirmations;
       this.context.onConfirmed(identity);
       this.context.mutations.submit(replicaDatabaseScopeOf(identity));
       this.spawn(this.bindReconciler(identity));
@@ -852,6 +854,10 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
 
   confirmedIdentity(): ReplicationIdentity | undefined {
     return this.identity;
+  }
+
+  confirmedAt(): number {
+    return this.confirmation;
   }
 
   viewWithdrawn(): boolean {

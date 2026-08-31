@@ -46,7 +46,12 @@ import {
   type ClientDatabase,
   type DatabaseContext,
 } from "./database.ts";
-import { fencedReceiver, GraphRegistry, receiverStableKey } from "./graph.ts";
+import {
+  fencedReceiver,
+  GraphRegistry,
+  mostRecentlyConfirmed,
+  receiverStableKey,
+} from "./graph.ts";
 import { Store, type Subscription } from "./subscription.ts";
 import { aggregateSyncStatus, syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -204,6 +209,7 @@ class RamoseClient implements Client {
           handle.reactivateUnconfirmed();
           handle.reactivateRefused();
         }
+        this.submissions().request(scope);
         return;
     }
   }
@@ -266,6 +272,8 @@ class RamoseClient implements Client {
       submit: (receiver) => this.submissions().request(receiver),
       applied: (receiver) => this.observeLayers(replicaDatabaseKey(receiver)),
       track: (receiver, driver) => this.submissions().track(receiver, driver),
+      untrack: (driver) =>
+        this.submissions().untrack(driver.receipt.invocation),
     };
   }
 
@@ -331,7 +339,11 @@ class RamoseClient implements Client {
 
   private resolveReceiver(receiver: ReplicaDatabaseScope): void {
     const key = replicaDatabaseKey(receiver);
-    if (this.terminal !== undefined || this.receivers.has(key)) return;
+    if (this.terminal !== undefined) return;
+    if (this.receivers.has(key)) {
+      this.receivers.get(key)?.reactivateOffline();
+      return;
+    }
     if (this.databaseFor(receiver) !== undefined) return;
     this.receivers.set(key, undefined);
     void this.storage().then(
@@ -361,15 +373,10 @@ class RamoseClient implements Client {
   private databaseFor(
     receiver: ReplicaDatabaseScope,
   ): ClientDatabaseHandle | undefined {
-    const key = replicaDatabaseKey(receiver);
-    const candidates = [
-      ...(this.root === undefined ? [] : [this.root]),
-      ...(this.graph?.handles() ?? []),
-    ];
-    return candidates.find((handle) => {
-      const scope = handle.confirmedScope();
-      return scope !== undefined && replicaDatabaseKey(scope) === key;
-    });
+    return mostRecentlyConfirmed(
+      this.handles(),
+      replicaDatabaseKey(receiver),
+    );
   }
 
   private endpointFor(

@@ -650,3 +650,63 @@ browserTest(
     }
   },
 );
+
+browserTest(
+  "a receiver record written after the queue was planned reschedules its pass",
+  async ({ browser }) => {
+    const name = `ramose-propagation-reschedule-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const childId = `c${database}`.slice(0, 43);
+    await seedDatabases(name, [{
+      identity: await identityFor(database),
+      datoms: [...noteDatoms(NOTES), ...workspaceDatoms(CHILD_LINEAGE[0]!)],
+    }]);
+    const tab = await openTab(tabModule);
+    try {
+      await started(tab, name, database);
+      await tab.call("enqueue", {
+        storageName: name,
+        database,
+        child: childId,
+        title: "queued",
+      });
+      const planned = await until(
+        () => tab.call<number>("presented"),
+        (presented) => presented > 0,
+        "the client's own pass over the child's queue",
+      );
+      await steady(
+        () => tab.call<number>("presented"),
+        (presented) => presented === planned,
+        "the credential presentations of a queue with no receiver record",
+      );
+
+      await observeChildRoute(name, await identityFor(childId, CHILD_LINEAGE));
+      const rescheduled = await until(
+        () => tab.call<number>("presented"),
+        (presented) => presented >= planned + 2,
+        "the pass the receiver record reschedules, and the errand it activates",
+      );
+
+      await steady(
+        () => tab.call<number>("presented"),
+        (presented) => presented === rescheduled,
+        "the credential presentations of a settled queue",
+      );
+      await tab.call("enqueue", {
+        storageName: name,
+        database,
+        child: childId,
+        title: "queued again",
+      });
+      await until(
+        () => tab.call<number>("presented"),
+        (presented) => presented >= rescheduled + 2,
+        "the next pass reactivating the errand whose activation failed",
+      );
+    } finally {
+      await tab.close();
+      await deleteDatabase(name);
+    }
+  },
+);

@@ -17,6 +17,7 @@ import {
   graphResolutionQuery,
   GraphRegistry,
   graphStableKey,
+  mostRecentlyConfirmed,
   resolveGraphReceiver,
   terminalPathError,
 } from "../../src/client/graph.ts";
@@ -225,6 +226,7 @@ describe("the resolved-database registry", () => {
       submit: () => undefined,
       applied: () => undefined,
       track: () => undefined,
+      untrack: () => undefined,
     },
     assertLive: () => undefined,
     live: () => true,
@@ -420,5 +422,44 @@ describe("the mutation pre-queue gate", () => {
     for (const status of ["idle", "connecting", "live", "stale", "offline"] as const) {
       expect(fencedReceiver(status)).toBeUndefined();
     }
+  });
+});
+
+describe("which handle addresses a receiver two of them confirmed", () => {
+  const scope = {
+    server: "s".repeat(43),
+    principal: "p".repeat(43),
+    database: "d".repeat(43),
+  };
+  const other = { ...scope, database: "e".repeat(43) };
+  const handle = (
+    name: string,
+    confirmed: typeof scope | undefined,
+    at: number,
+  ) => ({
+    name,
+    confirmedScope: () => confirmed,
+    confirmedAt: () => at,
+  });
+
+  test("the most recently confirmed one, whichever order they were opened in", () => {
+    const before = handle("before", scope, 3);
+    const after = handle("after", scope, 7);
+    const elsewhere = handle("elsewhere", other, 9);
+    const unconfirmed = handle("unconfirmed", undefined, 0);
+    const key = replicaDatabaseKey(scope);
+
+    expect(
+      mostRecentlyConfirmed([before, after, elsewhere, unconfirmed], key)?.name,
+    ).toBe("after");
+    expect(
+      mostRecentlyConfirmed([after, before, unconfirmed, elsewhere], key)?.name,
+    ).toBe("after");
+    expect(mostRecentlyConfirmed([unconfirmed, elsewhere], key)).toBeUndefined();
+    expect(mostRecentlyConfirmed([], key)).toBeUndefined();
+    expect(
+      mostRecentlyConfirmed([before, after, elsewhere], replicaDatabaseKey(other))
+        ?.name,
+    ).toBe("elsewhere");
   });
 });

@@ -216,6 +216,26 @@ export const graphStableKey = (
 export const receiverStableKey = (receiver: ReplicaDatabaseScope): string =>
   `receiver ${replicaDatabaseKey(receiver)}`;
 
+export type ConfirmedHandle = {
+  readonly confirmedScope: () => ReplicaDatabaseScope | undefined;
+  readonly confirmedAt: () => number;
+};
+
+export const mostRecentlyConfirmed = <H extends ConfirmedHandle>(
+  handles: Iterable<H>,
+  database: string,
+): H | undefined => {
+  let chosen: H | undefined;
+  for (const handle of handles) {
+    const scope = handle.confirmedScope();
+    if (scope === undefined || replicaDatabaseKey(scope) !== database) continue;
+    if (chosen === undefined || handle.confirmedAt() > chosen.confirmedAt()) {
+      chosen = handle;
+    }
+  }
+  return chosen;
+};
+
 type ResolvedSegment = {
   readonly id: EntityId;
   readonly name: string;
