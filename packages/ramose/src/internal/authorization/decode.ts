@@ -2,6 +2,8 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import {
+  MAX_CATALOG_DOCUMENT_BYTES,
+  MAX_CATALOG_DOCUMENT_NODES,
   MAX_COLLECTION_SIZE,
   MAX_JSON_DEPTH,
   MAX_JSON_ENCODED_BYTES,
@@ -76,6 +78,7 @@ export const decodePolicyTemplateResult = (
     Schema.decodeUnknownResult(PolicyTemplateIR, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(RelativeAuthorizationRule)(rule)),
     input,
+    CATALOG_DOCUMENT_BUDGET,
   );
 
 export const decodeInstalledAuthorizationResult = (
@@ -85,6 +88,7 @@ export const decodeInstalledAuthorizationResult = (
     Schema.decodeUnknownResult(InstalledAuthorizationIR, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
     input,
+    CATALOG_DOCUMENT_BUDGET,
   );
 
 export const decodeLegacyInstalledCatalogUnitV1Result = (
@@ -94,6 +98,7 @@ export const decodeLegacyInstalledCatalogUnitV1Result = (
     Schema.decodeUnknownResult(LegacyInstalledCatalogUnitV1, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
     input,
+    CATALOG_DOCUMENT_BUDGET,
   );
 
 export const decodeInstalledCatalogUnitResult = (
@@ -103,6 +108,7 @@ export const decodeInstalledCatalogUnitResult = (
     Schema.decodeUnknownResult(InstalledCatalogUnit, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
     input,
+    CATALOG_DOCUMENT_BUDGET,
   );
   if (Result.isSuccess(current)) return current;
   const legacy = decodeLegacyInstalledCatalogUnitV1Result(input);
@@ -310,9 +316,10 @@ const decodeDocument = <A>(
   decode: (input: unknown) => Result.Result<A, Schema.SchemaError>,
   encodeRule: (rule: unknown) => JsonValue,
   input: unknown,
+  budget: DocumentBudget = WIRE_DOCUMENT_BUDGET,
 ): Result.Result<A, InvalidIR> =>
   Result.gen(function* () {
-    const hostile = inspectRawJson(input);
+    const hostile = inspectRawJson(input, budget);
     if (hostile !== undefined) {
       return yield* Result.fail(new InvalidIR({ message: hostile }));
     }
@@ -549,9 +556,30 @@ const ownJsonField = (encoded: JsonValue, key: string): JsonValue => {
   return descriptor.value as JsonValue;
 };
 
+type DocumentBudget = {
+  readonly maxNodes: number;
+  readonly maxBytes: number;
+};
+
+const WIRE_DOCUMENT_BUDGET: DocumentBudget = Object.freeze({
+  maxNodes: MAX_JSON_NODES,
+  maxBytes: MAX_JSON_ENCODED_BYTES,
+});
+
+/**
+ * Catalog units and policy templates are assembled in-process from deployed
+ * code and never arrive over a wire, so they carry a code-sized budget; the
+ * wire budget stays the ceiling for every externally supplied document.
+ */
+const CATALOG_DOCUMENT_BUDGET: DocumentBudget = Object.freeze({
+  maxNodes: MAX_CATALOG_DOCUMENT_NODES,
+  maxBytes: MAX_CATALOG_DOCUMENT_BYTES,
+});
+
 type Work = {
   nodes: number;
   bytes: number;
+  readonly budget: DocumentBudget;
 };
 
 type WalkFrame = {
@@ -561,8 +589,11 @@ type WalkFrame = {
   readonly depth: number;
 };
 
-const inspectRawJson = (input: unknown): string | undefined => {
-  const work: Work = { nodes: 0, bytes: 0 };
+const inspectRawJson = (
+  input: unknown,
+  budget: DocumentBudget,
+): string | undefined => {
+  const work: Work = { nodes: 0, bytes: 0, budget };
   const root = jsonLeafViolation(input, work);
   if (root !== undefined) return root;
   if (typeof input !== "object" || input === null) return undefined;
@@ -594,7 +625,7 @@ const inspectRawJson = (input: unknown): string | undefined => {
 const charge = (work: Work, nodes: number, bytes: number): string | undefined => {
   work.nodes += nodes;
   work.bytes += bytes;
-  if (work.nodes > MAX_JSON_NODES || work.bytes > MAX_JSON_ENCODED_BYTES) {
+  if (work.nodes > work.budget.maxNodes || work.bytes > work.budget.maxBytes) {
     return "rejected oversized document";
   }
   return undefined;

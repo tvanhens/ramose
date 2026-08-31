@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { Entity } from "../../src/db/Entity.ts";
+import { string } from "../../src/db/Field.ts";
 import { Graph } from "../../src/db/Graph.ts";
 import { Schema } from "../../src/db/Schema.ts";
 import { CatalogId, DatabaseId } from "../../src/internal/authorization/identities.ts";
@@ -54,6 +55,32 @@ describe("public operation catalog startup", () => {
     }, { id: "deployment-alpha" }))).rejects.toBeInstanceOf(
       OperationCatalogDeploymentError,
     );
+  });
+
+  test("a code-sized catalog past the wire document budget still deploys", async () => {
+    const entities: Record<string, unknown> = {};
+    for (let i = 0; i < 40; i++) {
+      const name = `bulk${i}` as "bulk0";
+      entities[name] = Entity(name, {
+        alpha: string(),
+        beta: string(),
+        gamma: string(),
+        delta: string(),
+        epsilon: string(),
+      });
+    }
+    const Bulk = Schema("bulk-catalog", entities as never);
+    Bulk.applyPolicy(({ policy }) => {
+      for (let i = 0; i < 40; i++) {
+        (policy as Record<string, { read: { always: () => void } }>)[`bulk${i}`]!
+          .read.always();
+      }
+    });
+    const deployed = await Effect.runPromise(deployOperationCatalogsForVersion({
+      root: Bulk,
+      deployments: [{ database: "bulk" }],
+    }, { id: "deployment-bulk" }));
+    expect(deployed.proof("bulk")?.catalog).toBe("bulk-catalog");
   });
 
   test("an instance without a deployment version starts but refuses every use", async () => {
