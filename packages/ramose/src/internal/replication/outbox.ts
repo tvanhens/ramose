@@ -128,6 +128,7 @@ export type ReceiptRecord = {
   readonly state: ReceiptState;
   readonly observation: "unobserved" | "observed" | null;
   readonly activation: number;
+  readonly settled: number;
   readonly output: JsonValue | null;
   readonly mappings: readonly QueuedMapping[];
   readonly failure: { readonly code: string } | null;
@@ -844,6 +845,13 @@ const decodeActivation = (value: unknown): number | undefined => {
     : undefined;
 };
 
+const decodeSettlement = (value: unknown): number | undefined => {
+  if (value === undefined) return 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+};
+
 const isCodecVersion = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0 &&
   value <= 255;
@@ -910,6 +918,7 @@ export const buildReceipt = (record: ReceiptRecord): ReceiptRecord =>
       state: record.state,
       observation: record.observation,
       activation: record.activation,
+      settled: record.settled,
       output: record.output,
       mappings: Object.freeze(
         record.mappings.map((mapping) => Object.freeze({ ...mapping })),
@@ -938,6 +947,8 @@ export const decodeReceipt = (value: unknown): ReceiptRecord | undefined => {
   const activation = decodeActivation(value.activation);
   if (activation === undefined) return undefined;
   if (value.observation === null && activation !== 0) return undefined;
+  const settled = decodeSettlement(value.settled);
+  if (settled === undefined) return undefined;
   if (!Array.isArray(value.mappings)) return undefined;
   const mappings: QueuedMapping[] = [];
   const mapped = new Set<string>();
@@ -971,6 +982,7 @@ export const decodeReceipt = (value: unknown): ReceiptRecord | undefined => {
     state: value.state,
     observation: value.observation,
     activation,
+    settled,
     output,
     mappings: Object.freeze(mappings),
     failure: value.failure === null

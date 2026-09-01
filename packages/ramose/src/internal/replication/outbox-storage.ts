@@ -191,6 +191,7 @@ export type ActivationObservationState = {
   readonly receiver: ReplicaDatabaseScope;
   readonly activation: number;
   readonly unobserved: readonly UnobservedReceipt[];
+  readonly settlements: ReadonlyMap<InvocationId, number>;
 };
 
 export type ActivationFenceOutcome = {
@@ -460,6 +461,7 @@ export class IndexedDbOutbox {
       state: "queued",
       observation: null,
       activation: 0,
+      settled: 0,
       output: null,
       mappings: [],
       failure: null,
@@ -790,6 +792,7 @@ export class IndexedDbOutbox {
         state: "committed",
         observation: "unobserved",
         activation,
+        settled: acknowledgement.settled,
         output: acknowledgement.output,
         mappings: acknowledgement.mappings,
         failure: null,
@@ -802,6 +805,7 @@ export class IndexedDbOutbox {
         state: "rejected",
         observation: null,
         activation: 0,
+        settled: 0,
         output: null,
         mappings: [],
         failure: { code: acknowledgement.code },
@@ -928,6 +932,7 @@ export class IndexedDbOutbox {
         state: "rejected",
         observation: null,
         activation: 0,
+        settled: 0,
         output: null,
         mappings: [],
         failure: { code: "dependency_rejected" },
@@ -957,9 +962,11 @@ export class IndexedDbOutbox {
     ]);
     await transactionDone(transaction);
     const unobserved: UnobservedReceipt[] = [];
+    const settlements = new Map<InvocationId, number>();
     for (const value of stored) {
       const receipt = decodeReceipt(value);
       if (receipt === undefined) continue;
+      if (receipt.settled > 0) settlements.set(receipt.invocation, receipt.settled);
       const pending = unobservedReceiptOf(receipt);
       if (pending !== undefined) unobserved.push(pending);
     }
@@ -978,6 +985,7 @@ export class IndexedDbOutbox {
       receiver,
       activation: decoded?.activation ?? 0,
       unobserved: Object.freeze(unobserved),
+      settlements,
     });
   }
 

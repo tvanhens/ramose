@@ -305,9 +305,13 @@ export const resolveSettledThrough = async (
     body: await response.text(),
   });
   const body = (await response.json()) as { readonly settled?: unknown };
-  return Number.isSafeInteger(body.settled) && (body.settled as number) >= 0
-    ? body.settled as number
-    : 0;
+  if (!Number.isSafeInteger(body.settled) || (body.settled as number) < 0) {
+    throw new UpstreamError({
+      status: 502,
+      body: JSON.stringify({ error: "transactor returned an invalid settlement" }),
+    });
+  }
+  return body.settled as number;
 };
 
 export function wantsBasisCache(_request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">): boolean {

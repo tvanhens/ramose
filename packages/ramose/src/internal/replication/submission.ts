@@ -211,7 +211,9 @@ export const classifyMutationResponse = (
     const mappings = readMappings(record, body.mappings);
     if (mappings === undefined) return RETRY("malformed");
     if (!Object.hasOwn(body, "result")) return RETRY("malformed");
-    if (!isReplicationSettlement(body.settled)) return RETRY("malformed");
+    if (!isReplicationSettlement(body.settled) || body.settled === 0) {
+      return RETRY("malformed");
+    }
     return Object.freeze({
       _tag: "Committed",
       settled: body.settled as number,

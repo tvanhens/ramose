@@ -206,11 +206,11 @@ const install = async (
   const snapshot = `snapshot-${label}`.padEnd(43, "0");
   const revision = `revision-${label}`.padEnd(43, "0");
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 3, identity: selected, snapshot, revision,
+    type: "SnapshotStart", protocol: 4, identity: selected, snapshot, revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
-    protocol: 3,
+    protocol: 4,
     identity: selected,
     snapshot,
     index: 0,
@@ -222,7 +222,7 @@ const install = async (
     }],
   }));
   dropped(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 3, identity: selected, snapshot, revision, ordinal: 1, chunks: 1,
+    type: "SnapshotCommit", protocol: 4, identity: selected, snapshot, revision, ordinal: 1, settled: 0, chunks: 1,
   }, ATTRIBUTES));
 };
 
@@ -373,6 +373,7 @@ browserTest(
 
       await outbox.acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: { name: "server-decided" },
         mappings: [],
       });
@@ -499,6 +500,7 @@ browserTest(
       const entityId = await handleFor(receiver, 41);
       await storage.outbox().acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [{ clientRef: allocation, entityId }],
       });
@@ -553,6 +555,7 @@ browserTest(
         });
         await outbox.acknowledge(record, {
           _tag: "Committed",
+          settled: record.sequence,
           output: null,
           mappings: [{
             clientRef: record.allocations[0]!.clientRef,
@@ -603,6 +606,7 @@ browserTest(
       });
       await outbox.acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [{ clientRef: allocation, entityId: await handleFor(receiver, 7) }],
       });
@@ -651,6 +655,7 @@ browserTest(
       });
       await outbox.acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [{ clientRef: allocation, entityId: await handleFor(receiver, 21) }],
       });
@@ -824,6 +829,7 @@ browserTest(
       });
       await outbox.acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [{ clientRef: allocation, entityId: await handleFor(receiver, 12) }],
       });
@@ -906,6 +912,7 @@ const pendingFence = async (
   });
   await outbox.acknowledge(record, {
     _tag: "Committed",
+    settled: 1,
     output: null,
     mappings: [{ clientRef: allocation, entityId: await handleFor(receiver, 12) }],
   });
@@ -1122,6 +1129,7 @@ browserTest(
         identity: identity(),
         revision: recorded.revision,
         ordinal: 5,
+        settled: 0,
       })).toBe(5);
       expect(await storedOrdinal(database)).toBe(5);
 
@@ -1222,6 +1230,7 @@ browserTest(
         identity: identity(),
         revision: recorded.revision,
         ordinal: delayed.ordinal + 1,
+        settled: 0,
       })).toBe(delayed.ordinal + 1);
 
       const skipped = await storage.applyChange(delayed);

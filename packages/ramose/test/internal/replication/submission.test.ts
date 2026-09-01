@@ -219,10 +219,12 @@ describe("classifyMutationResponse", () => {
       response(200, {
         result: { id: 7 },
         receipt: completedReceipt(bound.invocation),
+        settled: 3,
         mappings: [{ clientRef: ref, entityId: mapped }],
       }),
     )).toEqual({
       _tag: "Committed",
+      settled: 3,
       output: { id: 7 },
       mappings: [{ clientRef: ref, entityId: mapped }],
     });
@@ -238,7 +240,22 @@ describe("classifyMutationResponse", () => {
     ]) {
       expect(classifyMutationResponse(
         bound,
-        response(200, { result: { id: 7 }, receipt, mappings }),
+        response(200, { result: { id: 7 }, receipt, settled: 1, mappings }),
+      )).toEqual({ _tag: "Retry", reason: "malformed" });
+    }
+  });
+
+  test("a 200 without a settlement sequence is not a commit", () => {
+    const mappings = [{ clientRef: ref, entityId: handle("E") }];
+    for (const settled of [undefined, null, 0, -1, 1.5, "1", Number.NaN]) {
+      expect(classifyMutationResponse(
+        bound,
+        response(200, {
+          result: { id: 7 },
+          receipt: completedReceipt(bound.invocation),
+          settled,
+          mappings,
+        }),
       )).toEqual({ _tag: "Retry", reason: "malformed" });
     }
   });
@@ -259,6 +276,7 @@ describe("classifyMutationResponse", () => {
         response(200, {
           result: {},
           receipt: completedReceipt(bound.invocation),
+          settled: 1,
           mappings,
         }),
       )).toEqual({ _tag: "Retry", reason: "malformed" });
@@ -268,19 +286,22 @@ describe("classifyMutationResponse", () => {
   test("a 200 whose result is absent is not a commit", () => {
     expect(classifyMutationResponse(plain, response(200, {
       receipt: completedReceipt(plain.invocation),
+      settled: 1,
     }))).toEqual({ _tag: "Retry", reason: "malformed" });
 
     expect(classifyMutationResponse(plain, response(200, {
       result: null,
       receipt: completedReceipt(plain.invocation),
-    }))).toEqual({ _tag: "Committed", output: null, mappings: [] });
+      settled: 1,
+    }))).toEqual({ _tag: "Committed", settled: 1, output: null, mappings: [] });
   });
 
   test("an invocation that binds nothing commits without mappings", () => {
     expect(classifyMutationResponse(plain, response(200, {
       result: null,
       receipt: completedReceipt(plain.invocation),
-    }))).toEqual({ _tag: "Committed", output: null, mappings: [] });
+      settled: 2,
+    }))).toEqual({ _tag: "Committed", settled: 2, output: null, mappings: [] });
   });
 
   test("the compatibility answers are non-terminal and typed, never dropped", () => {

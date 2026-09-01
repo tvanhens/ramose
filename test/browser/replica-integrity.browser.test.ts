@@ -182,20 +182,21 @@ const installSnapshot = async (
 ): Promise<void> => {
   const snapshot = `${revision}-snapshot`.padEnd(43, "q").slice(0, 43);
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 3, identity: selected, snapshot, revision,
+    type: "SnapshotStart", protocol: 4, identity: selected, snapshot, revision,
   });
 
   let index = 0;
   for (let offset = 0; offset < datoms.length; offset += 16) {
     await storage.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk", protocol: 3, identity: selected, snapshot,
+      type: "SnapshotChunk", protocol: 4, identity: selected, snapshot,
       index: index++,
       datoms: datoms.slice(offset, offset + 16),
     }));
   }
   expect(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 3, identity: selected, snapshot, revision,
+    type: "SnapshotCommit", protocol: 4, identity: selected, snapshot, revision,
     ordinal: 1,
+    settled: 0,
     chunks: index,
   }, attributes)).toBeDefined();
 };
@@ -611,7 +612,7 @@ browserTest(
       const snapshot = opaque("q");
       const revision = opaque("2");
       await storage.startSnapshot({
-        type: "SnapshotStart", protocol: 3, identity: selected, snapshot, revision,
+        type: "SnapshotStart", protocol: 4, identity: selected, snapshot, revision,
       });
 
       const roots = (await committedOf(name, partition)).roots as Record<string, { hash: string }>;
@@ -620,14 +621,14 @@ browserTest(
         .toMatchObject({ _tag: "replacement-required" });
 
       await storage.startSnapshot({
-        type: "SnapshotStart", protocol: 3, identity: selected, snapshot, revision,
+        type: "SnapshotStart", protocol: 4, identity: selected, snapshot, revision,
       });
       await storage.stageSnapshotChunk(snapshotChunk({
-        type: "SnapshotChunk", protocol: 3, identity: selected, snapshot, index: 0,
+        type: "SnapshotChunk", protocol: 4, identity: selected, snapshot, index: 0,
         datoms: [snapshotDatom(opaque("x"), "rebased")],
       }));
       const installed = await storage.commitSnapshot({
-        type: "SnapshotCommit", protocol: 3, identity: selected, snapshot, revision, ordinal: 1, chunks: 1,
+        type: "SnapshotCommit", protocol: 4, identity: selected, snapshot, revision, ordinal: 1, settled: 0, chunks: 1,
       }, attributes);
       expect(installed?.revision).toBe(revision);
       expect(await names(installed!.db)).toEqual(["rebased"]);

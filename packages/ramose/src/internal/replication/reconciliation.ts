@@ -84,6 +84,7 @@ export type OptimisticOverlayState = {
   readonly updateRequired: readonly LayerQuarantine[];
   readonly pending: OptimisticPending;
   readonly activation: number;
+  readonly settlements: ReadonlyMap<InvocationId, number>;
 };
 
 export type OptimisticOverlayObserver = (state: OptimisticOverlayState) => void;
@@ -153,6 +154,7 @@ export class OptimisticReconciler {
       updateRequired: Object.freeze([]),
       pending: new Map(),
       activation: 0,
+      settlements: new Map(),
     });
   }
 
@@ -264,6 +266,7 @@ export class OptimisticReconciler {
         : restoration.quarantined,
       pending: pendingLayerState(layers),
       activation: this.fence.snapshot().activation,
+      settlements: this.fence.snapshot().settlements,
     });
     for (const observer of this.observers) this.notify(observer);
     return this.state;

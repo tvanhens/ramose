@@ -33,6 +33,7 @@ export type ActivationFenceSnapshot = {
   readonly activation: number;
   readonly unobserved: readonly UnobservedReceipt[];
   readonly fenced: readonly InvocationId[];
+  readonly settlements: ReadonlyMap<InvocationId, number>;
 };
 
 export type ActivationFenceObserver = (
@@ -68,6 +69,7 @@ export class ActivationFence {
       activation: 0,
       unobserved: Object.freeze([]),
       fenced: EMPTY,
+      settlements: new Map(),
     });
   }
 
@@ -123,6 +125,7 @@ export class ActivationFence {
       activation: observation.activation,
       unobserved: observation.unobserved,
       fenced,
+      settlements: observation.settlements,
     });
     for (const observer of this.observers) this.notify(observer);
     return this.state;

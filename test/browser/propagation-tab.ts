@@ -194,15 +194,16 @@ export const seedDatabases = async (
       const graphPath = entry.graphPath ?? [];
       const snapshot = opaque("q");
       await storage.startSnapshot({
-        type: "SnapshotStart", protocol: 3, identity, snapshot, revision: REVISION,
+        type: "SnapshotStart", protocol: 4, identity, snapshot, revision: REVISION,
       });
       await storage.stageSnapshotChunk(snapshotChunk({
-        type: "SnapshotChunk", protocol: 3, identity, snapshot, index: 0,
+        type: "SnapshotChunk", protocol: 4, identity, snapshot, index: 0,
         datoms: entry.datoms,
       }));
       (await storage.commitSnapshot({
-        type: "SnapshotCommit", protocol: 3, identity, snapshot, revision: REVISION,
+        type: "SnapshotCommit", protocol: 4, identity, snapshot, revision: REVISION,
         ordinal: 1,
+        settled: 0,
         chunks: 1,
       }, installed.attributes))?.release();
       const address = replicationActivationAddress({
@@ -485,14 +486,15 @@ export const serve = (id: string): void =>
       const revision = opaque("i");
       return outcome(async () => {
         await store.startSnapshot({
-          type: "SnapshotStart", protocol: 3, identity, snapshot, revision,
+          type: "SnapshotStart", protocol: 4, identity, snapshot, revision,
         }, { lease: held });
         await store.stageSnapshotChunk(snapshotChunk({
-          type: "SnapshotChunk", protocol: 3, identity, snapshot, index: 0,
+          type: "SnapshotChunk", protocol: 4, identity, snapshot, index: 0,
           datoms: noteDatoms([note]),
         }), { lease: held });
         (await store.commitSnapshot({
-          type: "SnapshotCommit", protocol: 3, identity, snapshot, revision, ordinal: 1, chunks: 1,
+          type: "SnapshotCommit", protocol: 4, identity, snapshot, revision, ordinal: 1,
+          settled: 0, chunks: 1,
         }, (await installClientCatalog(NotesSchema)).attributes, {
           lease: held,
         }))?.release();
@@ -587,8 +589,9 @@ export const serve = (id: string): void =>
         seeded: SeededNote,
       ): Promise<string> => {
         const installed = await opened.applyChange(changeFrame({
-          type: "Change", protocol: 3, identity, from: base, revision: at,
+          type: "Change", protocol: 4, identity, from: base, revision: at,
           ordinal: 2,
+          settled: 0,
           datoms: noteDatoms([seeded]),
         }));
         const landed = installed?.revision ?? "";

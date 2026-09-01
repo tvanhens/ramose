@@ -253,19 +253,20 @@ const installSnapshot = async (
 ): Promise<void> => {
   const snapshot = `${revision}-snapshot`.padEnd(43, "q").slice(0, 43);
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 3, identity: selected, snapshot, revision,
+    type: "SnapshotStart", protocol: 4, identity: selected, snapshot, revision,
   });
   let index = 0;
   for (let offset = 0; offset < datoms.length; offset += 16) {
     await storage.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk", protocol: 3, identity: selected, snapshot,
+      type: "SnapshotChunk", protocol: 4, identity: selected, snapshot,
       index: index++,
       datoms: datoms.slice(offset, offset + 16),
     }));
   }
   const committed = await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 3, identity: selected, snapshot, revision,
+    type: "SnapshotCommit", protocol: 4, identity: selected, snapshot, revision,
     ordinal: 1,
+    settled: 0,
     chunks: index,
   }, attributes);
   expect(committed).toBeDefined();
@@ -284,11 +285,12 @@ const changeOne = (
   value: string,
 ) => (changeFrame({
   type: "Change" as const,
-  protocol: 3 as const,
+  protocol: 4 as const,
   identity: selected,
   from,
   revision,
   ordinal: 2,
+  settled: 0,
   datoms: [{
     entity,
     field: ":item/name",
@@ -412,11 +414,11 @@ browserTest(
       await confirm(storage, sibling, "right");
 
       await storage.startSnapshot({
-        type: "SnapshotStart", protocol: 3, identity: selected,
+        type: "SnapshotStart", protocol: 4, identity: selected,
         snapshot: opaque("y"), revision: opaque("9"),
       });
       await storage.stageSnapshotChunk(snapshotChunk({
-        type: "SnapshotChunk", protocol: 3, identity: selected, snapshot: opaque("y"),
+        type: "SnapshotChunk", protocol: 4, identity: selected, snapshot: opaque("y"),
         index: 0, datoms: [snapshotDatom(opaque("x"), "abandoned")],
       }));
 

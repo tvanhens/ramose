@@ -24,6 +24,7 @@ const value = (stale: boolean) => ({
   identity,
   revision: opaque("r"),
   ordinal: 1,
+  settled: 0,
   handles: new Map<string, number>(),
   stale,
 });

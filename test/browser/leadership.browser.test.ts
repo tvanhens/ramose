@@ -76,6 +76,7 @@ const draft = (
 
 const COMMITTED = {
   _tag: "Committed",
+  settled: 1,
   output: { id: "opaque" },
   mappings: [],
 } as const;
@@ -176,14 +177,14 @@ const confirm = async (
   const revision = `revision-${label}`.padEnd(43, "0");
   await storage.startSnapshot({
     type: "SnapshotStart",
-    protocol: 3,
+    protocol: 4,
     identity: selected,
     snapshot,
     revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
-    protocol: 3,
+    protocol: 4,
     identity: selected,
     snapshot,
     index: 0,
@@ -196,11 +197,12 @@ const confirm = async (
   }));
   const installed = await storage.commitSnapshot({
     type: "SnapshotCommit",
-    protocol: 3,
+    protocol: 4,
     identity: selected,
     snapshot,
     revision,
     ordinal: 1,
+    settled: 0,
     chunks: 1,
   }, REPLICA_ATTRIBUTES);
   installed?.release();
@@ -435,7 +437,7 @@ browserTest(
       expect(await receiptStates(name)).toEqual(["committed", "queued"]);
 
       const unfenced = await deposed.outbox()
-        .acknowledge(decoyed, COMMITTED, 1_700_000_000_003);
+        .acknowledge(decoyed, { ...COMMITTED, settled: 2 }, 1_700_000_000_003);
       expect(unfenced.state).toBe("committed");
       expect(await receiptStates(name)).toEqual(["committed", "committed"]);
       expect(await dumpStore(name, "mutation-outbox-v1")).toEqual([]);
@@ -767,7 +769,7 @@ browserTest(
         await submitting.acknowledge(head.record, COMMITTED, 1_700_000_000_002);
         const next = (await submitting.submissionPlan(scope)).plans[0]!.head;
         if (next.type !== "ready") throw new Error(`the queue is ${next.type}`);
-        await submitting.acknowledge(next.record, COMMITTED, 1_700_000_000_003);
+        await submitting.acknowledge(next.record, { ...COMMITTED, settled: 2 }, 1_700_000_000_003);
       } finally {
         settling.close();
       }
