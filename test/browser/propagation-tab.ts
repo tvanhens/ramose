@@ -459,8 +459,8 @@ export const serve = (id: string): void =>
         replicaRouteScope(address),
         replicaRoutePathKey(child ? CHILD_PATH : []),
       ]);
-      return outcome(() =>
-        store.bindAuthenticated({
+      return outcome(async () => {
+        await store.bindAuthenticated({
           fingerprint,
           identity,
           candidateKey: { selector, routeSlot },
@@ -470,8 +470,8 @@ export const serve = (id: string): void =>
             slot: routeSlot,
             ...(child ? { graphPath: CHILD_PATH } : {}),
           },
-        }, { lease: held })
-      );
+        }, { lease: held });
+      });
     },
 
     installHeld: async (

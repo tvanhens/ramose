@@ -657,24 +657,33 @@ browserTest("a delayed claim cannot re-take a partition its successor already ow
   try {
     await storage.bindCredential(opaque("1"), selected);
     await install(storage);
-    const captured = await storage.partitionSuccession(selected);
-    expect(captured).toBe(1);
+    const captured = await storage.partitionExpectation(selected);
+    expect(captured).toMatchObject({ partition, succession: 1 });
 
-    expect(await storage.partitionSuccession(successor)).toBe(captured);
-    await storage.bindAuthenticated({
-      fingerprint: opaque("2"),
+    expect(await storage.partitionExpectation(successor)).toEqual(captured);
+    expect(await storage.bindAuthenticated({
+      fingerprint: opaque("1"),
       identity: successor,
-      expectedSuccession: captured,
-    });
+      expected: captured,
+    })).toBe("claimed");
     expect(await owner()).toMatchObject({ identity: successor, succession: 2 });
     await install(storage, opaque("Q"), opaque("5"), successor, "successor");
 
-    await storage.bindAuthenticated({
+    expect(await storage.bindAuthenticated({
+      fingerprint: opaque("1"),
+      identity: selected,
+      expected: captured,
+    })).toBe("lost");
+    expect(await owner()).toMatchObject({ identity: successor, succession: 2 });
+    expect(await storage.boundIdentity(opaque("1"))).toEqual(successor);
+
+    expect(await storage.bindAuthenticated({
       fingerprint: opaque("3"),
       identity: selected,
-      expectedSuccession: captured,
-    });
+      expected: { succession: "absent" },
+    })).toBe("lost");
     expect(await owner()).toMatchObject({ identity: successor, succession: 2 });
+    expect(await storage.boundIdentity(opaque("3"))).toEqual(selected);
 
     await storage.startSnapshot({
       type: "SnapshotStart",
@@ -705,12 +714,12 @@ browserTest("a delayed claim cannot re-take a partition its successor already ow
     expect(held?.revision).toBe(opaque("5"));
     held!.release();
 
-    const recaptured = await storage.partitionSuccession(selected);
-    expect(recaptured).toBe(2);
+    const recaptured = await storage.partitionExpectation(selected);
+    expect(recaptured).toMatchObject({ partition, succession: 2 });
     await storage.bindAuthenticated({
       fingerprint: opaque("4"),
       identity: selected,
-      expectedSuccession: recaptured,
+      expected: recaptured,
     });
     expect(await owner()).toMatchObject({ identity: selected, succession: 3 });
   } finally {

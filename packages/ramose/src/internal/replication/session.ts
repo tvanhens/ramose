@@ -415,9 +415,9 @@ export class ReplicationSession {
         try {
           const established = restored?.identity ?? candidate?.identity ??
             await options.storage.boundIdentity(fingerprint).catch(() => undefined);
-          const expectedSuccession = established === undefined
-            ? "absent" as const
-            : await options.storage.partitionSuccession(established);
+          const expected = established === undefined
+            ? { succession: "absent" as const }
+            : await options.storage.partitionExpectation(established);
           const response = await openReplicationResponse({
             activation,
             credential: options.credential,
@@ -467,11 +467,11 @@ export class ReplicationSession {
                     activation,
                     confirmedSlot,
                   );
-                await options.storage.bindAuthenticated({
+                const claim = await options.storage.bindAuthenticated({
                   fingerprint: confirmedFingerprint,
                   identity: frameIdentity,
                   claimsPartition: action !== "terminal",
-                  expectedSuccession,
+                  expected,
                   ...(candidateKey === undefined
                     ? {}
                     : { candidateKey: { selector: candidateKey.selector, routeSlot: confirmedSlot } }),
@@ -482,6 +482,10 @@ export class ReplicationSession {
                   },
                 }, { signal: session.controller.signal, lease: session.lease });
                 if (!session.current(generation)) return;
+                if (claim === "lost") {
+                  session.quarantine(generation);
+                  throw new Error("replication response lost the partition succession");
+                }
                 session.bound = confirmedFingerprint;
                 bindingConfirmed = true;
                 if (session.state.value === undefined) {
