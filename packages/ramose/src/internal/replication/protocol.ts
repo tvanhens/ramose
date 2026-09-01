@@ -3,9 +3,9 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ReadCompatibilityHash } from "../authorization/identities.ts";
 
-export const REPLICATION_PROTOCOL_VERSION = 2 as const;
+export const REPLICATION_PROTOCOL_VERSION = 3 as const;
 
-export const REPLICA_STORAGE_VERSION = 4 as const;
+export const REPLICA_STORAGE_VERSION = 5 as const;
 export const INITIAL_REPLICA_BUILD_ID = "ramose-client-v1" as const;
 
 export const MAX_REPLICATION_REQUEST_BYTES = 65_536;

@@ -372,21 +372,21 @@ const handleReplicationRevision = async (
   const body = (await request.json()) as {
     action?: unknown;
     revision?: unknown;
-    binding?: unknown;
+    scope?: unknown;
     basisT?: unknown;
     keyId?: unknown;
   };
   if (
-    typeof body.binding !== "string" ||
+    typeof body.scope !== "string" ||
     typeof body.keyId !== "string" ||
     typeof body.revision !== "string"
   ) {
     throw new BadRequest({
-      message: "replication-revision needs revision, binding and keyId",
+      message: "replication-revision needs revision, scope and keyId",
     });
   }
   const response = await env.REPLICA.get(
-    replicationRevisionStoreId(env, db, body.binding),
+    replicationRevisionStoreId(env, db, body.scope),
   ).fetch(`https://replica/replication/revision?db=${encodeURIComponent(db)}`, {
     method: "POST",
     headers: { "content-type": "application/json", ...internalHeaders(env) },

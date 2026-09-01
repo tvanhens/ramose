@@ -76,7 +76,7 @@ const datom = (e: number, a: number, v: string): Datom => ({
 
 const manifest = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   partition: replicaPartitionKey(identity()),
-  storageVersion: 4,
+  storageVersion: 5,
   identity: identity(),
   readCompatibilityHash: READ_COMPATIBILITY,
   revision: opaque("r"),

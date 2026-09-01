@@ -79,7 +79,7 @@ export const openReplication = (
   database: string,
   token: string,
   resumeRevision?: string,
-  protocol = 2,
+  protocol = 3,
   signal?: AbortSignal,
   readCompatibilityHash = conformanceReadCompatibilityHash,
 ): Promise<Response> => fetchPastProxyBlip(
@@ -278,7 +278,7 @@ const observeFirstSeenRetention = async (
     world.database,
     world.member,
     revision,
-    2,
+    3,
     controller.signal,
   );
   const resumed = readReplicationNdjson(resumedResponse)[Symbol.asyncIterator]();
@@ -332,7 +332,7 @@ const observeUnchangedResume = async (
     world.database,
     world.member,
     revision,
-    2,
+    3,
     controller.signal,
   );
   const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
@@ -500,13 +500,13 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         undefined,
-        2,
+        3,
         undefined,
         ReadCompatibilityHash.make("z".repeat(43)),
       );
       expect(mismatched.status).toBe(409);
       expect(await mismatched.text()).toBe(
-        `${JSON.stringify({ type: "TerminalError", protocol: 2, code: "update-required" })}\n`,
+        `${JSON.stringify({ type: "TerminalError", protocol: 3, code: "update-required" })}\n`,
       );
 
       const unauthenticated = await openReplication(
@@ -514,7 +514,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         "not-a-token",
         undefined,
-        2,
+        3,
         undefined,
         ReadCompatibilityHash.make("z".repeat(43)),
       );
@@ -526,7 +526,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         {
           ...post({
             type: "Activate",
-            protocol: 2,
+            protocol: 3,
             graphPath: ["missing"],
             scope: { type: "database" },
             readCompatibilityHash: "z".repeat(43),
@@ -601,7 +601,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       if (Result.isSuccess(terminal)) {
         expect(terminal.success).toEqual({
           type: "TerminalError",
-          protocol: 2,
+          protocol: 3,
           code: "incompatible-version",
         });
       }
@@ -777,7 +777,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        2,
+        3,
         controller.signal,
       );
       const production = readReplicationFrames(
@@ -835,7 +835,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         const reset = await observed(recovery, "unreconstructable resume reset");
         expect(reset.frame).toEqual({
           type: "Reset",
-          protocol: 2,
+          protocol: 3,
           identity: initialIdentity,
         });
         state = applyObservedFrame(state, reset);
@@ -1012,7 +1012,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(terminal.done).toBe(false);
         expect(terminal.value?.frame).toEqual({
           type: "TerminalError",
-          protocol: 2,
+          protocol: 3,
           code: "closed",
           identity: baseline.state.identity,
         });
@@ -1151,7 +1151,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         baseline.state.committed!.revision,
-        2,
+        3,
         cancelled.signal,
       );
       const cancelledIterator = readReplicationNdjson(
@@ -1279,7 +1279,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        2,
+        3,
         controller.signal,
         conformanceInertReadCompatibilityHash,
       );
@@ -1291,7 +1291,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(ready.done).toBe(false);
         expect(ready.value?.frame).toEqual({
           type: "ResumeReady",
-          protocol: 2,
+          protocol: 3,
           identity,
           revision,
           ordinal: resumeOrdinal,
@@ -1314,7 +1314,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        2,
+        3,
         undefined,
         conformanceRotatedReadCompatibilityHash,
       );
@@ -1322,7 +1322,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(await rotated.text()).toBe(
         `${JSON.stringify({
           type: "TerminalError",
-          protocol: 2,
+          protocol: 3,
           code: "update-required",
         })}\n`,
       );
@@ -1410,7 +1410,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        2,
+        3,
         controller.signal,
       );
       expect(resumedResponse.status).toBe(200);
@@ -1421,7 +1421,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(ready.done).toBe(false);
         expect(ready.value?.frame).toEqual({
           type: "ResumeReady",
-          protocol: 2,
+          protocol: 3,
           identity,
           revision,
           ordinal: resumeOrdinal,

@@ -56,7 +56,7 @@ const apply = (
 
 const start = (snapshot: string, revision: string): ReplicationFrame => ({
   type: "SnapshotStart",
-  protocol: 2,
+  protocol: 3,
   identity: active,
   snapshot,
   revision,
@@ -67,7 +67,7 @@ const chunk = (
   datoms: readonly (LogicalDatom | SnapshotDatom)[],
 ): ReplicationFrame => (snapshotChunk({
   type: "SnapshotChunk",
-  protocol: 2,
+  protocol: 3,
   identity: active,
   snapshot,
   index,
@@ -83,7 +83,7 @@ const commit = (
   ordinal = 1,
 ): ReplicationFrame => ({
   type: "SnapshotCommit",
-  protocol: 2,
+  protocol: 3,
   identity: active,
   snapshot,
   revision,
@@ -180,7 +180,7 @@ describe("client replication transition machine", () => {
     const prior = committed();
     const change: ReplicationFrame = changeFrame({
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       from: opaque("K"),
       revision: opaque("L"),
@@ -217,7 +217,7 @@ describe("client replication transition machine", () => {
 
     const advanced = apply(state, changeFrame({
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       from: opaque("K"),
       revision: opaque("L"),
@@ -229,7 +229,7 @@ describe("client replication transition machine", () => {
 
     expect(apply(advanced, changeFrame({
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       from: opaque("L"),
       revision: opaque("M"),
@@ -242,7 +242,7 @@ describe("client replication transition machine", () => {
     const prior = committed();
     const acknowledged = apply(prior, {
       type: "ResumeReady",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       revision: opaque("K"),
       ordinal: 3,
@@ -257,7 +257,7 @@ describe("client replication transition machine", () => {
     for (const ordinal of [1, 3]) {
       expect(apply(acknowledged, {
         type: "ResumeReady",
-        protocol: 2,
+        protocol: 3,
         identity: active,
         revision: opaque("K"),
         ordinal,
@@ -266,7 +266,7 @@ describe("client replication transition machine", () => {
 
     expect(apply(acknowledged, changeFrame({
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       from: opaque("K"),
       revision: opaque("L"),
@@ -279,7 +279,7 @@ describe("client replication transition machine", () => {
     const prior = committed();
     const ready: ReplicationFrame = {
       type: "ResumeReady",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       revision: opaque("K"),
       ordinal: 1,
@@ -310,7 +310,7 @@ describe("client replication transition machine", () => {
     const replacement = identity("Z");
     const reset = apply(prior, {
       type: "Reset",
-      protocol: 2,
+      protocol: 3,
       identity: replacement,
     });
     expect(reset.identity).toEqual(replacement);
@@ -318,7 +318,7 @@ describe("client replication transition machine", () => {
 
     const sameReset = apply(prior, {
       type: "Reset",
-      protocol: 2,
+      protocol: 3,
       identity: active,
     });
     expect(sameReset.committed).toBe(prior.committed);
@@ -328,14 +328,14 @@ describe("client replication transition machine", () => {
     const prior = committed();
     const mismatch = applyReplicationFrame(prior, {
       type: "KeepAlive",
-      protocol: 2,
+      protocol: 3,
       identity: identity("Z"),
     });
     expect(Result.isFailure(mismatch)).toBe(true);
     expect(prior.closed).toBe(false);
     const closed = apply(prior, {
       type: "TerminalError",
-      protocol: 2,
+      protocol: 3,
       code: "closed",
       identity: active,
     });
@@ -344,7 +344,7 @@ describe("client replication transition machine", () => {
     expect(apply(closed, start(opaque("L"), opaque("M")))).toBe(closed);
     expect(apply(closed, changeFrame({
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       from: opaque("K"),
       revision: opaque("N"),
@@ -353,7 +353,7 @@ describe("client replication transition machine", () => {
     }))).toBe(closed);
     expect(apply(closed, {
       type: "ResumeReady",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       revision: opaque("K"),
       ordinal: 1,
@@ -375,7 +375,7 @@ describe("the committed sealed-handle binding", () => {
 
     state = apply(state, {
       type: "SnapshotChunk",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       snapshot: opaque("J"),
       index: 0,
@@ -398,7 +398,7 @@ describe("the committed sealed-handle binding", () => {
     const staged = apply(started, chunk(opaque("J"), 0, [first]));
     const rebinding = applyReplicationFrame(staged, {
       type: "SnapshotChunk",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       snapshot: opaque("J"),
       index: 1,
@@ -410,7 +410,7 @@ describe("the committed sealed-handle binding", () => {
     const prior = committed();
     const changed = applyReplicationFrame(prior, {
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       from: opaque("K"),
       revision: opaque("L"),
@@ -431,7 +431,7 @@ describe("the committed sealed-handle binding", () => {
     const prior = committed();
     const changed = applyReplicationFrame(prior, {
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: active,
       from: opaque("K"),
       revision: opaque("L"),

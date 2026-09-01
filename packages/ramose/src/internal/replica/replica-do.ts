@@ -17,6 +17,7 @@ import { type Basis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
 import {
   decideReplicationRevisionRetention,
+  REPLICATION_PARTITION_SCOPE_PATTERN,
   isReplicationProgression,
   issueReplicationOrdinal,
 } from "./revision-retention.ts";
@@ -119,15 +120,15 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
   private async boot(): Promise<void> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS novelty (t INTEGER PRIMARY KEY, tx_instant INTEGER NOT NULL, datoms BLOB NOT NULL)`);
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS replication_revisions (
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS replication_scope_revisions (
       revision TEXT NOT NULL,
-      binding TEXT NOT NULL,
+      scope TEXT NOT NULL,
       basis_t INTEGER NOT NULL,
       touched INTEGER NOT NULL,
-      PRIMARY KEY (binding, revision)
+      PRIMARY KEY (scope, revision)
     )`);
-    this.sql.exec(`CREATE INDEX IF NOT EXISTS replication_revisions_binding_age
-      ON replication_revisions (binding, touched, revision)`);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS replication_scope_revisions_age
+      ON replication_scope_revisions (scope, touched, revision)`);
     this.dbName = this.getMeta<string>("db");
     if (this.dbName) this.bindStore(this.dbName);
     this.root = this.getMeta<RootRecord>("root");
@@ -700,7 +701,7 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         const body = (await request.json()) as {
           readonly action?: unknown;
           readonly revision?: unknown;
-          readonly binding?: unknown;
+          readonly scope?: unknown;
           readonly basisT?: unknown;
           readonly keyId?: unknown;
         };
@@ -708,8 +709,8 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
           (body.action !== "remember" && body.action !== "resolve") ||
           typeof body.revision !== "string" ||
           !OPAQUE_REPLICATION_ID.test(body.revision) ||
-          typeof body.binding !== "string" ||
-          !OPAQUE_REPLICATION_ID.test(body.binding) ||
+          typeof body.scope !== "string" ||
+          !REPLICATION_PARTITION_SCOPE_PATTERN.test(body.scope) ||
           typeof body.keyId !== "string" ||
           !SERVER_IDENTITY_KEY_ID.test(body.keyId)
         ) {
@@ -719,10 +720,10 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         if (quarantined !== undefined) return quarantined;
         if (body.action === "resolve") {
           const row = this.sql.exec(
-            `SELECT basis_t FROM replication_revisions
-             WHERE revision = ? AND binding = ?`,
+            `SELECT basis_t FROM replication_scope_revisions
+             WHERE revision = ? AND scope = ?`,
             body.revision,
-            body.binding,
+            body.scope,
           ).toArray()[0];
           if (
             row === undefined ||
@@ -735,13 +736,11 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
           return json({ error: "invalid replication basis" }, 400);
         }
         const existing = this.sql.exec(
-          `SELECT binding FROM replication_revisions WHERE revision = ?`,
+          `SELECT revision FROM replication_scope_revisions
+           WHERE revision = ? AND scope = ?`,
           body.revision,
+          body.scope,
         ).toArray()[0];
-        const storedBinding = this.getMeta<string>("replication-binding");
-        if (storedBinding !== undefined && storedBinding !== body.binding) {
-          return json({ error: "replication binding mismatch" }, 409);
-        }
         const progressed = this.getMeta<unknown>("replication-progression");
         const issuance = issueReplicationOrdinal(
           isReplicationProgression(progressed) ? progressed : undefined,
@@ -751,34 +750,24 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
           return json({ ok: true, stored: false, refused: "stale-basis" });
         }
         this.setMeta("replication-progression", issuance.progression);
-        if (storedBinding === undefined) {
-          this.setMeta("replication-binding", body.binding);
-        }
         if (this.getMeta<string>("server-identity-key") === undefined) {
           this.setMeta("server-identity-key", body.keyId);
         }
-        const bindingRevisionCount = this.sql.exec(
-          `SELECT COUNT(*) AS n FROM replication_revisions WHERE binding = ?`,
-          body.binding,
-        ).toArray()[0]?.n as number;
         const decision = decideReplicationRevisionRetention({
-          ...(existing === undefined
-            ? {}
-            : { existingBinding: existing.binding as string }),
-          candidateBinding: body.binding,
-          bindingRevisionCount,
+          known: existing !== undefined,
+          storedRevisions: this.sql.exec(
+            `SELECT COUNT(*) AS n FROM replication_scope_revisions WHERE scope = ?`,
+            body.scope,
+          ).toArray()[0]?.n as number,
         });
-        if (decision.type === "reject") {
-          return json({ ok: true, stored: false });
-        }
         if (decision.type === "advance") {
           this.sql.exec(
-            `UPDATE replication_revisions
+            `UPDATE replication_scope_revisions
              SET basis_t = MAX(basis_t, ?)
-             WHERE revision = ? AND binding = ?`,
+             WHERE revision = ? AND scope = ?`,
             body.basisT,
             body.revision,
-            body.binding,
+            body.scope,
           );
           return json({
             ok: true,
@@ -787,32 +776,32 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
           });
         }
         const priorTouched = this.sql.exec(
-          `SELECT MAX(touched) AS touched FROM replication_revisions
-           WHERE binding = ?`,
-          body.binding,
+          `SELECT MAX(touched) AS touched FROM replication_scope_revisions
+           WHERE scope = ?`,
+          body.scope,
         ).toArray()[0]?.touched;
         const touched = Math.max(
           Date.now(),
           typeof priorTouched === "number" ? priorTouched + 1 : 0,
         );
         this.sql.exec(
-          `INSERT INTO replication_revisions
-             (revision, binding, basis_t, touched) VALUES (?, ?, ?, ?)`,
+          `INSERT INTO replication_scope_revisions
+             (revision, scope, basis_t, touched) VALUES (?, ?, ?, ?)`,
           body.revision,
-          body.binding,
+          body.scope,
           body.basisT,
           touched,
         );
         if (decision.evictCount > 0) {
           this.sql.exec(
-            `DELETE FROM replication_revisions
-             WHERE binding = ? AND revision IN (
-               SELECT revision FROM replication_revisions
-               WHERE binding = ?
+            `DELETE FROM replication_scope_revisions
+             WHERE scope = ? AND revision IN (
+               SELECT revision FROM replication_scope_revisions
+               WHERE scope = ?
                ORDER BY touched ASC, revision ASC LIMIT ?
              )`,
-            body.binding,
-            body.binding,
+            body.scope,
+            body.scope,
             decision.evictCount,
           );
         }

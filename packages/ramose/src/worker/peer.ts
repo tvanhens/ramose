@@ -176,7 +176,7 @@ export const watchBasisChanges = (
 
 export type ReplicationRevisionRecord = {
   readonly revision: string;
-  readonly binding: string;
+  readonly scope: string;
   readonly basisT: number;
   readonly keyId: string;
 };
@@ -204,17 +204,17 @@ const rejectQuarantined = async (
 export const replicationRevisionStoreId = (
   env: Pick<RamoseEnv, "REPLICA">,
   database: string,
-  binding: string,
+  scope: string,
 ): DurableObjectId => env.REPLICA.idFromName(
-  `ramose-replication-revisions-v1|${database}|${binding}`,
+  `ramose-replication-revisions-v2|${database}|${scope}`,
 );
 
 const replicationRevisionStore = (
   env: RamoseEnv,
   database: string,
-  binding: string,
+  scope: string,
 ): DurableObjectStub => env.REPLICA.get(
-  replicationRevisionStoreId(env, database, binding),
+  replicationRevisionStoreId(env, database, scope),
 );
 
 export const rememberReplicationRevision = async (
@@ -225,7 +225,7 @@ export const rememberReplicationRevision = async (
   const response = await replicationRevisionStore(
     env,
     database,
-    record.binding,
+    record.scope,
   ).fetch(
     `https://replica/replication/revision?db=${encodeURIComponent(database)}`,
     {
@@ -252,13 +252,13 @@ export const resolveReplicationRevision = async (
   env: RamoseEnv,
   database: string,
   revision: string,
-  binding: string,
+  scope: string,
   keyId: string,
 ): Promise<number | undefined> => {
   const response = await replicationRevisionStore(
     env,
     database,
-    binding,
+    scope,
   ).fetch(
     `https://replica/replication/revision?db=${encodeURIComponent(database)}`,
     {
@@ -267,7 +267,7 @@ export const resolveReplicationRevision = async (
         "content-type": "application/json",
         ...internalHeaders(env),
       },
-      body: JSON.stringify({ action: "resolve", revision, binding, keyId }),
+      body: JSON.stringify({ action: "resolve", revision, scope, keyId }),
     },
   );
   await rejectQuarantined(response, keyId);

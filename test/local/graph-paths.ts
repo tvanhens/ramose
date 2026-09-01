@@ -214,7 +214,7 @@ const nestedReplication = (
     },
     body: JSON.stringify({
       type: "Activate",
-      protocol: 2,
+      protocol: 3,
       graphPath: at,
       scope: { type: "database" },
       readCompatibilityHash,
@@ -763,7 +763,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         expect(ready.done).toBe(false);
         expect(ready.value?.frame).toEqual({
           type: "ResumeReady",
-          protocol: 2,
+          protocol: 3,
           identity: snapshotIdentity,
           revision: snapshot.state.committed!.revision,
           ordinal: snapshot.state.committed!.ordinal,
@@ -805,7 +805,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         expect(closed.done).toBe(false);
         expect(closed.value?.frame).toEqual({
           type: "TerminalError",
-          protocol: 2,
+          protocol: 3,
           code: "closed",
           identity: snapshotIdentity,
         });
@@ -895,7 +895,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         expect(ready.done).toBe(false);
         expect(ready.value?.frame).toEqual({
           type: "ResumeReady",
-          protocol: 2,
+          protocol: 3,
           identity,
           revision,
           ordinal: 1,
@@ -1213,7 +1213,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
         expect(first.done).toBe(false);
         expect(first.value?.frame).toEqual({
           type: "TerminalError",
-          protocol: 2,
+          protocol: 3,
           code: "update-required",
         });
         const next = await withTimeout(

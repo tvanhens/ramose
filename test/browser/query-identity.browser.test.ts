@@ -146,13 +146,13 @@ const seed = async (name: string): Promise<ReplicationIdentity> => {
     const snapshot = opaque("q");
     const revision = opaque("r");
     await storage.startSnapshot({
-      type: "SnapshotStart", protocol: 2, identity, snapshot, revision,
+      type: "SnapshotStart", protocol: 3, identity, snapshot, revision,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk", protocol: 2, identity, snapshot, index: 0, datoms,
+      type: "SnapshotChunk", protocol: 3, identity, snapshot, index: 0, datoms,
     }));
     const committed = await storage.commitSnapshot({
-      type: "SnapshotCommit", protocol: 2, identity, snapshot, revision, ordinal: 1, chunks: 1,
+      type: "SnapshotCommit", protocol: 3, identity, snapshot, revision, ordinal: 1, chunks: 1,
     }, installed.attributes);
     expect(committed).toBeDefined();
     committed!.release();

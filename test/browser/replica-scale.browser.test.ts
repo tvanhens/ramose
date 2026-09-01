@@ -229,7 +229,7 @@ const installSnapshot = async (
   const snapshot = `${revision}-snap`.padEnd(43, "q").slice(0, 43);
   await storage.startSnapshot({
     type: "SnapshotStart",
-    protocol: 2,
+    protocol: 3,
     identity: selected,
     snapshot,
     revision,
@@ -242,7 +242,7 @@ const installSnapshot = async (
   ) {
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot,
       index: index++,
@@ -251,7 +251,7 @@ const installSnapshot = async (
   }
   const installed = await storage.commitSnapshot({
     type: "SnapshotCommit",
-    protocol: 2,
+    protocol: 3,
     identity: selected,
     snapshot,
     revision,
@@ -330,7 +330,7 @@ const stageSnapshot = async (
 ): Promise<number> => {
   await storage.startSnapshot({
     type: "SnapshotStart",
-    protocol: 2,
+    protocol: 3,
     identity: selected,
     snapshot,
     revision,
@@ -343,7 +343,7 @@ const stageSnapshot = async (
   ) {
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot,
       index: index++,
@@ -497,7 +497,7 @@ browserTest(
           storage.resetWriteCounts();
           const applied = await storage.applyChange(changeFrame({
             type: "Change",
-            protocol: 2,
+            protocol: 3,
             identity: selected,
             from: opaque("1"),
             revision: opaque("2"),
@@ -620,7 +620,7 @@ browserTest(
         await withStorage(name, async (storage) => {
           await storage.startSnapshot({
             type: "SnapshotStart",
-            protocol: 2,
+            protocol: 3,
             identity: selected,
             snapshot,
             revision,
@@ -633,7 +633,7 @@ browserTest(
           ) {
             const frame = {
               type: "SnapshotChunk" as const,
-              protocol: 2 as const,
+              protocol: 3 as const,
               identity: selected,
               snapshot,
               index: index++,
@@ -648,7 +648,7 @@ browserTest(
           }
           const committed = await storage.commitSnapshot({
             type: "SnapshotCommit",
-            protocol: 2,
+            protocol: 3,
             identity: selected,
             snapshot,
             revision,
@@ -777,7 +777,7 @@ for (const scale of CRASH_SCALES) {
         ) =>
           storage.commitSnapshot({
             type: "SnapshotCommit",
-            protocol: 2,
+            protocol: 3,
             identity: selected,
             snapshot: opaque("q"),
             revision: second,
@@ -819,7 +819,7 @@ for (const scale of CRASH_SCALES) {
 
         const change = changeFrame({
           type: "Change",
-          protocol: 2,
+          protocol: 3,
           identity: selected,
           from: second,
           revision: third,
