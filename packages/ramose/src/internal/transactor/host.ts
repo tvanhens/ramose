@@ -22,6 +22,7 @@ export interface TransactorConfig {
   gcEveryNIndexes: number;
   retainRoots: number;
   maxBatch: number;
+  batchBudgetMs: number;
   timingYields: boolean;
 }
 
@@ -33,6 +34,7 @@ export const DEFAULT_CONFIG: TransactorConfig = {
   gcEveryNIndexes: 50,
   retainRoots: 20,
   maxBatch: 0,
+  batchBudgetMs: 20,
   timingYields: false,
 };
 

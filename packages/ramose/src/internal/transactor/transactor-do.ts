@@ -30,6 +30,7 @@ export function configFromEnv(env: RamoseEnv): TransactorConfig {
     gcEveryNIndexes: envInt(env.RAMOSE_GC_EVERY_N_INDEXES, DEFAULT_CONFIG.gcEveryNIndexes),
     retainRoots: envInt(env.RAMOSE_RETAIN_ROOTS, DEFAULT_CONFIG.retainRoots),
     maxBatch: envInt(env.RAMOSE_MAX_BATCH, DEFAULT_CONFIG.maxBatch),
+    batchBudgetMs: envInt(env.RAMOSE_BATCH_BUDGET_MS, DEFAULT_CONFIG.batchBudgetMs),
     timingYields: env.RAMOSE_TIMING_YIELDS === "1",
   };
 }

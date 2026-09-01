@@ -711,11 +711,19 @@ export class Transactor {
 
   private takeBatch(): Pending[] {
     const max = this.host.config.maxBatch;
-    if (this.queue[0]?.operation !== undefined) return this.queue.splice(0, 1);
-    const operationAt = this.queue.findIndex((pending) => pending.operation !== undefined);
-    const available = operationAt < 0 ? this.queue.length : operationAt;
-    const count = max > 0 ? Math.min(available, max) : available;
+    const count = max > 0 ? Math.min(this.queue.length, max) : this.queue.length;
     return this.queue.splice(0, count);
+  }
+
+  private deferOverBudget(batch: Pending[], position: number, startedAt: number): void {
+    const budget = this.host.config.batchBudgetMs;
+    if (budget <= 0 || position === 0 || position >= batch.length) return;
+    if (performance.now() - startedAt < budget) return;
+    this.deferFrom(batch, position);
+  }
+
+  private deferFrom(batch: Pending[], from: number): void {
+    this.queue.unshift(...batch.splice(from));
   }
 
   private async commitLoop(): Promise<void> {
@@ -748,8 +756,12 @@ export class Transactor {
           };
         }[] = [];
         const batchAcks = new Map<string, TxAck>();
+        const claimedInBatch = new Set<string>();
         const tResolve = performance.now();
-        for (const p of batch) {
+        for (let position = 0; position < batch.length; position++) {
+          this.deferOverBudget(batch, position, tResolve);
+          if (position >= batch.length) break;
+          const p = batch[position];
           if (p.operation !== undefined) {
             let claim: ClaimedInvocationReceipt | undefined;
             try {
@@ -847,6 +859,11 @@ export class Transactor {
               const prepared = await Effect.runPromise(
                 prepareInvocationReceipt(operation, operationVersion),
               );
+              const receiptKey = `${prepared.principalId}\0${prepared.invocationId}`;
+              if (claimedInBatch.has(receiptKey)) {
+                this.deferFrom(batch, position);
+                break;
+              }
               const inspected = this.inspectInvocationReceipt(prepared);
               if (
                 inspected._tag === "OperationChanged" ||
@@ -944,6 +961,7 @@ export class Transactor {
                 continue;
               }
               claim = decision.receipt;
+              claimedInBatch.add(receiptKey);
               await this.boundaries.checkpoint("operation.claimed");
               const executed = await executeCatalogOperation(
                 this.conn,
@@ -1217,7 +1235,7 @@ export class Transactor {
       earliestLogT: this.earliestLogT(),
       nextEid: this.conn.nextEntityId,
       subscribers: this.host.sockets().length,
-      opts: { timingYields: this.host.config.timingYields, maxBatch: this.host.config.maxBatch },
+      opts: { timingYields: this.host.config.timingYields, maxBatch: this.host.config.maxBatch, batchBudgetMs: this.host.config.batchBudgetMs },
       stats: this.stats,
       metrics: {
         txPerSec: round(this.txRate.rate(this.host.now())),

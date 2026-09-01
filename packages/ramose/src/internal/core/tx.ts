@@ -275,6 +275,17 @@ export async function expandTx(
     if (op.kind === "add" && op.a === ":db/ident" && typeof op.v === "string") newIdents.set(op.v, op.e);
   }
 
+  const avetProbes = new Map<string, Promise<Datom | undefined>>();
+  const firstAvet = (a: number, tv: TaggedValue): Promise<Datom | undefined> => {
+    const k = a + "|" + valueKey(tv.vt, tv.v);
+    let p = avetProbes.get(k);
+    if (p === undefined) {
+      p = db.first(Index.AVET, { a, vt: tv.vt, v: tv.v });
+      avetProbes.set(k, p);
+    }
+    return p;
+  };
+
   const lookupEntid = async (form: [string, unknown]): Promise<number | undefined> => {
     try {
       return await db.entid(form);
@@ -384,7 +395,7 @@ export async function expandTx(
     }
     if (tv.v === undefined) continue;
     const claimKey = attr.id + "|" + valueKey(tv.vt, tv.v);
-    const existing = await db.first(Index.AVET, { a: attr.id, vt: tv.vt, v: tv.v });
+    const existing = await firstAvet(attr.id, tv);
     const canonical = aliasOf(op.e);
     if (existing) {
       const prev = tempids.get(canonical);
@@ -453,7 +464,7 @@ export async function expandTx(
       if (seen !== undefined && seen !== e) {
         throw new TxError(`unique conflict: ${attr.ident} ${String(tv.v)} already asserted for ${seen}`, "tx/unique-conflict");
       }
-      const other = await db.first(Index.AVET, { a: attr.id, vt: tv.vt, v: tv.v });
+      const other = await firstAvet(attr.id, tv);
       if (other && other.e !== e) {
         const ov = await current(other.e, attr.id);
         if (ov.has(vk)) {
