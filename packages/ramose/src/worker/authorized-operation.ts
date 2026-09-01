@@ -388,6 +388,7 @@ export const publicOperationResult = (
       body: {
         result: result.output,
         receipt: result.receipt,
+        settled: result.settled,
         ...(result.mappings === undefined ? {} : { mappings: result.mappings }),
       },
     };

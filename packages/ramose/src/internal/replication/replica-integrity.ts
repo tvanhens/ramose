@@ -8,6 +8,7 @@ import { FIRST_USER_EID, Schema } from "../core/schema.ts";
 import { NodeKind, type NodeRef, type TreeNode } from "../core/tree.ts";
 import {
   isReplicationOrdinal,
+  isReplicationSettlement,
   REPLICA_STORAGE_VERSION,
   type LogicalDatom,
   type LogicalValue,
@@ -27,6 +28,7 @@ export type ReplicaManifest = {
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly revision: string;
   readonly ordinal: number;
+  readonly settled: number;
   readonly datoms: readonly LogicalDatom[];
   readonly attributes: readonly ReplicaAttributeSpec[];
   readonly entityIds: readonly (readonly [string, number])[];
@@ -363,6 +365,11 @@ export const validateReplicaManifest = (
     if (!isReplicationOrdinal(record.ordinal)) {
       return yield* Result.fail(
         failure("manifest-undecodable", "manifest has no visible-change ordinal"),
+      );
+    }
+    if (!isReplicationSettlement(record.settled)) {
+      return yield* Result.fail(
+        failure("manifest-undecodable", "manifest has no settlement watermark"),
       );
     }
     if (

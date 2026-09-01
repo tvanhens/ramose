@@ -7,6 +7,7 @@ export type OverlayLayer = {
   readonly invocation: InvocationId;
   readonly sequence: number;
   readonly state: OverlayLayerState;
+  readonly settled: number;
   readonly activation: number | null;
   readonly declared: readonly MutationRef[];
   readonly changeset: ProjectionChangeset;

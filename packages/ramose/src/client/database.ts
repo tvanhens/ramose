@@ -7,7 +7,6 @@ import {
   type LoweredKernelQuery,
   type QueryObject,
 } from "../db/query/index.ts";
-import type { InvocationId } from "../db/refs.ts";
 import type { Db } from "../internal/core/db.ts";
 import { query as runQuery } from "../internal/core/query/engine.ts";
 import {
@@ -359,8 +358,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private basis = 0;
   private composed: OverlayLayers = emptyOverlayLayers;
   private carried: readonly CarriedLayer[] = [];
-  private acknowledged = new Map<InvocationId, number>();
-  private queued = new Map<InvocationId, number>();
+  private settled = 0;
   private account: string | undefined;
   private handles: ReadonlyMap<string, number> = new Map();
   private reverse: Map<number, string> | undefined;
@@ -773,6 +771,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.handles = value.handles;
       this.reverse = undefined;
       this.basis = value.ordinal;
+      this.settled = value.settled;
     }
     this.publishStatus(this.statusOf(snapshot));
     this.spawn(this.recompute());
@@ -977,13 +976,12 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.basis = 0;
     this.composed = emptyOverlayLayers;
     this.carried = [];
-    this.acknowledged = new Map();
-    this.queued = new Map();
+    this.settled = 0;
   }
 
   private carrying(activation: number): readonly CarriedLayer[] {
     const kept = this.carried.filter((held) =>
-      held.basis === this.basis && held.activation === activation
+      held.layer.settled > this.settled && held.activation === activation
     );
     if (kept.length !== this.carried.length) this.carried = Object.freeze(kept);
     return this.carried;
@@ -993,8 +991,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     if (state.updateRequired.length > 0) {
       this.composed = state.layers;
       this.carried = [];
-      this.acknowledged.clear();
-      this.queued.clear();
       return;
     }
     const live = new Set(state.layers.map((layer) => layer.invocation));
@@ -1003,8 +999,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     );
     const retired = this.composed.filter(
       (layer) =>
-        layer.state === "committed-unobserved" && !live.has(layer.invocation) &&
-        this.acknowledged.get(layer.invocation) === this.basis &&
+        !live.has(layer.invocation) && layer.settled > this.settled &&
         !kept.some((held) => held.layer.invocation === layer.invocation),
     );
     this.carried = Object.freeze([
@@ -1015,23 +1010,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
         activation: state.activation,
       })),
     ]);
-    for (const invocation of [...this.acknowledged.keys()]) {
-      if (!live.has(invocation)) this.acknowledged.delete(invocation);
-    }
-    for (const invocation of [...this.queued.keys()]) {
-      if (!live.has(invocation)) this.queued.delete(invocation);
-    }
-    for (const layer of state.layers) {
-      if (layer.state === "queued") {
-        if (!this.queued.has(layer.invocation)) {
-          this.queued.set(layer.invocation, this.basis);
-        }
-        continue;
-      }
-      if (this.acknowledged.has(layer.invocation)) continue;
-      const anchor = this.queued.get(layer.invocation);
-      if (anchor !== undefined) this.acknowledged.set(layer.invocation, anchor);
-    }
     this.composed = state.layers;
   }
 

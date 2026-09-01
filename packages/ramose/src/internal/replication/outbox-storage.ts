@@ -851,7 +851,13 @@ export class IndexedDbOutbox {
       record.partition,
       record.sequence,
     ]);
-    await this.stageLayerOutcome(transaction, record, next.state, next.activation);
+    await this.stageLayerOutcome(
+      transaction,
+      record,
+      next.state,
+      next.activation,
+      acknowledgement._tag === "Committed" ? acknowledgement.settled : 0,
+    );
     if (acknowledgement._tag === "Rejected") {
       await this.cascadeRejection(transaction, record, acknowledgedAt);
     }
@@ -863,6 +869,7 @@ export class IndexedDbOutbox {
     record: OutboxRecord,
     state: ReceiptState,
     activation: number,
+    settled = 0,
   ): Promise<void> {
     const layers = transaction.objectStore(MUTATION_LAYERS);
     const key = [record.partition, record.sequence];
@@ -874,8 +881,16 @@ export class IndexedDbOutbox {
     if (stored === undefined) return;
     const layer = decodeOptimisticLayer(stored);
     if (layer === undefined) return;
-    if (layer.state === "committed-unobserved" && layer.activation === activation) return;
-    layers.put(withLayerState(layer, "committed-unobserved", activation));
+    if (
+      layer.state === "committed-unobserved" && layer.activation === activation &&
+      layer.settled >= settled
+    ) return;
+    layers.put(withLayerState(
+      layer,
+      "committed-unobserved",
+      activation,
+      Math.max(layer.settled, settled),
+    ));
   }
 
   private async cascadeRejection(

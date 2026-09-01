@@ -285,6 +285,31 @@ export const resolveReplicationRevision = async (
     : undefined;
 };
 
+export const resolveSettledThrough = async (
+  env: RamoseEnv,
+  database: string,
+  principalId: string,
+  basisT: number,
+): Promise<number> => {
+  const response = await env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database))
+    .fetch(`https://transactor/settled?db=${encodeURIComponent(database)}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...internalHeaders(env),
+      },
+      body: JSON.stringify({ principalId, basisT }),
+    });
+  if (!response.ok) throw new UpstreamError({
+    status: response.status,
+    body: await response.text(),
+  });
+  const body = (await response.json()) as { readonly settled?: unknown };
+  return Number.isSafeInteger(body.settled) && (body.settled as number) >= 0
+    ? body.settled as number
+    : 0;
+};
+
 export function wantsBasisCache(_request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">): boolean {
   const h = env?.RAMOSE_CACHE_BASIS ?? "1";
   return h !== "0";

@@ -51,6 +51,7 @@ import { JwtVerifier } from "./jwt.ts";
 import {
   rememberReplicationRevision,
   resolveReplicationRevision,
+  resolveSettledThrough,
   watchBasisChanges,
   type ReplicationRevisionIssuance,
 } from "./peer.ts";
@@ -220,6 +221,21 @@ const remember = (
     },
   );
 
+const settledFor = (
+  input: ReplicationRun,
+  state: ServerReplicaState,
+): Promise<number> => {
+  const subject = state.version.caller.claims.sub;
+  return typeof subject === "string" && subject.length > 0
+    ? resolveSettledThrough(
+      input.env,
+      rawDatabase(state.version),
+      subject,
+      state.basisT,
+    )
+    : Promise.resolve(0);
+};
+
 const sameVersion = (
   expectedPath: GraphPathLeaseIdentity,
   expectedIdentity: ReplicationIdentity,
@@ -327,7 +343,10 @@ const snapshotFrames = async function* (
     if (!leaseAlive(finalVersion) || finalState.revision !== candidate.revision) {
       continue;
     }
-    const issued = await remember(input, finalState);
+    const [issued, settled] = await Promise.all([
+      remember(input, finalState),
+      settledFor(input, finalState),
+    ]);
     if (issued.type !== "issued") continue;
     if (!leaseAlive(finalVersion)) continue;
     await atBoundary(input.boundaries, "replication.snapshot.commit", signal);
@@ -340,6 +359,7 @@ const snapshotFrames = async function* (
       snapshot,
       revision: candidate.revision,
       ordinal: issued.ordinal,
+      settled,
       chunks: index,
     });
     return finalState;
@@ -491,7 +511,10 @@ const advanceFrames = async function* (
       basisT: finalBasisT,
       revision,
     });
-    const issued = await remember(input, finalState);
+    const [issued, settled] = await Promise.all([
+      remember(input, finalState),
+      settledFor(input, finalState),
+    ]);
     if (issued.type !== "issued") continue;
     if (revision === previous.revision) {
       await atBoundary(
@@ -522,6 +545,7 @@ const advanceFrames = async function* (
           identity: expectedIdentity,
           revision,
           ordinal: issued.ordinal,
+          settled,
         });
         return readyState;
       }
@@ -539,6 +563,7 @@ const advanceFrames = async function* (
       from: previous.revision,
       revision,
       ordinal: issued.ordinal,
+      settled,
       datoms: delta.datoms,
       handles: delta.handles,
     });

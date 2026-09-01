@@ -16,6 +16,7 @@ export const emptyEntityHandles: EntityHandles = new Map();
 export type CommittedReplica = {
   readonly revision: string;
   readonly ordinal: number;
+  readonly settled: number;
   readonly datoms: readonly LogicalDatom[];
   readonly handles: EntityHandles;
 };
@@ -253,6 +254,7 @@ const commitSnapshot = (
     committed: Object.freeze({
       revision: frame.revision,
       ordinal: frame.ordinal,
+      settled: Math.max(state.committed?.settled ?? 0, frame.settled),
       datoms: Object.freeze(datoms),
       handles: retainHandles(staging.handles, datoms),
     }),
@@ -306,6 +308,7 @@ const applyChange = (
     committed: Object.freeze({
       revision: frame.revision,
       ordinal: frame.ordinal,
+      settled: Math.max(committed.settled, frame.settled),
       datoms,
       handles: retainHandles(handles, datoms),
     }),
@@ -397,10 +400,17 @@ export const applyReplicationFrame = (
       if (committed?.revision !== frame.revision) {
         return fail("resume-ready revision does not match the committed value");
       }
-      if (frame.ordinal <= committed.ordinal) return Result.succeed(state);
+      const settled = Math.max(committed.settled, frame.settled);
+      if (frame.ordinal <= committed.ordinal && settled === committed.settled) {
+        return Result.succeed(state);
+      }
       return Result.succeed({
         ...state,
-        committed: Object.freeze({ ...committed, ordinal: frame.ordinal }),
+        committed: Object.freeze({
+          ...committed,
+          ordinal: Math.max(committed.ordinal, frame.ordinal),
+          settled,
+        }),
       });
     }
     case "KeepAlive": {

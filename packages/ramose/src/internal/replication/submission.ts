@@ -1,3 +1,4 @@
+import { isReplicationSettlement } from "./protocol.ts";
 import type { JsonValue } from "../authorization/json.ts";
 import type { AllocationPathSegment } from "../../db/allocations.ts";
 import {
@@ -127,6 +128,7 @@ export const buildMutationRequest = (
 export type MutationAcknowledgement =
   | {
     readonly _tag: "Committed";
+    readonly settled: number;
     readonly output: JsonValue | null;
     readonly mappings: readonly QueuedMapping[];
   }
@@ -209,8 +211,10 @@ export const classifyMutationResponse = (
     const mappings = readMappings(record, body.mappings);
     if (mappings === undefined) return RETRY("malformed");
     if (!Object.hasOwn(body, "result")) return RETRY("malformed");
+    if (!isReplicationSettlement(body.settled)) return RETRY("malformed");
     return Object.freeze({
       _tag: "Committed",
+      settled: body.settled as number,
       output: body.result as JsonValue,
       mappings,
     });

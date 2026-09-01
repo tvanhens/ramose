@@ -49,6 +49,7 @@ export type ReplicationSessionValue = {
   readonly identity: ReplicationIdentity;
   readonly revision: string;
   readonly ordinal: number;
+  readonly settled: number;
   readonly handles: ReadonlyMap<string, number>;
   readonly stale: boolean;
 };
@@ -174,6 +175,7 @@ const valueFrom = (
   identity,
   revision: replica.revision,
   ordinal: replica.ordinal,
+  settled: replica.settled,
   handles: replica.handles,
   stale,
 });

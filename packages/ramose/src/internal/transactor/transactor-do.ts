@@ -158,6 +158,30 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       }
       return new Response(JSON.stringify(toJson({ ok: true, t: this.core.t })), { headers: { "content-type": "application/json" } });
     }
+    if (url.pathname === "/settled" && request.method === "POST") {
+      const body = await request.json() as {
+        readonly principalId?: unknown;
+        readonly basisT?: unknown;
+      };
+      if (
+        typeof body.principalId !== "string" || body.principalId.length === 0 ||
+        !Number.isSafeInteger(body.basisT) || (body.basisT as number) < 0
+      ) {
+        return new Response(
+          JSON.stringify({ error: "settled needs principalId and basisT" }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          settled: this.core.settledThrough(
+            body.principalId,
+            body.basisT as number,
+          ),
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
     if (url.pathname === "/provision-catalog" && request.method === "POST") {
       if (this.databaseCatalogBindings === undefined) {
         return new Response(JSON.stringify({ error: "catalog provisioning unavailable" }), {

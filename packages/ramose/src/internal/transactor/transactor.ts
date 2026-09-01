@@ -74,7 +74,10 @@ import {
   type CatalogOperationAdmission,
   type ClaimedInvocationReceipt,
   type InstalledCatalogDefinition,
+  type CompletedInvocationReceipt,
+  type InvocationReceiptCompletion,
   type InvocationReceiptEvent,
+  type PendingInvocationReceiptEvent,
   type InvocationReceiptOutcome,
   type LegacyInvocationReceiptRow,
   type OperationRuntime,
@@ -236,6 +239,15 @@ export class Transactor {
       receipt TEXT NOT NULL,
       PRIMARY KEY (principal_id, invocation_id)
     )`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS principal_settlements (
+      principal_id TEXT NOT NULL,
+      settled INTEGER NOT NULL,
+      committed_t INTEGER NOT NULL,
+      invocation_id TEXT NOT NULL,
+      PRIMARY KEY (principal_id, settled)
+    )`);
+    sql.exec(`CREATE INDEX IF NOT EXISTS principal_settlements_basis
+      ON principal_settlements (principal_id, committed_t, settled)`);
     this.store = new R2NodeStore(this.host.bucket, { codec: gzipCodec, maxNodes: 4096 });
 
     let rec = this.getMeta<RootRecord>("root") ?? (await readCurrentRoot(this.host.bucket));
@@ -321,6 +333,36 @@ export class Transactor {
     );
   }
 
+  private nextSettlement(principalId: string): number {
+    const row = this.host.sql.exec(
+      `SELECT MAX(settled) AS settled FROM principal_settlements
+       WHERE principal_id = ?`,
+      principalId,
+    ).toArray()[0];
+    return typeof row?.settled === "number" ? row.settled + 1 : 1;
+  }
+
+  private recordSettlement(receipt: CompletedInvocationReceipt): void {
+    this.host.sql.exec(
+      `INSERT OR REPLACE INTO principal_settlements
+       (principal_id, settled, committed_t, invocation_id) VALUES (?, ?, ?, ?)`,
+      receipt.principalId,
+      receipt.settled,
+      receipt.committedT,
+      receipt.invocationId,
+    );
+  }
+
+  settledThrough(principalId: string, basisT: number): number {
+    const row = this.host.sql.exec(
+      `SELECT MAX(settled) AS settled FROM principal_settlements
+       WHERE principal_id = ? AND committed_t <= ?`,
+      principalId,
+      basisT,
+    ).toArray()[0];
+    return typeof row?.settled === "number" ? row.settled : 0;
+  }
+
   private replaceInvocationReceipt(receipt: TerminalInvocationReceipt): void {
     this.host.sql.exec(
       `UPDATE operation_receipts SET status = ?, receipt = ?
@@ -395,7 +437,7 @@ export class Transactor {
 
   private finishInvocationReceipt(
     claim: ClaimedInvocationReceipt,
-    event: InvocationReceiptEvent,
+    event: PendingInvocationReceiptEvent,
     insideTransaction = false,
   ): TerminalInvocationReceipt {
     const finish = () => {
@@ -404,8 +446,14 @@ export class Transactor {
         claim.invocationId,
       );
       this.assertClaimIdentity(stored, claim);
-      const terminal = transitionInvocationReceipt(stored, event);
+      const terminal = transitionInvocationReceipt(
+        stored,
+        event._tag === "Complete"
+          ? { ...event, settled: this.nextSettlement(claim.principalId) }
+          : event,
+      );
       this.replaceInvocationReceipt(terminal);
+      if (terminal.status === "completed") this.recordSettlement(terminal);
       return terminal;
     };
     return insideTransaction ? finish() : this.host.transactionSync(finish);
@@ -739,12 +787,14 @@ export class Transactor {
         const acks: {
           p: Pending;
           ack: TxAck | OperationAck;
+          settledAck?: OperationAck;
           assertFresh?: () => void;
           receiptCompletion?: {
             readonly claim: ClaimedInvocationReceipt;
-            readonly event: InvocationReceiptEvent & {
-              readonly _tag: "Complete";
-            };
+            readonly event: InvocationReceiptCompletion;
+            readonly outcomeOf: (
+              receipt: TerminalInvocationReceipt,
+            ) => InvocationReceiptOutcome;
           };
         }[] = [];
         const batchAcks = new Map<string, TxAck>();
@@ -971,14 +1021,17 @@ export class Transactor {
                     },
                   }),
               };
-              const terminal = transitionInvocationReceipt(claim, event);
+              const terminal = transitionInvocationReceipt(claim, {
+                ...event,
+                settled: 1,
+              });
               const txInstant = rep.txData[0]?.v as number;
               entries.push({ t: rep.t, txInstant, datoms: rep.txData });
               acks.push({
                 p,
                 ack: outcomeOf(terminal),
                 assertFresh: executed.assertFresh,
-                receiptCompletion: { claim, event },
+                receiptCompletion: { claim, event, outcomeOf },
               });
             } catch (err) {
               if (err instanceof OperationRuntimeFault) {
@@ -1072,10 +1125,12 @@ export class Transactor {
             this.setMeta("next_eid", this.conn.nextEntityId);
             for (const pending of acks) {
               if (pending.receiptCompletion !== undefined) {
-                this.finishInvocationReceipt(
-                  pending.receiptCompletion.claim,
-                  pending.receiptCompletion.event,
-                  true,
+                pending.settledAck = pending.receiptCompletion.outcomeOf(
+                  this.finishInvocationReceipt(
+                    pending.receiptCompletion.claim,
+                    pending.receiptCompletion.event,
+                    true,
+                  ),
                 );
               }
             }
@@ -1100,7 +1155,7 @@ export class Transactor {
         for (const a of acks) {
           try {
             a.assertFresh?.();
-            a.p.resolve(a.ack);
+            a.p.resolve(a.settledAck ?? a.ack);
           } catch (err) {
             this.stats.rejected++;
             a.p.reject(err);

@@ -229,6 +229,7 @@ describe("authoritative invocation receipt state machine", () => {
     const completed = transitionInvocationReceipt(claimed.receipt, {
       _tag: "Complete",
       committedT: 42,
+      settled: 1,
       output: { id: 1001 },
       replayFence,
     });
@@ -251,6 +252,7 @@ describe("authoritative invocation receipt state machine", () => {
       {
         _tag: "Complete",
         committedT: 8,
+        settled: 2,
         output: { ok: true },
         replayFence,
       } as const,
@@ -270,6 +272,7 @@ describe("authoritative invocation receipt state machine", () => {
       expect(transitionInvocationReceipt(terminal, {
         _tag: "Complete",
         committedT: 99,
+        settled: 3,
         output: "changed",
         replayFence,
       })).toBe(terminal);
@@ -283,6 +286,7 @@ describe("authoritative invocation receipt state machine", () => {
     const completed = transitionInvocationReceipt(claim.receipt, {
       _tag: "Complete",
       committedT: 12,
+      settled: 4,
       output: { id: 7 },
       replayFence,
     });
@@ -306,6 +310,7 @@ describe("authoritative invocation receipt state machine", () => {
       invocationDigest: digest("b"),
       status: "completed",
       committedT: 3,
+      settled: 5,
       output: { id: 1 },
       replayFence,
     });
@@ -339,6 +344,7 @@ describe("authoritative invocation receipt serialization", () => {
     const completed = transitionInvocationReceipt(claim.receipt, {
       _tag: "Complete",
       committedT: 42,
+      settled: 6,
       output: { id: 1001 },
       replayFence,
     });
@@ -367,6 +373,7 @@ describe("authoritative invocation receipt serialization", () => {
     const completed = transitionInvocationReceipt(claim.receipt, {
       _tag: "Complete",
       committedT: 42,
+      settled: 7,
       output: { id: 1001, rows: [1002] },
       replayFence,
     });
@@ -412,6 +419,7 @@ describe("authoritative invocation receipt serialization", () => {
     const completed = transitionInvocationReceipt(claim.receipt, {
       _tag: "Complete",
       committedT: 42,
+      settled: 8,
       output: { id: 1001 },
       replayFence,
       allocations,
@@ -504,6 +512,7 @@ describe("authoritative invocation receipt serialization", () => {
       ...transitionInvocationReceipt(claim.receipt, {
         _tag: "Complete",
         committedT: 42,
+        settled: 9,
         output: null,
         replayFence,
       }),
@@ -538,6 +547,7 @@ describe("authoritative invocation receipt serialization", () => {
     const completed = transitionInvocationReceipt(claim.receipt, {
       _tag: "Complete",
       committedT: 42,
+      settled: 10,
       output: { id: 1001 },
       replayFence,
     });
@@ -561,6 +571,7 @@ describe("authoritative invocation receipt serialization", () => {
     const completed = transitionInvocationReceipt(claim.receipt, {
       _tag: "Complete",
       committedT: 7,
+      settled: 11,
       output: JSON.parse('{"__proto__":"owned","kept":true}'),
       replayFence,
     });

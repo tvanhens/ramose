@@ -139,7 +139,8 @@ const MANIFEST_V3_DATABASE_VERSION = REPLICA_MANIFEST_STORAGE_VERSION;
 const GRAPH_RECEIVER_DATABASE_VERSION = MANIFEST_V3_DATABASE_VERSION + 1;
 const MANIFEST_V4_DATABASE_VERSION = GRAPH_RECEIVER_DATABASE_VERSION + 1;
 const MANIFEST_V5_DATABASE_VERSION = MANIFEST_V4_DATABASE_VERSION + 1;
-export const REPLICA_DATABASE_VERSION = MANIFEST_V5_DATABASE_VERSION;
+const MANIFEST_V6_DATABASE_VERSION = MANIFEST_V5_DATABASE_VERSION + 1;
+export const REPLICA_DATABASE_VERSION = MANIFEST_V6_DATABASE_VERSION;
 const DATABASE_VERSION = REPLICA_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
 const COMMITTED_HEADS = REPLICA_COMMITTED_HEADS_STORE;
@@ -196,6 +197,7 @@ type CommittedHeadRecord = {
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly revision: string;
   readonly ordinal: number;
+  readonly settled: number;
 };
 
 type StagingRecord = {
@@ -305,6 +307,7 @@ const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
   readCompatibilityHash: record.readCompatibilityHash,
   revision: record.revision,
   ordinal: record.ordinal,
+  settled: record.settled,
 });
 
 const recordOrdinal = (record: unknown): number | undefined => {
@@ -326,6 +329,7 @@ export type RestoredReplica = {
   readonly db: Db;
   readonly revision: string;
   readonly ordinal: number;
+  readonly settled: number;
   readonly handles: ReadonlyMap<string, number>;
   readonly release: () => void;
 };
@@ -349,6 +353,7 @@ export type ReplicaOrdinalAcknowledgement = {
   readonly identity: ReplicationIdentity;
   readonly revision: string;
   readonly ordinal: number;
+  readonly settled: number;
 };
 
 export type ReplicaCacheCandidateKey = {
@@ -646,6 +651,7 @@ const materialize = async (
     readCompatibilityHash: identity.readCompatibilityHash,
     revision: committed.revision,
     ordinal: committed.ordinal,
+    settled: committed.settled,
     datoms: Object.freeze([...committed.datoms]),
     attributes: Object.freeze(specs),
     entityIds: Object.freeze([...entities]),
@@ -980,7 +986,7 @@ export class IndexedDbReplicaStorage {
         seedConfirmedGenerations(request.transaction);
       }
       if (
-        oldVersion > 0 && oldVersion < MANIFEST_V5_DATABASE_VERSION &&
+        oldVersion > 0 && oldVersion < MANIFEST_V6_DATABASE_VERSION &&
         request.transaction !== null
       ) {
         const upgrade = request.transaction;
@@ -1835,6 +1841,7 @@ export class IndexedDbReplicaStorage {
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
       ordinal: validated.replica.record.ordinal,
+      settled: validated.replica.record.settled,
       handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
@@ -1918,6 +1925,7 @@ export class IndexedDbReplicaStorage {
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
       ordinal: validated.replica.record.ordinal,
+      settled: validated.replica.record.settled,
       handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
@@ -2150,6 +2158,7 @@ export class IndexedDbReplicaStorage {
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
       ordinal: validated.replica.record.ordinal,
+      settled: validated.replica.record.settled,
       handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
@@ -2472,6 +2481,7 @@ export class IndexedDbReplicaStorage {
       db: built.db,
       revision: built.record.revision,
       ordinal: built.record.ordinal,
+      settled: built.record.settled,
       handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };
@@ -2510,7 +2520,11 @@ export class IndexedDbReplicaStorage {
         await abortTransaction(write);
         return undefined;
       }
-      if (current.ordinal >= acknowledgement.ordinal) {
+      const settled = Math.max(current.settled, acknowledgement.settled);
+      if (
+        current.ordinal >= acknowledgement.ordinal &&
+        settled === current.settled
+      ) {
         if (recordOrdinal(head) === undefined) {
           write.objectStore(COMMITTED_HEADS).put(committedHead(current));
           await commitTransaction(write);
@@ -2522,7 +2536,8 @@ export class IndexedDbReplicaStorage {
       }
       const acknowledged: CommittedRecord = {
         ...current,
-        ordinal: acknowledgement.ordinal,
+        ordinal: Math.max(current.ordinal, acknowledgement.ordinal),
+        settled,
       };
       write.objectStore(COMMITTED).put(acknowledged);
       write.objectStore(COMMITTED_HEADS).put(committedHead(acknowledged));
@@ -2530,7 +2545,7 @@ export class IndexedDbReplicaStorage {
       await commitTransaction(write);
       this.meter.manifests++;
       this.meter.heads++;
-      return acknowledgement.ordinal;
+      return acknowledged.ordinal;
     } catch (error) {
       await abortTransaction(write);
       throw error;
@@ -2572,6 +2587,7 @@ export class IndexedDbReplicaStorage {
       committed: {
         revision: prior.revision,
         ordinal: prior.ordinal,
+        settled: prior.settled,
         datoms: prior.datoms,
         handles: new Map(prior.entityHandles),
       },
@@ -2582,6 +2598,7 @@ export class IndexedDbReplicaStorage {
         db: dbFromRecord(this.database, prior, frame.identity.readCompatibilityHash),
         revision: prior.revision,
         ordinal: prior.ordinal,
+        settled: prior.settled,
         handles: recordHandles(prior),
         release: this.retainRoots(frame.identity, prior.roots),
       };
@@ -2666,6 +2683,7 @@ export class IndexedDbReplicaStorage {
       db: built.db,
       revision: built.record.revision,
       ordinal: built.record.ordinal,
+      settled: built.record.settled,
       handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };
