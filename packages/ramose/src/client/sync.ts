@@ -4,11 +4,14 @@
  * - `connecting` — an activation is in flight and no local value is readable.
  * - `live` — a local value is readable and the server has confirmed it.
  * - `stale` — a local value is readable but the current session has not
- *   confirmed it: a restored offline replica, or a reconnect in progress.
+ *   confirmed it: a restored offline replica, a reconnect in progress, or a
+ *   stream the server ended that this client is re-establishing.
  * - `offline` — the activation could not reach the server. Whatever local value
  *   was already confirmed stays readable; nothing new is. Not a terminal state:
- *   the next time the tab is activated — focused, shown, restored from the
- *   back/forward cache, or told the device is online — it activates again.
+ *   while the tab is visible and the browser reports the device online, it
+ *   retries on its own with a bounded backoff, and any activation — focused,
+ *   shown, restored from the back/forward cache, or told the device is online —
+ *   retries at once.
  * - `update-required` — this client build is behind, and no retry helps; ship a
  *   new build. Two causes, and they differ in what stays readable. The server
  *   rotated the authorized view (a schema, trait, read-policy, or graph-read

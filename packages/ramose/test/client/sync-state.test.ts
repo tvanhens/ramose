@@ -81,7 +81,7 @@ describe("readSessionSnapshot", () => {
       .toEqual({ status: "closed", publishes: false });
   });
 
-  test("`offline` names every disposition a later activation can recover, and no other", () => {
+  test("`offline` names every disposition a retry can recover, and no other", () => {
     const dispositions: readonly ReplicationSessionSnapshot[] = [
       { status: "connecting" },
       { status: "connecting", value: value(true) },

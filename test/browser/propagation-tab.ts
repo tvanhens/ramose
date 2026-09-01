@@ -397,6 +397,14 @@ export const serve = (id: string): void =>
         .BroadcastChannel === undefined;
     },
 
+    withoutNetwork: (): boolean => {
+      Object.defineProperty(globalThis.navigator, "onLine", {
+        configurable: true,
+        get: () => false,
+      });
+      return globalThis.navigator.onLine === false;
+    },
+
     start: async ({ storageName }: StartInput): Promise<QueryReport> => {
       database = open(storageName);
       return observeNotes(database);

@@ -663,6 +663,7 @@ browserTest(
     }]);
     const tab = await openTab(tabModule);
     try {
+      expect(await tab.call<boolean>("withoutNetwork")).toBe(true);
       await started(tab, name, database);
       const activated = await tab.call<number>("presented");
       await tab.call("enqueue", {

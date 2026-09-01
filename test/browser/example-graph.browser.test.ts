@@ -498,6 +498,93 @@ browserTest(
   },
 );
 
+const untouched = (): { readonly count: () => number; readonly release: () => void } => {
+  let interactions = 0;
+  const observed = (): void => {
+    interactions += 1;
+  };
+  const events = ["focus", "pageshow", "online"] as const;
+  for (const type of events) window.addEventListener(type, observed);
+  document.addEventListener("visibilitychange", observed);
+  return {
+    count: () => interactions,
+    release: () => {
+      for (const type of events) window.removeEventListener(type, observed);
+      document.removeEventListener("visibilitychange", observed);
+    },
+  };
+};
+
+browserTest(
+  "another context's commit reaches a client whose stream died, with no interaction",
+  { timeout: 120_000 },
+  async ({ browser }) => {
+    const subject = principal(browser.uniqueId);
+    const wallet = new Wallet(subject);
+    const storageName = `ramose-example-${browser.uniqueId}`;
+    const peerStorage = `ramose-example-peer-${browser.uniqueId}`;
+    const slug = `org-${browser.uniqueId.slice(0, 8)}`;
+    const board = `board-${browser.uniqueId.slice(0, 8)}`;
+    const session = app(storageName, wallet);
+    const idle = untouched();
+    try {
+      const root = session.client.open();
+      const boardHandle = await workspace(root, slug, board);
+      await settled(boardHandle.mutate.createIssue({ title: "Before the stream died" }));
+      const view = rows(boardHandle, issues(boardHandle));
+      await until(
+        () => titles(view.read()),
+        (values) => values.includes("Before the stream died"),
+        "the issue this client committed itself",
+      );
+
+      await partition(subject, true);
+      await until(
+        () => [root.sync.getSnapshot().status, boardHandle.sync.getSnapshot().status],
+        (statuses) => statuses.every((status) => status === "offline"),
+        "the streams dying under the client",
+      );
+      await partition(subject, false);
+
+      const peer = app(peerStorage, wallet);
+      try {
+        const peerRoot = peer.client.open();
+        await visible(peerRoot, organizations(peerRoot), slug, "the organization at the peer");
+        const peerOrganization = organizationDb(peerRoot, slug);
+        await visible(peerOrganization, boards(peerOrganization), board, "the board at the peer");
+        const peerBoard = boardDb(peerRoot, slug, board);
+        const peerView = rows(peerBoard, issues(peerBoard));
+        await until(
+          () => peerBoard.sync.getSnapshot().status,
+          (status) => status === "live",
+          "the peer's board activation",
+        );
+        await settled(peerBoard.mutate.createIssue({ title: "From the other device" }));
+        peerView.release();
+      } finally {
+        await peer.client.close();
+      }
+
+      const converged = await until(
+        () => titles(view.read()),
+        (values) => values.includes("From the other device"),
+        "the peer's commit reaching the client nobody touched",
+        60_000,
+      );
+      expect(converged).toContain("Before the stream died");
+      expect(boardHandle.sync.getSnapshot().status).toBe("live");
+      expect(idle.count()).toBe(0);
+      view.release();
+    } finally {
+      idle.release();
+      await partition(subject, false);
+      await session.client.close();
+      await deleteDatabase(peerStorage);
+      await deleteDatabase(storageName);
+    }
+  },
+);
+
 browserTest(
   "a rotated bearer renders nothing offline and renders on the server's confirmation",
   { timeout: 120_000 },

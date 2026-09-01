@@ -146,6 +146,7 @@ export type DatabaseContext = {
   readonly assertLive: (operation: string) => void;
   readonly live: () => boolean;
   readonly onSyncChange: () => void;
+  readonly reconnecting: () => boolean;
   readonly onConfirmed: (identity: ReplicationIdentity) => void;
   readonly onFenced: () => void;
   readonly mutations: MutationContext;
@@ -831,9 +832,20 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private statusOf(snapshot: ReplicationSessionSnapshot): SyncStatus {
     const status = readSessionSnapshot(snapshot).status;
     if (status === "authentication-required" || status === "closed") return status;
-    return this.updateRequired || this.queueUpdateRequired
-      ? "update-required"
-      : status;
+    if (this.updateRequired || this.queueUpdateRequired) return "update-required";
+    if (
+      status !== "offline" || snapshot.status !== "terminal" ||
+      !this.context.reconnecting()
+    ) return status;
+    return this.committed === undefined ? "connecting" : "stale";
+  }
+
+  reconnects(): boolean {
+    if (!this.live() || this.refused) return false;
+    const snapshot = this.session?.snapshot();
+    return snapshot === undefined
+      ? this.syncStatus() === "offline"
+      : readSessionSnapshot(snapshot).status === "offline";
   }
 
   private publishStatus(status: SyncStatus): void {

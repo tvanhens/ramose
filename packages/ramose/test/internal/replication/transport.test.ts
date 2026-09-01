@@ -60,6 +60,58 @@ const conflict = (body: string): Response => new Response(body, {
   },
 });
 
+const streaming = (
+  emit: (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+  ) => void | Promise<void>,
+): Response =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        void emit(controller);
+      },
+    }),
+    {
+      status: 200,
+      headers: {
+        "cache-control": "no-store",
+        "content-type": "application/x-ndjson",
+      },
+    },
+  );
+
+test("a stream that stops sending within its deadline ends as a transport failure", async () => {
+  const line = new TextEncoder().encode(`${encodeReplicationFrame(ready)}\n`);
+
+  const silent = collect(readReplicationFrames(
+    streaming((controller) => controller.enqueue(line)),
+    undefined,
+    25,
+  ));
+  await expect(silent).rejects.toBeInstanceOf(ReplicationTransportError);
+  await expect(silent).rejects.toThrow(/keep-alive deadline/);
+
+  expect(await collect(readReplicationFrames(
+    streaming((controller) => {
+      controller.enqueue(line);
+      controller.close();
+    }),
+    undefined,
+    25,
+  ))).toEqual([ready]);
+
+  expect(await collect(readReplicationFrames(
+    streaming(async (controller) => {
+      controller.enqueue(line);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      controller.enqueue(line);
+      controller.close();
+    }),
+    undefined,
+    120,
+  ))).toEqual([ready, ready]);
+});
+
 test("canonical activation rejects configured non-origin URL components", () => {
   expect(() => replicationActivationAddress({
     server: "https://data.example/base",

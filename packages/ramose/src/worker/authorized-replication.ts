@@ -33,6 +33,7 @@ import {
   replicationFrameFitsBound,
   sameReplicationIdentity,
   snapshotEntryChunks,
+  REPLICATION_KEEPALIVE_INTERVAL_MS,
   REPLICATION_PROTOCOL_VERSION,
   sealingKeyOf,
   type ActivationRequest,
@@ -148,13 +149,13 @@ const abortPromise = (signal: AbortSignal): Promise<typeof ABORTED> =>
         signal.addEventListener("abort", () => resolve(ABORTED), { once: true });
       });
 
-const scheduledCycle = (milliseconds: number): {
-  readonly promise: Promise<"cycle">;
+const scheduledWake = <A extends string>(milliseconds: number, wake: A): {
+  readonly promise: Promise<A>;
   readonly cancel: () => void;
 } => {
   const controller = new AbortController();
   const promise = scheduler.wait(milliseconds, { signal: controller.signal })
-    .then(() => "cycle" as const)
+    .then(() => wake)
     .catch((cause): Promise<never> =>
       controller.signal.aborted
         ? new Promise<never>(() => undefined)
@@ -165,6 +166,11 @@ const scheduledCycle = (milliseconds: number): {
     cancel: () => controller.abort(),
   };
 };
+
+const scheduledCycle = (milliseconds: number) => scheduledWake(milliseconds, "cycle");
+
+const scheduledKeepAlive = () =>
+  scheduledWake(REPLICATION_KEEPALIVE_INTERVAL_MS, "keep-alive");
 
 const rawDatabase = (version: AuthorizedVersion): string =>
   version.target.route.database;
@@ -724,22 +730,41 @@ const replicationFrames = async function* (
     let renewalAt = committed.version.leaseExpiresAt;
     let cycle = scheduledCycle(Math.max(0, renewalAt - Date.now()));
     let commits = observeCommit();
+    let beat = scheduledKeepAlive();
     try {
       while (!signal.aborted) {
         effectiveSignal.throwIfAborted();
-        let next: "cycle" | "commit" | typeof WATCH_FAILED | typeof ABORTED;
+        let next: "cycle" | "commit" | "keep-alive" | typeof WATCH_FAILED | typeof ABORTED;
         if (Date.now() >= renewalAt) next = "cycle";
         else {
-          next = await Promise.race([cycle.promise, commits, watchFailed, aborted]);
+          next = await Promise.race([
+            cycle.promise,
+            commits,
+            beat.promise,
+            watchFailed,
+            aborted,
+          ]);
         }
         if (next === ABORTED) return;
         effectiveSignal.throwIfAborted();
         if (next === WATCH_FAILED) {
           throw new Error("replication basis watch closed");
         }
+        if (next === "keep-alive") {
+          beat.cancel();
+          await atBoundary(input.boundaries, "replication.keepalive", effectiveSignal);
+          yield frame({
+            type: "KeepAlive",
+            protocol: REPLICATION_PROTOCOL_VERSION,
+            identity: initialIdentity,
+          });
+          beat = scheduledKeepAlive();
+          continue;
+        }
         if (next === "commit") commits = observeCommit();
 
         cycle.cancel();
+        const published = committed.revision;
         await atBoundary(
           input.boundaries,
           next === "commit" ? "replication.wake" : "replication.cycle",
@@ -768,11 +793,16 @@ const replicationFrames = async function* (
             { initialVersion: renewed },
           );
         }
+        if (committed.revision !== published) {
+          beat.cancel();
+          beat = scheduledKeepAlive();
+        }
         renewalAt = committed.version.leaseExpiresAt;
         cycle = scheduledCycle(Math.max(0, renewalAt - Date.now()));
       }
     } finally {
       cycle.cancel();
+      beat.cancel();
     }
   } finally {
     signal.removeEventListener("abort", cancelEffective);

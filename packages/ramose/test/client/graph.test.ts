@@ -231,6 +231,7 @@ describe("the resolved-database registry", () => {
     assertLive: () => undefined,
     live: () => true,
     onSyncChange: () => undefined,
+    reconnecting: () => true,
     onConfirmed: () => undefined,
     onFenced: () => undefined,
   });

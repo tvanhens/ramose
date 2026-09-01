@@ -476,6 +476,7 @@ browserTest(
       assertLive: () => undefined,
       live: () => true,
       onSyncChange: () => undefined,
+      reconnecting: () => true,
       onConfirmed: () => undefined,
       onFenced: () => undefined,
     });
@@ -552,6 +553,7 @@ browserTest(
         assertLive: () => undefined,
         live: () => true,
         onSyncChange: () => undefined,
+        reconnecting: () => true,
         onConfirmed: () => undefined,
         onFenced: () => undefined,
       });

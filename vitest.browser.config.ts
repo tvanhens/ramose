@@ -40,12 +40,13 @@ const replicationFrameFixtures = (root: string): Plugin => ({
         });
         return;
       }
-      const file = join(root, "test/browser/frames", `${match[1]!}.ndjson`);
+      const held = /^(.+)-held$/.exec(match[1]!);
+      const file = join(root, "test/browser/frames", `${held?.[1] ?? match[1]!}.ndjson`);
       if (!existsSync(file)) return next();
       response.statusCode = 200;
       response.setHeader("content-type", "application/x-ndjson");
       response.setHeader("cache-control", "no-store");
-      createReadStream(file).pipe(response);
+      createReadStream(file).pipe(response, { end: held === null });
     });
   },
 });

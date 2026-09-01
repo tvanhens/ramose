@@ -56,12 +56,13 @@ const deleteDatabase = (name: string): Promise<void> =>
 const waitFor = <A>(
   subscription: Subscription<A>,
   accept: (value: A) => boolean,
+  budget = 10_000,
 ): Promise<A> =>
   new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       stop();
       reject(new Error(`timed out at ${JSON.stringify(subscription.getSnapshot())}`));
-    }, 10_000);
+    }, budget);
     const settle = (): void => {
       const value = subscription.getSnapshot();
       if (!accept(value)) return;
@@ -575,13 +576,98 @@ browserTest("a committed value enters a query already being observed", async ({ 
     expect(issues.getSnapshot()).toBe(ready);
 
     expect(seen).toContain("live");
-    expect(await waitFor(client.sync, (state) => state.status === "offline")).toBeDefined();
+    expect(await waitFor(client.sync, (state) => state.status === "stale")).toBeDefined();
     expect(issues.getSnapshot()).toBe(ready);
   } finally {
     await client.close();
     await deleteDatabase(name);
   }
 });
+
+browserTest("re-establishes a stream the server ended with no activation event", async ({ browser }) => {
+  const name = `ramose-client-reconnect-${browser.uniqueId}`;
+  expect(document.visibilityState).toBe("visible");
+  const client = createClient({
+    url: globalThis.location.origin,
+    root: "optimistic-fence",
+    catalog: ConformanceSchema,
+    auth: () => Promise.resolve({ token: "session-credential", cacheKey: "recorded" }),
+    storageName: name,
+  });
+  try {
+    const db = client.open();
+    const issues = db.observe(
+      db.query.from(ConformanceIssue).select({ title: ConformanceIssue.title }),
+    );
+    await waitFor(issues, (snapshot) => snapshot.status === "ready");
+    const seen: string[] = [];
+    const release = client.sync.subscribe(() => seen.push(client.sync.getSnapshot().status));
+    try {
+      for (const attempt of [1, 2]) {
+        expect(
+          await waitFor(
+            client.sync,
+            (state) => state.status !== "live" && state.status !== "connecting",
+          ),
+          `stream ${attempt} did not end`,
+        ).toBeDefined();
+        expect(
+          await waitFor(client.sync, (state) => state.status === "live"),
+          `stream ${attempt} was not re-established`,
+        ).toBeDefined();
+      }
+      expect(seen).toContain("stale");
+      expect(seen).not.toContain("offline");
+      expect(seen.filter((status) => status === "live").length)
+        .toBeGreaterThanOrEqual(2);
+    } finally {
+      release();
+    }
+  } finally {
+    await client.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest(
+  "tears down and re-establishes a stream that goes silent",
+  { timeout: 90_000 },
+  async ({ browser }) => {
+    const name = `ramose-client-silent-${browser.uniqueId}`;
+    const client = createClient({
+      url: globalThis.location.origin,
+      root: "optimistic-fence-held",
+      catalog: ConformanceSchema,
+      auth: () => Promise.resolve({ token: "session-credential", cacheKey: "recorded" }),
+      storageName: name,
+    });
+    try {
+      const db = client.open();
+      const issues = db.observe(
+        db.query.from(ConformanceIssue).select({ title: ConformanceIssue.title }),
+      );
+      await waitFor(issues, (snapshot) => snapshot.status === "ready");
+      expect(await waitFor(client.sync, (state) => state.status === "live")).toBeDefined();
+
+      const seen: string[] = [];
+      const release = client.sync.subscribe(() => seen.push(client.sync.getSnapshot().status));
+      try {
+        expect(
+          await waitFor(client.sync, (state) => state.status === "offline", 60_000),
+        ).toBeDefined();
+        expect(
+          await waitFor(client.sync, (state) => state.status === "live", 30_000),
+        ).toBeDefined();
+      } finally {
+        release();
+      }
+      expect(seen[0]).toBe("offline");
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
 
 browserTest("fences a replaced principal before any of its data can be read", async ({ browser }) => {
   const name = `ramose-client-transition-${browser.uniqueId}`;
