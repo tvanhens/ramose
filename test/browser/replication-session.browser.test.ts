@@ -50,7 +50,6 @@ import {
   buildReceipt,
   mutationPartitionKey,
 } from "../../packages/ramose/src/internal/replication/outbox.ts";
-import { sameReplicationIdentity } from "../../packages/ramose/src/internal/replication/state.ts";
 import { invocationId } from "../../packages/ramose/src/db/refs.ts";
 import type { OperationVersion } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import { browserTest } from "./fixtures.ts";
@@ -123,13 +122,13 @@ const install = async (
     op: "add",
   }];
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 2, identity, snapshot, revision,
+    type: "SnapshotStart", protocol: 3, identity, snapshot, revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
-    type: "SnapshotChunk", protocol: 2, identity, snapshot, index: 0, datoms,
+    type: "SnapshotChunk", protocol: 3, identity, snapshot, index: 0, datoms,
   }));
   expect(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 2, identity, snapshot, revision, ordinal: 1, chunks: 1,
+    type: "SnapshotCommit", protocol: 3, identity, snapshot, revision, ordinal: 1, chunks: 1,
   }, attributes)).toBeDefined();
 };
 
@@ -263,7 +262,7 @@ browserTest("a follower never re-renders a committed revision it has already lef
   ): Promise<void> => {
     (await storage.applyChange(changeFrame({
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       from,
       revision,
@@ -309,14 +308,14 @@ browserTest("a follower never re-renders a committed revision it has already lef
 
     await storage.startSnapshot({
       type: "SnapshotStart",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot: opaque("p"),
       revision: installed,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot: opaque("p"),
       index: 0,
@@ -324,7 +323,7 @@ browserTest("a follower never re-renders a committed revision it has already lef
     }));
     await expect(storage.commitSnapshot({
       type: "SnapshotCommit",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot: opaque("p"),
       revision: installed,
@@ -422,7 +421,7 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
 
     (await storage.applyChange(changeFrame({
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       from: installed,
       revision: delayed,
@@ -433,14 +432,14 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
 
     await storage.startSnapshot({
       type: "SnapshotStart",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot: opaque("p"),
       revision: delayed,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot: opaque("p"),
       index: 0,
@@ -448,7 +447,7 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
     }));
     await expect(storage.commitSnapshot({
       type: "SnapshotCommit",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot: opaque("p"),
       revision: delayed,
@@ -468,7 +467,7 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
 
     const current = await storage.applyChange(changeFrame({
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       from: installed,
       revision: opaque("3"),
@@ -486,16 +485,20 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
   }
 });
 
-browserTest("a rotated identity sharing a partition is not wedged by the prior counter", async ({ browser }) => {
-  const name = `ramose-session-rotated-ordinal-${browser.uniqueId}`;
+browserTest("a stale writer's install is refused by the ordinal it was issued", async ({ browser }) => {
+  const name = `ramose-session-stale-writer-${browser.uniqueId}`;
   const storage = await IndexedDbReplicaStorage.open(name);
   const rotated: ReplicationIdentity = {
     ...selected,
     catalog: opaque("C"),
     authenticator: opaque("A"),
   };
-  const replacement = opaque("5");
   const partition = replicaPartitionKey(selected);
+  const named = async (db: Db): Promise<string[]> => {
+    const attribute = db.attr(":item/name")!;
+    return (await db.datomsArray(Index.AEVT, { a: attribute.id }))
+      .map((datom) => datom.v as string);
+  };
   const storedOrdinal = async (): Promise<number | undefined> => {
     const database = await openNative(name);
     const read = database.transaction("replica-committed-heads-v1", "readonly");
@@ -506,337 +509,80 @@ browserTest("a rotated identity sharing a partition is not wedged by the prior c
     database.close();
     return head?.ordinal;
   };
-  try {
-    expect(replicaPartitionKey(rotated)).toBe(partition);
-    expect(sameReplicationIdentity(rotated, selected)).toBe(false);
-
-    const bind = (identity: ReplicationIdentity, credential: string) =>
-      storage.bindCredential(credential.repeat(43).slice(0, 43), identity);
-
-    await bind(selected, "a");
-    await install(storage);
-    expect(await storage.acknowledgeOrdinal({
-      identity: selected,
-      revision: opaque("r"),
-      ordinal: 5,
-    })).toBe(5);
-    expect(await storedOrdinal()).toBe(5);
-
-    await bind(rotated, "b");
-    await install(storage, opaque("Q"), replacement, rotated, "rotated");
-    expect(await storedOrdinal()).toBe(1);
-    const installed = await storage.restore(
-      rotated,
-      attributes,
-      rotated.readCompatibilityHash,
-    );
-    expect(installed?.revision).toBe(replacement);
-    expect(installed?.ordinal).toBe(1);
-    installed!.release();
-
-    expect(await storage.acknowledgeOrdinal({
-      identity: rotated,
-      revision: replacement,
-      ordinal: 4,
-    })).toBe(4);
+  const stage = async (
+    identity: ReplicationIdentity,
+    snapshot: string,
+    revision: string,
+    value: string,
+  ): Promise<void> => {
     await storage.startSnapshot({
       type: "SnapshotStart",
-      protocol: 2,
-      identity: rotated,
-      snapshot: opaque("P"),
-      revision: opaque("6"),
+      protocol: 3,
+      identity,
+      snapshot,
+      revision,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 2,
-      identity: rotated,
-      snapshot: opaque("P"),
+      protocol: 3,
+      identity,
+      snapshot,
       index: 0,
       datoms: [{
         entity: opaque("e"),
         field: ":item/name",
-        value: { type: "string", value: "regressed" },
+        value: { type: "string", value },
         op: "add",
       }],
     }));
-    await expect(storage.commitSnapshot({
+  };
+  const commit = (
+    identity: ReplicationIdentity,
+    snapshot: string,
+    revision: string,
+    ordinal: number,
+  ) =>
+    storage.commitSnapshot({
       type: "SnapshotCommit",
-      protocol: 2,
-      identity: rotated,
-      snapshot: opaque("P"),
-      revision: opaque("6"),
-      ordinal: 2,
+      protocol: 3,
+      identity,
+      snapshot,
+      revision,
+      ordinal,
       chunks: 1,
-    }, attributes)).rejects.toMatchObject({ _tag: "ReplicaSupersededError" });
-    expect(await storedOrdinal()).toBe(4);
+    }, attributes);
+  try {
+    expect(replicaPartitionKey(rotated)).toBe(partition);
+    await install(storage);
+    expect(await storedOrdinal()).toBe(1);
 
-    const replay = async (identity: ReplicationIdentity, revision: string) => {
-      await storage.startSnapshot({
-        type: "SnapshotStart",
-        protocol: 2,
-        identity,
-        snapshot: opaque("S"),
-        revision,
-      });
-      await storage.stageSnapshotChunk(snapshotChunk({
-        type: "SnapshotChunk",
-        protocol: 2,
-        identity,
-        snapshot: opaque("S"),
-        index: 0,
-        datoms: [{
-          entity: opaque("e"),
-          field: ":item/name",
-          value: { type: "string", value: "replayed" },
-          op: "add",
-        }],
-      }));
-      return storage.commitSnapshot({
-        type: "SnapshotCommit",
-        protocol: 2,
-        identity,
-        snapshot: opaque("S"),
-        revision,
-        ordinal: 1,
-        chunks: 1,
-      }, attributes);
-    };
+    await stage(rotated, opaque("Q"), opaque("5"), "rotated");
+    expect((await commit(rotated, opaque("Q"), opaque("5"), 2))?.ordinal).toBe(2);
+    expect(await storedOrdinal()).toBe(2);
 
-    expect(await replay(selected, opaque("7")).catch(() => undefined))
-      .toBeUndefined();
+    await stage(selected, opaque("S"), opaque("6"), "replayed");
+    await expect(commit(selected, opaque("S"), opaque("6"), 1))
+      .rejects.toMatchObject({ _tag: "ReplicaSupersededError" });
+    expect(await storedOrdinal()).toBe(2);
     expect(await storage.acknowledgeOrdinal({
       identity: selected,
-      revision: replacement,
-      ordinal: 9,
-    })).toBeUndefined();
-    expect(await storedOrdinal()).toBe(4);
+      revision: opaque("5"),
+      ordinal: 1,
+    })).toBe(2);
+
     const held = await storage.restore(
       rotated,
       attributes,
       rotated.readCompatibilityHash,
     );
-    expect(held?.revision).toBe(replacement);
-    expect(held?.ordinal).toBe(4);
-    held!.release();
-
-    await bind(selected, "c");
-    expect((await replay(selected, opaque("8")))?.revision).toBe(opaque("8"));
-    const reclaimed = await storage.restore(
-      selected,
-      attributes,
-      selected.readCompatibilityHash,
-    );
-    expect(reclaimed?.revision).toBe(opaque("8"));
-    expect(reclaimed?.ordinal).toBe(1);
-    reclaimed!.release();
-  } finally {
-    storage.close();
-    await deleteDatabase(name);
-  }
-});
-
-browserTest("a delayed claim cannot re-take a partition its successor already owns", async ({ browser }) => {
-  const name = `ramose-session-succession-cas-${browser.uniqueId}`;
-  const storage = await IndexedDbReplicaStorage.open(name);
-  const successor: ReplicationIdentity = { ...selected, authenticator: opaque("A") };
-  const partition = replicaPartitionKey(selected);
-  const owner = async (): Promise<
-    { readonly identity: ReplicationIdentity; readonly succession: number } | undefined
-  > => {
-    const database = await openNative(name);
-    const read = database.transaction(REPLICA_GENERATIONS_STORE, "readonly");
-    const record = await requestResult<
-      { readonly identity: ReplicationIdentity; readonly succession: number } | undefined
-    >(read.objectStore(REPLICA_GENERATIONS_STORE).get(
-      `ramose-replica-owner-v4:${partition}`,
-    ));
-    await transactionDone(read);
-    database.close();
-    return record;
-  };
-  try {
-    await storage.bindCredential(opaque("1"), selected);
-    await install(storage);
-    const captured = await storage.partitionExpectation(selected);
-    expect(captured).toMatchObject({ partition, succession: 1 });
-
-    expect(await storage.partitionExpectation(successor)).toEqual(captured);
-    expect(await storage.bindAuthenticated({
-      fingerprint: opaque("1"),
-      identity: successor,
-      expected: captured,
-    })).toBe("claimed");
-    expect(await owner()).toMatchObject({ identity: successor, succession: 2 });
-    await install(storage, opaque("Q"), opaque("5"), successor, "successor");
-
-    expect(await storage.bindAuthenticated({
-      fingerprint: opaque("1"),
-      identity: selected,
-      expected: captured,
-    })).toBe("lost");
-    expect(await owner()).toMatchObject({ identity: successor, succession: 2 });
-    expect(await storage.boundIdentity(opaque("1"))).toEqual(successor);
-
-    expect(await storage.bindAuthenticated({
-      fingerprint: opaque("3"),
-      identity: selected,
-      expected: { succession: "absent" },
-    })).toBe("lost");
-    expect(await owner()).toMatchObject({ identity: successor, succession: 2 });
-    expect(await storage.boundIdentity(opaque("3"))).toEqual(selected);
-
-    await storage.startSnapshot({
-      type: "SnapshotStart",
-      protocol: 2,
-      identity: selected,
-      snapshot: opaque("S"),
-      revision: opaque("6"),
-    });
-    expect(await storage.commitSnapshot({
-      type: "SnapshotCommit",
-      protocol: 2,
-      identity: selected,
-      snapshot: opaque("S"),
-      revision: opaque("6"),
-      ordinal: 9,
-      chunks: 1,
-    }, attributes).catch(() => undefined)).toBeUndefined();
-    expect(await storage.acknowledgeOrdinal({
-      identity: selected,
-      revision: opaque("5"),
-      ordinal: 9,
-    })).toBeUndefined();
-    const held = await storage.restore(
-      successor,
-      attributes,
-      successor.readCompatibilityHash,
-    );
     expect(held?.revision).toBe(opaque("5"));
+    expect(held?.ordinal).toBe(2);
+    expect(await named(held!.db)).toEqual(["rotated"]);
     held!.release();
 
-    const recaptured = await storage.partitionExpectation(selected);
-    expect(recaptured).toMatchObject({ partition, succession: 2 });
-    await storage.bindAuthenticated({
-      fingerprint: opaque("4"),
-      identity: selected,
-      expected: recaptured,
-    });
-    expect(await owner()).toMatchObject({ identity: selected, succession: 3 });
-  } finally {
-    storage.close();
-    await deleteDatabase(name);
-  }
-});
-
-browserTest("a response that can never install confirms its credential without taking the partition", async ({ browser }) => {
-  const name = `ramose-session-terminal-bind-${browser.uniqueId}`;
-  const storage = await IndexedDbReplicaStorage.open(name);
-  const retired: ReplicationIdentity = { ...selected, authenticator: opaque("A") };
-  const partition = replicaPartitionKey(selected);
-  const owner = async (): Promise<ReplicationIdentity | undefined> => {
-    const database = await openNative(name);
-    const read = database.transaction(REPLICA_GENERATIONS_STORE, "readonly");
-    const record = await requestResult<
-      { readonly identity?: ReplicationIdentity } | undefined
-    >(read.objectStore(REPLICA_GENERATIONS_STORE).get(
-      `ramose-replica-owner-v4:${partition}`,
-    ));
-    await transactionDone(read);
-    database.close();
-    return record?.identity;
-  };
-  try {
-    await storage.bindCredential(opaque("1"), selected);
-    await install(storage);
-    expect(await owner()).toEqual(selected);
-
-    await storage.bindAuthenticated({
-      fingerprint: opaque("2"),
-      identity: retired,
-      claimsPartition: false,
-    });
-    expect(await owner()).toEqual(selected);
-
-    const advanced = await storage.applyChange(changeFrame({
-      type: "Change",
-      protocol: 2,
-      identity: selected,
-      from: opaque("r"),
-      revision: opaque("8"),
-      ordinal: 2,
-      datoms: [],
-    }));
-    expect(advanced?.revision).toBe(opaque("8"));
-    advanced!.release();
-
-    await storage.bindCredential(opaque("3"), retired);
-    expect(await owner()).toEqual(retired);
-  } finally {
-    storage.close();
-    await deleteDatabase(name);
-  }
-});
-
-browserTest("a retired identity cannot disturb the owner's in-flight staging", async ({ browser }) => {
-  const name = `ramose-session-staging-fence-${browser.uniqueId}`;
-  const storage = await IndexedDbReplicaStorage.open(name);
-  const retired: ReplicationIdentity = { ...selected, authenticator: opaque("A") };
-  const staged = opaque("9");
-  const fact = (value: string) => ({
-    entity: opaque("e"),
-    field: ":item/name",
-    value: { type: "string" as const, value },
-    op: "add" as const,
-  });
-  try {
-    await storage.bindCredential(opaque("1"), selected);
-    await install(storage);
-
-    await storage.startSnapshot({
-      type: "SnapshotStart",
-      protocol: 2,
-      identity: selected,
-      snapshot: opaque("Q"),
-      revision: staged,
-    });
-    await storage.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk",
-      protocol: 2,
-      identity: selected,
-      snapshot: opaque("Q"),
-      index: 0,
-      datoms: [fact("staged")],
-    }));
-
-    await storage.resetStaging(retired);
-    await storage.startSnapshot({
-      type: "SnapshotStart",
-      protocol: 2,
-      identity: retired,
-      snapshot: opaque("R"),
-      revision: opaque("8"),
-    });
-    await storage.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk",
-      protocol: 2,
-      identity: retired,
-      snapshot: opaque("R"),
-      index: 0,
-      datoms: [fact("intruded")],
-    }));
-
-    const installed = await storage.commitSnapshot({
-      type: "SnapshotCommit",
-      protocol: 2,
-      identity: selected,
-      snapshot: opaque("Q"),
-      revision: staged,
-      ordinal: 2,
-      chunks: 1,
-    }, attributes);
-    expect(installed?.revision).toBe(staged);
-    expect(installed?.ordinal).toBe(2);
-    installed!.release();
+    await stage(selected, opaque("T"), opaque("7"), "resumed");
+    expect((await commit(selected, opaque("T"), opaque("7"), 3))?.ordinal).toBe(3);
+    expect(await storedOrdinal()).toBe(3);
   } finally {
     storage.close();
     await deleteDatabase(name);
@@ -881,7 +627,7 @@ browserTest("a damaged head recovers its order from the manifest and is rebuilt"
   const commitAt = (revision: string, ordinal: number) =>
     storage.commitSnapshot({
       type: "SnapshotCommit",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot: opaque("Q"),
       revision,
@@ -891,14 +637,14 @@ browserTest("a damaged head recovers its order from the manifest and is rebuilt"
   const stage = async (revision: string): Promise<void> => {
     await storage.startSnapshot({
       type: "SnapshotStart",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot: opaque("Q"),
       revision,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       snapshot: opaque("Q"),
       index: 0,
@@ -994,7 +740,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     inspectedHead.close();
     expect(head).toEqual({
       partition,
-      storageVersion: 4,
+      storageVersion: 5,
       identity: selected,
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
@@ -1049,7 +795,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
 
     const correctHead = {
       partition,
-      storageVersion: 4,
+      storageVersion: 5,
       identity: selected,
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
@@ -1080,7 +826,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
 
     const ready = {
       type: "ResumeReady" as const,
-      protocol: 2 as const,
+      protocol: 3 as const,
       identity: selected,
       revision: opaque("r"),
       ordinal: 1,
@@ -1104,7 +850,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     const changedRevision = opaque("3");
     expect((await storage.applyChange(changeFrame({
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity: selected,
       from: opaque("r"),
       revision: changedRevision,
@@ -1130,7 +876,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       oldKey,
       selected.readCompatibilityHash,
     );
-    const reset = { type: "Reset" as const, protocol: 2 as const, identity: other };
+    const reset = { type: "Reset" as const, protocol: 3 as const, identity: other };
     expect(classifyReplicationCandidateFrame(collision, reset)).toBe("reset");
     await storage.bindAuthenticated({
       fingerprint: await replicationCredentialFingerprint(
@@ -1162,7 +908,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     )).toBeUndefined();
     const start = {
       type: "SnapshotStart" as const,
-      protocol: 2 as const,
+      protocol: 3 as const,
       identity: selected,
       snapshot: opaque("n"),
       revision: opaque("3"),
@@ -1457,7 +1203,7 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
       attributes,
       selected.readCompatibilityHash,
     ))?.revision).toBe(opaque("r"));
-    expect(replicaPartitionKey(selected).startsWith("ramose-replica-v4:")).toBe(true);
+    expect(replicaPartitionKey(selected).startsWith("ramose-replica-v5:")).toBe(true);
   } finally {
     upgraded?.close();
     await deleteDatabase(legacyName);
@@ -1482,7 +1228,7 @@ browserTest(
     expect(replicaScopeKey(scope)).toBe(scopeKey);
     const partition = mutationPartitionKey(receiver);
     const legacyPartition = replicaPartitionKey(selected).replace(
-      "ramose-replica-v4:",
+      "ramose-replica-v5:",
       "ramose-replica-v2:",
     );
 

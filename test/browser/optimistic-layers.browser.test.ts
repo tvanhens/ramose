@@ -206,11 +206,11 @@ const install = async (
   const snapshot = `snapshot-${label}`.padEnd(43, "0");
   const revision = `revision-${label}`.padEnd(43, "0");
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 2, identity: selected, snapshot, revision,
+    type: "SnapshotStart", protocol: 3, identity: selected, snapshot, revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
-    protocol: 2,
+    protocol: 3,
     identity: selected,
     snapshot,
     index: 0,
@@ -222,7 +222,7 @@ const install = async (
     }],
   }));
   dropped(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 2, identity: selected, snapshot, revision, ordinal: 1, chunks: 1,
+    type: "SnapshotCommit", protocol: 3, identity: selected, snapshot, revision, ordinal: 1, chunks: 1,
   }, ATTRIBUTES));
 };
 
@@ -1109,72 +1109,6 @@ const storedOrdinal = async (
   connection.close();
   return head?.ordinal as number | undefined;
 };
-
-browserTest(
-  "a response whose claim lost the succession restarts instead of proceeding",
-  async ({ browser }) => {
-    const database = `ramose-layer-claim-lost-${browser.uniqueId}`;
-    const storage = await IndexedDbReplicaStorage.open(database);
-    const successor: ReplicationIdentity = {
-      ...identity(),
-      authenticator: "z".repeat(43),
-    };
-    const elsewhere: ReplicationIdentity = {
-      ...identity(),
-      principal: "y".repeat(43),
-    };
-    let session: ReplicationSession | undefined;
-    try {
-      await installRecorded(storage, "optimistic-fence");
-      const fingerprint = await replicationCredentialFingerprint(
-        CREDENTIAL,
-        replicationActivationAddress({
-          server: globalThis.location.origin,
-          root: "optimistic-fence",
-          graphPath: [],
-        }),
-        await rootReplicaRouteSlot(),
-      );
-      expect(await storage.boundIdentity(fingerprint)).toEqual(identity());
-
-      expect(await storage.bindAuthenticated({
-        fingerprint: "w".repeat(43),
-        identity: successor,
-        expected: await storage.partitionExpectation(successor),
-      })).toBe("claimed");
-      expect(await storage.bindAuthenticated({
-        fingerprint,
-        identity: elsewhere,
-        claimsPartition: false,
-      })).toBe("confirmed");
-      expect(await storage.boundIdentity(fingerprint)).toEqual(elsewhere);
-
-      session = await ReplicationSession.open({
-        activation: {
-          server: globalThis.location.origin,
-          root: "optimistic-fence",
-          graphPath: [],
-        },
-        credential: CREDENTIAL,
-        attributes: ATTRIBUTES,
-        readCompatibilityHash: READ_COMPATIBILITY,
-        storage,
-      });
-      const observed = settledSnapshots(session);
-      await observed.failed;
-
-      expect(session.snapshot().status).toBe("failed");
-      expect(observed.seen.map((snapshot) => snapshot.status)).not.toContain("open");
-      expect(await storage.boundIdentity(fingerprint)).toEqual(elsewhere);
-      expect(await storage.partitionExpectation(successor))
-        .toMatchObject({ succession: 2 });
-    } finally {
-      await session?.close();
-      storage.close();
-      await deleteDatabase(database);
-    }
-  },
-);
 
 browserTest(
   "a snapshot the identity has advanced past reconnects instead of being consumed",

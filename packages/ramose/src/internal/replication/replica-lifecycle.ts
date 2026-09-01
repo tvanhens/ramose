@@ -56,6 +56,14 @@ export const replicaPartitionKey = (identity: ReplicationIdentity): string =>
     identity.readCompatibilityHash,
   ].join(":");
 
+export const replicationPartitionScope = (identity: ReplicationIdentity): string =>
+  [
+    identity.principal,
+    identity.database,
+    identity.readView,
+    identity.readCompatibilityHash,
+  ].join("|");
+
 export const replicaPartitionScopeKey = (partition: string): string | undefined => {
   const parts = partition.split(":");
   if (parts.length !== 6 || parts[0] !== `ramose-replica-v${REPLICA_STORAGE_VERSION}`) {

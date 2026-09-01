@@ -176,14 +176,14 @@ const confirm = async (
   const revision = `revision-${label}`.padEnd(43, "0");
   await storage.startSnapshot({
     type: "SnapshotStart",
-    protocol: 2,
+    protocol: 3,
     identity: selected,
     snapshot,
     revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
-    protocol: 2,
+    protocol: 3,
     identity: selected,
     snapshot,
     index: 0,
@@ -196,7 +196,7 @@ const confirm = async (
   }));
   const installed = await storage.commitSnapshot({
     type: "SnapshotCommit",
-    protocol: 2,
+    protocol: 3,
     identity: selected,
     snapshot,
     revision,

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { MAX_REPLICATION_REVISIONS_PER_BINDING } from "../../packages/ramose/src/internal/replica/revision-retention.ts";
+import { MAX_REPLICATION_REVISIONS_PER_SCOPE } from "../../packages/ramose/src/internal/replica/revision-retention.ts";
 import { CONFORMANCE_DATABASES } from "./conformance-catalog.ts";
 import { loadConformanceProof } from "./conformance-proof.ts";
 import { seedWorld } from "./conformance.ts";
@@ -86,6 +86,9 @@ const envelopeOf = (token: string): Uint8Array =>
     atob(`${token.replaceAll("-", "+").replaceAll("_", "/")}=`),
     (character) => character.charCodeAt(0),
   );
+
+const scopeId = (): string =>
+  [opaqueId(), opaqueId(), opaqueId(), opaqueId()].join("|");
 
 const opaqueId = (): string => {
   const bytes = new Uint8Array(32);
@@ -221,7 +224,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
     test("a revision store quarantines state sealed under a replaced key id", async () => {
       const base = ctx.urls().conformanceUrl;
       const database = uniqueDb("identity-quarantine");
-      const binding = opaqueId();
+      const scope = scopeId();
       const revision = opaqueId();
       const current = (await probeIdentityRoot(base, database)).keyId;
       const replaced = "z".repeat(22);
@@ -230,7 +233,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       const remembered = await testAdmin(base, database, "/replication-revision", {
         action: "remember",
         revision,
-        binding,
+        scope,
         basisT: 7,
         keyId: current,
       });
@@ -240,7 +243,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       const resolved = await testAdmin(base, database, "/replication-revision", {
         action: "resolve",
         revision,
-        binding,
+        scope,
         keyId: current,
       });
       expect(resolved.status).toBe(200);
@@ -250,7 +253,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         base,
         database,
         "/replication-revision",
-        { action: "resolve", revision, binding, keyId: replaced },
+        { action: "resolve", revision, scope, keyId: replaced },
       );
       expect(quarantinedRead.status).toBe(409);
       expect(quarantinedRead.body).toEqual({
@@ -265,7 +268,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         {
           action: "remember",
           revision,
-          binding,
+          scope,
           basisT: 99,
           keyId: replaced,
         },
@@ -275,7 +278,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       const stillThere = await testAdmin(base, database, "/replication-revision", {
         action: "resolve",
         revision,
-        binding,
+        scope,
         keyId: current,
       });
       expect(stillThere.status).toBe(200);
@@ -285,7 +288,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
     test("one dense ordinal per visible change, and a lagging stream mints none", async () => {
       const base = ctx.urls().conformanceUrl;
       const database = uniqueDb("revision-ordinal");
-      const binding = opaqueId();
+      const scope = scopeId();
       const keyId = (await probeIdentityRoot(base, database)).keyId;
       const committed = opaqueId();
       const advanced = opaqueId();
@@ -294,7 +297,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         testAdmin(base, database, "/replication-revision", {
           action: "remember",
           revision,
-          binding,
+          scope,
           basisT,
           keyId,
         });
@@ -302,7 +305,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         testAdmin(base, database, "/replication-revision", {
           action: "resolve",
           revision,
-          binding,
+          scope,
           keyId,
         });
 
@@ -324,17 +327,39 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       expect((await resolve(advanced)).body).toEqual({ found: true, basisT: 9 });
     });
 
+    test("one counter spans every identity rotation inside a partition scope", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = uniqueDb("revision-rotation");
+      const scope = scopeId();
+      const keyId = (await probeIdentityRoot(base, database)).keyId;
+      const remember = (revision: string, basisT: number) =>
+        testAdmin(base, database, "/replication-revision", {
+          action: "remember",
+          revision,
+          scope,
+          basisT,
+          keyId,
+        });
+
+      expect((await remember(opaqueId(), 3)).body)
+        .toEqual({ ok: true, stored: true, ordinal: 1 });
+      expect((await remember(opaqueId(), 4)).body)
+        .toEqual({ ok: true, stored: true, ordinal: 2 });
+      expect((await remember(opaqueId(), 5)).body)
+        .toEqual({ ok: true, stored: true, ordinal: 3 });
+    });
+
     test("advancing a remembered revision does not refresh its eviction order", async () => {
       const base = ctx.urls().conformanceUrl;
       const database = uniqueDb("revision-retention");
-      const binding = opaqueId();
+      const scope = scopeId();
       const keyId = (await probeIdentityRoot(base, database)).keyId;
       const revisions = Array.from(
-        { length: MAX_REPLICATION_REVISIONS_PER_BINDING + 1 },
+        { length: MAX_REPLICATION_REVISIONS_PER_SCOPE + 1 },
         opaqueId,
       );
 
-      for (let index = 0; index < MAX_REPLICATION_REVISIONS_PER_BINDING; index++) {
+      for (let index = 0; index < MAX_REPLICATION_REVISIONS_PER_SCOPE; index++) {
         const remembered = await testAdmin(
           base,
           database,
@@ -342,7 +367,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
           {
             action: "remember",
             revision: revisions[index],
-            binding,
+            scope,
             basisT: index + 1,
             keyId,
           },
@@ -355,7 +380,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
       await testAdmin(base, database, "/replication-revision", {
         action: "remember",
         revision: revisions[0],
-        binding,
+        scope,
         basisT: 99,
         keyId,
       });
@@ -363,14 +388,14 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         base,
         database,
         "/replication-revision",
-        { action: "resolve", revision: revisions[0], binding, keyId },
+        { action: "resolve", revision: revisions[0], scope, keyId },
       );
       expect(advanced.body).toEqual({ found: true, basisT: 99 });
 
       await testAdmin(base, database, "/replication-revision", {
         action: "remember",
         revision: revisions.at(-1),
-        binding,
+        scope,
         basisT: 100,
         keyId,
       });
@@ -379,7 +404,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         base,
         database,
         "/replication-revision",
-        { action: "resolve", revision: revisions[0], binding, keyId },
+        { action: "resolve", revision: revisions[0], scope, keyId },
       );
       expect(evicted.body).toEqual({ found: false });
 
@@ -387,7 +412,7 @@ export const registerServerIdentity = (ctx: { urls: () => LocalUrls }) => {
         base,
         database,
         "/replication-revision",
-        { action: "resolve", revision: revisions[1], binding, keyId },
+        { action: "resolve", revision: revisions[1], scope, keyId },
       );
       expect(retained.body).toEqual({ found: true, basisT: 2 });
     });

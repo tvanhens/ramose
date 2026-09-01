@@ -34,7 +34,7 @@ const identity: ReplicationIdentity = {
 };
 const ready: ReplicationFrame = {
   type: "ResumeReady",
-  protocol: 2,
+  protocol: 3,
   identity,
   revision: opaque("r"),
   ordinal: 1,
@@ -167,7 +167,7 @@ test("bounded decoder rejects invalid UTF-8, unterminated, and oversized frames"
 test("HTTP 409 yields only one identity-free agreement or version terminal", async () => {
   const updateRequired: ReplicationFrame = {
     type: "TerminalError",
-    protocol: 2,
+    protocol: 3,
     code: "update-required",
   };
   expect(await collect(readReplicationFrames(conflict(

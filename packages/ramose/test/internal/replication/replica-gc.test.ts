@@ -93,8 +93,8 @@ describe("sweep selection", () => {
 });
 
 describe("supersession", () => {
-  const rotated = "ramose-replica-v4:s:p:d:w:h";
-  const original = "ramose-replica-v4:s:p:d:v:h";
+  const rotated = "ramose-replica-v5:s:p:d:w:h";
+  const original = "ramose-replica-v5:s:p:d:v:h";
 
   test("a partition nothing references loses to a confirmed one over the same database", () => {
     expect([...supersededPartitions([original, rotated], new Set([rotated]))])
@@ -108,12 +108,12 @@ describe("supersession", () => {
   test("nothing is superseded while the database has no confirmed partition", () => {
     expect(supersededPartitions([original, rotated], new Set()).size).toBe(0);
     expect(
-      supersededPartitions([original], new Set(["ramose-replica-v4:s:p:e:v:h"])).size,
+      supersededPartitions([original], new Set(["ramose-replica-v5:s:p:e:v:h"])).size,
     ).toBe(0);
   });
 
   test("a confirmation for another principal or server supersedes nothing", () => {
-    for (const other of ["ramose-replica-v4:s:q:d:v:h", "ramose-replica-v4:t:p:d:v:h"]) {
+    for (const other of ["ramose-replica-v5:s:q:d:v:h", "ramose-replica-v5:t:p:d:v:h"]) {
       expect(supersededPartitions([original], new Set([other])).size).toBe(0);
     }
   });
@@ -124,7 +124,7 @@ describe("supersession", () => {
   });
 
   test("a key that is not a partition key is never superseded and confirms nothing", () => {
-    expect(supersededPartitions(["ramose-replica-v4:s:p:d:v"], new Set([rotated])).size)
+    expect(supersededPartitions(["ramose-replica-v5:s:p:d:v"], new Set([rotated])).size)
       .toBe(0);
     expect(supersededPartitions([original], new Set(["ramose-replica-v2:s:p:d:v:h"])).size)
       .toBe(0);
@@ -132,8 +132,8 @@ describe("supersession", () => {
 
   test("a partition key names the database prefix that owns it", () => {
     expect(replicaPartitionDatabasePrefix(original))
-      .toBe("ramose-replica-v4:s:p:d:");
-    expect(replicaPartitionDatabasePrefix("ramose-replica-v4:s:p:d:v")).toBeUndefined();
+      .toBe("ramose-replica-v5:s:p:d:");
+    expect(replicaPartitionDatabasePrefix("ramose-replica-v5:s:p:d:v")).toBeUndefined();
     expect(replicaPartitionDatabasePrefix("")).toBeUndefined();
   });
 });
@@ -213,26 +213,26 @@ describe("bounded recovery", () => {
 
 describe("keys", () => {
   test("the sweep generation is keyed by partition and storage version", () => {
-    expect(replicaSweepKey("ramose-replica-v4:s:p:d:v:h"))
-      .toBe("ramose-replica-sweep-v4:ramose-replica-v4:s:p:d:v:h");
+    expect(replicaSweepKey("ramose-replica-v5:s:p:d:v:h"))
+      .toBe("ramose-replica-sweep-v5:ramose-replica-v5:s:p:d:v:h");
   });
 
   test("one prefix covers every sweep record under a partition prefix", () => {
-    const prefix = replicaSweepPrefix("ramose-replica-v4:s:p:");
-    expect(prefix).toBe("ramose-replica-sweep-v4:ramose-replica-v4:s:p:");
+    const prefix = replicaSweepPrefix("ramose-replica-v5:s:p:");
+    expect(prefix).toBe("ramose-replica-sweep-v5:ramose-replica-v5:s:p:");
 
-    expect(replicaSweepKey("ramose-replica-v4:s:p:d:v:h").startsWith(prefix)).toBe(true);
-    expect(replicaSweepKey("ramose-replica-v4:s:q:d:v:h").startsWith(prefix)).toBe(false);
+    expect(replicaSweepKey("ramose-replica-v5:s:p:d:v:h").startsWith(prefix)).toBe(true);
+    expect(replicaSweepKey("ramose-replica-v5:s:q:d:v:h").startsWith(prefix)).toBe(false);
   });
 
   test("a partition key names the scope that owns it", () => {
-    expect(replicaPartitionScopeKey("ramose-replica-v4:s:p:d:v:h"))
+    expect(replicaPartitionScopeKey("ramose-replica-v5:s:p:d:v:h"))
       .toBe("ramose-replica-scope-v2:s:p");
   });
 
   test("anything that is not a partition key owns no scope", () => {
-    expect(replicaPartitionScopeKey("ramose-replica-v4:s:p:d:v")).toBeUndefined();
-    expect(replicaPartitionScopeKey("ramose-replica-v4:s:p:d:v:h:extra")).toBeUndefined();
+    expect(replicaPartitionScopeKey("ramose-replica-v5:s:p:d:v")).toBeUndefined();
+    expect(replicaPartitionScopeKey("ramose-replica-v5:s:p:d:v:h:extra")).toBeUndefined();
     expect(replicaPartitionScopeKey("ramose-replica-v2:s:p:d:v:h")).toBeUndefined();
     expect(replicaPartitionScopeKey("")).toBeUndefined();
   });

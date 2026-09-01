@@ -79,7 +79,7 @@ describe("replication activation codec", () => {
       resumeRevision: undefined,
     })))).toEqual({
       type: "Activate",
-      protocol: 2,
+      protocol: 3,
       graphPath: ["organizations", "acme"],
       scope: { type: "database" },
       readCompatibilityHash: compatible,
@@ -117,10 +117,10 @@ describe("replication frame codec", () => {
   const revision = opaque("K");
   const nextRevision = opaque("L");
   const frames: readonly ReplicationFrame[] = [
-    { type: "SnapshotStart", protocol: 2, identity, snapshot, revision },
+    { type: "SnapshotStart", protocol: 3, identity, snapshot, revision },
     snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 2,
+      protocol: 3,
       identity,
       snapshot,
       index: 0,
@@ -128,7 +128,7 @@ describe("replication frame codec", () => {
     }),
     snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 2,
+      protocol: 3,
       identity,
       snapshot,
       index: 1,
@@ -145,22 +145,22 @@ describe("replication frame codec", () => {
         op: "add",
       }],
     }),
-    { type: "SnapshotCommit", protocol: 2, identity, snapshot, revision, ordinal: 1, chunks: 1 },
+    { type: "SnapshotCommit", protocol: 3, identity, snapshot, revision, ordinal: 1, chunks: 1 },
     changeFrame({
       type: "Change",
-      protocol: 2,
+      protocol: 3,
       identity,
       from: revision,
       revision: nextRevision,
       ordinal: 2,
       datoms: [{ ...values[0]!, op: "retract" }],
     }),
-    { type: "ResumeReady", protocol: 2, identity, revision, ordinal: 3 },
-    { type: "Reset", protocol: 2, identity },
-    { type: "KeepAlive", protocol: 2, identity },
-    { type: "TerminalError", protocol: 2, code: "closed", identity },
-    { type: "TerminalError", protocol: 2, code: "incompatible-version" },
-    { type: "TerminalError", protocol: 2, code: "update-required" },
+    { type: "ResumeReady", protocol: 3, identity, revision, ordinal: 3 },
+    { type: "Reset", protocol: 3, identity },
+    { type: "KeepAlive", protocol: 3, identity },
+    { type: "TerminalError", protocol: 3, code: "closed", identity },
+    { type: "TerminalError", protocol: 3, code: "incompatible-version" },
+    { type: "TerminalError", protocol: 3, code: "update-required" },
   ];
 
   test("round-trips every exact envelope and canonical logical value", () => {
@@ -185,7 +185,7 @@ describe("replication frame codec", () => {
     ]) {
       const maximum: ReplicationFrame = snapshotChunk({
         type: "SnapshotChunk",
-        protocol: 2,
+        protocol: 3,
         identity,
         snapshot,
         index: Number.MAX_SAFE_INTEGER,
@@ -245,7 +245,7 @@ describe("replication frame codec", () => {
       },
       {
         type: "Change",
-        protocol: 2,
+        protocol: 3,
         identity,
         from: opaque("K"),
         revision: opaque("L"),
@@ -273,9 +273,9 @@ describe("replication frame codec", () => {
         }],
       },
       { ...base, identity: { ...identity, principal: "not-opaque" } },
-      { type: "ResumeReady", protocol: 2, identity },
-      { type: "ResumeReady", protocol: 2, identity, revision: "raw-t:42" },
-      { type: "ResumeReady", protocol: 2, identity, revision, basisT: 42 },
+      { type: "ResumeReady", protocol: 3, identity },
+      { type: "ResumeReady", protocol: 3, identity, revision: "raw-t:42" },
+      { type: "ResumeReady", protocol: 3, identity, revision, basisT: 42 },
       oversizedChunk,
       tooManyUtf8Bytes,
     ]) {

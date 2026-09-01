@@ -29,7 +29,7 @@ const identity: ReplicationIdentity = {
 test("replication NDJSON decoder bounds coalesced transport data per frame", async () => {
   const frame: ReplicationFrame = {
     type: "SnapshotChunk",
-    protocol: 2,
+    protocol: 3,
     identity,
     snapshot: opaque("G"),
     index: 0,
@@ -63,7 +63,7 @@ test("replication NDJSON decoder bounds coalesced transport data per frame", asy
 test("a stream cut mid-frame is a truncation, not a malformed frame", async () => {
   const wire = encodeReplicationFrame({
     type: "KeepAlive",
-    protocol: 2,
+    protocol: 3,
     identity,
   });
   const bytes = new TextEncoder().encode(`${wire}\n${wire.slice(0, 20)}`);

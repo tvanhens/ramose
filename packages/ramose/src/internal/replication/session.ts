@@ -21,6 +21,7 @@ import {
   isReplicaFenceError,
   replicaDatabaseKey,
   replicaDatabaseScopeOf,
+  replicaPartitionKey,
   ReplicaLease,
   replicaScopeOf,
 } from "./replica-lifecycle.ts";
@@ -111,7 +112,8 @@ export const classifyReplicationAdoption = (
   candidate: ReplicationPublication,
 ): "adopt" | "refuse" =>
   published !== undefined &&
-    sameReplicationIdentity(published.identity, candidate.identity) &&
+    replicaPartitionKey(published.identity) ===
+      replicaPartitionKey(candidate.identity) &&
     candidate.ordinal < published.ordinal
     ? "refuse"
     : "adopt";
@@ -413,11 +415,6 @@ export class ReplicationSession {
         let bindingConfirmed = restored !== undefined && candidateKey === undefined &&
           slotConfirmed;
         try {
-          const established = restored?.identity ?? candidate?.identity ??
-            await options.storage.boundIdentity(fingerprint).catch(() => undefined);
-          const expected = established === undefined
-            ? { succession: "absent" as const }
-            : await options.storage.partitionExpectation(established);
           const response = await openReplicationResponse({
             activation,
             credential: options.credential,
@@ -467,11 +464,9 @@ export class ReplicationSession {
                     activation,
                     confirmedSlot,
                   );
-                const claim = await options.storage.bindAuthenticated({
+                await options.storage.bindAuthenticated({
                   fingerprint: confirmedFingerprint,
                   identity: frameIdentity,
-                  claimsPartition: action !== "terminal",
-                  expected,
                   ...(candidateKey === undefined
                     ? {}
                     : { candidateKey: { selector: candidateKey.selector, routeSlot: confirmedSlot } }),
@@ -482,10 +477,6 @@ export class ReplicationSession {
                   },
                 }, { signal: session.controller.signal, lease: session.lease });
                 if (!session.current(generation)) return;
-                if (claim === "lost") {
-                  session.quarantine(generation);
-                  throw new Error("replication response lost the partition succession");
-                }
                 session.bound = confirmedFingerprint;
                 bindingConfirmed = true;
                 if (session.state.value === undefined) {
