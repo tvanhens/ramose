@@ -3,6 +3,7 @@ import type { AttributeSpec } from "../core/schema.ts";
 import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import {
   IndexedDbReplicaStorage,
+  type AcknowledgedReplicaPosition,
   type BoundRestoredReplica,
   type ReplicaCacheCandidate,
   type ReplicaCacheCandidateKey,
@@ -576,7 +577,7 @@ export class ReplicationSession {
   private async acknowledge(
     acknowledgement: ReplicaOrdinalAcknowledgement,
     generation: number,
-  ): Promise<number | undefined> {
+  ): Promise<AcknowledgedReplicaPosition | undefined> {
     const acknowledged = await this.storage.acknowledgeOrdinal(acknowledgement, {
       signal: this.controller.signal,
       lease: this.lease,
@@ -853,7 +854,8 @@ export class ReplicationSession {
             status: "open",
             value: Object.freeze({
               ...prior,
-              ordinal: Math.max(prior.ordinal, acknowledged),
+              ordinal: Math.max(prior.ordinal, acknowledged.ordinal),
+              settled: Math.max(prior.settled, acknowledged.settled),
               stale: false,
             }),
           });
@@ -887,7 +889,8 @@ export class ReplicationSession {
           status: "open",
           value: Object.freeze({
             ...prior,
-            ordinal: Math.max(prior.ordinal, acknowledged),
+            ordinal: Math.max(prior.ordinal, acknowledged.ordinal),
+            settled: Math.max(prior.settled, acknowledged.settled),
             stale: false,
           }),
         });

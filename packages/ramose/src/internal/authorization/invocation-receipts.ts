@@ -135,6 +135,11 @@ export type CompletedInvocationReceipt = InvocationReceiptIdentity & {
   readonly allocations?: InvocationAllocationMappingsV1;
 };
 
+export type UnsettledInvocationReceipt = Omit<
+  CompletedInvocationReceipt,
+  "settled"
+>;
+
 export type RejectedInvocationReceipt = InvocationReceiptIdentity & {
   readonly status: "rejected";
   readonly rejection: SealedInvocationRejection;
@@ -768,7 +773,7 @@ export type LegacyInvocationReceiptRow = {
 };
 
 export const isLegacyInvocationReceiptRow = (
-  value: StoredInvocationReceipt | LegacyInvocationReceiptRow,
+  value: StoredInvocationReceipt | LegacyInvocationReceiptRow | UnsettledInvocationReceipt,
 ): value is LegacyInvocationReceiptRow =>
   (value as Partial<LegacyInvocationReceiptRow>)._tag === "LegacyInvocationReceipt";
 
@@ -781,9 +786,25 @@ const isLegacyInvocationReceipt = (
   typeof record.invocationId === "string" && record.invocationId.length > 0 &&
   typeof record.status === "string";
 
+export const isUnsettledInvocationReceipt = (
+  value: StoredInvocationReceipt | LegacyInvocationReceiptRow | UnsettledInvocationReceipt,
+): value is UnsettledInvocationReceipt =>
+  (value as Partial<CompletedInvocationReceipt>).status === "completed" &&
+  (value as Partial<CompletedInvocationReceipt>).settled === undefined;
+
+export const settleInvocationReceipt = (
+  receipt: UnsettledInvocationReceipt,
+  settled: number,
+): CompletedInvocationReceipt => {
+  if (!Number.isSafeInteger(settled) || settled <= 0) {
+    throw new TypeError("a backfilled invocation receipt needs a settlement sequence");
+  }
+  return Object.freeze({ ...receipt, settled });
+};
+
 export const parseStoredInvocationReceipt = (
   value: unknown,
-): StoredInvocationReceipt | LegacyInvocationReceiptRow => {
+): StoredInvocationReceipt | LegacyInvocationReceiptRow | UnsettledInvocationReceipt => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("invalid durable invocation receipt");
   }
@@ -805,19 +826,22 @@ export const parseStoredInvocationReceipt = (
   if (
     record.status === "completed" &&
     Number.isSafeInteger(record.committedT) && (record.committedT as number) >= 0 &&
-    Number.isSafeInteger(record.settled) && (record.settled as number) > 0 &&
+    (record.settled === undefined ||
+      (Number.isSafeInteger(record.settled) && (record.settled as number) > 0)) &&
     Object.hasOwn(record, "output") &&
     isInvocationReplayFence(record.replayFence) &&
     (record.allocations === undefined || isAllocationMappings(record.allocations)) &&
     hasExactKeys(record, [
       ...IDENTITY_KEYS,
       "committedT",
-      "settled",
+      ...(record.settled === undefined ? [] : ["settled"]),
       "output",
       "replayFence",
       ...(record.allocations === undefined ? [] : ["allocations"]),
     ])
-  ) return record as StoredInvocationReceipt;
+  ) {
+    return record as StoredInvocationReceipt | UnsettledInvocationReceipt;
+  }
   if (
     record.status === "rejected" && isRejection(record.rejection) &&
     hasExactKeys(record, [...IDENTITY_KEYS, "rejection"])

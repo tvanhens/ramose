@@ -57,6 +57,7 @@ import {
   inputEntityRefHandles,
   invocationReceiptOutcome,
   isLegacyInvocationReceiptRow,
+  isUnsettledInvocationReceipt,
   OperationRuntimeFault,
   opaqueOperationDenial,
   outputEntityRefPaths,
@@ -68,6 +69,7 @@ import {
   resolveOperationCatalog,
   resolveSealedInputRefs,
   resolveSealedTarget,
+  settleInvocationReceipt,
   transitionInvocationReceipt,
   type AuthoritativeInvocationResult,
   type AuthoritativeOperationInvocation,
@@ -306,6 +308,7 @@ export class Transactor {
   private readInvocationReceipt(
     principalId: string,
     invocationId: string,
+    insideTransaction = false,
   ): StoredInvocationReceipt | LegacyInvocationReceiptRow | undefined {
     const row = this.host.sql.exec(
       `SELECT status, receipt FROM operation_receipts
@@ -319,7 +322,17 @@ export class Transactor {
     if (row.status !== receipt.status) {
       throw new TypeError("durable invocation receipt status mismatch");
     }
-    return receipt;
+    if (!isUnsettledInvocationReceipt(receipt)) return receipt;
+    const backfill = () => {
+      const settled = settleInvocationReceipt(
+        receipt,
+        this.nextSettlement(receipt.principalId),
+      );
+      this.replaceInvocationReceipt(settled);
+      this.recordSettlement(settled);
+      return settled;
+    };
+    return insideTransaction ? backfill() : this.host.transactionSync(backfill);
   }
 
   private insertInvocationReceipt(receipt: ClaimedInvocationReceipt): void {
@@ -353,6 +366,46 @@ export class Transactor {
     );
   }
 
+  dropStoredSettlement(principalId: string, invocationId: string): boolean {
+    const row = this.host.sql.exec(
+      `SELECT receipt FROM operation_receipts
+       WHERE principal_id = ? AND invocation_id = ?`,
+      principalId,
+      invocationId,
+    ).toArray()[0];
+    if (row === undefined) return false;
+    const stored = JSON.parse(row.receipt as string) as Record<string, unknown>;
+    if (stored.settled === undefined) return false;
+    delete stored.settled;
+    this.host.sql.exec(
+      `UPDATE operation_receipts SET receipt = ?
+       WHERE principal_id = ? AND invocation_id = ?`,
+      JSON.stringify(stored),
+      principalId,
+      invocationId,
+    );
+    this.host.sql.exec(
+      `DELETE FROM principal_settlements WHERE principal_id = ? AND invocation_id = ?`,
+      principalId,
+      invocationId,
+    );
+    return true;
+  }
+
+  storedSettlements(
+    principalId: string,
+  ): readonly { settled: number; committedT: number; invocationId: string }[] {
+    return this.host.sql.exec(
+      `SELECT settled, committed_t, invocation_id FROM principal_settlements
+       WHERE principal_id = ? ORDER BY settled`,
+      principalId,
+    ).toArray().map((row) => ({
+      settled: row.settled as number,
+      committedT: row.committed_t as number,
+      invocationId: row.invocation_id as string,
+    }));
+  }
+
   settledThrough(principalId: string, basisT: number): number {
     const row = this.host.sql.exec(
       `SELECT MAX(settled) AS settled FROM principal_settlements
@@ -381,6 +434,7 @@ export class Transactor {
       const stored = this.readInvocationReceipt(
         prepared.principalId,
         prepared.invocationId,
+        true,
       );
       const decision = decideInvocationReceipt(stored, prepared);
       if (decision._tag === "Claim") {
@@ -409,6 +463,7 @@ export class Transactor {
       const stored = this.readInvocationReceipt(
         prepared.principalId,
         prepared.invocationId,
+        true,
       );
       const decision = decideInvocationReceipt(stored, prepared);
       if (decision._tag === "Recover") {
@@ -444,6 +499,7 @@ export class Transactor {
       const stored = this.readInvocationReceipt(
         claim.principalId,
         claim.invocationId,
+        true,
       );
       this.assertClaimIdentity(stored, claim);
       const terminal = transitionInvocationReceipt(

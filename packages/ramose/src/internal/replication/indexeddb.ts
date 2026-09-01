@@ -300,6 +300,9 @@ class WriteMeter {
   }
 }
 
+const positionOf = (record: CommittedRecord): AcknowledgedReplicaPosition =>
+  Object.freeze({ ordinal: record.ordinal, settled: record.settled });
+
 const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
   partition: record.partition,
   storageVersion: record.storageVersion,
@@ -347,6 +350,11 @@ export type ReplicaCacheCandidate = {
   readonly identity: ReplicationIdentity;
   readonly revision: string;
   readonly ordinal: number;
+};
+
+export type AcknowledgedReplicaPosition = {
+  readonly ordinal: number;
+  readonly settled: number;
 };
 
 export type ReplicaOrdinalAcknowledgement = {
@@ -2490,7 +2498,7 @@ export class IndexedDbReplicaStorage {
   async acknowledgeOrdinal(
     acknowledgement: ReplicaOrdinalAcknowledgement,
     options: ReplicaInstallOptions = {},
-  ): Promise<number | undefined> {
+  ): Promise<AcknowledgedReplicaPosition | undefined> {
     this.assertScopeLive(replicaScopeOf(acknowledgement.identity));
     const fence = replicaFence(options.lease, acknowledgement.identity);
     const partition = replicaPartitionKey(acknowledgement.identity);
@@ -2529,10 +2537,10 @@ export class IndexedDbReplicaStorage {
           write.objectStore(COMMITTED_HEADS).put(committedHead(current));
           await commitTransaction(write);
           this.meter.heads++;
-          return current.ordinal;
+          return positionOf(current);
         }
         await transactionDone(write);
-        return current.ordinal;
+        return positionOf(current);
       }
       const acknowledged: CommittedRecord = {
         ...current,
@@ -2545,7 +2553,7 @@ export class IndexedDbReplicaStorage {
       await commitTransaction(write);
       this.meter.manifests++;
       this.meter.heads++;
-      return acknowledged.ordinal;
+      return positionOf(acknowledged);
     } catch (error) {
       await abortTransaction(write);
       throw error;

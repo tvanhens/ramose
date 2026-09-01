@@ -1125,6 +1125,81 @@ browserTest(
 );
 
 browserTest(
+  "a settlement that changes nothing visible still retires the carried layer",
+  async ({ browser }) => {
+    const name = `ramose-propagation-settlement-only-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    const tabs = [[writer, "the writer"], [reader, "the reader"]] as const;
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of tabs) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      for (const [tab] of tabs) tab.wake();
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved")
+          ),
+        "the carried layer before its settlement is covered",
+        15,
+      );
+
+      expect(await leader.acknowledgeOrdinal({
+        identity,
+        revision: REVISION,
+        ordinal: 1,
+        settled: 1,
+      })).toEqual({ ordinal: 1, settled: 1 });
+
+      for (const [tab, label] of tabs) {
+        tab.wake();
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => !rows.includes("moved"),
+            `${label} to retire the layer the settlement now covers`,
+          ),
+        ).toEqual(["first", "second"]);
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a follower's enqueue wakes the leader's submission loop",
   async ({ browser }) => {
     const name = `ramose-propagation-wakeup-${browser.uniqueId}`;

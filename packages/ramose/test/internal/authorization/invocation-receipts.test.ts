@@ -13,14 +13,27 @@ import {
   invocationDigestMaterial,
   invocationReceiptOutcome,
   invocationScopeMaterial,
+  isUnsettledInvocationReceipt,
   parseAuthoritativeInvocationResult,
   parseStoredInvocationReceipt,
   prepareInvocationReceipt,
   publicInvocationReceipt,
+  settleInvocationReceipt,
   transitionInvocationReceipt,
   type AuthoritativeOperationInvocation,
+  type LegacyInvocationReceiptRow,
   type PreparedInvocationReceipt,
+  type StoredInvocationReceipt,
 } from "../../../src/internal/authorization/index.ts";
+
+const decidable = (
+  value: ReturnType<typeof parseStoredInvocationReceipt>,
+): StoredInvocationReceipt | LegacyInvocationReceiptRow => {
+  if (isUnsettledInvocationReceipt(value)) {
+    throw new Error("a stored receipt must be settled before it decides");
+  }
+  return value;
+};
 
 const unitHash = CatalogUnitHash.make("ab".repeat(32));
 const allocatedRef = clientRef();
@@ -315,10 +328,10 @@ describe("authoritative invocation receipt state machine", () => {
       replayFence,
     });
     expect(legacy).toEqual({ _tag: "LegacyInvocationReceipt", version: 1 });
-    expect(decideInvocationReceipt(legacy, preparedFixture()))
+    expect(decideInvocationReceipt(decidable(legacy), preparedFixture()))
       .toEqual({ _tag: "UpdateRequired" });
 
-    expect(decideInvocationReceipt(legacy, preparedFixture({
+    expect(decideInvocationReceipt(decidable(legacy), preparedFixture({
       invocationDigest: digest("f"),
     }))).toEqual({ _tag: "UpdateRequired" });
   });
@@ -556,13 +569,43 @@ describe("authoritative invocation receipt serialization", () => {
       JSON.parse(JSON.stringify(completed)),
     );
     expect(decoded).toEqual(completed);
-    const replay = decideInvocationReceipt(decoded, preparedFixture());
+    const replay = decideInvocationReceipt(decidable(decoded), preparedFixture());
     expect(replay._tag).toBe("Replay");
     if (replay._tag !== "Replay") throw new Error("expected replay");
     expect(replay.receipt).toEqual(decoded as never);
     const outcome = invocationReceiptOutcome(completed);
     if (outcome._tag !== "Completed") throw new Error("expected completion");
     expect(Object.hasOwn(outcome, "mappings")).toBe(false);
+  });
+
+  test("a completed receipt written before the settlement sequence decodes unsettled", () => {
+    const claim = decideInvocationReceipt(undefined, preparedFixture());
+    if (claim._tag !== "Claim") throw new Error("expected claim");
+    const completed = transitionInvocationReceipt(claim.receipt, {
+      _tag: "Complete",
+      committedT: 42,
+      settled: 3,
+      output: { id: 1001 },
+      replayFence,
+    });
+    const { settled: _assigned, ...parentRevision } = JSON.parse(
+      JSON.stringify(completed),
+    ) as Record<string, unknown>;
+    const decoded = parseStoredInvocationReceipt(parentRevision);
+    expect(isUnsettledInvocationReceipt(decoded)).toBe(true);
+    if (!isUnsettledInvocationReceipt(decoded)) throw new Error("expected unsettled");
+    expect(decoded.committedT).toBe(42);
+    expect(Object.hasOwn(decoded, "settled")).toBe(false);
+
+    const backfilled = settleInvocationReceipt(decoded, 7);
+    expect(backfilled.settled).toBe(7);
+    expect(backfilled.committedT).toBe(42);
+    expect(isUnsettledInvocationReceipt(backfilled)).toBe(false);
+    expect({ ...backfilled, settled: 3 }).toEqual(completed as never);
+
+    for (const settled of [0, -1, 1.5]) {
+      expect(() => settleInvocationReceipt(decoded, settled)).toThrow();
+    }
   });
 
   test("durable decode preserves exact terminal output and rejects corruption", () => {

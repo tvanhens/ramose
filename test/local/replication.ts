@@ -62,6 +62,7 @@ const SCOPE_BYSTANDER_DATABASE = CONFORMANCE_DATABASES[29]!;
 const SETTLEMENT_SEQUENCE_DATABASE = CONFORMANCE_DATABASES[30]!;
 const SETTLEMENT_RACE_DATABASE = CONFORMANCE_DATABASES[31]!;
 const SETTLEMENT_BASIS_DATABASE = CONFORMANCE_DATABASES[32]!;
+const SETTLEMENT_BACKFILL_DATABASE = CONFORMANCE_DATABASES[33]!;
 
 const HIDDEN_SCALE_COMMITS = 1_000;
 
@@ -1742,6 +1743,88 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(await settle(author, "settlement-author-replay", replay)).toBe(4);
       expect(await settle(author, "settlement-author-last")).toBe(5);
       expect(await settle(alternate, "settlement-alternate-last")).toBe(3);
+    });
+
+    test("a completed receipt from the parent revision backfills its settlement on replay", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = SETTLEMENT_BACKFILL_DATABASE;
+      await install(base, database);
+      const custodian = await signToken(database, "admin", "settlement-backfill-custodian", {
+        org: "acme",
+      });
+      const author = await signToken(database, "admin", "settlement-backfill-author", {
+        org: "acme",
+      });
+      const owner = await create(base, database, custodian, ConformanceUser.ns, {
+        sub: "settlement-backfill-owner",
+      });
+      const settlements = async (): Promise<
+        readonly { settled: number; committedT: number; invocationId: string }[]
+      > => {
+        const response = await testAdmin(base, database, "/operation-receipts", {
+          action: "settlements",
+          principalId: "settlement-backfill-author",
+        });
+        expect(response.status).toBe(200);
+        return response.body.settlements;
+      };
+
+      const invocation = crypto.randomUUID();
+      const first = await invoke(base, database, author, {
+        owner: { kind: "entity", name: ConformanceIssue.ns },
+        localName: "create",
+      }, {
+        key: "settlement-backfill",
+        title: "Settlement backfill",
+        owner,
+        org: "acme",
+      }, undefined, invocation);
+      expect(first.status).toBe(200);
+      expect(first.body.settled).toBe(1);
+      const recorded = await settlements();
+      expect(recorded).toHaveLength(1);
+      const committedT = recorded[0]!.committedT;
+
+      const dropped = await testAdmin(base, database, "/operation-receipts", {
+        action: "drop-settlement",
+        principalId: "settlement-backfill-author",
+        invocationId: invocation,
+      });
+      expect(dropped.status).toBe(200);
+      expect(dropped.body.dropped).toBe(true);
+      expect(await settlements()).toEqual([]);
+
+      const replayed = await invoke(base, database, author, {
+        owner: { kind: "entity", name: ConformanceIssue.ns },
+        localName: "create",
+      }, {
+        key: "settlement-backfill",
+        title: "Settlement backfill",
+        owner,
+        org: "acme",
+      }, undefined, invocation);
+      expect(replayed.status).toBe(200);
+      expect(replayed.body.result).toEqual(first.body.result);
+      expect(replayed.body.settled).toBeGreaterThan(0);
+      const backfilled = replayed.body.settled as number;
+      expect(await settlements()).toEqual([
+        { settled: backfilled, committedT, invocationId: invocation },
+      ]);
+
+      const again = await invoke(base, database, author, {
+        owner: { kind: "entity", name: ConformanceIssue.ns },
+        localName: "create",
+      }, {
+        key: "settlement-backfill",
+        title: "Settlement backfill",
+        owner,
+        org: "acme",
+      }, undefined, invocation);
+      expect(again.status).toBe(200);
+      expect(again.body.settled).toBe(backfilled);
+      expect(await settlements()).toEqual([
+        { settled: backfilled, committedT, invocationId: invocation },
+      ]);
     });
 
     test("racing invocations from one principal settle distinctly and consecutively", async () => {

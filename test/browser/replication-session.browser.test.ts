@@ -403,13 +403,13 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
     expect(await storedOrdinal()).toBe(1);
 
     storage.resetWriteCounts();
-    expect(await acknowledge(installed, 3)).toBe(3);
+    expect(await acknowledge(installed, 3)).toEqual({ ordinal: 3, settled: 0 });
     expect(await storedOrdinal()).toBe(3);
     expect(storage.writeCounts()).toMatchObject({ manifests: 1, heads: 1 });
 
     storage.resetWriteCounts();
     for (const ordinal of [1, 3]) {
-      expect(await acknowledge(installed, ordinal)).toBe(3);
+      expect(await acknowledge(installed, ordinal)).toEqual({ ordinal: 3, settled: 0 });
       expect(await storedOrdinal()).toBe(3);
     }
     expect(storage.writeCounts()).toMatchObject({ manifests: 0, heads: 0 });
@@ -576,7 +576,7 @@ browserTest("a stale writer's install is refused by the ordinal it was issued", 
       revision: opaque("5"),
       ordinal: 1,
       settled: 0,
-    })).toBe(2);
+    })).toEqual({ ordinal: 2, settled: 0 });
 
     const held = await storage.restore(
       rotated,
@@ -672,7 +672,7 @@ browserTest("a damaged head recovers its order from the manifest and is rebuilt"
       revision: opaque("r"),
       ordinal: 6,
       settled: 0,
-    })).toBe(6);
+    })).toEqual({ ordinal: 6, settled: 0 });
 
     await damage();
     expect(await head()).toBeUndefined();
@@ -685,7 +685,7 @@ browserTest("a damaged head recovers its order from the manifest and is rebuilt"
       revision: opaque("r"),
       ordinal: 2,
       settled: 0,
-    })).toBe(6);
+    })).toEqual({ ordinal: 6, settled: 0 });
     expect(await head()).toMatchObject({ revision: opaque("r"), ordinal: 6 });
 
     await damage(null);

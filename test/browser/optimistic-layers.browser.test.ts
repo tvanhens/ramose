@@ -1117,6 +1117,79 @@ const storedOrdinal = async (
   return head?.ordinal as number | undefined;
 };
 
+const storedSettlement = async (
+  database: string,
+  settled?: number,
+): Promise<number | undefined> => {
+  const connection = await openNative(database);
+  const partition = replicaPartitionKey(identity());
+  const transaction = connection.transaction(
+    ["replica-committed-v1", "replica-committed-heads-v1"],
+    settled === undefined ? "readonly" : "readwrite",
+  );
+  const manifests = transaction.objectStore("replica-committed-v1");
+  const heads = transaction.objectStore("replica-committed-heads-v1");
+  const [manifest, head] = await Promise.all([
+    requestResult<Record<string, unknown> | undefined>(manifests.get(partition)),
+    requestResult<Record<string, unknown> | undefined>(heads.get(partition)),
+  ]);
+  if (settled !== undefined && manifest !== undefined && head !== undefined) {
+    manifests.put({ ...manifest, settled });
+    heads.put({ ...head, settled });
+  }
+  await transactionDone(transaction);
+  connection.close();
+  return head?.settled as number | undefined;
+};
+
+browserTest(
+  "a change re-reaching the published revision publishes its settlement, not only its ordinal",
+  async ({ browser }) => {
+    const database = `ramose-layer-change-settlement-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    let session: ReplicationSession | undefined;
+    try {
+      await installRecorded(storage, "optimistic-fence-change");
+      const acknowledging = await recordedChange();
+      expect(acknowledging.settled).toBeGreaterThan(0);
+      dropped(await storage.applyChange(acknowledging));
+      expect(await storedSettlement(database)).toBe(acknowledging.settled);
+
+      await storedOrdinal(database, acknowledging.ordinal - 1);
+      await storedSettlement(database, 0);
+      const behind = await storage.restore(identity(), ATTRIBUTES, READ_COMPATIBILITY);
+      expect(behind?.settled).toBe(0);
+      behind!.release();
+
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence-change",
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const observed = settledSnapshots(session);
+      await observed.failed;
+
+      expect(session.snapshot().value).toMatchObject({
+        revision: acknowledging.revision,
+        ordinal: acknowledging.ordinal,
+        settled: acknowledging.settled,
+        stale: false,
+      });
+      expect(await storedSettlement(database)).toBe(acknowledging.settled);
+    } finally {
+      await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
 browserTest(
   "a snapshot the identity has advanced past reconnects instead of being consumed",
   async ({ browser }) => {
@@ -1130,7 +1203,7 @@ browserTest(
         revision: recorded.revision,
         ordinal: 5,
         settled: 0,
-      })).toBe(5);
+      })).toEqual({ ordinal: 5, settled: 0 });
       expect(await storedOrdinal(database)).toBe(5);
 
       session = await ReplicationSession.open({
@@ -1231,7 +1304,7 @@ browserTest(
         revision: recorded.revision,
         ordinal: delayed.ordinal + 1,
         settled: 0,
-      })).toBe(delayed.ordinal + 1);
+      })).toEqual({ ordinal: delayed.ordinal + 1, settled: 0 });
 
       const skipped = await storage.applyChange(delayed);
       expect(skipped?.revision).toBe(recorded.revision);

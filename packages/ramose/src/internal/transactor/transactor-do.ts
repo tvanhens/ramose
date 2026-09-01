@@ -46,6 +46,13 @@ export interface TransactorTesting {
     abort: (reason: string) => void,
     inspect: {
       readonly operationReceiptCount: () => number;
+      readonly dropStoredSettlement: (
+        principalId: string,
+        invocationId: string,
+      ) => boolean;
+      readonly storedSettlements: (
+        principalId: string,
+      ) => readonly { settled: number; committedT: number; invocationId: string }[];
     },
   ) => Promise<Response | undefined>;
 }
@@ -256,6 +263,9 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
         (reason) => this.ctx.abort(reason),
         {
           operationReceiptCount: () => this.core.operationReceiptCount(),
+          dropStoredSettlement: (principalId, invocationId) =>
+            this.core.dropStoredSettlement(principalId, invocationId),
+          storedSettlements: (principalId) => this.core.storedSettlements(principalId),
         },
       );
       if (testAdmin !== undefined) return testAdmin;
