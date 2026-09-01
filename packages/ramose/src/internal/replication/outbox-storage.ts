@@ -18,7 +18,6 @@ import {
   buildOptimisticLayer,
   decodeOptimisticLayer,
   MUTATION_LAYERS,
-  settlementRecoverable,
   withLayerState,
   type LayerRows,
   type OptimisticLayerRecord,
@@ -213,20 +212,23 @@ const confirmCommittedHead = async (
       prefixRange(replicaDatabasePartitionPrefix(receiver)),
     ),
   );
+  let revision: string | undefined;
+  let settled: number | undefined;
   for (const head of heads) {
     const stored = head as {
       readonly revision?: unknown;
       readonly settled?: unknown;
     } | null;
-    const revision = stored?.revision;
-    if (typeof revision === "string" && revision.length > 0) {
-      return {
-        revision,
-        settled: typeof stored?.settled === "number" && stored.settled >= 0
-          ? stored.settled
-          : 0,
-      };
-    }
+    const confirmed = stored?.revision;
+    if (typeof confirmed !== "string" || confirmed.length === 0) continue;
+    revision ??= confirmed;
+    const covered = typeof stored?.settled === "number" && stored.settled >= 0
+      ? stored.settled
+      : 0;
+    settled = settled === undefined ? covered : Math.min(settled, covered);
+  }
+  if (revision !== undefined) {
+    return { revision, settled: settled ?? 0 };
   }
   throw new OutboxRecordInvalid({
     reason: "no committed replica of this receiver database confirms the fenced outcome",
@@ -1108,8 +1110,8 @@ export class IndexedDbOutbox {
         }
         if (fenced.has(layer.invocation)) {
           if (
-            layer.state === "committed-unobserved" &&
-            (layer.settled === undefined || layer.settled > confirmed.settled)
+            layer.state === "committed-unobserved" && layer.settled !== undefined &&
+            layer.settled > confirmed.settled
           ) {
             const held = withLayerState(layer, "retired", layer.activation);
             layerStore.put(held);
@@ -1120,8 +1122,8 @@ export class IndexedDbOutbox {
           continue;
         }
         if (
-          layer.state === "retired" && layer.settled !== undefined &&
-          layer.settled <= confirmed.settled
+          layer.state === "retired" &&
+          (layer.settled === undefined || layer.settled <= confirmed.settled)
         ) {
           layerStore.delete([layer.partition, layer.sequence]);
           continue;
@@ -1142,89 +1144,6 @@ export class IndexedDbOutbox {
         layers: Object.freeze(remaining),
         unreadable,
       });
-    } catch (error) {
-      await abortTransaction(transaction);
-      throw error;
-    }
-  }
-
-  async sweepDurableLayers(
-    receiver: ReplicaDatabaseScope,
-  ): Promise<{ readonly recovered: readonly InvocationId[] }> {
-    this.assertScopeLive(receiver);
-    const scopeKey = replicaScopeKey(receiver);
-    const partition = mutationPartitionKey(receiver);
-    const observed = await this.preflightScope(receiver);
-    const transaction = this.database.transaction(
-      [
-        MUTATION_LAYERS,
-        MUTATION_OUTBOX,
-        MUTATION_QUEUES,
-        REPLICA_GENERATIONS_STORE,
-      ],
-      "readwrite",
-    );
-    try {
-      await this.fenceScope(transaction, scopeKey, observed, undefined);
-      const outbox = transaction.objectStore(MUTATION_OUTBOX);
-      const [storedLayers, storedOutbox, cursor] = await Promise.all([
-        requestResult<unknown[]>(
-          transaction.objectStore(MUTATION_LAYERS).getAll(
-            compoundPrefixRange(partition),
-          ),
-        ),
-        requestResult<unknown[]>(outbox.getAll(compoundPrefixRange(partition))),
-        requestResult<unknown>(
-          transaction.objectStore(MUTATION_QUEUES).get(partition),
-        ),
-      ]);
-      const current = cursor === undefined ? undefined : decodeQueueCursor(cursor);
-      if (cursor !== undefined && current === undefined) {
-        throw new OutboxRecordInvalid({
-          reason: "the durable queue cursor of this receiver is unreadable",
-        });
-      }
-      const queued = new Set<InvocationId>();
-      for (const value of storedOutbox) {
-        const record = decodeOutboxRecord(value);
-        if (record !== undefined) queued.add(record.invocation);
-      }
-      const recovered: InvocationId[] = [];
-      let sequence = current?.nextSequence ?? 1;
-      for (const value of storedLayers) {
-        const layer = decodeOptimisticLayer(value);
-        if (layer === undefined || !settlementRecoverable(layer)) continue;
-        if (queued.has(layer.invocation)) continue;
-        outbox.add(buildOutboxRecord({
-          invocation: layer.invocation,
-          receiver: layer.receiver,
-          operation: layer.operation,
-          operationVersion: layer.operationVersion,
-          target: layer.target,
-          input: layer.input,
-          allocations: layer.allocations,
-          inputRefs: [],
-          enqueuedAt: Date.now(),
-        }, scopeKey, sequence));
-        recovered.push(layer.invocation);
-        sequence += 1;
-      }
-      if (recovered.length === 0) {
-        await transactionDone(transaction);
-        return Object.freeze({ recovered: Object.freeze([]) });
-      }
-      transaction.objectStore(MUTATION_QUEUES).put(buildQueueCursor({
-        partition,
-        scope: scopeKey,
-        receiver: Object.freeze({ ...receiver }),
-        nextSequence: sequence,
-        sealing: current?.sealing ?? null,
-        activation: current?.activation ?? 0,
-        updatedAt: Date.now(),
-      }));
-      await commitTransaction(transaction);
-      this.announceReceiver("layer", receiver);
-      return Object.freeze({ recovered: Object.freeze(recovered) });
     } catch (error) {
       await abortTransaction(transaction);
       throw error;

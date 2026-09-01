@@ -1235,12 +1235,15 @@ browserTest(
 );
 
 browserTest(
-  "a layer acknowledged before settlements existed is carried, never snapped back",
+  "a layer acknowledged before settlements existed is covered by any v6 snapshot",
   async ({ browser }) => {
     const name = `ramose-propagation-legacy-layer-${browser.uniqueId}`;
     const database = databaseOf(browser.uniqueId);
     const identity = await identityFor(database);
-    await seed(name, identity, NOTES);
+    await seed(name, identity, [
+      { entity: NOTES[0]!.entity, title: "server-decided", rank: "a" },
+      NOTES[1]!,
+    ]);
     const writer = await openTab(tabModule);
     const reader = await openTab(tabModule);
     const leader = await IndexedDbReplicaStorage.open(name);
@@ -1249,13 +1252,15 @@ browserTest(
       await started(writer, name, database);
       await started(reader, name, database);
 
-      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await writer.call<string>("rename", { from: "server-decided", to: "moved" });
       for (const [tab, label] of tabs) {
-        await until(
-          () => titles(tab),
-          (rows) => rows.includes("moved"),
-          `${label} to render the optimistic layer`,
-        );
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("moved"),
+            `${label} to render the optimistic layer`,
+          ),
+        ).toEqual(["moved", "second"]);
       }
 
       const receiver = replicaDatabaseScopeOf(identity);
@@ -1277,83 +1282,25 @@ browserTest(
         );
       }
 
-      const invocation = queued.records[0]!.invocation;
-      const requeued = await until(
-        async () => (await leader.outbox().restore(replicaScopeOf(identity))).records,
-        (records) => records.length === 1,
-        "a reconciler pass to re-enqueue the settlement-pending invocation",
-      );
-      expect(requeued[0]!.invocation).toBe(invocation);
-      expect(requeued[0]!.input).toEqual(queued.records[0]!.input);
-      expect(await leader.outbox().sweepDurableLayers(receiver)).toMatchObject({ recovered: [] });
-
       const activation = await leader.outbox().beginActivation(receiver);
       await leader.outbox().fenceActivation(receiver, activation);
-      for (const [tab] of tabs) tab.wake();
-
-      await steady(
-        async () => ({
-          writer: await titles(writer),
-          reader: await titles(reader),
-        }),
-        (rendered) =>
-          [rendered.writer, rendered.reader].every((rows) =>
-            rows.length === 0 || rows.includes("moved")
-          ),
-        "the settlement-pending layer across the fence",
-        25,
-      );
-      for (const [tab, label] of tabs) await monotone(tab, label, ["first"], "moved");
-
-      const replaying = await leader.outbox().restore(replicaScopeOf(identity));
-      expect(replaying.records.map((record) => record.invocation)).toEqual([invocation]);
-      expect((await leader.outbox().acknowledge(replaying.records[0]!, {
-        _tag: "Committed",
-        settled: 1,
-        output: {},
-        mappings: [],
-      })).settled).toBe(1);
-      expect((await leader.outbox().observationState(receiver)).settlements)
-        .toEqual(new Map([[invocation, 1]]));
+      expect(await dumpStore(name, "mutation-layers-v1")).toEqual([]);
 
       for (const [tab] of tabs) tab.wake();
-      await steady(
-        async () => ({
-          writer: await titles(writer),
-          reader: await titles(reader),
-        }),
-        (rendered) =>
-          [rendered.writer, rendered.reader].every((rows) =>
-            rows.length === 0 || rows.includes("moved")
-          ),
-        "the recovered layer before its settlement is covered",
-        15,
-      );
-
-      const installed = await leader.applyChange(changeFrame({
-        type: "Change",
-        protocol: 4,
-        identity,
-        from: REVISION,
-        revision: NEXT_REVISION,
-        ordinal: 2,
-        settled: 1,
-        datoms: [
-          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
-          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
-        ],
-      }));
-      installed?.release();
-
       for (const [tab, label] of tabs) {
         expect(
           await until(
             () => titles(tab),
-            (rows) => rows.includes("server-decided"),
-            `${label} to retire the recovered layer on coverage`,
+            (rows) => !rows.includes("moved"),
+            `${label} to reveal the snapshot that already carries the legacy commit`,
           ),
-        ).toEqual(["server-decided", "second", "third"]);
-        await monotone(tab, label, ["first"], "moved");
+        ).toEqual(["server-decided", "second"]);
+        await steady(
+          () => titles(tab),
+          (rows) => rows.length === 0 || !rows.includes("moved"),
+          `${label} keeping the authoritative value`,
+          15,
+        );
       }
     } finally {
       leader.close();

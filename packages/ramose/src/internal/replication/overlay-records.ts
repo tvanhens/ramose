@@ -57,13 +57,6 @@ export type OptimisticLayerRecord = {
   readonly createdAt: number;
 };
 
-export const settlementRecoverable = (
-  record: OptimisticLayerRecord,
-): boolean =>
-  (record.state === "committed-unobserved" || record.state === "retired") &&
-  record.settled === undefined &&
-  record.target.type !== "client-ref" && !record.refs.some(isClientRef);
-
 export type OptimisticLayerDraft = {
   readonly record: OutboxRecord;
   readonly projection: ProjectionIdentity;

@@ -26,6 +26,7 @@ import {
 } from "../../packages/ramose/src/internal/replication/outbox.ts";
 import {
   replicaDatabaseScopeOf,
+  replicaPartitionKey,
   replicaScopeOf,
   type ReplicaDatabaseScope,
   type ReplicaScope,
@@ -2000,82 +2001,61 @@ const commitOne = async (
   );
 };
 
-const stripLayerSettlements = async (name: string): Promise<number> => {
+const setHeadSettlement = async (
+  name: string,
+  of: ReplicationIdentity,
+  settled: number,
+): Promise<void> => {
   const database = await openNative(name);
-  const stores = ["mutation-layers-v1", "mutation-receipts-v1"];
-  const transaction = database.transaction(stores, "readwrite");
-  let stripped = 0;
-  for (const store of stores) {
-    const target = transaction.objectStore(store);
-    for (const value of await requestResult<unknown[]>(target.getAll())) {
-      const record = value as Record<string, unknown>;
-      if (record.settled === undefined) continue;
-      delete record.settled;
-      target.put(record);
-      stripped++;
-    }
-  }
+  const transaction = database.transaction("replica-committed-heads-v1", "readwrite");
+  const heads = transaction.objectStore("replica-committed-heads-v1");
+  const partition = replicaPartitionKey(of);
+  const head = await requestResult<Record<string, unknown> | undefined>(
+    heads.get(partition),
+  );
+  if (head !== undefined) heads.put({ ...head, settled });
   await transactionDone(transaction);
   database.close();
-  return stripped;
 };
 
 browserTest(
-  "a settlement-pending layer is re-enqueued once and settles on its replay",
+  "the fence covers a receiver only as far as its laggard partition head",
   async ({ browser }) => {
-    const name = `ramose-outbox-settlement-recovery-${browser.uniqueId}`;
+    const name = `ramose-outbox-head-minimum-${browser.uniqueId}`;
     const left = identity();
+    const drifted = identity({
+      readView: opaque("w"),
+      readCompatibilityHash: ReadCompatibilityHash.make(opaque("m")),
+    });
     const receiver = replicaDatabaseScopeOf(left);
     const scope = replicaScopeOf(left);
     const storage = await IndexedDbReplicaStorage.open(name);
     try {
       await confirm(storage, left, "left");
+      await confirm(storage, drifted, "drifted");
       const outbox = storage.outbox();
       const enqueued = await outbox.enqueue(
         draft(receiver, { enqueuedAt: 1_700_000_000_001 }),
         { scope, projection: { revision: 3, build: "build-a" } },
       );
-      const original = await outbox.acknowledge(enqueued, {
+      await outbox.acknowledge(enqueued, {
         _tag: "Committed",
-        settled: 1,
-        output: { id: enqueued.invocation },
+        settled: 3,
+        output: null,
         mappings: [],
       }, 1_700_000_000_001);
-      expect(original.settled).toBe(1);
-      expect(await stripLayerSettlements(name)).toBeGreaterThan(0);
 
-      const layersBefore = await outbox.optimisticLayers(receiver);
-      expect(layersBefore.layers).toHaveLength(1);
-      expect(layersBefore.layers[0]!.settled).toBeUndefined();
+      await setHeadSettlement(name, left, 5);
+      await setHeadSettlement(name, drifted, 1);
+      const first = await outbox.beginActivation(receiver);
+      await outbox.fenceActivation(receiver, first);
+      expect((await outbox.optimisticLayers(receiver)).layers)
+        .toMatchObject([{ state: "retired", settled: 3 }]);
 
-      expect(await outbox.sweepDurableLayers(receiver))
-        .toMatchObject({ recovered: [original.invocation] });
-
-      const restored = await outbox.restore(scope);
-      expect(restored.records).toHaveLength(1);
-      const resubmitted = restored.records[0]!;
-      expect(resubmitted.invocation).toBe(original.invocation);
-      expect(resubmitted.operationVersion).toBe(version);
-      expect(resubmitted.target).toEqual({ type: "none" });
-      expect(resubmitted.input).toEqual({ title: "offline" });
-
-      expect(await outbox.sweepDurableLayers(receiver)).toMatchObject({ recovered: [] });
-      expect((await outbox.restore(scope)).records).toHaveLength(1);
-
-      const replayed = await outbox.acknowledge(resubmitted, {
-        _tag: "Committed",
-        settled: 9,
-        output: { id: original.invocation },
-        mappings: [],
-      }, 1_700_000_000_002);
-      expect(replayed.settled).toBe(9);
-
-      const layersAfter = await outbox.optimisticLayers(receiver);
-      expect(layersAfter.layers).toHaveLength(1);
-      expect(layersAfter.layers[0]!.settled).toBe(9);
-      expect(await outbox.sweepDurableLayers(receiver)).toMatchObject({ recovered: [] });
-      expect((await outbox.observationState(receiver)).settlements)
-        .toEqual(new Map([[original.invocation, 9]]));
+      await setHeadSettlement(name, drifted, 3);
+      const second = await outbox.beginActivation(receiver);
+      await outbox.fenceActivation(receiver, second);
+      expect((await outbox.optimisticLayers(receiver)).layers).toEqual([]);
     } finally {
       storage.close();
       await deleteDatabase(name);
