@@ -17,6 +17,8 @@ import type {
   ReplicationIdentity,
   SnapshotDatom,
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
+import { decodeReplicationFrame } from "../../packages/ramose/src/internal/replication/protocol.ts";
+import * as Result from "effect/Result";
 import { invocationId } from "../../packages/ramose/src/db/refs.ts";
 import {
   replicaDatabaseScopeOf,
@@ -584,6 +586,47 @@ browserTest("a committed value enters a query already being observed", async ({ 
   }
 });
 
+const RECORDED = { token: "session-credential", cacheKey: "recorded" };
+
+const seedRecorded = async (name: string, root: string): Promise<void> => {
+  const installed = await installClientCatalog(ConformanceSchema);
+  const response = await fetch("/db/optimistic-fence/replicate", { method: "POST" });
+  expect(response.status).toBe(200);
+  const storage = await IndexedDbReplicaStorage.open(name);
+  try {
+    for (const line of (await response.text()).split("\n")) {
+      if (line === "") continue;
+      const decoded = decodeReplicationFrame(line);
+      if (Result.isFailure(decoded)) throw decoded.failure;
+      const frame = decoded.success;
+      if (frame.type === "SnapshotStart") await storage.startSnapshot(frame);
+      else if (frame.type === "SnapshotChunk") await storage.stageSnapshotChunk(frame);
+      else if (frame.type === "SnapshotCommit") {
+        (await storage.commitSnapshot(frame, installed.attributes))?.release();
+      }
+    }
+    const address = replicationActivationAddress({
+      server: globalThis.location.origin,
+      root,
+    });
+    const routeSlot = await rootReplicaRouteSlot();
+    await storage.bindAuthenticated({
+      fingerprint: await replicationCredentialFingerprint(
+        RECORDED.token,
+        address,
+        routeSlot,
+      ),
+      identity: recorded.identity as unknown as ReplicationIdentity,
+      candidateKey: {
+        selector: await replicationCacheSelector(RECORDED.cacheKey, address),
+        routeSlot,
+      },
+    });
+  } finally {
+    storage.close();
+  }
+};
+
 const untouched = (): { readonly count: () => number; readonly release: () => void } => {
   let interactions = 0;
   const observed = (): void => {
@@ -648,6 +691,54 @@ browserTest("re-establishes a stream the server ended with no activation event",
     await deleteDatabase(name);
   }
 });
+
+browserTest(
+  "reconnects a restored replica whose stream ended before it answered",
+  { timeout: 60_000 },
+  async ({ browser }) => {
+    const name = `ramose-client-cold-${browser.uniqueId}`;
+    await seedRecorded(name, "optimistic-fence-cold");
+    expect(document.visibilityState).toBe("visible");
+    const idle = untouched();
+    let activations = 0;
+    const client = createClient({
+      url: globalThis.location.origin,
+      root: "optimistic-fence-cold",
+      catalog: ConformanceSchema,
+      auth: () => {
+        activations += 1;
+        return Promise.resolve(RECORDED);
+      },
+      storageName: name,
+    });
+    try {
+      const db = client.open();
+      const seen: string[] = [];
+      const release = client.sync.subscribe(() => seen.push(client.sync.getSnapshot().status));
+      try {
+        const issues = db.observe(
+          db.query.from(ConformanceIssue).select({ title: ConformanceIssue.title }),
+        );
+        const restored = await waitFor(issues, (snapshot) => snapshot.status === "ready");
+        expect(restored.stale).toBe(true);
+        expect(await waitFor(client.sync, (state) => state.status === "stale")).toBeDefined();
+
+        expect(
+          await waitFor(client.sync, (state) => state.status === "live", 30_000),
+        ).toBeDefined();
+        expect(activations).toBeGreaterThanOrEqual(2);
+        expect(idle.count()).toBe(0);
+        expect(await waitFor(issues, (snapshot) => !snapshot.stale)).toBeDefined();
+      } finally {
+        release();
+      }
+    } finally {
+      idle.release();
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
 
 browserTest(
   "holds a stream from a server that never sends keep-alives",

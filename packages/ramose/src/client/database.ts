@@ -672,6 +672,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
       this.context.mutations.submit(replicaDatabaseScopeOf(identity));
       this.spawn(this.bindReconciler(identity));
     }
+    const transitioned = this.lastSession?.status !== snapshot.status;
     this.lastSession = snapshot;
     const disposition = readSessionSnapshot(snapshot);
     if (disposition.status === "authentication-required") this.refused = true;
@@ -685,7 +686,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
       this.handles = value.handles;
       this.reverse = undefined;
     }
-    this.publishStatus(this.statusOf(snapshot));
+    this.publishStatus(this.statusOf(snapshot), transitioned);
     this.spawn(this.recompute());
     this.answerWake();
   }
@@ -770,9 +771,10 @@ export class ClientDatabaseHandle implements ClientDatabase {
       : readSessionSnapshot(snapshot).status === "offline";
   }
 
-  private publishStatus(status: SyncStatus): void {
+  private publishStatus(status: SyncStatus, transitioned = false): void {
     if (this.closed && status !== "closed") return;
-    if (this.syncStore.publish(syncState(status))) this.context.onSyncChange();
+    const published = this.syncStore.publish(syncState(status));
+    if (published || transitioned) this.context.onSyncChange();
   }
 
   syncStatus(): SyncStatus {

@@ -248,6 +248,16 @@ const timed = async function* <A>(
   }
 };
 
+const renewedVersion = async (
+  input: ReplicationRun,
+  boundary: "replication.wake" | "replication.cycle",
+  authorize: () => Promise<AuthorizedVersion>,
+  signal: AbortSignal,
+): Promise<AuthorizedVersion> => {
+  await atBoundary(input.boundaries, boundary, signal);
+  return authorize();
+};
+
 const rawDatabase = (version: AuthorizedVersion): string =>
   version.target.route.database;
 
@@ -866,21 +876,37 @@ const replicationFrames = async function* (
         if (next === "commit") commits = observeCommit();
 
         cycle.cancel();
-        await atBoundary(
-          input.boundaries,
-          next === "commit" ? "replication.wake" : "replication.cycle",
-          effectiveSignal,
+        const renewed = yield* timed(
+          keepAliveWhile(
+            input,
+            initialIdentity,
+            renewedVersion(
+              input,
+              next === "commit" ? "replication.wake" : "replication.cycle",
+              authorize,
+              effectiveSignal,
+            ),
+            effectiveSignal,
+          ),
+          input.keepAlive,
         );
-        const renewed = await authorize();
         if (!sameVersion(expectedPath, initialIdentity, renewed)) {
           throw new Error("replication authorization partition changed");
         }
         if (renewed.target.context.currentDb.basisT === committed.basisT) {
           committed = Object.freeze({ ...committed, version: renewed });
-          await atBoundary(
-            input.boundaries,
-            "replication.silent",
-            effectiveSignal,
+          yield* timed(
+            keepAliveWhile(
+              input,
+              initialIdentity,
+              atBoundary(
+                input.boundaries,
+                "replication.silent",
+                effectiveSignal,
+              ),
+              effectiveSignal,
+            ),
+            input.keepAlive,
           );
         } else {
           committed = yield* timed(
