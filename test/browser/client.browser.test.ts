@@ -28,6 +28,7 @@ import {
   replicationCacheSelector,
   replicationCredentialFingerprint,
 } from "../../packages/ramose/src/internal/replication/transport.ts";
+import { REPLICATION_SILENCE_DEADLINE_MS } from "../../packages/ramose/src/internal/replication/protocol.ts";
 import recorded from "./frames/optimistic-fence.client.json";
 import { browserTest } from "./fixtures.ts";
 import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
@@ -630,13 +631,52 @@ browserTest("re-establishes a stream the server ended with no activation event",
 });
 
 browserTest(
+  "holds a stream from a server that never sends keep-alives",
+  { timeout: 90_000 },
+  async ({ browser }) => {
+    const name = `ramose-client-unproven-${browser.uniqueId}`;
+    const client = createClient({
+      url: globalThis.location.origin,
+      root: "optimistic-fence-held",
+      catalog: ConformanceSchema,
+      auth: () => Promise.resolve({ token: "session-credential", cacheKey: "recorded" }),
+      storageName: name,
+    });
+    try {
+      const db = client.open();
+      const issues = db.observe(
+        db.query.from(ConformanceIssue).select({ title: ConformanceIssue.title }),
+      );
+      const ready = await waitFor(issues, (snapshot) => snapshot.status === "ready");
+      expect(await waitFor(client.sync, (state) => state.status === "live")).toBeDefined();
+
+      const seen: string[] = [];
+      const release = client.sync.subscribe(() => seen.push(client.sync.getSnapshot().status));
+      try {
+        await new Promise((resolve) =>
+          setTimeout(resolve, REPLICATION_SILENCE_DEADLINE_MS + 5_000)
+        );
+        expect(seen).toEqual([]);
+        expect(client.sync.getSnapshot().status).toBe("live");
+        expect(issues.getSnapshot()).toBe(ready);
+      } finally {
+        release();
+      }
+    } finally {
+      await client.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "tears down and re-establishes a stream that goes silent",
   { timeout: 90_000 },
   async ({ browser }) => {
     const name = `ramose-client-silent-${browser.uniqueId}`;
     const client = createClient({
       url: globalThis.location.origin,
-      root: "optimistic-fence-held",
+      root: "optimistic-fence-alive-held",
       catalog: ConformanceSchema,
       auth: () => Promise.resolve({ token: "session-credential", cacheKey: "recorded" }),
       storageName: name,

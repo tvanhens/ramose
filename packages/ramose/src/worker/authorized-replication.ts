@@ -101,9 +101,15 @@ export type AuthorizedReplicationInput = {
   readonly boundaries?: RuntimeBoundaries;
 };
 
+type KeepAliveClock = {
+  since: number;
+  emitted: boolean;
+};
+
 type ReplicationRun = AuthorizedReplicationInput & {
   readonly identityRoot: ServerIdentityRoot;
   readonly sealing: ServerSealingKey;
+  readonly keepAlive: KeepAliveClock;
 };
 
 const frame = <A extends ReplicationFrame>(value: A): A => value;
@@ -169,8 +175,78 @@ const scheduledWake = <A extends string>(milliseconds: number, wake: A): {
 
 const scheduledCycle = (milliseconds: number) => scheduledWake(milliseconds, "cycle");
 
-const scheduledKeepAlive = () =>
-  scheduledWake(REPLICATION_KEEPALIVE_INTERVAL_MS, "keep-alive");
+const keepAliveDue = (clock: KeepAliveClock): number =>
+  Math.max(0, clock.since + REPLICATION_KEEPALIVE_INTERVAL_MS - Date.now());
+
+const scheduledKeepAlive = (clock: KeepAliveClock) =>
+  scheduledWake(keepAliveDue(clock), "keep-alive");
+
+const keepAliveFrame = (identity: ReplicationIdentity): ReplicationFrame =>
+  frame({
+    type: "KeepAlive",
+    protocol: REPLICATION_PROTOCOL_VERSION,
+    identity,
+  });
+
+const outcomeOf = <A>(work: Promise<A>): Promise<
+  { readonly type: "value"; readonly value: A } | {
+    readonly type: "failure";
+    readonly cause: unknown;
+  }
+> =>
+  work.then(
+    (value) => ({ type: "value" as const, value }),
+    (cause) => ({ type: "failure" as const, cause }),
+  );
+
+const keepAliveWhile = async function* <A>(
+  input: ReplicationRun,
+  identity: ReplicationIdentity,
+  work: Promise<A>,
+  signal: AbortSignal,
+): AsyncGenerator<ReplicationFrame, A, undefined> {
+  const settled = outcomeOf(work);
+  while (input.keepAlive.emitted) {
+    const beat = scheduledKeepAlive(input.keepAlive);
+    let waited: Awaited<typeof settled> | "keep-alive";
+    try {
+      waited = await Promise.race([settled, beat.promise]);
+    } finally {
+      beat.cancel();
+    }
+    if (waited !== "keep-alive") {
+      if (waited.type === "failure") throw waited.cause;
+      return waited.value;
+    }
+    signal.throwIfAborted();
+    await atBoundary(input.boundaries, "replication.keepalive", signal);
+    yield keepAliveFrame(identity);
+  }
+  const outcome = await settled;
+  if (outcome.type === "failure") throw outcome.cause;
+  return outcome.value;
+};
+
+const timed = async function* <A>(
+  source: AsyncGenerator<ReplicationFrame, A, undefined>,
+  clock: KeepAliveClock,
+): AsyncGenerator<ReplicationFrame, A, undefined> {
+  let ended = false;
+  try {
+    for (;;) {
+      const next = await source.next();
+      if (next.done === true) {
+        ended = true;
+        return next.value;
+      }
+      clock.since = Date.now();
+      clock.emitted = true;
+      yield next.value;
+    }
+  } finally {
+    if (!ended) await source.return(undefined as A);
+  }
+};
 
 const rawDatabase = (version: AuthorizedVersion): string =>
   version.target.route.database;
@@ -246,7 +322,12 @@ const snapshotFrames = async function* (
       throw new Error("replication authorization partition changed");
     }
     const logical = identityEncoder(input, version);
-    const candidate = await currentState(input, version, logical, signal);
+    const candidate = yield* keepAliveWhile(
+      input,
+      expectedIdentity,
+      currentState(input, version, logical, signal),
+      signal,
+    );
     if (!leaseAlive(version)) continue;
     const snapshot = await makeSnapshotIdentity(
       input.sealing,
@@ -328,7 +409,12 @@ const snapshotFrames = async function* (
     if (!sameVersion(expectedPath, expectedIdentity, finalVersion)) {
       throw new Error("replication authorization partition changed");
     }
-    const finalState = await currentState(input, finalVersion, logical, signal);
+    const finalState = yield* keepAliveWhile(
+      input,
+      expectedIdentity,
+      currentState(input, finalVersion, logical, signal),
+      signal,
+    );
     if (!leaseAlive(finalVersion) || finalState.revision !== candidate.revision) {
       continue;
     }
@@ -417,14 +503,19 @@ const advanceFrames = async function* (
     };
     let before: Db;
     try {
-      before = await reconstruct(async () => {
-        await atBoundary(
-          input.boundaries,
-          "replication.resume.reconstruct",
-          signal,
-        );
-        return authorizeAt(version, previous.basisT);
-      });
+      before = yield* keepAliveWhile(
+        input,
+        expectedIdentity,
+        reconstruct(async () => {
+          await atBoundary(
+            input.boundaries,
+            "replication.resume.reconstruct",
+            signal,
+          );
+          return authorizeAt(version, previous.basisT);
+        }),
+        signal,
+      );
     } catch (cause) {
       if (!(cause instanceof ResumeBasisUnavailable)) throw cause;
       return yield* resetFrames(
@@ -437,12 +528,20 @@ const advanceFrames = async function* (
     }
     let delta: Awaited<ReturnType<typeof diffLogicalDbs>>;
     try {
-      delta = await reconstruct(() => diffLogicalDbs(
-        before,
-        version.target.context.filteredDb,
-        logical,
+      delta = yield* keepAliveWhile(
+        input,
+        expectedIdentity,
+        reconstruct(async () => {
+          await atBoundary(input.boundaries, "replication.advance.diff", signal);
+          return diffLogicalDbs(
+            before,
+            version.target.context.filteredDb,
+            logical,
+            signal,
+          );
+        }),
         signal,
-      ));
+      );
     } catch (cause) {
       if (!(cause instanceof ResumeBasisUnavailable)) throw cause;
       return yield* resetFrames(
@@ -680,12 +779,15 @@ const replicationFrames = async function* (
     let committed: ServerReplicaState;
     const resume = input.activation.resumeRevision;
     if (resume === undefined) {
-      committed = yield* snapshotFrames(
-        input,
-        authorize,
-        expectedPath,
-        initialIdentity,
-        effectiveSignal,
+      committed = yield* timed(
+        snapshotFrames(
+          input,
+          authorize,
+          expectedPath,
+          initialIdentity,
+          effectiveSignal,
+        ),
+        input.keepAlive,
       );
     } else {
       let basisT: number | undefined;
@@ -705,32 +807,42 @@ const replicationFrames = async function* (
         basisT = undefined;
       }
       if (basisT === undefined) {
-        committed = yield* resetFrames(
-          input,
-          authorize,
-          expectedPath,
-          initialIdentity,
-          effectiveSignal,
+        committed = yield* timed(
+          resetFrames(
+            input,
+            authorize,
+            expectedPath,
+            initialIdentity,
+            effectiveSignal,
+          ),
+          input.keepAlive,
         );
       } else {
-        committed = yield* advanceFrames(
-          input,
-          authorize,
-          authorizeAt,
-          expectedPath,
-          initialIdentity,
-          { basisT, revision: resume },
-          effectiveSignal,
-          { acknowledgeUnchanged: true },
+        committed = yield* timed(
+          advanceFrames(
+            input,
+            authorize,
+            authorizeAt,
+            expectedPath,
+            initialIdentity,
+            { basisT, revision: resume },
+            effectiveSignal,
+            { acknowledgeUnchanged: true },
+          ),
+          input.keepAlive,
         );
       }
     }
 
     effectiveSignal.throwIfAborted();
+    await atBoundary(input.boundaries, "replication.keepalive", effectiveSignal);
+    yield keepAliveFrame(initialIdentity);
+    input.keepAlive.since = Date.now();
+    input.keepAlive.emitted = true;
     let renewalAt = committed.version.leaseExpiresAt;
     let cycle = scheduledCycle(Math.max(0, renewalAt - Date.now()));
     let commits = observeCommit();
-    let beat = scheduledKeepAlive();
+    let beat = scheduledKeepAlive(input.keepAlive);
     try {
       while (!signal.aborted) {
         effectiveSignal.throwIfAborted();
@@ -753,18 +865,14 @@ const replicationFrames = async function* (
         if (next === "keep-alive") {
           beat.cancel();
           await atBoundary(input.boundaries, "replication.keepalive", effectiveSignal);
-          yield frame({
-            type: "KeepAlive",
-            protocol: REPLICATION_PROTOCOL_VERSION,
-            identity: initialIdentity,
-          });
-          beat = scheduledKeepAlive();
+          yield keepAliveFrame(initialIdentity);
+          input.keepAlive.since = Date.now();
+          beat = scheduledKeepAlive(input.keepAlive);
           continue;
         }
         if (next === "commit") commits = observeCommit();
 
         cycle.cancel();
-        const published = committed.revision;
         await atBoundary(
           input.boundaries,
           next === "commit" ? "replication.wake" : "replication.cycle",
@@ -782,21 +890,22 @@ const replicationFrames = async function* (
             effectiveSignal,
           );
         } else {
-          committed = yield* advanceFrames(
-            input,
-            authorize,
-            authorizeAt,
-            expectedPath,
-            initialIdentity,
-            { basisT: committed.basisT, revision: committed.revision },
-            effectiveSignal,
-            { initialVersion: renewed },
+          committed = yield* timed(
+            advanceFrames(
+              input,
+              authorize,
+              authorizeAt,
+              expectedPath,
+              initialIdentity,
+              { basisT: committed.basisT, revision: committed.revision },
+              effectiveSignal,
+              { initialVersion: renewed },
+            ),
+            input.keepAlive,
           );
         }
-        if (committed.revision !== published) {
-          beat.cancel();
-          beat = scheduledKeepAlive();
-        }
+        beat.cancel();
+        beat = scheduledKeepAlive(input.keepAlive);
         renewalAt = committed.version.leaseExpiresAt;
         cycle = scheduledCycle(Math.max(0, renewalAt - Date.now()));
       }
@@ -869,6 +978,7 @@ export const authorizedReplicationResponse = (
       ...input,
       identityRoot,
       sealing: sealingKeyOf(identityRoot),
+      keepAlive: { since: Date.now(), emitted: false },
     };
     const initialIdentity = yield* Effect.tryPromise({
       try: async () => makeReplicationIdentity({

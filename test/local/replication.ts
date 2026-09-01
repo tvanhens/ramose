@@ -15,6 +15,7 @@ import {
 import {
   applyObservedFrame,
   collectCommittedSnapshot,
+  nextVisibleFrame as nextVisible,
   readReplicationNdjson,
   type ObservedReplicationFrame,
 } from "../support/replication.ts";
@@ -59,6 +60,7 @@ const WAKE_BURST_DATABASE = CONFORMANCE_DATABASES[27]!;
 const SCOPE_ARMED_DATABASE = CONFORMANCE_DATABASES[28]!;
 const SCOPE_BYSTANDER_DATABASE = CONFORMANCE_DATABASES[29]!;
 const KEEPALIVE_DATABASE = CONFORMANCE_DATABASES[30]!;
+const KEEPALIVE_ADVANCE_DATABASE = CONFORMANCE_DATABASES[31]!;
 
 const HIDDEN_SCALE_COMMITS = 1_000;
 
@@ -125,7 +127,7 @@ export const observed = async (
   iterator: AsyncIterator<ObservedReplicationFrame>,
   label: string,
 ): Promise<ObservedReplicationFrame> => {
-  const next = await withTimeout(iterator.next(), 7_000, label);
+  const next = await withTimeout(nextVisible(iterator), 7_000, label);
   if (next.done) throw new Error(`${label} closed before a frame`);
   return next.value;
 };
@@ -134,27 +136,21 @@ export const closeIterator = (
   iterator: AsyncIterator<ObservedReplicationFrame> & CancellableStream,
 ): Promise<void> => closeObservedStream(iterator);
 
-const nextVisible = async (
-  iterator: AsyncIterator<ObservedReplicationFrame>,
-  keepAlives?: string[],
-): Promise<IteratorResult<ObservedReplicationFrame>> => {
-  for (;;) {
-    const next = await iterator.next();
-    if (next.done || next.value.frame.type !== "KeepAlive") return next;
-    keepAlives?.push(next.value.wire);
-  }
-};
-
 type ObservedKeepAlive = {
   readonly wire: string;
   readonly at: number;
+};
+
+type KeepAliveObservation = {
+  readonly opened: number;
+  readonly beats: readonly ObservedKeepAlive[];
 };
 
 const observeKeepAlives = async (
   base: string,
   world: World,
   hidden: number,
-): Promise<readonly ObservedKeepAlive[]> => {
+): Promise<KeepAliveObservation> => {
   const controller = new AbortController();
   const response = await openReplication(
     base,
@@ -169,6 +165,7 @@ const observeKeepAlives = async (
   const seen: ObservedKeepAlive[] = [];
   try {
     await collectCommittedSnapshot(iterator);
+    const opened = Date.now();
     let committed = 0;
     const noise = async (): Promise<void> => {
       for (let index = 0; index < hidden; index++) {
@@ -187,7 +184,7 @@ const observeKeepAlives = async (
       seen.push({ wire: next.value.wire, at: Date.now() });
     }
     expect(committed).toBe(hidden * 2);
-    return Object.freeze(seen);
+    return Object.freeze({ opened, beats: Object.freeze(seen) });
   } finally {
     controller.abort();
     await closeIterator(iterator);
@@ -383,6 +380,7 @@ const observeFirstSeenRetention = async (
 type ResumeObservation = {
   readonly checkpoints: readonly string[];
   readonly frames: readonly string[];
+  readonly keepAlives: readonly string[];
 };
 
 const observeUnchangedResume = async (
@@ -393,6 +391,7 @@ const observeUnchangedResume = async (
 ): Promise<ResumeObservation> => {
   const { revision, ordinal } = committed;
   const checkpoints: string[] = [];
+  const keepAlives: string[] = [];
   const controller = new AbortController();
   await armCheckpoint(base, world.database, "replication.resume.reconstruct");
   const response = await openReplication(
@@ -436,7 +435,7 @@ const observeUnchangedResume = async (
     }
     expect(ready.value.frame.revision).toBe(revision);
     expect(ready.value.frame.ordinal).toBe(ordinal);
-    const following = iterator.next();
+    const following = nextVisible(iterator, keepAlives);
     const afterReady = await Promise.race([
       following.then(() => "frame" as const),
       Bun.sleep(200).then(() => "pending" as const),
@@ -446,6 +445,7 @@ const observeUnchangedResume = async (
     return {
       checkpoints: Object.freeze(checkpoints),
       frames: Object.freeze([ready.value.wire]),
+      keepAlives: Object.freeze([...keepAlives]),
     };
   } finally {
     controller.abort();
@@ -867,7 +867,12 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         "production resume acknowledgement",
       );
       expect(acknowledgement.value?.type).toBe("ResumeReady");
-      const parked = production.next();
+      const parked = (async () => {
+        for (;;) {
+          const next = await production.next();
+          if (next.done || next.value.type !== "KeepAlive") return next;
+        }
+      })();
       controller.abort();
       await expect(withTimeout(
         parked,
@@ -964,7 +969,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
           "operation.claimed",
           "transactor",
         );
-        const revokedFrame = resumed.next();
+        const revokedFrame = nextVisible(resumed);
         const revokedRequest = transfer(
           base,
           world.database,
@@ -1346,17 +1351,88 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       const quiet = await observeKeepAlives(base, world, 0);
       const hidden = await observeKeepAlives(base, world, 2);
 
-      expect(quiet.map((beat) => beat.wire)).toEqual([quiet[0]!.wire, quiet[0]!.wire]);
-      expect(hidden.map((beat) => beat.wire)).toEqual([quiet[0]!.wire, quiet[0]!.wire]);
-      expect(JSON.parse(quiet[0]!.wire).type).toBe("KeepAlive");
+      const first = quiet.beats[0]!.wire;
+      expect(quiet.beats.map((beat) => beat.wire)).toEqual([first, first]);
+      expect(hidden.beats.map((beat) => beat.wire)).toEqual([first, first]);
+      expect(JSON.parse(first).type).toBe("KeepAlive");
 
-      const spacing = (beats: readonly { readonly at: number }[]): number =>
-        beats[1]!.at - beats[0]!.at;
+      expect(quiet.beats[0]!.at - quiet.opened)
+        .toBeLessThan(REPLICATION_KEEPALIVE_INTERVAL_MS - 2_000);
+
+      const spacing = (observation: KeepAliveObservation): number =>
+        observation.beats[1]!.at - observation.beats[0]!.at;
       for (const observed of [spacing(quiet), spacing(hidden)]) {
         expect(observed).toBeGreaterThan(REPLICATION_KEEPALIVE_INTERVAL_MS - 1_000);
         expect(observed).toBeLessThan(REPLICATION_KEEPALIVE_INTERVAL_MS + 3_000);
       }
       expect(Math.abs(spacing(hidden) - spacing(quiet))).toBeLessThan(2_000);
+    });
+
+    test("a long advance keeps sending keep-alives while it computes", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, KEEPALIVE_ADVANCE_DATABASE, false);
+      const controller = new AbortController();
+      const response = await openReplication(
+        base,
+        world.database,
+        world.member,
+        undefined,
+        3,
+        controller.signal,
+      );
+      expect(response.status).toBe(200);
+      const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+      try {
+        await collectCommittedSnapshot(iterator);
+        const opening = await withTimeout(
+          iterator.next(),
+          12_000,
+          "the steady-state keep-alive",
+        );
+        expect(opening.value?.frame.type).toBe("KeepAlive");
+
+        await armCheckpoint(base, world.database, "replication.advance.diff");
+        const renamed = await rename(
+          base,
+          world.database,
+          world.member,
+          world.ids.parent,
+          "Computed slowly",
+        );
+        expect(renamed.status).toBe(200);
+        await waitForCheckpoint(base, world.database, "replication.advance.diff");
+
+        const beats: number[] = [];
+        for (const beat of [1, 2]) {
+          const next = await withTimeout(
+            iterator.next(),
+            12_000,
+            `keep-alive ${beat} during the advance`,
+          );
+          if (next.done || next.value.frame.type !== "KeepAlive") {
+            throw new Error(
+              `the parked advance carried ${next.done ? "nothing" : next.value.frame.type}`,
+            );
+          }
+          beats.push(Date.now());
+        }
+        const spacing = beats[1]! - beats[0]!;
+        expect(spacing).toBeGreaterThan(REPLICATION_KEEPALIVE_INTERVAL_MS - 1_000);
+        expect(spacing).toBeLessThan(REPLICATION_KEEPALIVE_INTERVAL_MS + 3_000);
+
+        await releaseCheckpoint(base, world.database, "replication.advance.diff");
+        const change = await observed(iterator, "the advance the keep-alives covered");
+        expect(change.frame.type).toBe("Change");
+        expect(change.wire).toMatch(/Computed slowly/);
+      } finally {
+        controller.abort();
+        await testAdmin(base, world.database, "/checkpoint", {
+          scope: "worker",
+          action: "release",
+          name: "replication.advance.diff",
+        });
+        await closeIterator(iterator);
+      }
     });
 
     test("a documentation-only client build resumes without a reset or snapshot", async () => {
@@ -1399,7 +1475,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
           revision,
           ordinal: resumeOrdinal,
         });
-        const following = resumed.next();
+        const following = nextVisible(resumed);
         const quiet = await Promise.race([
           following.then(() => "frame" as const),
           Bun.sleep(200).then(() => "pending" as const),
@@ -1474,6 +1550,13 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(hidden.checkpoints).toEqual(zero.checkpoints);
         expect(hidden.frames).toEqual(zero.frames);
         expect(hidden.frames.join("\n")).not.toMatch(/Parked hidden|count|queue/);
+        for (const wire of [...zero.keepAlives, ...hidden.keepAlives]) {
+          expect(JSON.parse(wire)).toEqual({
+            type: "KeepAlive",
+            protocol: 3,
+            identity: JSON.parse(zero.frames[0]!).identity,
+          });
+        }
 
         const after = await openReplication(base, world.database, world.member);
         const afterIterator = readReplicationNdjson(after)[Symbol.asyncIterator]();
@@ -1654,7 +1737,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
       try {
         const snapshot = await collectCommittedSnapshot(iterator);
-        const first = iterator.next();
+        const first = nextVisible(iterator);
         await armCheckpoint(base, world.database, "replication.wake");
 
         expect((await rename(
@@ -1683,7 +1766,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(coalesced.value.wire).toMatch(/Burst two/);
         expect(coalesced.value.wire).not.toMatch(/Burst one/);
 
-        const following = iterator.next();
+        const following = nextVisible(iterator);
         expect(await Promise.race([
           following.then(() => "frame" as const),
           Bun.sleep(300).then(() => "pending" as const),

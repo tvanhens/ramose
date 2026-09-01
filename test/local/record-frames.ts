@@ -7,6 +7,7 @@ import type {
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
 import {
   collectCommittedSnapshot,
+  nextVisibleFrame,
   readReplicationNdjson,
 } from "../support/replication.ts";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
@@ -90,6 +91,7 @@ export const registerFrameRecorder = (
       expect(response.status).toBe(200);
       const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
       let wire: readonly string[];
+      let aliveWire: string;
       let identity: ReplicationIdentity;
       let revision: string;
       let datoms: readonly LogicalDatom[];
@@ -107,6 +109,13 @@ export const registerFrameRecorder = (
         revision = snapshot.state.committed!.revision;
         datoms = snapshot.state.committed?.datoms ?? [];
         expect(datoms.length).toBeGreaterThan(0);
+
+        const beat = await iterator.next();
+        if (beat.done || beat.value.frame.type !== "KeepAlive") {
+          throw new Error(`the steady state was answered ${JSON.stringify(beat)}`);
+        }
+        expect(beat.value.frame.identity).toEqual(identity);
+        aliveWire = beat.value.wire;
       } finally {
         await closeIterator(iterator);
       }
@@ -140,7 +149,7 @@ export const registerFrameRecorder = (
       try {
         const before = await collectCommittedSnapshot(changing);
         expect(before.state.committed!.revision).toBe(revision);
-        const pending = changing.next();
+        const pending = nextVisibleFrame(changing);
         const renamed = await invoke(base, RECORDING_DATABASE, token, {
           owner: { kind: "entity", name: ConformanceIssue.ns },
           localName: "rename",
@@ -161,6 +170,10 @@ export const registerFrameRecorder = (
       await Bun.write(
         join(FIXTURE_DIRECTORY, `${FIXTURE_NAME}.ndjson`),
         `${wire.join("\n")}\n`,
+      );
+      await Bun.write(
+        join(FIXTURE_DIRECTORY, `${FIXTURE_NAME}-alive.ndjson`),
+        `${[...wire, aliveWire].join("\n")}\n`,
       );
       await Bun.write(
         join(FIXTURE_DIRECTORY, `${FIXTURE_NAME}-resume.ndjson`),

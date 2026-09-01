@@ -198,10 +198,11 @@ export async function* readReplicationFrames(
   const body = response.body;
   if (body === null) return fail("replication response has no body");
   const reader = body.getReader();
+  let enforced: number | undefined;
   const chunks = (async function* (): AsyncGenerator<Uint8Array, void, undefined> {
     for (;;) {
       signal?.throwIfAborted();
-      const next = await withinDeadline(reader.read(), silenceDeadlineMs);
+      const next = await withinDeadline(reader.read(), enforced);
       if (next.done) return;
       yield next.value;
     }
@@ -229,7 +230,10 @@ export async function* readReplicationFrames(
       yield terminal as ReplicationFrame;
       return;
     }
-    yield* decoded;
+    for await (const frame of decoded) {
+      if (frame.type === "KeepAlive") enforced = silenceDeadlineMs;
+      yield frame;
+    }
   } finally {
     try {
       await reader.cancel();

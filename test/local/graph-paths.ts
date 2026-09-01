@@ -31,6 +31,7 @@ import {
 } from "../support/live-query.ts";
 import {
   collectCommittedSnapshot,
+  nextVisibleFrame,
   readReplicationNdjson,
 } from "../support/replication.ts";
 import { closeObservedStream } from "../support/stream.ts";
@@ -768,7 +769,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
           revision: snapshot.state.committed!.revision,
           ordinal: snapshot.state.committed!.ordinal,
         });
-        const changed = resumed.next();
+        const changed = nextVisibleFrame(resumed);
         const secondNote = await invoke(base, member, {
           owner: { kind: "entity", name: "localNestedNote" },
           localName: "create",
@@ -791,7 +792,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
           )).toBe(true);
         }
 
-        const terminal = resumed.next();
+        const terminal = nextVisibleFrame(resumed);
         const renamed = await invoke(base, member, {
           owner: { kind: "entity", name: Workspace.ns },
           localName: "rename",
@@ -901,7 +902,7 @@ export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
           ordinal: 1,
         });
 
-        const following = resumed.next();
+        const following = nextVisibleFrame(resumed);
         const second = await invoke(base, member, {
           owner: { kind: "entity", name: "localNestedNote" },
           localName: "create",

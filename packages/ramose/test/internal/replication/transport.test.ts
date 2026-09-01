@@ -80,11 +80,45 @@ const streaming = (
     },
   );
 
-test("a stream that stops sending within its deadline ends as a transport failure", async () => {
-  const line = new TextEncoder().encode(`${encodeReplicationFrame(ready)}\n`);
+const alive: ReplicationFrame = { type: "KeepAlive", protocol: 3, identity };
 
+const encoded = (frame: ReplicationFrame): Uint8Array =>
+  new TextEncoder().encode(`${encodeReplicationFrame(frame)}\n`);
+
+const pendingPast = async (
+  work: Promise<unknown>,
+  milliseconds: number,
+): Promise<"settled" | "pending"> => {
+  const outcome = work.then(() => "settled" as const, () => "settled" as const);
+  return await Promise.race([
+    outcome,
+    new Promise<"pending">((resolve) =>
+      setTimeout(() => resolve("pending"), milliseconds)
+    ),
+  ]);
+};
+
+test("a server that never sends keep-alives is never held to the deadline", async () => {
+  let quiet: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const unproven = collect(readReplicationFrames(
+    streaming((controller) => {
+      quiet = controller;
+      controller.enqueue(encoded(ready));
+    }),
+    undefined,
+    25,
+  ));
+  expect(await pendingPast(unproven, 150)).toBe("pending");
+  quiet!.close();
+  expect(await unproven).toEqual([ready]);
+});
+
+test("a stream that stops sending after a keep-alive ends as a transport failure", async () => {
   const silent = collect(readReplicationFrames(
-    streaming((controller) => controller.enqueue(line)),
+    streaming((controller) => {
+      controller.enqueue(encoded(ready));
+      controller.enqueue(encoded(alive));
+    }),
     undefined,
     25,
   ));
@@ -93,23 +127,23 @@ test("a stream that stops sending within its deadline ends as a transport failur
 
   expect(await collect(readReplicationFrames(
     streaming((controller) => {
-      controller.enqueue(line);
+      controller.enqueue(encoded(alive));
       controller.close();
     }),
     undefined,
     25,
-  ))).toEqual([ready]);
+  ))).toEqual([alive]);
 
   expect(await collect(readReplicationFrames(
     streaming(async (controller) => {
-      controller.enqueue(line);
+      controller.enqueue(encoded(alive));
       await new Promise((resolve) => setTimeout(resolve, 40));
-      controller.enqueue(line);
+      controller.enqueue(encoded(ready));
       controller.close();
     }),
     undefined,
     120,
-  ))).toEqual([ready, ready]);
+  ))).toEqual([alive, ready]);
 });
 
 test("canonical activation rejects configured non-origin URL components", () => {
