@@ -635,6 +635,90 @@ browserTest("a rotated identity sharing a partition is not wedged by the prior c
   }
 });
 
+browserTest("a delayed claim cannot re-take a partition its successor already owns", async ({ browser }) => {
+  const name = `ramose-session-succession-cas-${browser.uniqueId}`;
+  const storage = await IndexedDbReplicaStorage.open(name);
+  const successor: ReplicationIdentity = { ...selected, authenticator: opaque("A") };
+  const partition = replicaPartitionKey(selected);
+  const owner = async (): Promise<
+    { readonly identity: ReplicationIdentity; readonly succession: number } | undefined
+  > => {
+    const database = await openNative(name);
+    const read = database.transaction(REPLICA_GENERATIONS_STORE, "readonly");
+    const record = await requestResult<
+      { readonly identity: ReplicationIdentity; readonly succession: number } | undefined
+    >(read.objectStore(REPLICA_GENERATIONS_STORE).get(
+      `ramose-replica-owner-v4:${partition}`,
+    ));
+    await transactionDone(read);
+    database.close();
+    return record;
+  };
+  try {
+    await storage.bindCredential(opaque("1"), selected);
+    await install(storage);
+    const captured = await storage.partitionSuccession(selected);
+    expect(captured).toBe(1);
+
+    expect(await storage.partitionSuccession(successor)).toBe(captured);
+    await storage.bindAuthenticated({
+      fingerprint: opaque("2"),
+      identity: successor,
+      expectedSuccession: captured,
+    });
+    expect(await owner()).toMatchObject({ identity: successor, succession: 2 });
+    await install(storage, opaque("Q"), opaque("5"), successor, "successor");
+
+    await storage.bindAuthenticated({
+      fingerprint: opaque("3"),
+      identity: selected,
+      expectedSuccession: captured,
+    });
+    expect(await owner()).toMatchObject({ identity: successor, succession: 2 });
+
+    await storage.startSnapshot({
+      type: "SnapshotStart",
+      protocol: 2,
+      identity: selected,
+      snapshot: opaque("S"),
+      revision: opaque("6"),
+    });
+    expect(await storage.commitSnapshot({
+      type: "SnapshotCommit",
+      protocol: 2,
+      identity: selected,
+      snapshot: opaque("S"),
+      revision: opaque("6"),
+      ordinal: 9,
+      chunks: 1,
+    }, attributes).catch(() => undefined)).toBeUndefined();
+    expect(await storage.acknowledgeOrdinal({
+      identity: selected,
+      revision: opaque("5"),
+      ordinal: 9,
+    })).toBeUndefined();
+    const held = await storage.restore(
+      successor,
+      attributes,
+      successor.readCompatibilityHash,
+    );
+    expect(held?.revision).toBe(opaque("5"));
+    held!.release();
+
+    const recaptured = await storage.partitionSuccession(selected);
+    expect(recaptured).toBe(2);
+    await storage.bindAuthenticated({
+      fingerprint: opaque("4"),
+      identity: selected,
+      expectedSuccession: recaptured,
+    });
+    expect(await owner()).toMatchObject({ identity: selected, succession: 3 });
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
 browserTest("a response that can never install confirms its credential without taking the partition", async ({ browser }) => {
   const name = `ramose-session-terminal-bind-${browser.uniqueId}`;
   const storage = await IndexedDbReplicaStorage.open(name);

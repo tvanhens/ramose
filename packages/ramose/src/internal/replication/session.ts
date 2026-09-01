@@ -413,6 +413,11 @@ export class ReplicationSession {
         let bindingConfirmed = restored !== undefined && candidateKey === undefined &&
           slotConfirmed;
         try {
+          const established = restored?.identity ?? candidate?.identity ??
+            await options.storage.boundIdentity(fingerprint).catch(() => undefined);
+          const expectedSuccession = established === undefined
+            ? "absent" as const
+            : await options.storage.partitionSuccession(established);
           const response = await openReplicationResponse({
             activation,
             credential: options.credential,
@@ -466,6 +471,7 @@ export class ReplicationSession {
                   fingerprint: confirmedFingerprint,
                   identity: frameIdentity,
                   claimsPartition: action !== "terminal",
+                  expectedSuccession,
                   ...(candidateKey === undefined
                     ? {}
                     : { candidateKey: { selector: candidateKey.selector, routeSlot: confirmedSlot } }),

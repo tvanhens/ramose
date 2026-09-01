@@ -317,6 +317,22 @@ const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
   ordinal: record.ordinal,
 });
 
+const succeedsPartitionOwner = (
+  binding: ReplicaAuthenticatedBinding,
+  owner: PartitionOwnerRecord | undefined,
+): boolean => {
+  if (binding.claimsPartition === false) return false;
+  if (
+    owner !== undefined &&
+    sameReplicationIdentity(owner.identity, binding.identity)
+  ) return false;
+  const expected = binding.expectedSuccession;
+  if (expected === undefined) return true;
+  return expected === "absent"
+    ? owner === undefined
+    : owner?.succession === expected;
+};
+
 const ownsPartition = (
   owner: PartitionOwnerRecord | undefined,
   identity: ReplicationIdentity,
@@ -386,10 +402,13 @@ export type ReplicaCacheCandidateKey = {
   readonly routeSlot: ReplicaRouteSlot;
 };
 
+export type ReplicaPartitionSuccession = number | "absent";
+
 export type ReplicaAuthenticatedBinding = {
   readonly fingerprint: string;
   readonly identity: ReplicationIdentity;
   readonly claimsPartition?: boolean | undefined;
+  readonly expectedSuccession?: ReplicaPartitionSuccession | undefined;
   readonly candidateKey?: ReplicaCacheCandidateKey | undefined;
   readonly route?: (ReplicaRouteObservation & {
     readonly slot: ReplicaRouteSlot;
@@ -2032,11 +2051,7 @@ export class IndexedDbReplicaStorage {
       const owner = await requestResult<PartitionOwnerRecord | undefined>(
         generations.get(ownerKey),
       );
-      if (
-        binding.claimsPartition !== false &&
-        (owner === undefined ||
-          !sameReplicationIdentity(owner.identity, binding.identity))
-      ) {
+      if (succeedsPartitionOwner(binding, owner)) {
         generations.put({
           key: ownerKey,
           kind: "partition",
@@ -2154,12 +2169,29 @@ export class IndexedDbReplicaStorage {
     return generation;
   }
 
+  async partitionSuccession(
+    identity: ReplicationIdentity,
+  ): Promise<ReplicaPartitionSuccession> {
+    const transaction = this.database.transaction(GENERATIONS, "readonly");
+    const owner = await requestResult<PartitionOwnerRecord | undefined>(
+      transaction.objectStore(GENERATIONS).get(
+        replicaOwnerKey(replicaPartitionKey(identity)),
+      ),
+    );
+    await transactionDone(transaction);
+    return owner?.succession ?? "absent";
+  }
+
   async bindCredential(
     fingerprint: string,
     identity: ReplicationIdentity,
     options: ReplicaInstallOptions = {},
   ): Promise<void> {
-    await this.bindAuthenticated({ fingerprint, identity }, options);
+    await this.bindAuthenticated({
+      fingerprint,
+      identity,
+      expectedSuccession: await this.partitionSuccession(identity),
+    }, options);
   }
 
   async restoreBoundOutcome(
