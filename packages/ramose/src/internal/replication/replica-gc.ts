@@ -8,6 +8,12 @@ export const replicaSweepKey = (partition: string): string =>
 export const replicaSweepPrefix = (partitionPrefix: string): string =>
   [`ramose-replica-sweep-v${REPLICA_STORAGE_VERSION}`, partitionPrefix].join(":");
 
+export const replicaOwnerKey = (partition: string): string =>
+  [`ramose-replica-owner-v${REPLICA_STORAGE_VERSION}`, partition].join(":");
+
+export const replicaOwnerPrefix = (partitionPrefix: string): string =>
+  [`ramose-replica-owner-v${REPLICA_STORAGE_VERSION}`, partitionPrefix].join(":");
+
 export class ReplicaReachability {
   private readonly known = new Set<string>();
   private readonly frontier: string[] = [];

@@ -89,6 +89,14 @@ export class ReplicaCorruptError extends Data.TaggedError("ReplicaCorruptError")
   readonly detail: string;
 }> {}
 
+export class ReplicaSupersededError extends Data.TaggedError(
+  "ReplicaSupersededError",
+)<{
+  readonly partition: string;
+  readonly revision: string;
+  readonly ordinal: number;
+}> {}
+
 export type ReplicaRestoreOutcome<A> =
   | { readonly _tag: "restored"; readonly replica: A }
   | { readonly _tag: "absent" }

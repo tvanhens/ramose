@@ -725,7 +725,7 @@ browserTest(
       ).toMatchObject({ _tag: "update-required", reason: "schema-metadata" });
       expect(partitioned((await dump(name))[COMMITTED], partition)).toEqual([]);
 
-      expect((await dump(name))[GENERATIONS]).toHaveLength(2);
+      expect((await dump(name))[GENERATIONS]).toHaveLength(3);
     } finally {
       storage.close();
       await deleteDatabase(name);

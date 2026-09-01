@@ -322,7 +322,7 @@ browserTest("a follower never re-renders a committed revision it has already lef
       index: 0,
       datoms: [fact("persisted", "add")],
     }));
-    expect(await storage.commitSnapshot({
+    await expect(storage.commitSnapshot({
       type: "SnapshotCommit",
       protocol: 2,
       identity: selected,
@@ -330,7 +330,7 @@ browserTest("a follower never re-renders a committed revision it has already lef
       revision: installed,
       ordinal: 1,
       chunks: 1,
-    }, attributes)).toBeUndefined();
+    }, attributes)).rejects.toMatchObject({ _tag: "ReplicaSupersededError" });
     const stored = await storage.restore(
       selected,
       attributes,
@@ -446,7 +446,7 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
       index: 0,
       datoms: [fact("delayed", "add")],
     }));
-    expect(await storage.commitSnapshot({
+    await expect(storage.commitSnapshot({
       type: "SnapshotCommit",
       protocol: 2,
       identity: selected,
@@ -454,7 +454,7 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
       revision: delayed,
       ordinal: 2,
       chunks: 1,
-    }, attributes)).toBeUndefined();
+    }, attributes)).rejects.toMatchObject({ _tag: "ReplicaSupersededError" });
     expect(await storedOrdinal()).toBe(3);
 
     const held = await storage.restore(
@@ -510,6 +510,10 @@ browserTest("a rotated identity sharing a partition is not wedged by the prior c
     expect(replicaPartitionKey(rotated)).toBe(partition);
     expect(sameReplicationIdentity(rotated, selected)).toBe(false);
 
+    const bind = (identity: ReplicationIdentity, credential: string) =>
+      storage.bindCredential(credential.repeat(43).slice(0, 43), identity);
+
+    await bind(selected, "a");
     await install(storage);
     expect(await storage.acknowledgeOrdinal({
       identity: selected,
@@ -518,6 +522,7 @@ browserTest("a rotated identity sharing a partition is not wedged by the prior c
     })).toBe(5);
     expect(await storedOrdinal()).toBe(5);
 
+    await bind(rotated, "b");
     await install(storage, opaque("Q"), replacement, rotated, "rotated");
     expect(await storedOrdinal()).toBe(1);
     const installed = await storage.restore(
@@ -554,7 +559,7 @@ browserTest("a rotated identity sharing a partition is not wedged by the prior c
         op: "add",
       }],
     }));
-    expect(await storage.commitSnapshot({
+    await expect(storage.commitSnapshot({
       type: "SnapshotCommit",
       protocol: 2,
       identity: rotated,
@@ -562,8 +567,62 @@ browserTest("a rotated identity sharing a partition is not wedged by the prior c
       revision: opaque("6"),
       ordinal: 2,
       chunks: 1,
-    }, attributes)).toBeUndefined();
+    }, attributes)).rejects.toMatchObject({ _tag: "ReplicaSupersededError" });
     expect(await storedOrdinal()).toBe(4);
+
+    const replay = async (identity: ReplicationIdentity, revision: string) => {
+      await storage.startSnapshot({
+        type: "SnapshotStart",
+        protocol: 2,
+        identity,
+        snapshot: opaque("S"),
+        revision,
+      });
+      await storage.stageSnapshotChunk(snapshotChunk({
+        type: "SnapshotChunk",
+        protocol: 2,
+        identity,
+        snapshot: opaque("S"),
+        index: 0,
+        datoms: [{
+          entity: opaque("e"),
+          field: ":item/name",
+          value: { type: "string", value: "replayed" },
+          op: "add",
+        }],
+      }));
+      return storage.commitSnapshot({
+        type: "SnapshotCommit",
+        protocol: 2,
+        identity,
+        snapshot: opaque("S"),
+        revision,
+        ordinal: 1,
+        chunks: 1,
+      }, attributes);
+    };
+
+    await expect(replay(selected, opaque("7")))
+      .rejects.toMatchObject({ _tag: "ReplicaSupersededError" });
+    const held = await storage.restore(
+      rotated,
+      attributes,
+      rotated.readCompatibilityHash,
+    );
+    expect(held?.revision).toBe(replacement);
+    expect(held?.ordinal).toBe(4);
+    held!.release();
+
+    await bind(selected, "c");
+    expect((await replay(selected, opaque("8")))?.revision).toBe(opaque("8"));
+    const reclaimed = await storage.restore(
+      selected,
+      attributes,
+      selected.readCompatibilityHash,
+    );
+    expect(reclaimed?.revision).toBe(opaque("8"));
+    expect(reclaimed?.ordinal).toBe(1);
+    reclaimed!.release();
   } finally {
     storage.close();
     await deleteDatabase(name);

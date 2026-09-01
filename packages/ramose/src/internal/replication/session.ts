@@ -824,12 +824,12 @@ export class ReplicationSession {
           { signal: this.controller.signal, lease: this.lease },
         );
         if (installed === undefined) return false;
-        if (installed.revision === frame.revision) {
-          this.publishReplica(frame.identity, installed, false, generation);
-          await this.settled(frame, generation);
-        } else {
+        if (installed.revision !== frame.revision) {
           installed.release();
+          throw new Error("replication snapshot does not install the committed revision");
         }
+        this.publishReplica(frame.identity, installed, false, generation);
+        await this.settled(frame, generation);
         return false;
       }
       case "Change": {

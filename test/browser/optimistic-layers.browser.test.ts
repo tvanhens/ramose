@@ -1111,6 +1111,53 @@ const storedOrdinal = async (
 };
 
 browserTest(
+  "a snapshot the identity has advanced past reconnects instead of being consumed",
+  async ({ browser }) => {
+    const database = `ramose-layer-snapshot-superseded-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    let session: ReplicationSession | undefined;
+    try {
+      await installRecorded(storage, "optimistic-fence");
+      expect(await storage.acknowledgeOrdinal({
+        identity: identity(),
+        revision: recorded.revision,
+        ordinal: 5,
+      })).toBe(5);
+      expect(await storedOrdinal(database)).toBe(5);
+
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence",
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const observed = settledSnapshots(session);
+      await observed.failed;
+
+      expect(session.snapshot().status).toBe("failed");
+      expect(observed.seen.map((snapshot) => snapshot.status)).not.toContain("open");
+      for (const snapshot of observed.seen) {
+        expect(snapshot.value?.stale).not.toBe(false);
+      }
+      expect(await storedOrdinal(database)).toBe(5);
+      const held = await storage.restore(identity(), ATTRIBUTES, READ_COMPATIBILITY);
+      expect(held?.revision).toBe(recorded.revision);
+      expect(held?.ordinal).toBe(5);
+      held!.release();
+    } finally {
+      await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+browserTest(
   "a change re-reaching the published revision acknowledges its higher ordinal",
   async ({ browser }) => {
     const database = `ramose-layer-change-acknowledge-${browser.uniqueId}`;
