@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
-import {
-  CatalogId,
-  DatabaseId,
-  type AuthoritativeOperationInvocation,
-} from "../../src/internal/authorization/index.ts";
+import type { AuthoritativeOperationInvocation } from "../../src/internal/authorization/index.ts";
 import {
   parseOperationRequest,
   serializeOperationInvocation,
@@ -33,10 +29,6 @@ describe("operation invocation transport", () => {
         classes: ["member"],
         exp: 1_700_000_000,
       },
-      routeDerivation: {
-        rootDatabase: DatabaseId.make("operation-root"),
-        graphs: [{ graphEntity: 1000, catalogKey: CatalogId.make("child") }],
-      },
     } as unknown as AuthoritativeOperationInvocation;
 
     const parsed = JSON.parse(serializeOperationInvocation(invocation)) as {
@@ -53,14 +45,10 @@ describe("operation invocation transport", () => {
     expect(claims.tagged).toEqual({ vt: 2, v: "claim-owned" });
     expect(Object.hasOwn(claims.ownProto as object, "__proto__")).toBe(true);
     expect((claims.ownProto as Record<string, unknown>).__proto__).toBe("claim-owned");
-    expect(parsed.invocation.routeDerivation).toEqual({
-      rootDatabase: "operation-root",
-      graphs: [{ graphEntity: 1000, catalogKey: "child" }],
-    });
   });
 
-  test("parses operation addresses, which never carry a caller catalog proof", async () => {
-    const parsed = await Effect.runPromise(parseOperationRequest(new Request(
+  test("rejects database selectors", async () => {
+    const parsed = Effect.runPromise(parseOperationRequest(new Request(
       "https://peer.test/db/root/op",
       {
         method: "POST",
@@ -76,19 +64,12 @@ describe("operation invocation transport", () => {
         }),
       },
     )));
-    expect(parsed.path).toEqual(["acme", "design"]);
-    expect(Object.hasOwn(parsed, "catalogKey")).toBe(false);
-    expect(Object.hasOwn(parsed, "unitHash")).toBe(false);
+    await expect(parsed).rejects.toThrow("database selector 'at' is not supported");
   });
 
   test("refuses a caller-supplied catalog proof at every depth", async () => {
     const supplied: readonly (readonly [string, Record<string, unknown>, HeadersInit])[] = [
       ["root, in the body", { catalog: "root", unitHash: "a".repeat(64) }, {}],
-      ["nested, in the body", {
-        at: ["acme"],
-        catalog: "root",
-        unitHash: "a".repeat(64),
-      }, {}],
       ["root, in the headers", {}, {
         "x-ramose-catalog": "root",
         "x-ramose-unit-hash": "a".repeat(64),
@@ -134,7 +115,6 @@ describe("operation invocation transport", () => {
         }),
       },
     )));
-    expect(parsed.path).toEqual([]);
     expect(parsed.invocationId).toBe("root-invocation");
   });
 

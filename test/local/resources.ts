@@ -10,7 +10,6 @@ const worker = import.meta.resolve("./worker.ts");
 const empty = import.meta.resolve("./empty-worker.ts");
 const production = import.meta.resolve("./production-worker.ts");
 const operationWorker = import.meta.resolve("./operation-worker.ts");
-const graphPathWorker = import.meta.resolve("./graph-path-worker.ts");
 const conformanceWorker = import.meta.resolve("./conformance-worker.ts");
 
 const jwtAuth = () =>
@@ -90,14 +89,6 @@ export const McpBudget = Ramose.Server("McpBudget", {
   main: operationWorker,
   auth: jwtAuth(),
   env: { ...TEST_HOOKS_ENV, RAMOSE_QUERY_MAX_CELLS: "1" },
-});
-
-export const GraphPaths = Ramose.Server("GraphPaths", {
-  peer: "GraphPathsPeer",
-  storage: "GraphPathsStore",
-  main: graphPathWorker,
-  auth: jwtAuth(),
-  env: TEST_HOOKS_ENV,
 });
 
 export const Conformance = Ramose.Server("Conformance", {

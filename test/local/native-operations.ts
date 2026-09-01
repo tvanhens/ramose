@@ -2079,7 +2079,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         Object.freeze({
           origin: new URL(base).origin,
           database,
-          graphPath: [] as readonly string[],
           credential: token,
         });
 
@@ -2149,7 +2148,6 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         await install(base, database);
         const token = await signToken(database, "member", "user_root_proof");
         const endpoint = endpointFor(base, database, token);
-        expect(endpoint.graphPath).toEqual([]);
         const version = (await otherDeploymentVersions())
           .get("nativeItem/createAllocating")!;
         const ref = clientRef();

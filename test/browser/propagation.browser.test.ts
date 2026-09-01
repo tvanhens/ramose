@@ -8,16 +8,11 @@ import { changeFrame } from "../../packages/ramose/test/replication-fixtures.ts"
 import { browserTest } from "./fixtures.ts";
 import { openTab, type TabHandle } from "./tab-harness.ts";
 import {
-  CHILD_LINEAGE,
-  CHILD_PATH,
   identityFor,
   noteDatoms,
-  observeChildRoute,
   opaque,
   REVISION,
   seed,
-  seedDatabases,
-  workspaceDatoms,
 } from "./propagation-tab.ts";
 
 const tabModule = new URL("./propagation-tab.ts", import.meta.url).href;
@@ -33,8 +28,6 @@ type LoopReport = {
   readonly passes: number;
   readonly planned: readonly string[];
   readonly overlapped: boolean;
-  readonly resolved: readonly string[];
-  readonly retired: readonly string[];
 };
 
 const dumpStore = async (
@@ -1479,159 +1472,6 @@ browserTest(
 );
 
 browserTest(
-  "a follower's graph child enqueue reaches the leader's submission loop",
-  async ({ browser }) => {
-    const name = `ramose-propagation-child-${browser.uniqueId}`;
-    const database = databaseOf(browser.uniqueId);
-    const child = `child-${databaseOf(browser.uniqueId)}`.slice(0, 43).padEnd(43, "z");
-    await seed(name, await identityFor(database), NOTES);
-    const leader = await openTab(tabModule);
-    const follower = await openTab(tabModule);
-    try {
-      await leader.call<LoopReport>("lead", { storageName: name, database });
-      await until(
-        () => leader.call<LoopReport>("loop"),
-        (loop) => loop.leadership === "leading",
-        "leadership",
-      );
-      await leader.call<LoopReport>("settle");
-
-      await follower.call("enqueue", {
-        storageName: name,
-        database,
-        child,
-        title: "queued",
-      });
-
-      const woken = await until(
-        () => leader.call<LoopReport>("loop"),
-        (loop) => loop.planned.includes(child),
-        "the leader to plan the follower's graph child",
-      );
-      expect(woken.planned).toContain(child);
-    } finally {
-      await follower.close();
-      await leader.close();
-      await deleteDatabase(name);
-    }
-  },
-);
-
-browserTest(
-  "the leader resolves a follower's graph child from the durable record",
-  async ({ browser }) => {
-    const name = `ramose-propagation-receiver-${browser.uniqueId}`;
-    const database = databaseOf(browser.uniqueId);
-    const childId = `c${database}`.slice(0, 43);
-    const child = await identityFor(childId, CHILD_LINEAGE);
-    await seedDatabases(name, [
-      {
-        identity: await identityFor(database),
-        datoms: [...noteDatoms(NOTES), ...workspaceDatoms(CHILD_LINEAGE[0]!)],
-      },
-      {
-        identity: child,
-        datoms: noteDatoms([{ entity: opaque("g"), title: "child", rank: "a" }]),
-        graphPath: CHILD_PATH,
-        observeRoute: true,
-      },
-    ]);
-    const leader = await openTab(tabModule);
-    const follower = await openTab(tabModule);
-    try {
-      await leader.call<LoopReport>("lead", { storageName: name, database });
-      await until(
-        () => leader.call<LoopReport>("loop"),
-        (loop) => loop.leadership === "leading",
-        "leadership",
-      );
-      await leader.call<LoopReport>("settle");
-
-      await follower.call("enqueue", {
-        storageName: name,
-        database,
-        child: childId,
-        title: "queued",
-      });
-
-      const woken = await until(
-        () => leader.call<LoopReport>("loop"),
-        (loop) => loop.resolved.length > 0,
-        "the leader to resolve the receiver from its durable record",
-      );
-      expect(woken.planned).toContain(childId);
-      expect(woken.resolved).toContain(CHILD_PATH.join("/"));
-    } finally {
-      await follower.close();
-      await leader.close();
-      await deleteDatabase(name);
-    }
-  },
-);
-
-browserTest(
-  "a receiver whose path was renamed keeps the queue the old database owns",
-  async ({ browser }) => {
-    const name = `ramose-propagation-renamed-${browser.uniqueId}`;
-    const database = databaseOf(browser.uniqueId);
-    const before = `c${database}`.slice(0, 43);
-    const after = `d${database}`.slice(0, 43);
-    await seedDatabases(name, [
-      {
-        identity: await identityFor(database),
-        datoms: [...noteDatoms(NOTES), ...workspaceDatoms(CHILD_LINEAGE[0]!)],
-      },
-      {
-        identity: await identityFor(before, CHILD_LINEAGE),
-        datoms: noteDatoms([{ entity: opaque("g"), title: "before", rank: "a" }]),
-        graphPath: CHILD_PATH,
-        observeRoute: true,
-      },
-    ]);
-    const reader = await openTab(tabModule);
-    try {
-      const storage = await IndexedDbReplicaStorage.open(name);
-      try {
-        const receiver = { ...replicaScopeOf(await identityFor(database)), database: before };
-        expect((await storage.graphReceiver(receiver))?.graphPath)
-          .toEqual([...CHILD_PATH]);
-
-        await seedDatabases(name, [{
-          identity: await identityFor(after, CHILD_LINEAGE),
-          datoms: noteDatoms([{ entity: opaque("h"), title: "after", rank: "a" }]),
-          graphPath: CHILD_PATH,
-          observeRoute: true,
-        }]);
-        expect((await storage.graphReceiver(receiver))?.graphPath)
-          .toEqual([...CHILD_PATH]);
-        expect(
-          (await storage.graphReceiver({ ...receiver, database: after }))?.graphPath,
-        ).toEqual([...CHILD_PATH]);
-      } finally {
-        storage.close();
-      }
-
-      await reader.call("enqueue", {
-        storageName: name,
-        database,
-        child: before,
-        title: "queued",
-      });
-      await steady(
-        async () => (await dumpStore(name, "mutation-receipts-v1") as readonly {
-          readonly state: string;
-        }[]).map((receipt) => receipt.state),
-        (states) => states.every((state) => state === "queued"),
-        "the queue of the renamed receiver",
-      );
-    } finally {
-      await reader.close();
-      await deleteDatabase(name);
-    }
-  },
-);
-
-browserTest(
   "a follower's receipt settles from the leader's durable acknowledgement",
   async ({ browser }) => {
     const name = `ramose-propagation-receipt-${browser.uniqueId}`;
@@ -1663,54 +1503,6 @@ browserTest(
       ).toBe("committed");
     } finally {
       leader.close();
-      await follower.close();
-      await deleteDatabase(name);
-    }
-  },
-);
-
-browserTest(
-  "a route another tab confirms resolves this tab's graph child",
-  async ({ browser }) => {
-    const name = `ramose-propagation-route-${browser.uniqueId}`;
-    const database = databaseOf(browser.uniqueId);
-    const child = await identityFor(`c${database}`.slice(0, 43), CHILD_LINEAGE);
-    await seedDatabases(name, [
-      {
-        identity: await identityFor(database),
-        datoms: [...noteDatoms(NOTES), ...workspaceDatoms(opaque("w"))],
-      },
-      {
-        identity: child,
-        graphPath: CHILD_PATH,
-        datoms: noteDatoms([{ entity: opaque("h"), title: "child", rank: "a" }]),
-        observeRoute: false,
-      },
-    ]);
-    const follower = await openTab(tabModule);
-    try {
-      await follower.call("startChild", { storageName: name, database });
-      await until(
-        () => follower.call<string>("sync"),
-        (status) => status === "offline",
-        "the tab's own stream to end",
-      );
-
-      await steady(
-        () => follower.call<QueryReport>("report"),
-        (report) => report.status === "pending",
-        "the unresolved child query",
-      );
-
-      await observeChildRoute(name, child);
-
-      const resolved = await until(
-        () => follower.call<QueryReport>("report"),
-        (report) => report.status === "ready",
-        "the child to resolve from the confirmed route",
-      );
-      expect(resolved.titles).toEqual(["child"]);
-    } finally {
       await follower.close();
       await deleteDatabase(name);
     }
@@ -1759,67 +1551,6 @@ browserTest(
       observer.close();
       await follower.close();
       await leader.close();
-      await deleteDatabase(name);
-    }
-  },
-);
-
-browserTest(
-  "a receiver record written after the queue was planned reschedules its pass",
-  async ({ browser }) => {
-    const name = `ramose-propagation-reschedule-${browser.uniqueId}`;
-    const database = databaseOf(browser.uniqueId);
-    const childId = `c${database}`.slice(0, 43);
-    await seedDatabases(name, [{
-      identity: await identityFor(database),
-      datoms: [...noteDatoms(NOTES), ...workspaceDatoms(CHILD_LINEAGE[0]!)],
-    }]);
-    const tab = await openTab(tabModule);
-    try {
-      await started(tab, name, database);
-      const activated = await tab.call<number>("presented");
-      await tab.call("enqueue", {
-        storageName: name,
-        database,
-        child: childId,
-        title: "queued",
-      });
-      const planned = await until(
-        () => tab.call<number>("presented"),
-        (presented) => presented > activated,
-        "the client's own pass over the child's queue",
-      );
-      await steady(
-        () => tab.call<number>("presented"),
-        (presented) => presented === planned,
-        "the credential presentations of a queue with no receiver record",
-      );
-
-      await observeChildRoute(name, await identityFor(childId, CHILD_LINEAGE));
-      const rescheduled = await until(
-        () => tab.call<number>("presented"),
-        (presented) => presented >= planned + 2,
-        "the pass the receiver record reschedules, and the errand it activates",
-      );
-
-      await steady(
-        () => tab.call<number>("presented"),
-        (presented) => presented === rescheduled,
-        "the credential presentations of a settled queue",
-      );
-      await tab.call("enqueue", {
-        storageName: name,
-        database,
-        child: childId,
-        title: "queued again",
-      });
-      await until(
-        () => tab.call<number>("presented"),
-        (presented) => presented >= rescheduled + 2,
-        "the next pass reactivating the errand whose activation failed",
-      );
-    } finally {
-      await tab.close();
       await deleteDatabase(name);
     }
   },

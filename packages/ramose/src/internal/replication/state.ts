@@ -54,8 +54,6 @@ export const sameReplicationIdentity = (
   left.catalog === right.catalog &&
   left.readView === right.readView &&
   left.readCompatibilityHash === right.readCompatibilityHash &&
-  left.graphLineage.length === right.graphLineage.length &&
-  left.graphLineage.every((entity, index) => entity === right.graphLineage[index]) &&
   left.authenticator === right.authenticator;
 
 const factKey = (datom: LogicalDatom): string =>

@@ -4,7 +4,6 @@ import { useDb, useQuery, useSuspenseQuery } from "ramose/react";
 import {
   boardIssues,
   people,
-  workspaceDb,
   workspaces,
 } from "../../domain/queries.ts";
 import {
@@ -146,12 +145,9 @@ const Column = (props: {
 
 export const BoardScreen = (props: { readonly slug: string }) => {
   const root = useDb<ReefMutations>();
-  const board = useMemo(
-    () => workspaceDb(root, props.slug) as ReefDb,
-    [root, props.slug],
-  );
+  const board = root as ReefDb;
 
-  const rows = useSuspenseQuery(boardIssues(board), board);
+  const rows = useSuspenseQuery(boardIssues(board, props.slug), board);
   const folk = useQuery(people(board), board);
   const rootWorkspaces = useQuery(workspaces(root), root);
   const [selected, setSelected] = useState<string | undefined>(undefined);
@@ -206,9 +202,12 @@ export const BoardScreen = (props: { readonly slug: string }) => {
   };
 
   const createIssue = (status: Status, title: string) => {
+    if (workspace === undefined) return;
     const column = byStatus.get(status) ?? [];
     const last = column[column.length - 1]?.data.rank;
     board.mutate.createIssue({
+      workspace: workspace.id,
+      workspaceSlug: props.slug,
       title,
       status,
       rank: rankBetween(last, undefined),
@@ -249,10 +248,12 @@ export const BoardScreen = (props: { readonly slug: string }) => {
           />
         ))}
       </div>
-      {selectedIssue !== undefined && (
+      {selectedIssue !== undefined && workspace !== undefined && (
         <IssueDetail
           board={board}
           issue={selectedIssue}
+          workspaceId={workspace.id}
+          workspaceSlug={props.slug}
           peopleById={peopleById}
           members={members}
           onClose={() => setSelected(undefined)}

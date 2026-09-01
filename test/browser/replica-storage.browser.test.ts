@@ -38,7 +38,6 @@ const identity = (principal = opaque("p")): ReplicationIdentity => ({
   catalog: CATALOG,
   readView: READ_VIEW,
   readCompatibilityHash: READ_COMPATIBILITY,
-  graphLineage: [],
   authenticator: AUTHENTICATOR,
 });
 

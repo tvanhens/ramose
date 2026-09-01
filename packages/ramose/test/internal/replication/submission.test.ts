@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
-import * as Result from "effect/Result";
 import type { OperationVersion } from "../../../src/internal/authorization/identities.ts";
-import { parseGraphPath } from "../../../src/worker/authorized-read.ts";
 import { parseOperationRequest } from "../../../src/worker/authorized-operation.ts";
 import {
   clientRef,
@@ -60,7 +58,6 @@ const record = (overrides: Partial<OutboxDraft> = {}): OutboxRecord => {
 const endpoint: MutationEndpoint = Object.freeze({
   origin: "https://peer.example",
   database: "movies",
-  graphPath: [],
   credential: "token",
 });
 
@@ -163,7 +160,7 @@ describe("buildMutationRequest", () => {
     });
     const request = buildMutationRequest(
       queued,
-      { ...endpoint, graphPath: ["org", "team"] },
+      endpoint,
       substituteMutationRefs(queued, new Map())!,
     );
     const parsed = await Effect.runPromise(parseOperationRequest(
@@ -174,7 +171,6 @@ describe("buildMutationRequest", () => {
       }),
     ));
 
-    expect(parsed.path).toEqual(["org", "team"]);
     expect(parsed.owner).toEqual({ kind: "entity", name: "issue" });
     expect(parsed.localName).toBe("create");
     expect(parsed.invocationId).toBe(queued.invocation);
@@ -185,20 +181,11 @@ describe("buildMutationRequest", () => {
     expect(parsed.input).toEqual({ title: "offline", assignee: ref });
   });
 
-  test("a nested receiver's path is the one the server actually parses", () => {
+  test("a mutation request contains no database traversal selector", () => {
     const queued = record();
     const substituted = substituteMutationRefs(queued, new Map())!;
     const root = buildMutationRequest(queued, endpoint, substituted).body;
-    const nested = buildMutationRequest(
-      queued,
-      { ...endpoint, graphPath: ["org", "team"] },
-      substituted,
-    ).body;
-
-    const search = new URLSearchParams();
-    expect(Result.getOrThrow(parseGraphPath(root, search))).toEqual([]);
-    expect(Result.getOrThrow(parseGraphPath(nested, search)))
-      .toEqual(["org", "team"]);
+    expect(root.at).toBeUndefined();
   });
 });
 

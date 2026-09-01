@@ -61,7 +61,6 @@ const identity = (overrides: Partial<ReplicationIdentity> = {}): ReplicationIden
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: READ_COMPATIBILITY,
-  graphLineage: [],
   authenticator: opaque("a"),
   ...overrides,
 });
@@ -787,7 +786,6 @@ browserTest(
       const address = replicationActivationAddress({
         server: "http://127.0.0.1:1",
         root: "root",
-        graphPath: [],
       });
       await storage.bindAuthenticated({
         fingerprint: await replicationCredentialFingerprint(
@@ -799,7 +797,7 @@ browserTest(
       });
 
       session = await ReplicationSession.open({
-        activation: { server: "http://127.0.0.1:1", root: "root", graphPath: [] },
+        activation: { server: "http://127.0.0.1:1", root: "root" },
         credential: "known-credential",
         attributes,
         readCompatibilityHash: READ_COMPATIBILITY,

@@ -49,7 +49,6 @@ const identity = (
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: READ_COMPATIBILITY,
-  graphLineage: [],
   authenticator: opaque("a"),
   ...overrides,
 });

@@ -10,7 +10,6 @@ export const INITIAL_REPLICA_BUILD_ID = "ramose-client-v1" as const;
 
 export const MAX_REPLICATION_REQUEST_BYTES = 65_536;
 export const MAX_REPLICATION_FRAME_BYTES = 1_100_000;
-export const MAX_REPLICATION_PATH_SEGMENTS = 1_024;
 export const MAX_REPLICATION_STRING_BYTES = 131_072;
 export const MAX_REPLICATION_RAW_VALUE_PART_BYTES = 98_304;
 export const MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK = 16;
@@ -57,23 +56,14 @@ export const ReplicationScope = Schema.Struct({
 });
 export type ReplicationScope = typeof ReplicationScope.Type;
 
-const GraphPath = Schema.Array(nonEmptyBoundedString(4_096)).check(
-  Schema.isMaxLength(MAX_REPLICATION_PATH_SEGMENTS),
-);
-
 export const ActivationRequest = Schema.Struct({
   type: Schema.Literal("Activate"),
   protocol: Schema.Natural,
-  graphPath: GraphPath,
   scope: ReplicationScope,
   readCompatibilityHash: ReadCompatibilityHash,
   resumeRevision: Schema.optionalKey(OpaqueReplicationId),
 });
 export type ActivationRequest = typeof ActivationRequest.Type;
-
-const GraphLineage = Schema.Array(OpaqueReplicationId).check(
-  Schema.isMaxLength(MAX_REPLICATION_PATH_SEGMENTS),
-);
 
 export const ReplicationIdentity = Schema.Struct({
   version: Schema.Literal(1),
@@ -83,7 +73,6 @@ export const ReplicationIdentity = Schema.Struct({
   catalog: OpaqueReplicationId,
   readView: OpaqueReplicationId,
   readCompatibilityHash: ReadCompatibilityHash,
-  graphLineage: GraphLineage,
   authenticator: OpaqueReplicationId,
 });
 export type ReplicationIdentity = typeof ReplicationIdentity.Type;

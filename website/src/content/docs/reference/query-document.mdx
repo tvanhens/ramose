@@ -93,13 +93,13 @@ Result keys are caller-chosen plain JSON keys. Selection does not grant access t
 }
 ```
 
-The response contains an opaque continuation cursor when another page is available. Do not decode, modify, cache across principals, or reuse it with a different graph or query.
+The response contains an opaque continuation cursor when another page is available. Do not decode, modify, cache across principals, or reuse it with a different database or query.
 
 ## Validation errors
 
 - `invalid_query`: malformed grammar, bad operator, type mismatch, missing bound, or invalid cursor.
 - `unknown_definition`: the referenced public definition is not in the current visible catalog.
-- `inaccessible`: the graph path or requested capability cannot be revealed.
+- `inaccessible`: the requested capability cannot be revealed.
 - `catalog_changed`: `ifCatalog` does not match; rediscover and rebuild the query.
 - `query_budget_exceeded`: the valid query exceeds configured work limits; narrow it.
 

@@ -1,6 +1,6 @@
 ---
 title: Build for MCP clients
-description: Expose the same graphs, queries, operations, and authorization to agents through Ramose's fixed three-tool MCP surface.
+description: Expose the same queries, operations, and authorization to agents through Ramose's fixed three-tool MCP surface.
 ---
 import Learn from "../../../components/Learn.astro";
 import SurfaceMap from "../../../components/SurfaceMap.astro";
@@ -8,7 +8,7 @@ import Next from "../../../components/Next.astro";
 
 Ramose's MCP server is a projection of your application model, not a second API to maintain. Every deployment exposes three tools at `POST /mcp`: `describe`, `query`, and `mutate`.
 
-<Learn learn={["How discovery stays useful as a catalog grows", "How agents traverse child graphs without internal identifiers", "How to bound queries and make mutations safe to retry"]} before={[{ href: "/getting-started/connect-an-agent/", label: "Connect an agent" }]} minutes={14} />
+<Learn learn={["How discovery stays useful as a catalog grows", "How the database stays authorized", "How to bound queries and make mutations safe to retry"]} before={[{ href: "/getting-started/connect-an-agent/", label: "Connect an agent" }]} minutes={14} />
 
 <SurfaceMap />
 
@@ -16,11 +16,10 @@ Ramose's MCP server is a projection of your application model, not a second API 
 
 An agent can only use what the application declares and the principal may access. A good MCP experience therefore starts with a good Ramose model:
 
-1. Give entities, fields, graphs, and operations short descriptions that explain product meaning.
+1. Give entities, fields, and operations short descriptions that explain product meaning.
 2. Model product actions as narrow operations with validated inputs.
-3. Put data in child graphs when isolation, authorization, or lifecycle justifies the boundary.
-4. Grant the exact reads and operations each role needs.
-5. Keep common queries bounded and index-friendly.
+3. Grant the exact reads and operations each role needs.
+4. Keep common queries bounded and index-friendly.
 
 There are no MCP-specific handlers to keep in sync. Catalog descriptions become discovery cards, queries compile from `QueryDocumentV1`, and writes invoke ordinary operations.
 
@@ -30,8 +29,7 @@ Agents should not place an entire application schema in context. Start broad and
 
 ```json
 {
-  "at": [],
-  "browse": { "kinds": ["entity", "graph", "operation"] },
+  "browse": { "kinds": ["entity", "operation"] },
   "page": { "limit": 20 }
 }
 ```
@@ -39,18 +37,6 @@ Agents should not place an entire application schema in context. Start broad and
 Then ask `describe` for exact definitions only when needed. Search terms help when the catalog is large. Results include an opaque `catalogToken`; pass it as `ifCatalog` to `query` and `mutate`. If the model changes, Ramose returns `catalog_changed` so the client can rediscover instead of guessing.
 
 Descriptions are part of your agent interface. Prefer “A work item that can be assigned and completed” to “Task table.” Say what an operation does and what its input means; do not duplicate implementation details.
-
-## Traverse the graph hierarchy
-
-The `at` field is a path of public graph names from the authorized root:
-
-```json
-{ "at": ["acme", "launch"] }
-```
-
-Ramose resolves and authorizes every segment. The client never receives storage ids, database ids, or graph implementation details. Use child paths returned by discovery or an authorized parent query; do not invent paths from user input.
-
-Queries remain inside one graph. If an agent needs information from two projects, query each project graph separately and combine the plain results in the client. The same rule applies to the TypeScript API.
 
 ## Keep agent queries bounded
 
@@ -94,12 +80,12 @@ An `inaccessible` response deliberately does not distinguish missing from unauth
 
 ## Test the shared contract
 
-Test product behavior at the operation and query layers first. Add protocol coverage for the fixed MCP adapter: discovery pagination, catalog changes, bounded query errors, graph traversal, OAuth failures, repeated invocation ids, and inaccessible targets.
+Test product behavior at the operation and query layers first. Add protocol coverage for the fixed MCP adapter: discovery pagination, catalog changes, bounded query errors, OAuth failures, repeated invocation ids, and inaccessible targets.
 
 The strongest end-to-end check is simple: perform a mutation through MCP and observe the ordinary web app converge through its normal synchronization path.
 
 <Next links={[
   { href: "/reference/mcp/", label: "MCP reference", why: "request, response, paging, and error contracts" },
   { href: "/reference/query-document/", label: "QueryDocument v1", why: "the complete portable query grammar" },
-  { href: "/best-practices/security/", label: "Security checklist", why: "review graph paths, grants, errors, and tokens" },
+  { href: "/best-practices/security/", label: "Security checklist", why: "review grants, errors, and tokens" },
 ]} />

@@ -31,7 +31,7 @@ Ramose errors are tagged and safe to branch on. Public errors explain what a cal
 | `catalog_changed` | The inspected catalog token is stale | Rediscover and rebuild the request |
 | `query_budget_exceeded` | A valid query exceeded configured work | Narrow filters, projection, recursion, or page size |
 | `invalid_input` | Input failed the operation schema | Correct input from the catalog |
-| `inaccessible` | A graph, definition, entity, or target cannot be revealed | Stop or ask the user for access |
+| `inaccessible` | A database, definition, entity, or target cannot be revealed | Stop or ask the user for access |
 | `operation_rejected` | The authoritative operation refused the intent | Present the public reason; retry only after a meaningful change |
 | `invocation_conflict` | An invocation id identifies a different prior intent | Fix caller state; never silently repeat as new work |
 
@@ -39,7 +39,7 @@ Ramose errors are tagged and safe to branch on. Public errors explain what a cal
 
 A rejected receipt rolls back that optimistic layer and reapplies later layers. Preserve user-authored input when the UI offers a corrected new invocation.
 
-The browser client resumes graph synchronization and replays durable queued invocations. It does not blindly repeat invalid queries, policy denials, domain rejections, or invocation conflicts.
+The browser client resumes database synchronization and replays durable queued invocations. It does not blindly repeat invalid queries, policy denials, domain rejections, or invocation conflicts.
 
 ## UI guidance
 

@@ -5,9 +5,9 @@ description: Define entities, fields, relations, traits, documentation, defaults
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-The schema is the durable vocabulary of one graph. Spend time on names, identity, cardinality, and ownership before writing screens: those choices flow into queries, policies, operations, offline data, and MCP discovery.
+The schema is the durable vocabulary of the database. Spend time on names, identity, cardinality, and ownership before writing screens: those choices flow into queries, policies, operations, offline data, and MCP discovery.
 
-<Learn learn={["How to define every field shape and relation", "When to use traits instead of duplicate fields", "Which schema changes are additive and which require a fresh graph or migration"]} before={[{ href: "/concepts/data-model/", label: "Data model" }]} minutes={12} />
+<Learn learn={["How to define every field shape and relation", "When to use traits instead of duplicate fields", "Which schema changes are additive and which require a fresh database or migration"]} before={[{ href: "/concepts/data-model/", label: "Data model" }]} minutes={12} />
 
 ## Define entities
 
@@ -75,7 +75,7 @@ Use explicit rank or position fields for order. Do not infer order from creation
 
 ## Optional, indexed, defaulted, and fixed fields
 
-Field options include `optional`, `index`, and `doc`. Creation defaults are computed inside the authoritative operation; fixed values come from trait or graph bindings and cannot be supplied by callers or changed later.
+Field options include `optional`, `index`, and `doc`. Creation defaults are computed inside the authoritative operation; fixed values come from trait bindings and cannot be supplied by callers or changed later.
 
 Index fields used for equality, range filters, ordering, or lookup. Avoid indexing large text that is never filtered or sorted.
 
@@ -110,10 +110,9 @@ Write `doc` text as a contract: state the business meaning, valid unit, safety i
 
 Usually additive: a new entity, trait, operation, optional field, index, or documentation. Potentially incompatible: changing value type, cardinality, unique semantics, ownership, fixed binding, concrete type meaning, or reusing a stable operation key for different behavior.
 
-Ramose applies the current deployed catalog to current and historical facts. Recataloging a graph is unsupported. Plan incompatible changes as a fresh graph or an explicit application migration.
+Ramose applies the current deployed catalog to current and historical facts. Recataloging a database is unsupported. Plan incompatible changes as a fresh database or an explicit application migration.
 
 <Next links={[
-  { href: "/guides/subgraphs/", label: "Graphs and subgraphs", why: "divide the model into independently governed catalogs" },
   { href: "/guides/queries/", label: "Read data", why: "turn fields and relations into result shapes" },
   { href: "/best-practices/data-modeling/", label: "Model domains", why: "review identity, ownership, and history decisions" },
 ]} />

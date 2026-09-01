@@ -105,7 +105,6 @@ export const openReplication = (
     body: JSON.stringify({
       type: "Activate",
       protocol,
-      graphPath: [],
       scope: { type: "database" },
       readCompatibilityHash,
       ...(resumeRevision === undefined ? {} : { resumeRevision }),
@@ -554,22 +553,6 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         ReadCompatibilityHash.make("z".repeat(43)),
       );
       expect(unauthenticated.status).toBe(401);
-
-      const unresolved = await json(
-        base,
-        `/db/${encodeURIComponent(world.database)}/replicate`,
-        {
-          ...post({
-            type: "Activate",
-            protocol: 4,
-            graphPath: ["missing"],
-            scope: { type: "database" },
-            readCompatibilityHash: "z".repeat(43),
-          }),
-          token: world.member,
-        },
-      );
-      expect(unresolved.status).toBe(403);
     });
 
     test("snapshot bytes are complete, logical, and identical after a hidden-only commit", async () => {

@@ -2,11 +2,9 @@ import * as EffectSchema from "effect/Schema";
 import {
   Entity,
   Field,
-  Graph,
   Schema,
   Trait,
   string,
-  type CodeDefinition,
   type Equal,
   type Expect,
 } from "../../src/db/internal.ts";
@@ -23,9 +21,6 @@ import type {
   Receipt,
 } from "../../src/client/index.ts";
 import { useDb, useQuery } from "../../src/react/index.ts";
-
-const Child = Schema("child", {}) satisfies CodeDefinition;
-Child.applyPolicy(() => {});
 
 declare const computedPlacement: boolean;
 
@@ -115,7 +110,7 @@ const Note = Entity("note", {
 
 const Organization = Entity("organization", {
   slug: Field.unique(string(), "strict"),
-}, { traits: [Graph(Child)] });
+});
 
 const AppSchema = Schema("typed-mutations", {
   person: Person,
@@ -233,12 +228,6 @@ issue.mutate.setStatus({ status: 7 });
 export type _entityData = Expect<
   Equal<typeof issue.data.title, string>
 >;
-
-const childDb = db.query.from(Organization).where({ slug: "acme" }).one().db();
-export type _childNamespace = Expect<
-  Equal<typeof childDb.mutate, MutationNamespace>
->;
-export const _childCall: Receipt = childDb.mutate.anything({ whatever: true });
 
 export const _looseDatabase: ClientDatabase = db;
 export const _looseHandle: EntityHandle = issue;

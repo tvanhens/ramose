@@ -205,9 +205,7 @@ export const validateReplicaRoots = (
 const isReplicationIdentityShape = (value: unknown): value is ReplicationIdentity =>
   isRecord(value) && value.version === 1 &&
   ["server", "principal", "database", "catalog", "readView", "readCompatibilityHash",
-    "authenticator"].every((field) => typeof value[field] === "string") &&
-  Array.isArray(value.graphLineage) &&
-  value.graphLineage.every((entity: unknown) => typeof entity === "string");
+    "authenticator"].every((field) => typeof value[field] === "string");
 
 export const replicaManifestIdentity = (
   record: unknown,

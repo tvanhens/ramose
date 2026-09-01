@@ -4,29 +4,29 @@ description: Choose Ramose by its architecture and tradeoffs, not by a feature c
 ---
 import Next from "../../../components/Next.astro";
 
-Ramose is closest to an offline-first application database, a multi-tenant graph store, and an agent backend combined. Its differentiator is not one isolated feature: the local client, nested graph boundaries, policy, operations, and MCP surface are one model.
+Ramose is closest to an offline-first application database, a typed graph store, and an agent backend combined. Its local client, policy, operations, and MCP surface share one model.
 
 ## The short version
 
 | If you would otherwise use | Ramose feels familiar because | The decisive difference |
 | --- | --- | --- |
-| Convex | typed queries and server-controlled functions | complete offline replicas, graph boundaries, your Cloudflare account, native MCP |
-| Instant or Firebase | local-first reads and realtime synchronization | code-defined operations and policy, nested databases, no hosted control plane |
+| Convex | typed queries and server-controlled functions | complete offline replicas, your Cloudflare account, native MCP |
+| Instant or Firebase | local-first reads and realtime synchronization | code-defined operations and policy, no hosted control plane |
 | Supabase | the database enforces access | field-level filtered views and operation grants apply to app and agent callers |
-| D1 + Drizzle | it runs on Cloudflare primitives | sync, history, authorization, graph routing, and MCP are already assembled |
-| Postgres + an ORM | types flow from a schema | no SQL, no cross-graph joins, immutable history, offline query execution |
+| D1 + Drizzle | it runs on Cloudflare primitives | sync, history, authorization, and MCP are already assembled |
+| Postgres + an ORM | types flow from a schema | no SQL, immutable history, offline query execution |
 
-## Choose Ramose when boundaries matter
+## Choose Ramose when related data belongs together
 
-The graph-of-graphs model is unusually good for products whose natural containers should also be isolation and scale boundaries: organizations, projects, notebooks, worlds, repositories, rooms, or devices. Each child graph can have its own catalog and policy while still being reached through an authorized parent path.
+Ramose is a good fit when entities and relations should remain directly queryable under one policy and operation model.
 
 ## Choose something else when SQL is the product
 
-Ramose does not provide ad-hoc SQL, arbitrary cross-graph joins, a BI ecosystem, full-text search, or a managed console. If analysts need to explore the primary store directly, Postgres or a warehouse is usually the better center of gravity. Ramose data can still feed an analytical system.
+Ramose does not provide ad-hoc SQL, cross-database joins, a BI ecosystem, full-text search, or a managed console. If analysts need to explore the primary store directly, Postgres or a warehouse is usually the better center of gravity. Ramose data can still feed an analytical system.
 
 ## The performance trade
 
-Writes inside one graph are committed in order by one authoritative writer. That gives each graph simple ordering, uniqueness, receipts, and history. It also gives each graph a finite write ceiling. Scale writes by choosing graph boundaries that distribute ownership; do not expect one hot graph to scale horizontally without changing semantics.
+Writes are committed in order by one authoritative writer. That gives the database simple ordering, uniqueness, receipts, and history, with a finite write ceiling.
 
 Queries run over a complete authorized local graph in the browser and over immutable filtered values on the server. They are fast when a graph is appropriately sized and queries constrain indexed fields early. A giant graph increases initial sync, browser storage, local index, and query costs.
 
@@ -36,6 +36,5 @@ Ramose is pre-release. APIs are intentionally changing toward the coherent model
 
 <Next links={[
   { href: "/concepts/mental-model/", label: "Mental model", why: "see whether the architecture matches how you think" },
-  { href: "/best-practices/graph-boundaries/", label: "Graph boundary decisions", why: "turn the main tradeoff into a concrete design" },
   { href: "/getting-started/quickstart/", label: "Build the starter", why: "feel the client and operation model directly" },
 ]} />

@@ -42,7 +42,6 @@ const identity = (overrides: Partial<ReplicationIdentity> = {}): ReplicationIden
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: READ_COMPATIBILITY,
-  graphLineage: [],
   authenticator: opaque("a"),
   ...overrides,
 });
@@ -375,8 +374,6 @@ describe("manifest validation", () => {
 
     for (
       const damaged of [
-        { ...identity(), graphLineage: undefined },
-        { ...identity(), graphLineage: [7] },
         { ...identity(), authenticator: undefined },
         { ...identity(), version: 2 },
       ]

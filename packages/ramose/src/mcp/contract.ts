@@ -103,7 +103,6 @@ export const decodeOperationVersionToken = (
     : undefined;
 };
 
-export const MAX_AT_SEGMENTS = 16;
 export const MAX_SEGMENT_LENGTH = 256;
 export const MAX_WHERE_KEYS = 16;
 export const MAX_SELECT_FIELDS = 64;
@@ -128,7 +127,6 @@ export type OperationRefV1 = {
 };
 
 export type MutateArgsV1 = {
-  readonly at: readonly string[];
   readonly operation: OperationRefV1;
   readonly input: Record<string, unknown>;
   readonly invocationId: string;
@@ -147,25 +145,6 @@ const invalidQuery = (message: string): never => {
 
 export const requireArgs = (value: unknown): Record<string, unknown> =>
   isRecord(value) ? value : invalidInput("arguments must be an object");
-
-export const parseAt = (value: unknown): readonly string[] => {
-  if (value === undefined) return Object.freeze([]);
-  if (!Array.isArray(value) || value.length > MAX_AT_SEGMENTS) {
-    return invalidInput("at must be an array of at most 16 graph names");
-  }
-  const segments: string[] = [];
-  for (const segment of value) {
-    if (
-      typeof segment !== "string" ||
-      segment.length === 0 ||
-      segment.length > MAX_SEGMENT_LENGTH
-    ) {
-      return invalidInput("at segments must be bounded, non-empty strings");
-    }
-    segments.push(segment);
-  }
-  return Object.freeze(segments);
-};
 
 const parseScalar = (value: unknown, key: string): QueryScalar => {
   if (typeof value === "string") {
@@ -237,7 +216,6 @@ export const parseQueryDocument = (value: unknown): QueryDocumentV1 => {
 
 export const parseMutateArgs = (value: unknown): MutateArgsV1 => {
   const args = requireArgs(value);
-  const at = parseAt(args.at);
   const operation = args.operation;
   if (!isRecord(operation)) {
     return invalidInput("operation must be { owner, name, version }");
@@ -276,7 +254,6 @@ export const parseMutateArgs = (value: unknown): MutateArgsV1 => {
     return invalidInput("input must be an object");
   }
   return Object.freeze({
-    at,
     operation: Object.freeze({
       owner: Object.freeze({ kind: owner.kind, name: owner.name }),
       name: operation.name,

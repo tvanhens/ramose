@@ -5,15 +5,15 @@ description: Complete authorized browser replicas, durable operation queues, opt
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Ramose treats offline support as a database property, not a UI cache. Every activated graph has one complete, authorized, principal-scoped local database at an opaque revision.
+Ramose treats offline support as a database property, not a UI cache. The configured database has one complete, authorized, principal-scoped local replica at an opaque revision.
 
 <Learn learn={["What is persisted and what is derived", "How queued and optimistic state remains separate from committed state", "What happens on restart, reconnect, revocation, and multiple tabs"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={10} />
 
 ## Activation is lazy
 
-Creating a root or child handle is synchronous and inert. A graph activates when the first observed query or mutation needs it. Only activated graphs synchronize; merely being reachable does not download a sibling.
+Creating the database handle is synchronous and inert. Synchronization activates when the first observed query or mutation needs it.
 
-Once activated, a graph stays synchronized for that client session. A later session restores its last complete value and reactivates it lazily.
+Once activated, the database stays synchronized for that client session. A later session restores its last complete value and reactivates it lazily.
 
 ## The committed replica is always complete
 
@@ -36,7 +36,7 @@ Commit installs the server result and removes the corresponding layer. Rejection
 
 ## The outbox survives failure
 
-Invocations, client-created references, queue order, and receipts are persisted separately from the replica. Restart restores both the committed value and the exact speculative view. Reconnect resumes synchronization, submits in order per graph, and uses durable server receipts to recover lost acknowledgements safely. A connection that dies leaves the queue retrying on its own timer and the reads `offline` until the tab's next activation, which is when they activate again.
+Invocations, client-created references, queue order, and receipts are persisted separately from the replica. Restart restores both the committed value and the exact speculative view. Reconnect resumes synchronization, submits in order, and uses durable server receipts to recover lost acknowledgements safely. A connection that dies leaves the queue retrying on its own timer and the reads `offline` until the tab's next activation, which is when they activate again.
 
 ## One browser, one replica
 
@@ -44,13 +44,11 @@ Tabs coordinate through browser locks, IndexedDB, and broadcast messages. One le
 
 IndexedDB is what every tab agrees on. Broadcast messages only say that something changed and where; they order nothing and carry no values, so a tab reads the durable records. A tab that misses one — no broadcast channel, or a suspended tab — reads the same records on its next activation and reaches the same state, later rather than never.
 
-A tab can queue work for a graph child it never resolved: the leader activates the path that child was last confirmed at, and submits only to a confirmation naming the same database.
-
-Under storage pressure, Ramose reclaims content nothing reaches any more and retries the write; if that is not enough it fails with a typed quota error rather than discarding a graph. Authenticating a different principal under the same account selector fences every tab of the previous one through IndexedDB — including one still authenticating, and one that never saw a broadcast — before the replacement renders; a fenced tab withdraws what it was showing and activates again. Fencing withdraws, it does not delete, and signing out carries no such authentication at all — `clearLocalData()` is what removes an account's data. A refused authentication leaves the client usable: `auth()` runs once per activation, so signing in again activates with the refreshed bearer the next time the tab gains focus or visibility. An in-page sign-in with no tab transition waits for one.
+Under storage pressure, Ramose reclaims content nothing reaches any more and retries the write; if that is not enough it fails with a typed quota error rather than discarding the replica. Authenticating a different principal under the same account selector fences every tab of the previous one through IndexedDB — including one still authenticating, and one that never saw a broadcast — before the replacement renders; a fenced tab withdraws what it was showing and activates again. Fencing withdraws, it does not delete, and signing out carries no such authentication at all — `clearLocalData()` is what removes an account's data. A refused authentication leaves the client usable: `auth()` runs once per activation, so signing in again activates with the refreshed bearer the next time the tab gains focus or visibility. An in-page sign-in with no tab transition waits for one.
 
 ## Security remains observable offline
 
-Revocation, policy changes, graph-path changes, and read-view changes cause authorized resets or removals. Hidden-only server activity produces no visible frames, count gaps, queue signals, or diagnostic metadata. Offline data is locally retained application data; use the same device and session threat model you would use for any offline-capable product.
+Revocation, policy changes, catalog changes, and read-view changes cause authorized resets or removals. Hidden-only server activity produces no visible frames, count gaps, queue signals, or diagnostic metadata. Offline data is locally retained application data; use the same device and session threat model you would use for any offline-capable product.
 
 <Next links={[
   { href: "/guides/react/", label: "React and offline UX", why: "render pending, stale, error, and reconnect states" },

@@ -83,16 +83,12 @@ policy.task.operations.delete.where(session.hasRole("admin"))
 
 Operation expressions are session-only. They can use roles, the subject, and declared claims. They cannot read the target resource. A targeted operation also requires a visible compatible target.
 
-## Graph access needs no enter rule
-
-A readable Graph row and required Graph fields make the child discoverable and openable. The child policy then filters its contents. Every ancestor is reauthorized for long-lived output; an inaccessible ancestor stops descendant synchronization.
-
 ## Test observable behavior
 
-For each role, test visible rows, fields, relations, trait roots, graph paths, operations, history, counts, ordering, limits, errors, and revocation. Compare hidden and nonexistent cases. The security contract includes what callers cannot infer, not just which successful request returns 200.
+For each role, test visible rows, fields, relations, trait roots, operations, history, counts, ordering, limits, errors, and revocation. Compare hidden and nonexistent cases. The security contract includes what callers cannot infer, not just which successful request returns 200.
 
 <Next links={[
   { href: "/guides/sign-in/", label: "Authentication", why: "supply the verified principal and claims" },
   { href: "/reference/policy/", label: "Policy reference", why: "all focuses, expressions, merge rules, and limits" },
-  { href: "/best-practices/security/", label: "Security practices", why: "review graph, offline, MCP, and history exposure" },
+  { href: "/best-practices/security/", label: "Security practices", why: "review offline, MCP, and history exposure" },
 ]} />

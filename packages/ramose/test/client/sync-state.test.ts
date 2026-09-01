@@ -15,7 +15,6 @@ const identity: ReplicationIdentity = {
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: ReadCompatibilityHash.make(opaque("k")),
-  graphLineage: [],
   authenticator: opaque("a"),
 };
 

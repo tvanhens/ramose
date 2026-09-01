@@ -5,24 +5,24 @@ description: Read immutable database values as of an earlier version, inspect ch
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Ramose never overwrites the history of a field. Every committed operation produces a new immutable database value. Current reads use the latest value; temporal queries select another view over the same graph.
+Ramose never overwrites the history of a field. Every committed operation produces a new immutable database value. Current reads use the latest value; temporal queries select another view over the same database.
 
 <Learn learn={["The difference between current, as-of, and history views", "Why current policy governs historical data", "Which recovery and audit workflows temporal queries support"]} before={[{ href: "/concepts/data-model/", label: "Data model" }]} minutes={6} />
 
 ## Current
 
-The normal database is the latest committed value plus any client-local optimistic layers. Server reads use only committed state. Each graph has its own ordered version sequence.
+The normal database is the latest committed value plus any client-local optimistic layers. Server reads use only committed state. The database has one ordered version sequence.
 
 ## As of
 
-An as-of query asks what the graph looked like at or before an earlier version. The schema and policy come from the current deployment; the application facts come from the selected immutable value.
+An as-of query asks what the database looked like at or before an earlier version. The schema and policy come from the current deployment; the application facts come from the selected immutable value.
 
 ```ts
 const yesterday = projectDb.asOf(version)
 const tasks = yesterday.query.from(Task).where({ done: false })
 ```
 
-As-of views are read-only. They are not branches and do not rewind the current graph. Recovery is an explicit current operation that reads the desired past state, validates it, and writes a new present.
+As-of views are read-only. They are not branches and do not rewind the current database. Recovery is an explicit current operation that reads the desired past state, validates it, and writes a new present.
 
 ## History
 

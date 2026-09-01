@@ -106,7 +106,6 @@ const seed = async (
     catalog: opaque("c"),
     readView: opaque("v"),
     readCompatibilityHash: installed.readCompatibilityHash,
-    graphLineage: [],
     authenticator: opaque("a"),
   };
   const datoms: readonly SnapshotDatom[] = notes.flatMap((note) => [
@@ -130,14 +129,14 @@ const seed = async (
     await storage.bindAuthenticated({
       fingerprint: await replicationCredentialFingerprint(
         TOKEN,
-        replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] }),
+        replicationActivationAddress({ server: OFFLINE, root: ROOT }),
         await rootReplicaRouteSlot(),
       ),
       identity,
       candidateKey: {
         selector: await replicationCacheSelector(
           CACHE_KEY,
-          replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] }),
+          replicationActivationAddress({ server: OFFLINE, root: ROOT }),
         ),
         routeSlot: await rootReplicaRouteSlot(),
       },
@@ -507,7 +506,7 @@ browserTest("a stale→ready confirmation does not re-render a child memoized on
       fingerprint: await replicationCredentialFingerprint(
         "session-credential",
         replicationActivationAddress({
-          server: globalThis.location.origin, root: "optimistic-fence", graphPath: [],
+          server: globalThis.location.origin, root: "optimistic-fence",
         }),
         await rootReplicaRouteSlot(),
       ),

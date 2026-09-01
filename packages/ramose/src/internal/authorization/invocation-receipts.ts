@@ -278,15 +278,6 @@ export const invocationScopeMaterial = (
     claims: invocation.caller.claims,
     classes: [...invocation.caller.classes],
   },
-  graph: invocation.routeDerivation === undefined
-    ? null
-    : {
-      rootDatabase: invocation.routeDerivation.rootDatabase,
-      graphs: invocation.routeDerivation.graphs.map((graph) => ({
-        graphEntity: graph.graphEntity,
-        catalogKey: graph.catalogKey,
-      })),
-    },
 });
 
 export const invocationDigestMaterial = (

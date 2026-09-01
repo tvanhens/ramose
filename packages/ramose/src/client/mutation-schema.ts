@@ -47,8 +47,8 @@ type StructInput<S, Fields> = {
 /**
  * One callable mutation method whose declared input is not statically known.
  *
- * A database reached through a deployed `Graph` is bound to a child catalog the
- * parent's types do not name, so nothing here can be said about its inputs.
+ * Used when a catalog is not statically known, so nothing here can be said
+ * about its operation inputs.
  */
 export type MutationMethod = (input?: any) => Receipt;
 

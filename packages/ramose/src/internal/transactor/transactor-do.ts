@@ -2,7 +2,6 @@ import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
-  CatalogId,
   DatabaseId,
   deriveResolvedDatabaseRoute,
   resolveBoundCatalogDefinition,
@@ -101,9 +100,6 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
         ? undefined
         : {
           catalogs: operationCatalogs,
-          ...(databaseCatalogBindings === undefined
-            ? {}
-            : { bindings: databaseCatalogBindings }),
           environment: env,
           now: () => host.now(),
           sealing: () => serverSealingKey(env),
@@ -204,33 +200,14 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
         const raw = body?.derivation;
         if (
           typeof raw !== "object" || raw === null || Array.isArray(raw) ||
-          typeof (raw as { readonly rootDatabase?: unknown }).rootDatabase !== "string" ||
-          !Array.isArray((raw as { readonly graphs?: unknown }).graphs)
+          typeof (raw as { readonly rootDatabase?: unknown }).rootDatabase !== "string"
         ) {
           throw new Error("invalid database route derivation");
         }
-        const graphs = (raw as { readonly graphs: readonly unknown[] }).graphs.map(
-          (entry) => {
-            if (
-              typeof entry !== "object" || entry === null || Array.isArray(entry) ||
-              !Number.isSafeInteger((entry as { readonly graphEntity?: unknown }).graphEntity) ||
-              typeof (entry as { readonly catalogKey?: unknown }).catalogKey !== "string"
-            ) {
-              throw new Error("invalid dynamic Graph binding");
-            }
-            return Object.freeze({
-              graphEntity: (entry as { readonly graphEntity: number }).graphEntity,
-              catalogKey: CatalogId.make(
-                (entry as { readonly catalogKey: string }).catalogKey,
-              ),
-            });
-          },
-        );
         const derivation: DatabaseRouteDerivation = Object.freeze({
           rootDatabase: DatabaseId.make(
             (raw as { readonly rootDatabase: string }).rootDatabase,
           ),
-          graphs: Object.freeze(graphs),
         });
         const route = await Effect.runPromise(deriveResolvedDatabaseRoute(
           this.databaseCatalogBindings,

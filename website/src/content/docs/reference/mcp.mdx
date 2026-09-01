@@ -1,6 +1,6 @@
 ---
 title: MCP server
-description: Reference for Ramose's Streamable HTTP endpoint, OAuth discovery, three fixed tools, graph paths, paging, and errors.
+description: Reference for Ramose's Streamable HTTP endpoint, OAuth discovery, three fixed tools, paging, and errors.
 ---
 import Next from "../../../components/Next.astro";
 
@@ -12,15 +12,13 @@ Ramose serves a remote Model Context Protocol endpoint at `POST /mcp`. It uses S
 
 | Tool | Purpose |
 | --- | --- |
-| `describe` | Browse, search, or inspect the visible catalog and child graph capabilities |
-| `query` | Execute one bounded `QueryDocumentV1` against one authorized graph |
+| `describe` | Browse, search, or inspect the visible catalog |
+| `query` | Execute one bounded `QueryDocumentV1` against the authorized database |
 | `mutate` | Invoke one exact authorized operation and return its durable receipt |
 
 Catalog size never changes the tool list. Entities and operations are arguments discovered at runtime, not dynamically registered tools.
 
 ## Shared request fields
-
-`at: string[]` is the public graph path from the token's authorized root. An empty array addresses the root. Every segment is resolved and authorized; internal graph and storage ids are never accepted.
 
 `ifCatalog` is the opaque catalog token returned by `describe`. Supply it to `query` and `mutate` so a request fails with `catalog_changed` instead of running against a model the client did not inspect.
 
@@ -30,8 +28,7 @@ Browse visible capabilities:
 
 ```json
 {
-  "at": [],
-  "browse": { "kinds": ["entity", "trait", "graph", "operation"] },
+  "browse": { "kinds": ["entity", "trait", "operation"] },
   "page": { "limit": 20, "after": "cursor_opaque" }
 }
 ```
@@ -39,7 +36,7 @@ Browse visible capabilities:
 Search descriptions and names:
 
 ```json
-{ "at": [], "search": "complete task", "page": { "limit": 10 } }
+{ "search": "complete task", "page": { "limit": 10 } }
 ```
 
 Inspect exact references returned by a previous result to obtain field, input, output, relationship, and operator schemas. Results include concise cards, an opaque `catalogToken`, and an opaque continuation cursor when needed.
@@ -48,7 +45,6 @@ Inspect exact references returned by a previous result to obtain field, input, o
 
 ```json
 {
-  "at": ["acme", "launch"],
   "ifCatalog": "cat_opaque",
   "query": {
     "version": 1,
@@ -61,13 +57,12 @@ Inspect exact references returned by a previous result to obtain field, input, o
 }
 ```
 
-The response contains plain JSON rows, an opaque continuation cursor when another page is available, and catalog/basis metadata needed for safe continuation. Queries cannot cross graph boundaries.
+The response contains plain JSON rows, an opaque continuation cursor when another page is available, and catalog/basis metadata needed for safe continuation.
 
 ## mutate
 
 ```json
 {
-  "at": ["acme", "launch"],
   "ifCatalog": "cat_opaque",
   "operation": {
     "kind": "operation",

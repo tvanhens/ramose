@@ -30,21 +30,16 @@ export {
 export type {
   ClientQuery,
   ClientValue,
-  ComposesGraph,
   EntityFocused,
   EntityResult,
-  GraphFocus,
-  GraphFocusDb,
-} from "./graph.ts";
+} from "./query.ts";
 export type { Subscription } from "./subscription.ts";
 export type { SyncState, SyncStatus } from "./sync.ts";
 export {
   ClientClosedError,
   ClientConfigurationError,
   ClientLocalDataError,
-  GraphPathError,
-  GraphReceiverError,
+  DatabaseReceiverError,
   type ClientLocalDataFailure,
-  type GraphPathFailure,
-  type GraphReceiverFailure,
+  type DatabaseReceiverFailure,
 } from "./errors.ts";

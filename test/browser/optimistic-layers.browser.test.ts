@@ -310,7 +310,6 @@ const installRecorded = async (
       replicationActivationAddress({
         server: globalThis.location.origin,
         root,
-        graphPath: [],
       }),
       await rootReplicaRouteSlot(),
     ),
@@ -850,7 +849,6 @@ browserTest(
         activation: {
           server: globalThis.location.origin,
           root: "optimistic-fence",
-          graphPath: [],
         },
         credential: "session-credential",
         attributes: ATTRIBUTES,
@@ -966,7 +964,6 @@ browserTest(
         activation: {
           server: globalThis.location.origin,
           root: "refuses-credentials",
-          graphPath: [],
         },
         credential: CREDENTIAL,
         attributes: ATTRIBUTES,
@@ -991,7 +988,6 @@ browserTest(
         activation: {
           server: globalThis.location.origin,
           root,
-          graphPath: [],
         },
         credential: CREDENTIAL,
         attributes: ATTRIBUTES,
@@ -1064,7 +1060,6 @@ browserTest(
         activation: {
           server: globalThis.location.origin,
           root: "optimistic-fence-resume",
-          graphPath: [],
         },
         credential: CREDENTIAL,
         attributes: ATTRIBUTES,
@@ -1177,7 +1172,6 @@ browserTest(
         activation: {
           server: globalThis.location.origin,
           root: "optimistic-fence-change",
-          graphPath: [],
         },
         credential: CREDENTIAL,
         attributes: ATTRIBUTES,
@@ -1267,7 +1261,6 @@ browserTest(
         activation: {
           server: globalThis.location.origin,
           root: "optimistic-fence",
-          graphPath: [],
         },
         credential: CREDENTIAL,
         attributes: ATTRIBUTES,
@@ -1317,7 +1310,6 @@ browserTest(
         activation: {
           server: globalThis.location.origin,
           root: "optimistic-fence-change",
-          graphPath: [],
         },
         credential: CREDENTIAL,
         attributes: ATTRIBUTES,
@@ -1372,7 +1364,6 @@ browserTest(
         activation: {
           server: globalThis.location.origin,
           root: "optimistic-fence-change",
-          graphPath: [],
         },
         credential: CREDENTIAL,
         attributes: ATTRIBUTES,
@@ -1418,7 +1409,6 @@ browserTest(
         activation: {
           server: globalThis.location.origin,
           root,
-          graphPath: [],
         },
         credential: CREDENTIAL,
         attributes: ATTRIBUTES,

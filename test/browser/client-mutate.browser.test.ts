@@ -3,11 +3,9 @@ import * as EffectSchema from "effect/Schema";
 import {
   Entity,
   Field,
-  Graph,
   Ref,
   Schema,
   string,
-  type CodeDefinition,
 } from "../../packages/ramose/src/db/internal.ts";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import { createClient, type Client } from "../../packages/ramose/src/client/index.ts";
@@ -24,9 +22,6 @@ import { isInvocationId } from "../../packages/ramose/src/db/refs.ts";
 import { Query as PortableQuery } from "../../packages/ramose/src/db/internal.ts";
 import { browserTest } from "./fixtures.ts";
 import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
-
-const Child = Schema("child", {}) satisfies CodeDefinition;
-Child.applyPolicy(() => {});
 
 const Person = Entity("person", { name: string() });
 
@@ -62,7 +57,7 @@ const Issue = Entity("issue", {
 
 const Organization = Entity("organization", {
   slug: Field.unique(string(), "strict"),
-}, { traits: [Graph(Child)] });
+});
 
 const AppSchema = Schema("client-mutate", {
   person: Person,
@@ -173,7 +168,6 @@ const seedRoot = async (name: string): Promise<ReplicationIdentity> => {
     readCompatibilityHash: ReadCompatibilityHash.make(
       installed.readCompatibilityHash,
     ),
-    graphLineage: [],
     authenticator: opaque("a"),
   };
   const storage = await IndexedDbReplicaStorage.open(name);
@@ -201,7 +195,7 @@ const seedRoot = async (name: string): Promise<ReplicationIdentity> => {
     await storage.bindAuthenticated({
       fingerprint: await replicationCredentialFingerprint(
         TOKEN,
-        replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] }),
+        replicationActivationAddress({ server: OFFLINE, root: ROOT }),
         await rootReplicaRouteSlot(),
       ),
       identity,
@@ -239,7 +233,7 @@ browserTest(
       const receipt = db.mutate.createIssue({ title: "Offline" });
 
       await expect(receipt.queued).rejects.toMatchObject({
-        _tag: "GraphReceiverError",
+        _tag: "DatabaseReceiverError",
         reason: "unauthorized",
       });
       expect(receipt.getSnapshot().status).toBe("failed");
@@ -370,37 +364,6 @@ browserTest(
   },
 );
 
-browserTest(
-  "an unresolvable receiver fails before anything durable exists",
-  async ({ browser }) => {
-    const name = `ramose-mutate-unresolved-${browser.uniqueId}`;
-    const identity = await seedRoot(name);
-    const app = client(name);
-    try {
-      const db = app.open();
-      const missing = db.query
-        .from(Organization).where({ slug: "absent" }).one().db();
-
-      const receipt = missing.mutate.createIssue({ title: "Never queued" });
-      await expect(receipt.queued).rejects.toMatchObject({
-        _tag: "GraphReceiverError",
-        reason: "unresolved",
-      });
-      await expect(receipt.committed).rejects.toMatchObject({
-        _tag: "GraphReceiverError",
-      });
-      const state = receipt.getSnapshot();
-      expect(state.status).toBe("failed");
-
-      expect(await queued(name, identity)).toHaveLength(0);
-      expect(await mutationCensus(name)).toEqual(NO_MUTATION_TRACE);
-    } finally {
-      await app.close();
-      await deleteDatabase(name);
-    }
-  },
-);
-
 browserTest("an entity-focused query returns live handles", async ({ browser }) => {
   const name = `ramose-mutate-handles-${browser.uniqueId}`;
   await seedRoot(name);
@@ -495,87 +458,6 @@ browserTest("a paged entity query returns a page of handles", async ({ browser }
     await deleteDatabase(name);
   }
 });
-
-browserTest(
-  "closing while a graph path is unresolved settles its receipt",
-  async ({ browser }) => {
-    const name = `ramose-mutate-close-unresolved-${browser.uniqueId}`;
-    const identity = await seedRoot(name);
-    const app = client(name);
-    const db = app.open();
-    try {
-      const child = db.query
-        .from(Organization)
-        .where({ slug: "never-resolves" })
-        .one()
-        .db();
-      const receipt = child.mutate.createIssue({ title: "Offline" });
-
-      await app.close();
-
-      await expect(receipt.queued).rejects.toMatchObject({
-        _tag: "GraphReceiverError",
-        reason: "closed",
-      });
-      await expect(receipt.committed).rejects.toMatchObject({
-        _tag: "GraphReceiverError",
-      });
-      expect(receipt.getSnapshot().status).toBe("failed");
-      expect(await queued(name, identity)).toHaveLength(0);
-      expect(await mutationCensus(name)).toEqual(NO_MUTATION_TRACE);
-    } finally {
-      await deleteDatabase(name);
-    }
-  },
-);
-
-browserTest(
-  "a waiting receipt settles without waiting for close() to finish draining",
-  async ({ browser }) => {
-    const name = `ramose-mutate-close-drain-${browser.uniqueId}`;
-    const identity = await seedRoot(name);
-    const app = client(name);
-    try {
-      const db = app.open();
-      const issues = db.observe(
-        db.query.from(Issue).orderBy(Issue.title).select({ title: Issue.title }),
-      );
-      const held = issues.subscribe(() => undefined);
-      await waitFor(issues, (snapshot) => snapshot.status === "ready");
-      await waitFor(db.sync, (state) => state.status === "offline");
-
-      const waiting = db.query
-        .from(Organization)
-        .where({ slug: "never-resolves" })
-        .one()
-        .db()
-        .mutate.createIssue({ title: "Waiting" });
-
-      held();
-      const rerunning = issues.subscribe(() => undefined);
-
-      const closing = app.close();
-
-      await expect(waiting.queued).rejects.toMatchObject({
-        _tag: "GraphReceiverError",
-        reason: "closed",
-      });
-      await expect(waiting.committed).rejects.toMatchObject({
-        _tag: "GraphReceiverError",
-      });
-      expect(waiting.getSnapshot().status).toBe("failed");
-
-      await closing;
-      rerunning();
-
-      expect(db.sync.getSnapshot().status).toBe("closed");
-      expect(await queued(name, identity)).toHaveLength(0);
-      expect(await mutationCensus(name)).toEqual(NO_MUTATION_TRACE);
-    } finally {
-      await deleteDatabase(name);
-    }
-  },
-);
 
 browserTest(
   "a committed acknowledgement settles its receipt and keeps held handles",

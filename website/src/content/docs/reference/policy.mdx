@@ -32,7 +32,7 @@ ProjectSchema.applyPolicy(
 )
 ```
 
-Read authorization produces an immutable filtered database capability. All queries, relationship traversal, rule evaluation, counts, graph lookup, and target resolution run against it. The runtime does not query everything and filter the final rows.
+Read authorization produces an immutable filtered database capability. All queries, relationship traversal, rule evaluation, counts, entity lookup, and target resolution run against it. The runtime does not query everything and filter the final rows.
 
 Entity-level rules govern facts for a type. Field rules may narrow especially sensitive attributes. A field rule cannot widen an entity rule.
 
@@ -50,11 +50,11 @@ Operation rules use names checked from the schema. They can depend on the sessio
 
 ## Principal
 
-The principal is derived from a verified token and matched through the configured schema field. Token claims may supply stable identity and trusted coarse attributes; mutable membership and ownership normally belong in graph data so policy changes synchronize like other facts.
+The principal is derived from a verified token and matched through the configured schema field. Token claims may supply stable identity and trusted coarse attributes; mutable membership and ownership normally belong in database rows so policy changes synchronize like other facts.
 
-## Graph context
+## Database context
 
-Policy is evaluated for one authorized graph. Traversing a child graph first resolves and authorizes every parent binding. The child then applies its own schema policy to reads and operations.
+Policy is evaluated for the authorized database before reads or operations run.
 
 ## Composition
 

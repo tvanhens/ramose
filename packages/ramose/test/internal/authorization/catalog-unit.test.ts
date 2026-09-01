@@ -1311,7 +1311,7 @@ describe("read compatibility identity", () => {
     expect(canonicalizeReadPolicy(operationOnlyPolicy)).toBe(canonicalizeReadPolicy(installed));
   });
 
-  test("rotates for field schema, trait composition, and graph-read metadata", async () => {
+  test("rotates for field schema, trait composition, and database-read metadata", async () => {
     const baseline = catalogDescriptor();
     const expected = await Effect.runPromise(hashReadCompatibility(baseline));
     const changedField = {
@@ -1327,6 +1327,6 @@ describe("read compatibility identity", () => {
     expect(await Effect.runPromise(hashReadCompatibility(changedField))).not.toBe(expected);
     expect(await Effect.runPromise(hashReadCompatibility(changedTraits))).not.toBe(expected);
     const descriptor = Result.getOrThrow(readCompatibilityDescriptor(baseline));
-    expect(canonicalizeReadCompatibility(descriptor)).toContain('"graphReadSemantics":"ramose.graph-read/v1"');
+    expect(canonicalizeReadCompatibility(descriptor)).toContain('"readSemantics":"ramose.database-read/v1"');
   });
 });
