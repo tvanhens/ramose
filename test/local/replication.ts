@@ -1827,6 +1827,75 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       ]);
     });
 
+    test("coverage stays prefix-closed when a backfill lands out of commit order", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = SETTLEMENT_BACKFILL_DATABASE;
+      await install(base, database);
+      const principalId = "settlement-order-author";
+      const custodian = await signToken(database, "admin", "settlement-order-custodian", {
+        org: "acme",
+      });
+      const author = await signToken(database, "admin", principalId, { org: "acme" });
+      const owner = await create(base, database, custodian, ConformanceUser.ns, {
+        sub: "settlement-order-owner",
+      });
+      const settlements = async (): Promise<
+        readonly { settled: number; committedT: number; invocationId: string }[]
+      > => {
+        const response = await testAdmin(base, database, "/operation-receipts", {
+          action: "settlements",
+          principalId,
+        });
+        expect(response.status).toBe(200);
+        return response.body.settlements;
+      };
+      const settledThrough = async (basisT: number): Promise<number> => {
+        const response = await testAdmin(base, database, "/operation-receipts", {
+          action: "settled-through",
+          principalId,
+          basisT,
+        });
+        expect(response.status).toBe(200);
+        return response.body.settled as number;
+      };
+      const issue = async (key: string, invocation: string) => {
+        const response = await invoke(base, database, author, {
+          owner: { kind: "entity", name: ConformanceIssue.ns },
+          localName: "create",
+        }, { key, title: key, owner, org: "acme" }, undefined, invocation);
+        expect(response.status).toBe(200);
+        return response;
+      };
+
+      const earlier = crypto.randomUUID();
+      expect((await issue("settlement-order-a", earlier)).body.settled).toBe(1);
+      const first = await settlements();
+      expect(first).toHaveLength(1);
+      const t1 = first[0]!.committedT;
+
+      expect((await testAdmin(base, database, "/operation-receipts", {
+        action: "drop-settlement",
+        principalId,
+        invocationId: earlier,
+      })).body.dropped).toBe(true);
+
+      expect((await issue("settlement-order-b", crypto.randomUUID())).body.settled).toBe(1);
+      const second = await settlements();
+      expect(second).toHaveLength(1);
+      const t2 = second[0]!.committedT;
+      expect(t2).toBeGreaterThan(t1);
+
+      expect((await issue("settlement-order-a", earlier)).body.settled).toBe(2);
+      expect(await settlements()).toEqual([
+        { settled: 1, committedT: t2, invocationId: second[0]!.invocationId },
+        { settled: 2, committedT: t1, invocationId: earlier },
+      ]);
+
+      expect(await settledThrough(t1)).toBe(0);
+      expect(await settledThrough(t2)).toBe(2);
+      expect(await settledThrough(t1 - 1)).toBe(0);
+    });
+
     test("racing invocations from one principal settle distinctly and consecutively", async () => {
       const base = ctx.urls().conformanceUrl;
       const database = SETTLEMENT_RACE_DATABASE;

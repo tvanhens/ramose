@@ -52,10 +52,16 @@ export type OptimisticLayerRecord = {
   readonly refs: readonly MutationRef[];
   readonly sealing: SealingEpoch | null;
   readonly state: OverlayLayerState;
-  readonly settled: number;
+  readonly settled: number | undefined;
   readonly activation: number;
   readonly createdAt: number;
 };
+
+export const settlementRecoverable = (
+  record: OptimisticLayerRecord,
+): boolean =>
+  record.state === "committed-unobserved" && record.settled === undefined &&
+  record.target.type !== "client-ref" && !record.refs.some(isClientRef);
 
 export type OptimisticLayerDraft = {
   readonly record: OutboxRecord;
@@ -280,7 +286,7 @@ export const decodeOptimisticLayer = (
     refs: Object.freeze(refs),
     sealing: embedded,
     state: value.state,
-    settled: isSettlement(value.settled) ? value.settled : 0,
+    settled: isSettlement(value.settled) ? value.settled : undefined,
     activation: value.activation,
     createdAt: value.createdAt,
   });

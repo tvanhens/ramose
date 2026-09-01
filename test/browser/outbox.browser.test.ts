@@ -2000,6 +2000,89 @@ const commitOne = async (
   );
 };
 
+const stripLayerSettlements = async (name: string): Promise<number> => {
+  const database = await openNative(name);
+  const stores = ["mutation-layers-v1", "mutation-receipts-v1"];
+  const transaction = database.transaction(stores, "readwrite");
+  let stripped = 0;
+  for (const store of stores) {
+    const target = transaction.objectStore(store);
+    for (const value of await requestResult<unknown[]>(target.getAll())) {
+      const record = value as Record<string, unknown>;
+      if (record.settled === undefined) continue;
+      delete record.settled;
+      target.put(record);
+      stripped++;
+    }
+  }
+  await transactionDone(transaction);
+  database.close();
+  return stripped;
+};
+
+browserTest(
+  "a settlement-pending layer is re-enqueued once and settles on its replay",
+  async ({ browser }) => {
+    const name = `ramose-outbox-settlement-recovery-${browser.uniqueId}`;
+    const left = identity();
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      const outbox = storage.outbox();
+      const enqueued = await outbox.enqueue(
+        draft(receiver, { enqueuedAt: 1_700_000_000_001 }),
+        { scope, projection: { revision: 3, build: "build-a" } },
+      );
+      const original = await outbox.acknowledge(enqueued, {
+        _tag: "Committed",
+        settled: 1,
+        output: { id: enqueued.invocation },
+        mappings: [],
+      }, 1_700_000_000_001);
+      expect(original.settled).toBe(1);
+      expect(await stripLayerSettlements(name)).toBeGreaterThan(0);
+
+      const layersBefore = await outbox.optimisticLayers(receiver);
+      expect(layersBefore.layers).toHaveLength(1);
+      expect(layersBefore.layers[0]!.settled).toBeUndefined();
+
+      const recovered = await outbox.recoverPendingSettlements(receiver);
+      expect(recovered).toEqual([original.invocation]);
+
+      const restored = await outbox.restore(scope);
+      expect(restored.records).toHaveLength(1);
+      const resubmitted = restored.records[0]!;
+      expect(resubmitted.invocation).toBe(original.invocation);
+      expect(resubmitted.operationVersion).toBe(version);
+      expect(resubmitted.target).toEqual({ type: "none" });
+      expect(resubmitted.input).toEqual({ title: "offline" });
+
+      expect(await outbox.recoverPendingSettlements(receiver)).toEqual([]);
+      expect((await outbox.restore(scope)).records).toHaveLength(1);
+
+      const replayed = await outbox.acknowledge(resubmitted, {
+        _tag: "Committed",
+        settled: 9,
+        output: { id: original.invocation },
+        mappings: [],
+      }, 1_700_000_000_002);
+      expect(replayed.settled).toBe(9);
+
+      const layersAfter = await outbox.optimisticLayers(receiver);
+      expect(layersAfter.layers).toHaveLength(1);
+      expect(layersAfter.layers[0]!.settled).toBe(9);
+      expect(await outbox.recoverPendingSettlements(receiver)).toEqual([]);
+      expect((await outbox.observationState(receiver)).settlements)
+        .toEqual(new Map([[original.invocation, 9]]));
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
 browserTest(
   "one fresh activation fences exactly the markers durable before it began",
   async ({ browser }) => {

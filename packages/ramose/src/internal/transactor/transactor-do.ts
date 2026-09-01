@@ -53,6 +53,7 @@ export interface TransactorTesting {
       readonly storedSettlements: (
         principalId: string,
       ) => readonly { settled: number; committedT: number; invocationId: string }[];
+      readonly settledThrough: (principalId: string, basisT: number) => number;
     },
   ) => Promise<Response | undefined>;
 }
@@ -266,6 +267,8 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
           dropStoredSettlement: (principalId, invocationId) =>
             this.core.dropStoredSettlement(principalId, invocationId),
           storedSettlements: (principalId) => this.core.storedSettlements(principalId),
+          settledThrough: (principalId, basisT) =>
+            this.core.settledThrough(principalId, basisT),
         },
       );
       if (testAdmin !== undefined) return testAdmin;

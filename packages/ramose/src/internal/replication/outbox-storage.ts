@@ -18,6 +18,7 @@ import {
   buildOptimisticLayer,
   decodeOptimisticLayer,
   MUTATION_LAYERS,
+  settlementRecoverable,
   withLayerState,
   type LayerRows,
   type OptimisticLayerRecord,
@@ -826,8 +827,18 @@ export class IndexedDbOutbox {
         record.partition,
         record.sequence,
       ]);
-      await this.stageLayerOutcome(transaction, record, current.state, current.activation);
-      return current;
+      const recovered = current.settled === 0 && next.settled > 0
+        ? buildReceipt({ ...current, settled: next.settled })
+        : current;
+      if (recovered !== current) receipts.put(recovered);
+      await this.stageLayerOutcome(
+        transaction,
+        record,
+        recovered.state,
+        recovered.activation,
+        recovered.settled,
+      );
+      return recovered;
     }
     if (acknowledgement._tag === "Committed") {
       const mapped = new Set(
@@ -881,19 +892,22 @@ export class IndexedDbOutbox {
       layers.delete(key);
       return;
     }
-    const stored = await requestResult<unknown>(layers.get(key));
+    const stored = await requestResult<unknown>(layers.get(key)) ??
+      await requestResult<unknown>(
+        layers.index(BY_INVOCATION).get(record.invocation),
+      );
     if (stored === undefined) return;
     const layer = decodeOptimisticLayer(stored);
     if (layer === undefined) return;
     if (
       layer.state === "committed-unobserved" && layer.activation === activation &&
-      layer.settled >= settled
+      layer.settled !== undefined && layer.settled >= settled
     ) return;
     layers.put(withLayerState(
       layer,
       "committed-unobserved",
       activation,
-      Math.max(layer.settled, settled),
+      layer.settled === undefined ? settled : Math.max(layer.settled, settled),
     ));
   }
 
@@ -1100,6 +1114,84 @@ export class IndexedDbOutbox {
         layers: Object.freeze(remaining),
         unreadable,
       });
+    } catch (error) {
+      await abortTransaction(transaction);
+      throw error;
+    }
+  }
+
+  async recoverPendingSettlements(
+    receiver: ReplicaDatabaseScope,
+  ): Promise<readonly InvocationId[]> {
+    this.assertScopeLive(receiver);
+    const scopeKey = replicaScopeKey(receiver);
+    const partition = mutationPartitionKey(receiver);
+    const observed = await this.preflightScope(receiver);
+    const transaction = this.database.transaction(
+      [MUTATION_LAYERS, MUTATION_OUTBOX, MUTATION_QUEUES, REPLICA_GENERATIONS_STORE],
+      "readwrite",
+    );
+    try {
+      await this.fenceScope(transaction, scopeKey, observed, undefined);
+      const outbox = transaction.objectStore(MUTATION_OUTBOX);
+      const [storedLayers, storedOutbox, cursor] = await Promise.all([
+        requestResult<unknown[]>(
+          transaction.objectStore(MUTATION_LAYERS).getAll(
+            compoundPrefixRange(partition),
+          ),
+        ),
+        requestResult<unknown[]>(outbox.getAll(compoundPrefixRange(partition))),
+        requestResult<unknown>(
+          transaction.objectStore(MUTATION_QUEUES).get(partition),
+        ),
+      ]);
+      const current = cursor === undefined ? undefined : decodeQueueCursor(cursor);
+      if (cursor !== undefined && current === undefined) {
+        throw new OutboxRecordInvalid({
+          reason: "the durable queue cursor of this receiver is unreadable",
+        });
+      }
+      const queued = new Set<InvocationId>();
+      for (const value of storedOutbox) {
+        const record = decodeOutboxRecord(value);
+        if (record !== undefined) queued.add(record.invocation);
+      }
+      const recovered: InvocationId[] = [];
+      let sequence = current?.nextSequence ?? 1;
+      for (const value of storedLayers) {
+        const layer = decodeOptimisticLayer(value);
+        if (layer === undefined || !settlementRecoverable(layer)) continue;
+        if (queued.has(layer.invocation)) continue;
+        outbox.add(buildOutboxRecord({
+          invocation: layer.invocation,
+          receiver: layer.receiver,
+          operation: layer.operation,
+          operationVersion: layer.operationVersion,
+          target: layer.target,
+          input: layer.input,
+          allocations: layer.allocations,
+          inputRefs: [],
+          enqueuedAt: Date.now(),
+        }, scopeKey, sequence));
+        recovered.push(layer.invocation);
+        sequence += 1;
+      }
+      if (recovered.length === 0) {
+        await transactionDone(transaction);
+        return Object.freeze([]);
+      }
+      transaction.objectStore(MUTATION_QUEUES).put(buildQueueCursor({
+        partition,
+        scope: scopeKey,
+        receiver: Object.freeze({ ...receiver }),
+        nextSequence: sequence,
+        sealing: current?.sealing ?? null,
+        activation: current?.activation ?? 0,
+        updatedAt: Date.now(),
+      }));
+      await commitTransaction(transaction);
+      this.announceReceiver("layer", receiver);
+      return Object.freeze(recovered);
     } catch (error) {
       await abortTransaction(transaction);
       throw error;

@@ -408,12 +408,17 @@ export class Transactor {
 
   settledThrough(principalId: string, basisT: number): number {
     const row = this.host.sql.exec(
-      `SELECT MAX(settled) AS settled FROM principal_settlements
-       WHERE principal_id = ? AND committed_t <= ?`,
+      `SELECT
+         (SELECT MIN(settled) FROM principal_settlements
+          WHERE principal_id = ? AND committed_t > ?) AS uncovered,
+         (SELECT MAX(settled) FROM principal_settlements
+          WHERE principal_id = ?) AS highest`,
       principalId,
       basisT,
+      principalId,
     ).toArray()[0];
-    return typeof row?.settled === "number" ? row.settled : 0;
+    if (typeof row?.uncovered === "number") return row.uncovered - 1;
+    return typeof row?.highest === "number" ? row.highest : 0;
   }
 
   private replaceInvocationReceipt(receipt: TerminalInvocationReceipt): void {

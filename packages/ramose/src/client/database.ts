@@ -891,7 +891,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     const state = reconciler?.snapshot();
     const layers = state === undefined
       ? emptyOverlayLayers
-      : composedLayers(state.layers, this.carrying());
+      : composedLayers(state.layers, this.carrying(state.settlements));
     let view = committed;
     let speculative = new Map<number, string>();
     if (committed !== undefined && reconciler !== undefined && layers.length > 0) {
@@ -971,18 +971,29 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.settled = 0;
   }
 
-  private carrying(): readonly OverlayLayer[] {
-    const kept = this.carried.filter((held) => held.settled > this.settled);
-    if (kept.length !== this.carried.length) this.carried = Object.freeze(kept);
+  private carrying(
+    settlements: ReadonlyMap<InvocationId, number>,
+  ): readonly OverlayLayer[] {
+    const kept = this.carried
+      .map((held) => this.settlementOf(held, settlements))
+      .filter((held) => this.uncovered(held));
+    this.carried = Object.freeze(kept);
     return this.carried;
+  }
+
+  private uncovered(layer: OverlayLayer): boolean {
+    return layer.settled === undefined || layer.settled > this.settled;
   }
 
   private settlementOf(
     layer: OverlayLayer,
     settlements: ReadonlyMap<InvocationId, number>,
   ): OverlayLayer {
-    const durable = settlements.get(layer.invocation) ?? 0;
-    return durable > layer.settled ? { ...layer, settled: durable } : layer;
+    const durable = settlements.get(layer.invocation);
+    if (durable === undefined) return layer;
+    return layer.settled === undefined || durable > layer.settled
+      ? { ...layer, settled: durable }
+      : layer;
   }
 
   private carry(state: OptimisticOverlayState): void {
@@ -992,12 +1003,13 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       return;
     }
     const live = new Set(state.layers.map((layer) => layer.invocation));
-    const kept = this.carrying().filter((held) => !live.has(held.invocation));
+    const kept = this.carrying(state.settlements)
+      .filter((held) => !live.has(held.invocation));
     const retired = this.composed
       .map((layer) => this.settlementOf(layer, state.settlements))
       .filter(
         (layer) =>
-          !live.has(layer.invocation) && layer.settled > this.settled &&
+          !live.has(layer.invocation) && this.uncovered(layer) &&
           !kept.some((held) => held.invocation === layer.invocation),
       );
     this.carried = Object.freeze([...kept, ...retired]);

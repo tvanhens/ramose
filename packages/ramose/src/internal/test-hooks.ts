@@ -238,6 +238,7 @@ export const handleIsolateTestAdmin = async (
     readonly storedSettlements: (
       principalId: string,
     ) => readonly { settled: number; committedT: number; invocationId: string }[];
+    readonly settledThrough: (principalId: string, basisT: number) => number;
   },
 ): Promise<Response | undefined> => {
   if (!path.startsWith("/admin/test/")) return undefined;
@@ -304,6 +305,7 @@ export const handleIsolateTestAdmin = async (
       action?: unknown;
       principalId?: unknown;
       invocationId?: unknown;
+      basisT?: unknown;
     };
     const principalId = typeof body.principalId === "string" ? body.principalId : "";
     if (body.action === "drop-settlement") {
@@ -318,6 +320,14 @@ export const handleIsolateTestAdmin = async (
         return json({ error: "settlements needs principalId" }, 400);
       }
       return json({ settlements: inspect.storedSettlements(principalId) });
+    }
+    if (body.action === "settled-through") {
+      if (principalId === "" || !Number.isSafeInteger(body.basisT)) {
+        return json({ error: "settled-through needs principalId and basisT" }, 400);
+      }
+      return json({
+        settled: inspect.settledThrough(principalId, body.basisT as number),
+      });
     }
     return json({ count: inspect.operationReceiptCount() });
   }

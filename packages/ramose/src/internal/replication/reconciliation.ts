@@ -96,6 +96,9 @@ export type ReconciliationStore = ActivationFenceStore & {
   readonly mappedHandles: (
     receiver: ReplicaDatabaseScope,
   ) => Promise<ReadonlyMap<string, EntityId>>;
+  readonly recoverPendingSettlements: (
+    receiver: ReplicaDatabaseScope,
+  ) => Promise<readonly InvocationId[]>;
 };
 
 export type ReconciliationOptions = {
@@ -181,6 +184,7 @@ export class OptimisticReconciler {
   }
 
   private async readDurableLayers(): Promise<OptimisticOverlayState> {
+    await this.store.recoverPendingSettlements(this.receiver).catch(() => undefined);
     const [rows, handles] = await Promise.all([
       this.store.optimisticLayers(this.receiver),
       this.store.mappedHandles(this.receiver),

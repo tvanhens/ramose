@@ -60,6 +60,38 @@ const dumpStore = async (
   return records;
 };
 
+const stripSettlements = async (name: string): Promise<number> => {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  const stores = ["mutation-layers-v1", "mutation-receipts-v1"];
+  const transaction = database.transaction(stores, "readwrite");
+  let stripped = 0;
+  for (const store of stores) {
+    const target = transaction.objectStore(store);
+    const records = await new Promise<unknown[]>((resolve, reject) => {
+      const request = target.getAll();
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    for (const record of records) {
+      const value = record as Record<string, unknown>;
+      if (value.settled === undefined) continue;
+      delete value.settled;
+      target.put(value);
+      stripped++;
+    }
+  }
+  await new Promise<void>((resolve) => {
+    transaction.addEventListener("complete", () => resolve(), { once: true });
+    transaction.addEventListener("abort", () => resolve(), { once: true });
+  });
+  database.close();
+  return stripped;
+};
+
 const NOTES = [
   { entity: opaque("e"), title: "first", rank: "a" },
   { entity: opaque("f"), title: "second", rank: "b" },
@@ -1189,6 +1221,136 @@ browserTest(
             `${label} to retire the layer the settlement now covers`,
           ),
         ).toEqual(["first", "second"]);
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a layer acknowledged before settlements existed is carried, never snapped back",
+  async ({ browser }) => {
+    const name = `ramose-propagation-legacy-layer-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    const tabs = [[writer, "the writer"], [reader, "the reader"]] as const;
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of tabs) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+
+      expect(await stripSettlements(name)).toBeGreaterThan(0);
+      for (const [tab] of tabs) tab.wake();
+      for (const [tab, label] of tabs) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the settlement-pending layer`,
+        );
+      }
+
+      const invocation = queued.records[0]!.invocation;
+      const requeued = await until(
+        async () => (await leader.outbox().restore(replicaScopeOf(identity))).records,
+        (records) => records.length === 1,
+        "a reconciler pass to re-enqueue the settlement-pending invocation",
+      );
+      expect(requeued[0]!.invocation).toBe(invocation);
+      expect(requeued[0]!.input).toEqual(queued.records[0]!.input);
+      expect(await leader.outbox().recoverPendingSettlements(receiver)).toEqual([]);
+
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+      for (const [tab] of tabs) tab.wake();
+
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved")
+          ),
+        "the settlement-pending layer across the fence",
+        25,
+      );
+      for (const [tab, label] of tabs) await monotone(tab, label, ["first"], "moved");
+
+      const replaying = await leader.outbox().restore(replicaScopeOf(identity));
+      expect(replaying.records.map((record) => record.invocation)).toEqual([invocation]);
+      expect((await leader.outbox().acknowledge(replaying.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      })).settled).toBe(1);
+      expect((await leader.outbox().observationState(receiver)).settlements)
+        .toEqual(new Map([[invocation, 1]]));
+
+      for (const [tab] of tabs) tab.wake();
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved")
+          ),
+        "the recovered layer before its settlement is covered",
+        15,
+      );
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+
+      for (const [tab, label] of tabs) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("server-decided"),
+            `${label} to retire the recovered layer on coverage`,
+          ),
+        ).toEqual(["server-decided", "second", "third"]);
+        await monotone(tab, label, ["first"], "moved");
       }
     } finally {
       leader.close();
