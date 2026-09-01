@@ -1,6 +1,10 @@
 import { expect } from "vitest";
 import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
-import { replicaScopeOf } from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
+import {
+  replicaDatabaseScopeOf,
+  replicaScopeOf,
+} from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
+import { changeFrame } from "../../packages/ramose/test/replication-fixtures.ts";
 import { browserTest } from "./fixtures.ts";
 import { openTab, type TabHandle } from "./tab-harness.ts";
 import {
@@ -323,6 +327,304 @@ browserTest(
         ),
       ).toEqual(["renamed", "second"]);
     } finally {
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+const renamed = (
+  entity: string,
+  from: string,
+  to: string,
+): readonly {
+  readonly entity: string;
+  readonly field: string;
+  readonly value: { readonly type: "string"; readonly value: string };
+  readonly op: "add" | "retract";
+}[] => [
+  { entity, field: ":note/title", value: { type: "string", value: from }, op: "retract" },
+  { entity, field: ":note/title", value: { type: "string", value: to }, op: "add" },
+];
+
+const regressions = (
+  history: readonly QueryReport[],
+  left: readonly string[],
+  reached: string,
+): readonly (readonly string[])[] => {
+  const moved = history.findIndex((report) => report.titles.includes(reached));
+  if (moved < 0) return [];
+  return history.slice(moved + 1)
+    .filter((report) => left.some((title) => report.titles.includes(title)))
+    .map((report) => report.titles);
+};
+
+const monotone = async (
+  tab: TabHandle,
+  label: string,
+  left: readonly string[],
+  reached: string,
+): Promise<void> => {
+  expect(
+    regressions(await tab.call<readonly QueryReport[]>("published"), left, reached),
+    `${label} rendered a position the card had already left`,
+  ).toEqual([]);
+};
+
+browserTest(
+  "a fenced layer never returns a tab to the position the card left",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-snapback-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("moved"),
+            `${label} to render the optimistic layer`,
+          ),
+        ).toEqual(["moved", "second"]);
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      expect(queued.records).toHaveLength(1);
+      expect(
+        (await leader.outbox().acknowledge(queued.records[0]!, {
+          _tag: "Committed",
+          output: {},
+          mappings: [],
+        })).state,
+      ).toBe("committed");
+      expect(
+        await until(
+          () => writer.call<string>("receipt"),
+          (status) => status === "committed",
+          "the writer's receipt to settle",
+        ),
+      ).toBe("committed");
+
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+      expect(
+        (await leader.outbox().receipt(receiver, queued.records[0]!.invocation))
+          ?.observation,
+      ).toBe("observed");
+
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved")
+          ),
+        "the rendered position after the fence",
+        25,
+      );
+      await monotone(reader, "the reader", ["first"], "moved");
+      await monotone(writer, "the writer", ["first"], "moved");
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 3,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        datoms: renamed(NOTES[0]!.entity, "first", "moved"),
+      }));
+      installed?.release();
+
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => tab.call<QueryReport>("report"),
+            (rendered) =>
+              rendered.titles.includes("moved") && rendered.pending[0] === false,
+            `${label} to converge on the committed position`,
+          ),
+        ).toMatchObject({ titles: ["moved", "second"], pending: [false, false] });
+      }
+      await monotone(reader, "the reader", ["first"], "moved");
+      await monotone(writer, "the writer", ["first"], "moved");
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a fence over the earlier layer keeps the later one the tabs already render",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-partial-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the first layer",
+      );
+      await writer.call<string>("rename", { from: "moved", to: "moved-again" });
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("moved-again"),
+            `${label} to render the later layer`,
+          ),
+        ).toEqual(["moved-again", "second"]);
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      expect(queued.records).toHaveLength(2);
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      const fenced = await leader.outbox().fenceActivation(receiver, activation);
+      expect(fenced.fenced).toEqual([queued.records[0]!.invocation]);
+      expect(fenced.layers.map((layer) => layer.invocation))
+        .toEqual([queued.records[1]!.invocation]);
+
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved-again")
+          ),
+        "the rendered position after the partial fence",
+        25,
+      );
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 3,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        datoms: renamed(NOTES[0]!.entity, "first", "moved"),
+      }));
+      installed?.release();
+
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => tab.call<QueryReport>("report"),
+            (rendered) => rendered.pending[0] === true,
+            `${label} to render the later layer over the committed position`,
+          ),
+        ).toMatchObject({ titles: ["moved-again", "second"] });
+        await monotone(tab, label, ["first", "moved"], "moved-again");
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a fence after the committed outcome arrived retires the layer at once",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-outcome-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        output: {},
+        mappings: [],
+      });
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 3,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("third"),
+            `${label} to adopt the committed change`,
+          ),
+        ).toEqual(["moved", "second", "third"]);
+      }
+
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("server-decided"),
+            `${label} to render the authoritative outcome`,
+          ),
+        ).toEqual(["server-decided", "second", "third"]);
+      }
+    } finally {
+      leader.close();
       await reader.close();
       await writer.close();
       await deleteDatabase(name);

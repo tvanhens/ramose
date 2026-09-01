@@ -7,9 +7,14 @@ import {
   type LoweredKernelQuery,
   type QueryObject,
 } from "../db/query/index.ts";
+import type { InvocationId } from "../db/refs.ts";
 import type { Db } from "../internal/core/db.ts";
 import { query as runQuery } from "../internal/core/query/engine.ts";
-import { emptyOverlayLayers } from "../internal/replication/overlay-layers.ts";
+import {
+  emptyOverlayLayers,
+  type OverlayLayer,
+  type OverlayLayers,
+} from "../internal/replication/overlay-layers.ts";
 import type { ReplicationIdentity } from "../internal/replication/protocol.ts";
 import {
   OptimisticReconciler,
@@ -130,6 +135,22 @@ type RetiredObservation = {
   readonly snapshot: QuerySnapshot<unknown>;
   readonly plain: unknown;
 };
+
+type CarriedLayer = {
+  readonly layer: OverlayLayer;
+  readonly basis: number;
+  readonly activation: number;
+};
+
+const composedLayers = (
+  layers: OverlayLayers,
+  carried: readonly CarriedLayer[],
+): OverlayLayers =>
+  carried.length === 0 ? layers : Object.freeze(
+    [...layers, ...carried.map((held) => held.layer)].sort(
+      (left, right) => left.sequence - right.sequence,
+    ),
+  );
 
 export type DatabaseContext = {
   readonly server: string;
@@ -335,6 +356,10 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private releaseOverlay: (() => void) | undefined;
   private identity: ReplicationIdentity | undefined;
   private committed: Db | undefined;
+  private basis = 0;
+  private composed: OverlayLayers = emptyOverlayLayers;
+  private carried: readonly CarriedLayer[] = [];
+  private acknowledged = new Map<InvocationId, number>();
   private account: string | undefined;
   private handles: ReadonlyMap<string, number> = new Map();
   private reverse: Map<number, string> | undefined;
@@ -746,6 +771,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.committed = value.db.withComposition(catalog.composition);
       this.handles = value.handles;
       this.reverse = undefined;
+      this.basis = value.ordinal;
     }
     this.publishStatus(this.statusOf(snapshot));
     this.spawn(this.recompute());
@@ -766,6 +792,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.generation++;
     this.committed = undefined;
     this.forgetHandles();
+    this.forgetLayers();
     this.withdrawEntities();
     this.forgetCredential();
     this.viewValue = undefined;
@@ -793,6 +820,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.generation++;
     this.committed = undefined;
     this.forgetHandles();
+    this.forgetLayers();
     this.withdrawEntities();
     this.forgetCredential();
     this.viewValue = undefined;
@@ -867,12 +895,15 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     const generation = ++this.generation;
     const committed = this.committed;
     const reconciler = this.reconciler;
-    const layers = reconciler?.snapshot().layers ?? emptyOverlayLayers;
+    const state = reconciler?.snapshot();
+    const layers = state === undefined
+      ? emptyOverlayLayers
+      : composedLayers(state.layers, this.carrying(state.activation));
     let view = committed;
     let speculative = new Map<number, string>();
     if (committed !== undefined && reconciler !== undefined && layers.length > 0) {
       try {
-        const overlay = await reconciler.view(committed);
+        const overlay = await reconciler.view(committed, layers);
         view = overlay.db;
         for (const [handle, local] of overlay.speculative) {
           speculative.set(local, handle);
@@ -941,6 +972,57 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.speculative = new Map();
   }
 
+  private forgetLayers(): void {
+    this.basis = 0;
+    this.composed = emptyOverlayLayers;
+    this.carried = [];
+    this.acknowledged = new Map();
+  }
+
+  private carrying(activation: number): readonly CarriedLayer[] {
+    const kept = this.carried.filter((held) =>
+      held.basis === this.basis && held.activation === activation
+    );
+    if (kept.length !== this.carried.length) this.carried = Object.freeze(kept);
+    return this.carried;
+  }
+
+  private carry(state: OptimisticOverlayState): void {
+    if (state.updateRequired.length > 0) {
+      this.composed = state.layers;
+      this.carried = [];
+      this.acknowledged.clear();
+      return;
+    }
+    const live = new Set(state.layers.map((layer) => layer.invocation));
+    const kept = this.carrying(state.activation).filter((held) =>
+      !live.has(held.layer.invocation)
+    );
+    const retired = this.composed.filter(
+      (layer) =>
+        layer.state === "committed-unobserved" && !live.has(layer.invocation) &&
+        this.acknowledged.get(layer.invocation) === this.basis &&
+        !kept.some((held) => held.layer.invocation === layer.invocation),
+    );
+    this.carried = Object.freeze([
+      ...kept,
+      ...retired.map((layer) => ({
+        layer,
+        basis: this.basis,
+        activation: state.activation,
+      })),
+    ]);
+    for (const invocation of [...this.acknowledged.keys()]) {
+      if (!live.has(invocation)) this.acknowledged.delete(invocation);
+    }
+    for (const layer of state.layers) {
+      if (layer.state === "committed-unobserved" && !this.acknowledged.has(layer.invocation)) {
+        this.acknowledged.set(layer.invocation, this.basis);
+      }
+    }
+    this.composed = state.layers;
+  }
+
   private withdrawEntities(): void {
     this.registry?.clear();
     this.registry = undefined;
@@ -985,6 +1067,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
 
   private overlay(state: OptimisticOverlayState): void {
     if (this.closed) return;
+    this.carry(state);
     const moved = this.registry?.observe(state.pending);
     if (moved !== undefined && moved.size > 0) this.republishLocal(moved);
     const mappings = this.reconciler?.mappings();
@@ -1027,6 +1110,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.reconcilerPending = undefined;
     this.committed = undefined;
     this.forgetHandles();
+    this.forgetLayers();
     this.withdrawEntities();
     this.forgetCredential();
     this.viewValue = undefined;

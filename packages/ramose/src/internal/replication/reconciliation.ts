@@ -237,8 +237,8 @@ export class OptimisticReconciler {
     });
   }
 
-  view(committed: Db): Promise<OverlayView> {
-    return projectOverlay(committed, this.state.layers, this.resolver());
+  view(committed: Db, layers: OverlayLayers = this.state.layers): Promise<OverlayView> {
+    return projectOverlay(committed, layers, this.resolver());
   }
 
   private async applyFence(outcome: ActivationFenceOutcome): Promise<void> {
