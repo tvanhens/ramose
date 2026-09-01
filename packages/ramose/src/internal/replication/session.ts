@@ -37,10 +37,9 @@ import {
   type ReplicationActivationInput,
 } from "./transport.ts";
 import {
-  replicaRoutePathKey,
+  replicaDatabaseRouteKey,
   replicaRouteScope,
-  replicaRouteSlotFor,
-  stableReplicaRouteSlot,
+  rootReplicaRouteSlot,
   type ReplicaRouteSlot,
 } from "./route-slot.ts";
 
@@ -66,7 +65,6 @@ export type ReplicationSessionOptions = {
   readonly activation: ReplicationActivationInput;
   readonly credential: string;
   readonly cacheKey?: string;
-  readonly graphLineage?: readonly string[];
   readonly attributes: readonly AttributeSpec[];
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly storage: IndexedDbReplicaStorage;
@@ -345,16 +343,10 @@ export class ReplicationSession {
     const activation = replicationActivationAddress(options.activation);
     const observation = {
       scope: await replicaRouteScope(activation),
-      pathKey: await replicaRoutePathKey(activation.graphPath),
+      pathKey: await replicaDatabaseRouteKey(),
     };
-    const observedSlot = options.graphLineage !== undefined
-      ? undefined
-      : await options.storage.observedRouteSlot(observation);
-    const routeSlot: ReplicaRouteSlot = observedSlot ?? await replicaRouteSlotFor({
-      graphPath: activation.graphPath,
-      lineage: options.graphLineage,
-    });
-    const slotConfirmed = activation.graphPath.length === 0 || observedSlot !== undefined;
+    const routeSlot: ReplicaRouteSlot = await rootReplicaRouteSlot();
+    const slotConfirmed = true;
     const [fingerprint, selector] = await Promise.all([
       replicationCredentialFingerprint(options.credential, activation, routeSlot),
       options.cacheKey === undefined
@@ -432,10 +424,6 @@ export class ReplicationSession {
                 session.quarantine(generation);
                 throw new Error("replication identity does not confirm the installed read compatibility");
               }
-              if (frameIdentity.graphLineage.length !== activation.graphPath.length) {
-                session.quarantine(generation);
-                throw new Error("replication identity does not describe every path segment");
-              }
               if (responseIdentity === undefined) {
                 responseIdentity = frameIdentity;
                 session.track(frameIdentity);
@@ -456,7 +444,7 @@ export class ReplicationSession {
                 if (action === "invalid") {
                   throw new Error("first authenticated frame cannot confirm a cached replica");
                 }
-                const confirmedSlot = await stableReplicaRouteSlot(frameIdentity.graphLineage);
+                const confirmedSlot = routeSlot;
                 const confirmedFingerprint = confirmedSlot === routeSlot
                   ? fingerprint
                   : await replicationCredentialFingerprint(
@@ -473,7 +461,6 @@ export class ReplicationSession {
                   route: {
                     ...observation,
                     slot: confirmedSlot,
-                    graphPath: activation.graphPath,
                   },
                 }, { signal: session.controller.signal, lease: session.lease });
                 if (!session.current(generation)) return;

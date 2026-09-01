@@ -182,7 +182,6 @@ describe("authoritative invocation receipt identity", () => {
         claims: { sub: "user-1", org: "acme" },
         classes: ["member", "operator"],
       },
-      graph: null,
     });
     const material = JSON.stringify(invocationDigestMaterial(value, operationVersion));
     expect(material).not.toMatch(/source|callback|bytecode|function|run/);

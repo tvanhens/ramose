@@ -53,13 +53,6 @@ import {
   type DeployedCatalogDefinitions,
   type InstalledCatalogDefinition,
 } from "./definitions.ts";
-import {
-  deriveResolvedDatabaseRoute,
-  resolveBoundCatalogDefinition,
-  type DatabaseCatalogBindings,
-  type DatabaseRouteDerivation,
-  type ResolvedDatabaseRoute,
-} from "./database-bindings.ts";
 import type {
   CatalogId,
   CatalogUnitHash,
@@ -73,7 +66,6 @@ import type { JsonValue } from "./json.ts";
 import type { AuthorizationPrincipal } from "./principal.ts";
 import {
   constructAuthorizedRequestContext,
-  constructAuthorizedResolvedRequestContext,
   type AuthenticatedCaller,
   type AuthorizedRequestContext,
 } from "./request.ts";
@@ -111,7 +103,6 @@ export type OperationInvocation = {
   readonly allocations?: readonly InvocationAllocation[];
   readonly input: unknown;
   readonly caller: AuthenticatedCaller;
-  readonly routeDerivation?: DatabaseRouteDerivation;
 };
 
 export type OperationExecution = {
@@ -124,7 +115,6 @@ export type OperationExecution = {
 
 export type OperationRuntime = {
   readonly catalogs: DeployedCatalogDefinitions;
-  readonly bindings?: DatabaseCatalogBindings;
   readonly environment: unknown;
   readonly now: () => number;
   readonly sealing?: () => Promise<ServerSealingKey>;
@@ -132,7 +122,6 @@ export type OperationRuntime = {
 
 export type ResolvedOperationCatalog = {
   readonly deployed: DeployedCatalogDefinition;
-  readonly route?: ResolvedDatabaseRoute;
 };
 
 const OPERATION_ADMISSION: unique symbol = Symbol("ramose.operation-admission");
@@ -159,37 +148,13 @@ export const resolveOperationCatalog = Effect.fn(
   runtime: OperationRuntime,
   invocation: OperationInvocation,
 ): Effect.fn.Return<ResolvedOperationCatalog, Unauthorized> {
-  if (invocation.routeDerivation === undefined) {
-    const deployed = resolveDeployedCatalogDefinition(runtime.catalogs, {
-      database: invocation.database,
-      catalogKey: invocation.catalogKey,
-      unitHash: invocation.unitHash,
-    });
-    if (Result.isFailure(deployed)) return yield* deny();
-    return Object.freeze({ deployed: deployed.success });
-  }
-
-  if (
-    runtime.bindings === undefined ||
-    !Array.isArray(invocation.routeDerivation.graphs)
-  ) {
-    return yield* deny();
-  }
-  const route = yield* deriveResolvedDatabaseRoute(
-    runtime.bindings,
-    invocation.routeDerivation,
-  ).pipe(Effect.mapError(() => deny()));
-  if (
-    route.database !== invocation.database ||
-    route.deployed.catalogKey !== invocation.catalogKey ||
-    route.deployed.unitHash !== invocation.unitHash
-  ) {
-    return yield* deny();
-  }
-  const deployed = yield* Effect.fromResult(
-    resolveBoundCatalogDefinition(runtime.bindings, route),
-  ).pipe(Effect.mapError(() => deny()));
-  return Object.freeze({ deployed, route });
+  const deployed = resolveDeployedCatalogDefinition(runtime.catalogs, {
+    database: invocation.database,
+    catalogKey: invocation.catalogKey,
+    unitHash: invocation.unitHash,
+  });
+  if (Result.isFailure(deployed)) return yield* deny();
+  return Object.freeze({ deployed: deployed.success });
 });
 
 export class OperationRuntimeFault extends Error {
@@ -1485,21 +1450,14 @@ const admitOperationGrantOnDb = async (
     descriptor,
   );
   const context = await Effect.runPromise(
-    resolved.route === undefined || runtime.bindings === undefined
-      ? constructAuthorizedRequestContext({
-        authenticate: Effect.succeed(authorizationCaller),
-        catalogs: runtime.catalogs.catalogs,
-        routeDatabase: invocation.database,
-        catalogKey: invocation.catalogKey,
-        unitHash: invocation.unitHash,
-        currentDb: () => Effect.succeed(currentDb),
-      }, authorizationCaller)
-      : constructAuthorizedResolvedRequestContext({
-        authenticate: Effect.succeed(authorizationCaller),
-        bindings: runtime.bindings,
-        route: resolved.route,
-        currentDb: () => Effect.succeed(currentDb),
-      }, authorizationCaller),
+    constructAuthorizedRequestContext({
+      authenticate: Effect.succeed(authorizationCaller),
+      catalogs: runtime.catalogs.catalogs,
+      routeDatabase: invocation.database,
+      catalogKey: invocation.catalogKey,
+      unitHash: invocation.unitHash,
+      currentDb: () => Effect.succeed(currentDb),
+    }, authorizationCaller),
   );
   if (!operationGrantAllows(
     deployed.definition.unit,

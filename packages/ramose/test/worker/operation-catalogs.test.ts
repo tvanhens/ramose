@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
-import { Entity } from "../../src/db/Entity.ts";
-import { Graph } from "../../src/db/Graph.ts";
 import { Schema } from "../../src/db/Schema.ts";
-import { CatalogId, DatabaseId } from "../../src/internal/authorization/identities.ts";
+import { DatabaseId } from "../../src/internal/authorization/identities.ts";
 import {
   deployedDatabaseCatalogBindings,
   deployedOperationCatalogs,
@@ -76,27 +74,4 @@ describe("public operation catalog startup", () => {
     ).toThrow(OperationCatalogDeploymentError);
   });
 
-  test("retains reachable dynamic definitions without exposing child proofs", async () => {
-    const ChildSchema = Schema("public-child", {});
-    ChildSchema.applyPolicy(() => {});
-    const RootSchema = Schema("public-root", {
-      publicGraph: Entity("publicGraph", {}, { traits: [Graph(ChildSchema)] }),
-    });
-    RootSchema.applyPolicy(() => {});
-    const deployed = await Effect.runPromise(deployOperationCatalogsForVersion({
-      root: RootSchema,
-      deployments: [{ database: "root" }],
-    }, { id: "deployment-graph" }));
-    const bindings = deployedDatabaseCatalogBindings(deployed);
-    const rootRoute = bindings.root(DatabaseId.make("root"));
-    if (rootRoute._tag === "Failure") throw rootRoute.failure;
-    const childRoute = await Effect.runPromise(bindings.child(rootRoute.success, {
-      graphEntity: 1_000,
-      catalogKey: CatalogId.make("public-child"),
-    }));
-
-    expect(childRoute.deployed.catalogKey).toBe(CatalogId.make("public-child"));
-    expect(deployed.proof(childRoute.database)).toBeUndefined();
-    expect(Object.keys(deployed)).toEqual(["proof"]);
-  });
 });

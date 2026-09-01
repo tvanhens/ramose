@@ -20,7 +20,7 @@ import HistoryRecoveryDemo from "../../components/HistoryRecoveryDemo.astro";
   <HeroMesh />
   <h1>The database optimized for <em>humans</em> and <em>agents</em>.</h1>
   <div class="rg-proto-hero-grid">
-    <p class="rg-proto-intro">Right now those are two jobs: the app you shipped, and the MCP server, auth path, and permission model you bolt on beside it for agents. Ramose makes them one. Declare graphs, schema, operations, and policy once—your UI gets offline-first writes and local queries, your agents get one discoverable MCP endpoint, and both use the same capabilities.</p>
+    <p class="rg-proto-intro">Right now those are two jobs: the app you shipped, and the MCP server, auth path, and permission model you bolt on beside it for agents. Ramose makes them one. Declare schema, operations, and policy once—your UI gets offline-first writes and local queries, your agents get one discoverable MCP endpoint, and both use the same capabilities.</p>
     <div class="rg-proto-hero-cta">
       <div class="rg-proto-actions">
         <a class="rg-proto-button primary" href="/getting-started/quickstart/">Start in 15 minutes →</a>
@@ -44,7 +44,6 @@ import HistoryRecoveryDemo from "../../components/HistoryRecoveryDemo.astro";
 ```ts
 const Project = Ramose.Entity("project", {
   fields: { slug: Ramose.string().unique() },
-  traits: [Ramose.Graph(ProjectSchema)],
 })
 ```
 
@@ -83,7 +82,6 @@ ProjectSchema.applyPolicy(
 const openTasks = await mcp.callTool({
   name: "query",
   arguments: {
-    at: ["acme", "launch"],
     query: openTasksDocument,
   },
 })
@@ -129,7 +127,7 @@ const openTasks = await mcp.callTool({
       <div class="rg-feature-card" id="feature-mcp" role="tabpanel" data-feature-card aria-hidden="true">
         <p class="rg-console-label">MCP endpoint</p>
         <h2>Three tools understand your app</h2>
-        <p>Agents discover visible entities, graphs, and operations progressively, then query or mutate through the same model your application already uses.</p>
+        <p>Agents discover visible entities and operations progressively, then query or mutate through the same model your application already uses.</p>
         <div class="rg-feature-result">
           <span>Fixed tools</span>
           <code>describe · query · mutate</code>
@@ -152,7 +150,7 @@ const openTasks = await mcp.callTool({
   <div class="rg-proto-copy">
     <p class="rg-proto-kicker">02 — Agents</p>
     <h2>Everything a user can do an agent can do.</h2>
-    <p class="rg-proto-lede">Ramose projects the capabilities already in your app through three MCP tools. Agents discover the graph and catalog progressively, query visible data, and invoke the same named operations as your UI. No shadow database, glue server, or second authorization model to keep aligned.</p>
+    <p class="rg-proto-lede">Ramose projects the capabilities already in your app through three MCP tools. Agents discover the catalog progressively, query visible data, and invoke the same named operations as your UI. No shadow database, glue server, or second authorization model to keep aligned.</p>
   </div>
   <AgentCommandDemo />
 </section>

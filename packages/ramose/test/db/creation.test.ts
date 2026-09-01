@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import * as EffectSchema from "effect/Schema";
 import {
   BindingConflictError,
   CreationValueError,
@@ -7,17 +6,14 @@ import {
   Field,
   Query,
   Ref,
-  ReachabilityConflictError,
   Schema,
   Trait,
   assertNoFixedValues,
-  collectCodeReachability,
   compositionValueMetadata,
   resolveCreationValues,
   refTargetOf,
   string,
   timestamp,
-  type CodeDefinition,
 } from "../../src/db/internal.ts";
 
 const fixedNow = new Date("2026-08-27T12:34:56.000Z");
@@ -38,7 +34,6 @@ describe("creation defaults", () => {
             label: () => "composition",
             fallback: () => undefined,
           },
-          dependencies: [catalog],
         }),
       },
     );
@@ -172,16 +167,15 @@ describe("creation defaults", () => {
 
 describe("trait binding values", () => {
   test("a binding keeps one stable trait and field identity", () => {
-    const Graph = Trait("graph", { catalog: string(), name: string() }, {
+    const CatalogBinding = Trait("graph", { catalog: string(), name: string() }, {
       bind: (catalog) => ({
         values: { catalog: catalog.key },
-        dependencies: [catalog],
       }),
     });
     const child = Schema("workspace", {});
-    const Workspace = Entity("workspace", {}, { traits: [Graph(child)] });
+    const Workspace = Entity("workspace", {}, { traits: [CatalogBinding(child)] });
 
-    expect(Object.is(Workspace.catalog, Graph.catalog)).toBe(true);
+    expect(Object.is(Workspace.catalog, CatalogBinding.catalog)).toBe(true);
     expect(Workspace.catalog.ident).toBe(":graph/catalog");
     expect(Workspace.traits[0]!.ns).toBe("graph");
     expect(resolveCreationValues(Workspace, { name: "acme" }, { now: fixedNow }))
@@ -189,24 +183,24 @@ describe("trait binding values", () => {
   });
 
   test("the bindable trait remains a query and reference root", () => {
-    const Graph = Trait("composerGraph", { catalog: string() }, {
+    const CatalogBinding = Trait("composerBinding", { catalog: string() }, {
       bind: (catalog) => ({ values: { catalog: catalog.key } }),
     });
 
-    expect(Query.from(Graph)._tag).toBe("Query");
-    const target = refTargetOf(Ref(Graph).schema)?.();
-    expect(target?.ns).toBe("composerGraph");
-    expect(target?.fields).toBe(Graph.fields);
+    expect(Query.from(CatalogBinding)._tag).toBe("Query");
+    const target = refTargetOf(Ref(CatalogBinding).schema)?.();
+    expect(target?.ns).toBe("composerBinding");
+    expect(target?.fields).toBe(CatalogBinding.fields);
   });
 
   test("different fixed bindings on one reachable field fail with both paths", () => {
-    const Graph = Trait("graphConflict", { catalog: string() }, {
+    const CatalogBinding = Trait("catalogConflict", { catalog: string() }, {
       bind: (catalog) => ({ values: { catalog: catalog.key } }),
     });
     const left = Schema("left", {});
     const right = Schema("right", {});
     const Broken = Entity("broken", {}, {
-      traits: [Graph(left), Graph(right)],
+      traits: [CatalogBinding(left), CatalogBinding(right)],
     });
     expect(() => compositionValueMetadata(Broken)).toThrow(BindingConflictError);
     expect(() => compositionValueMetadata(Broken)).toThrow(
@@ -220,78 +214,6 @@ describe("trait binding values", () => {
     });
     expect(() => Entity("badBinding", {}, { traits: [Bound] })).toThrow(
       /must be called with a code definition/,
-    );
-  });
-});
-
-describe("code reachability", () => {
-  test("walks operation write entities before their binding dependencies", () => {
-    const Graph = Trait("writeGraph", { catalog: string() }, {
-      bind: (catalog) => ({ dependencies: [catalog] }),
-    });
-    const child: CodeDefinition = Schema("child", {});
-    const Audit = Entity("writeAudit", {}, { traits: [Graph(child)] });
-    const Root = Entity("writeRoot", {}, {
-      operations: (Operation) => ({
-        audit: Operation({
-          self: false,
-          writes: [Audit],
-          input: EffectSchema.Struct({}),
-          output: EffectSchema.Struct({}),
-          run() {
-            return {};
-          },
-        }),
-      }),
-    });
-    const root: CodeDefinition = Schema("root", { writeRoot: Root });
-
-    const reachable = collectCodeReachability(root);
-    expect(reachable.definitions.map((item) => item.key)).toEqual(["root", "child"]);
-    expect(reachable.bindings[0]!.path.join(" → ")).toContain(
-      "operation:writeRoot.audit → writes:writeAudit → trait:writeGraph",
-    );
-  });
-
-  test("recursive graphs terminate and equivalent diamonds deduplicate by key", () => {
-    const Graph = Trait("reachableGraph", { catalog: string() }, {
-      bind: (catalog) => ({
-        values: { catalog: catalog.key },
-        dependencies: [catalog],
-      }),
-    });
-
-    let root!: CodeDefinition;
-    let child!: CodeDefinition;
-    const RootNode = Entity("rootNode", {}, { traits: [Graph(() => child)] });
-    const SecondRootNode = Entity("secondRootNode", {}, {
-      traits: [Graph(() => child)],
-    });
-    const ChildNode = Entity("childNode", {}, { traits: [Graph(() => root)] });
-    root = Schema("root", { rootNode: RootNode, secondRootNode: SecondRootNode });
-    child = Schema("child", { childNode: ChildNode });
-
-    const reachable = collectCodeReachability(root);
-    expect(reachable.definitions.map((item) => item.key)).toEqual(["root", "child"]);
-    expect(reachable.bindings).toHaveLength(3);
-  });
-
-  test("duplicate permanent keys on different definitions name both paths", () => {
-    const Graph = Trait("duplicateGraph", { catalog: string() }, {
-      bind: (catalog) => ({
-        values: { catalog: catalog.key },
-        dependencies: [catalog],
-      }),
-    });
-    const first = Schema("duplicate", {});
-    const second = Schema("duplicate", {});
-    const Left = Entity("leftNode", {}, { traits: [Graph(first)] });
-    const Right = Entity("rightNode", {}, { traits: [Graph(second)] });
-    const root = Schema("root", { leftNode: Left, rightNode: Right });
-
-    expect(() => collectCodeReachability(root)).toThrow(ReachabilityConflictError);
-    expect(() => collectCodeReachability(root)).toThrow(
-      /permanent key "duplicate" names different definitions \(paths: .*leftNode.*rightNode/,
     );
   });
 });

@@ -1,6 +1,6 @@
 ---
 title: Glossary
-description: The public vocabulary used throughout Ramose documentation, from catalogs and graphs to receipts and authorized replicas.
+description: The public vocabulary used throughout Ramose documentation, from catalogs and databases to receipts and authorized replicas.
 ---
 import Next from "../../../components/Next.astro";
 
@@ -8,20 +8,18 @@ Ramose uses a small vocabulary consistently. Start here when a familiar database
 
 | Term | Meaning | In code |
 | --- | --- | --- |
-| <span id="activated-graph"></span>**activated graph** | A graph whose first observed query or mutation has started synchronization for this client session. | `useQuery(query)` or `db.mutate.*` |
-| <span id="authorized-root"></span>**authorized root** | The root graph assigned to a verified principal. MCP and client paths are relative to it. | `at: []`, `client.open()` |
+| <span id="activated-database"></span>**activated database** | A database whose first observed query or mutation has started synchronization for this client session. | `useQuery(query)` or `db.mutate.*` |
+| <span id="authorized-root"></span>**authorized root** | The database assigned to a verified principal. | `client.open()` |
 | <span id="catalog"></span>**catalog** | The installed runtime form of one named schema, including its policy, operations, traits, and documentation. | supplied by a named schema |
 | <span id="catalog-token"></span>**catalog token** | Opaque public token representing the visible deployed capability version for conditional MCP requests. | `catalogToken`, `ifCatalog` |
 | <span id="client-ref"></span>**client reference** | Stable typed identity for an entity created offline before the server returns its authoritative id. | `ClientRef<Entity>` |
-| <span id="complete-replica"></span>**complete replica** | The entire current authorized value of one activated graph for one principal, installed atomically in the browser. | local `Db` |
-| <span id="database"></span>**database / graph** | One independently stored, queried, authorized, synchronized, and written set of facts. | a root or `.one().db()` handle |
+| <span id="complete-replica"></span>**complete replica** | The entire current authorized value of the configured database for one principal, installed atomically in the browser. | local `Db` |
+| <span id="database"></span>**database** | One independently stored, queried, authorized, synchronized, and written set of facts. | `client.open()` |
 | <span id="entity"></span>**entity** | A concrete record kind with fields, traits, and owned operations. | `Ramose.Entity("task", …)` |
 | <span id="entity-handle"></span>**entity handle** | A client query result that keeps plain `.data` beside `.local` state and owned `.mutate` methods. | `task.data`, `task.local`, `task.mutate` |
 | <span id="fact"></span>**fact** | One typed statement associating an entity, field, and value over time. | presented as entity rows in the public API |
 | <span id="field"></span>**field** | A stable named value definition with type, cardinality, indexing, ownership, and documentation. | `Task.title` |
 | <span id="filtered-database"></span>**filtered database** | An immutable database value with facts hidden according to the current principal and policy before queries run. | internal read boundary |
-| <span id="graph-path"></span>**graph path** | Readable names used to reach a nested graph from the authorized root. | `at: ["acme", "launch"]` |
-| <span id="graph-row"></span>**Graph row** | An ordinary entity composing the built-in `Graph` trait and binding one child schema in deployed code. | `traits: [Ramose.Graph(ProjectSchema)]` |
 | <span id="history"></span>**history** | A temporal view exposing when visible facts were added or removed. | `history`, query temporal selector |
 | <span id="invocation-id"></span>**invocation id** | Caller-created stable id for one operation intent, used to recover retries and lost acknowledgements. | `invocationId` |
 | <span id="local-state"></span>**local state** | Pending and synchronization metadata held beside entity data, never stored as application facts. | `entity.local.pending` |
@@ -31,13 +29,12 @@ Ramose uses a small vocabulary consistently. Start here when a familiar database
 | <span id="query"></span>**query** | A typed serializable description of roots, filters, projections, relations, order, cardinality, and paging. | `db.query.from(Task)` |
 | <span id="query-document"></span>**QueryDocument** | The versioned plain-data form of the public query language, used by MCP and non-TypeScript clients. | `{ version: 1, from, where, … }` |
 | <span id="receipt"></span>**receipt** | Durable public record of one queued, committed, or rejected operation invocation. | `receipt.queued`, `receipt.committed` |
-| <span id="reference"></span>**reference** | A typed relation from one entity to another entity or trait in the same graph. | `Ramose.Ref(User)` |
+| <span id="reference"></span>**reference** | A typed relation from one entity to another entity or trait in the same database. | `Ramose.Ref(User)` |
 | <span id="schema"></span>**schema** | One named code definition containing entities and one applied policy. | `const App = Ramose.Schema("app", { task: Task }); App.applyPolicy(…)` |
-| <span id="stable-graph-identity"></span>**stable graph identity** | Internal child identity derived from parent identity and Graph-row identity; unchanged by path rename. | not public |
 | <span id="targeted-operation"></span>**targeted operation** | An operation invoked on one visible compatible entity. | `entity.mutate.rename(…)` |
-| <span id="targetless-operation"></span>**targetless operation** | An operation invoked on a graph rather than an existing entity, commonly for creation. | `db.mutate.createTask(…)` |
+| <span id="targetless-operation"></span>**targetless operation** | An operation invoked on a database rather than an existing entity, commonly for creation. | `db.mutate.createTask(…)` |
 | <span id="trait"></span>**trait** | A reusable transitive composition of fields and operations that can also be queried or referenced polymorphically. | `Ramose.Trait("commentable", …)` |
-| <span id="version"></span>**version** | One graph's ordered committed state marker. Public replication and paging use opaque tokens instead of exposing internal sequencing. | `asOf(version)` for explicit temporal reads |
+| <span id="version"></span>**version** | The database's ordered committed state marker. Public replication and paging use opaque tokens instead of exposing internal sequencing. | `asOf(version)` for explicit temporal reads |
 
 ## Public vocabulary choices
 

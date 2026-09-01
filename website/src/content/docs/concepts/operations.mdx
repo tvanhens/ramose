@@ -27,7 +27,7 @@ operations: (Operation) => ({
 })
 ```
 
-The operation body receives a narrow writer. It may change its owner and explicitly declared related entities. The authoritative transaction applies defaults, fixed graph bindings, protected types, reference validation, and cascade rules before committing all or nothing.
+The operation body receives a narrow writer. It may change its owner and explicitly declared related entities. The authoritative transaction applies defaults, fixed trait bindings, protected types, reference validation, and cascade rules before committing all or nothing.
 
 ## Permission has two gates
 
@@ -43,7 +43,7 @@ Prefer requested target values such as `{ done: true }` over basis-dependent com
 
 ## Receipts make intent durable
 
-The client assigns every invocation a stable id before it becomes queued. The server stores a durable receipt scoped to principal, graph, operation, target, and input. An identical retry returns the original result; reusing the id for another intent fails.
+The client assigns every invocation a stable id before it becomes queued. The server stores a durable receipt scoped to principal, database, operation, target, and input. An identical retry returns the original result; reusing the id for another intent fails.
 
 The browser exposes queued, committed, and rejected transitions. A lost acknowledgement, restart, reconnect, or leadership change across tabs cannot commit the same invocation twice.
 

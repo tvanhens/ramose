@@ -5,7 +5,7 @@ description: Build typed entity and trait queries with filters, projections, rel
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Use `db.query.from` for application queries. The builder is bound to one graph and emits the portable query model; constructing it is synchronous and performs no network request.
+Use `db.query.from` for application queries. The builder is bound to the configured database and emits the portable query model; constructing it is synchronous and performs no network request.
 
 <Learn learn={["How to shape entity, trait, and relational results", "How cardinality, ordering, and cursors prevent ambiguous reads", "How to keep query work bounded"]} before={[{ href: "/guides/catalog/", label: "Schemas and traits" }]} minutes={14} />
 
@@ -81,7 +81,7 @@ const project = organizationDb.query
   .one()
 ```
 
-Use `.one()` for zero-or-one and `.oneOrFail()` for exactly one. Graph traversal adds `.db()`. Never rely on an unspecified first row.
+Use `.one()` for zero-or-one and `.oneOrFail()` for exactly one. Never rely on an unspecified first row.
 
 ## Page stable ordered results
 
@@ -92,11 +92,11 @@ const firstPage = db.query
   .after({ first: 50 })
 ```
 
-The returned cursor is opaque and tied to principal, graph, query, catalog, and order. Supply it to the same query for the next page. Use offset only for small, stable administrative lists.
+The returned cursor is opaque and tied to principal, database, query, catalog, and order. Supply it to the same query for the next page. Use offset only for small, stable administrative lists.
 
-## Aggregate inside one graph
+## Aggregate inside the database
 
-Count, sum, minimum, maximum, and grouped results are query projections. Aggregates see only visible facts and share the same query budget. They do not cross graphs.
+Count, sum, minimum, maximum, and grouped results are query projections. Aggregates see only visible facts and share the same query budget.
 
 For frequently rendered dashboard totals, consider maintaining a summary entity through authoritative operations. That trades write work for predictable reads.
 
@@ -117,6 +117,6 @@ Filter on indexed selective fields early, project narrowly, bound every nested c
 
 <Next links={[
   { href: "/guides/react/", label: "Observe in React", why: "render ready, stale, and pending local results" },
-  { href: "/best-practices/query-performance/", label: "Query performance", why: "profile joins, sorting, projection, and graph size" },
+  { href: "/best-practices/query-performance/", label: "Query performance", why: "profile joins, sorting, projection, and database size" },
   { href: "/reference/query-language/", label: "Query builder reference", why: "the complete fluent and kernel surface" },
 ]} />

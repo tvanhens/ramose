@@ -56,13 +56,13 @@ Diamonds are harmless when they reach the same trait. Cycles and two flattened f
 
 A reference is a typed edge to an entity or trait. Forward navigation follows the stored edge; reverse navigation finds rows that point back. Nested query projections can pull related data, but every hop remains subject to authorization.
 
-References do not cross database boundaries directly. A Graph row is the authorized bridge to a child database; inside that child, ordinary references form its local graph.
+References connect rows within the database. Use an explicit entity and policy rules to model tenancy or ownership boundaries.
 
 ## Facts over time
 
 Because changes accumulate, the current database is only one immutable value in a sequence. `asOf` selects an earlier value. `history` asks when statements appeared or were removed. Current deployed policy and current grants still govern historical reads.
 
-This model descends from Datomic's immutable database values and indexes, adapted here for TypeScript authoring, graph boundaries, browser replication, and Cloudflare deployment.
+This model descends from Datomic's immutable database values and indexes, adapted here for TypeScript authoring, browser replication, and Cloudflare deployment.
 
 <Next links={[
   { href: "/guides/catalog/", label: "Schemas and traits", why: "use every field and composition option" },

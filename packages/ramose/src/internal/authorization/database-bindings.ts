@@ -8,19 +8,13 @@ import type {
   DeployedCatalogDefinitions,
   InstalledCatalogDefinition,
 } from "./definitions.ts";
-import { hashDomainSeparatedCanonicalJson } from "./decode.ts";
 import { CatalogMismatch, InvalidIR } from "./failures.ts";
-import type { CatalogId, CatalogUnitHash, DatabaseId } from "./identities.ts";
-import { DatabaseId as DatabaseIdSchema } from "./identities.ts";
+import type { CatalogUnitHash, CatalogId, DatabaseId } from "./identities.ts";
 import type { DeployedCatalog } from "./deployed.ts";
-
-const CHILD_DATABASE_ID_HASH_DOMAIN_V1 =
-  "ramose/dynamic-child-database/v1\0";
 
 const ResolvedDatabaseRouteTypeId: unique symbol = Symbol(
   "ramose/internal/ResolvedDatabaseRoute",
 );
-
 const DatabaseCatalogBindingsTypeId: unique symbol = Symbol(
   "ramose/internal/DatabaseCatalogBindings",
 );
@@ -31,23 +25,7 @@ export interface ResolvedDatabaseRoute {
   readonly deployed: DeployedCatalog;
 }
 
-export type DynamicGraphBinding = {
-  readonly graphEntity: number;
-  readonly catalogKey: CatalogId;
-};
-
-export type DatabaseRouteDerivation = {
-  readonly rootDatabase: DatabaseId;
-  readonly graphs: readonly DynamicGraphBinding[];
-};
-
-export class DynamicCatalogDefinitionMissing extends Data.TaggedError(
-  "DynamicCatalogDefinitionMissing",
-)<{
-  readonly parentDatabase: DatabaseId;
-  readonly graphEntity: number;
-  readonly catalogKey: CatalogId;
-}> {}
+export type DatabaseRouteDerivation = { readonly rootDatabase: DatabaseId };
 
 export class DatabaseCatalogBindingConflict extends Data.TaggedError(
   "DatabaseCatalogBindingConflict",
@@ -63,82 +41,42 @@ export class InvalidResolvedDatabaseRoute extends Data.TaggedError(
   "InvalidResolvedDatabaseRoute",
 )<{ readonly message: string }> {}
 
-export class InvalidDynamicGraphIdentity extends Data.TaggedError(
-  "InvalidDynamicGraphIdentity",
-)<{ readonly graphEntity: number }> {}
-
-export type DynamicDatabaseBindingFailure =
-  | DynamicCatalogDefinitionMissing
+export type DatabaseBindingFailure =
   | DatabaseCatalogBindingConflict
   | InvalidResolvedDatabaseRoute
-  | InvalidDynamicGraphIdentity
   | InvalidIR;
-
-export const opaqueDatabaseBindingDenial = (
-  _error: DynamicDatabaseBindingFailure | CatalogMismatch,
-): Unauthorized => new Unauthorized({});
 
 export interface DatabaseCatalogBindings {
   readonly [DatabaseCatalogBindingsTypeId]: typeof DatabaseCatalogBindingsTypeId;
   readonly root: (
     database: DatabaseId,
   ) => Result.Result<ResolvedDatabaseRoute, CatalogMismatch>;
-  readonly child: (
-    parent: ResolvedDatabaseRoute,
-    graph: DynamicGraphBinding,
-  ) => Effect.Effect<ResolvedDatabaseRoute, DynamicDatabaseBindingFailure>;
 }
 
-/**
- * Bindings for a Worker instance that started without a deployment version —
- * Cloudflare's upload-validation instance. Every use fails with the supplied
- * error; the instance never serves traffic.
- */
 export const unavailableDatabaseCatalogBindings = (
   fail: () => never,
-): DatabaseCatalogBindings => {
-  const bindings: DatabaseCatalogBindings = {
-    [DatabaseCatalogBindingsTypeId]: DatabaseCatalogBindingsTypeId,
-    root: fail,
-    child: fail,
-  };
-  return Object.freeze(bindings);
-};
+): DatabaseCatalogBindings => Object.freeze({
+  [DatabaseCatalogBindingsTypeId]:
+    DatabaseCatalogBindingsTypeId as typeof DatabaseCatalogBindingsTypeId,
+  root: fail,
+});
 
-type RootSource = { readonly _tag: "root" };
-type GraphSource = {
-  readonly _tag: "graph";
-  readonly parentDatabase: DatabaseId;
-  readonly graphEntity: number;
-};
-type BindingSource = RootSource | GraphSource;
+export const opaqueDatabaseBindingDenial = (
+  _error: DatabaseBindingFailure | CatalogMismatch,
+): Unauthorized => new Unauthorized({});
 
 type BoundRoute = {
   readonly route: ResolvedDatabaseRoute;
   readonly definition: InstalledCatalogDefinition;
-  readonly source: BindingSource;
 };
-
 type BindingState = {
   readonly owner: object;
   readonly byDatabase: Map<DatabaseId, BoundRoute>;
 };
-
 type RouteState = BoundRoute & { readonly owner: object };
 
 const bindingStates = new WeakMap<DatabaseCatalogBindings, BindingState>();
 const routeStates = new WeakMap<ResolvedDatabaseRoute, RouteState>();
-
-const compareBinding = (
-  existing: BoundRoute,
-  source: GraphSource,
-  definition: InstalledCatalogDefinition,
-): boolean =>
-  existing.source._tag === "graph" &&
-  existing.source.parentDatabase === source.parentDatabase &&
-  existing.source.graphEntity === source.graphEntity &&
-  existing.definition.catalogKey === definition.catalogKey &&
-  existing.definition.unitHash === definition.unitHash;
 
 const deployedCatalog = (
   database: DatabaseId,
@@ -155,7 +93,6 @@ const makeRoute = (
   owner: object,
   database: DatabaseId,
   definition: InstalledCatalogDefinition,
-  source: BindingSource,
 ): BoundRoute => {
   const route: ResolvedDatabaseRoute = Object.freeze({
     [ResolvedDatabaseRouteTypeId]:
@@ -163,7 +100,7 @@ const makeRoute = (
     database,
     deployed: deployedCatalog(database, definition),
   });
-  const bound = Object.freeze({ route, definition, source });
+  const bound = Object.freeze({ route, definition });
   routeStates.set(route, { ...bound, owner });
   return bound;
 };
@@ -201,25 +138,6 @@ const boundRoute = (
     return routed;
   });
 
-export const deriveDynamicChildDatabaseId = Effect.fn(
-  "Authorization.deriveDynamicChildDatabaseId",
-)(function* (
-  parentDatabase: DatabaseId,
-  graphEntity: number,
-): Effect.fn.Return<DatabaseId, InvalidDynamicGraphIdentity | InvalidIR> {
-  if (
-    !Number.isSafeInteger(graphEntity) ||
-    graphEntity < 0
-  ) {
-    return yield* new InvalidDynamicGraphIdentity({ graphEntity });
-  }
-  const digest = yield* hashDomainSeparatedCanonicalJson(
-    CHILD_DATABASE_ID_HASH_DOMAIN_V1,
-    [parentDatabase, graphEntity],
-  );
-  return DatabaseIdSchema.make(digest);
-});
-
 export const deployDatabaseCatalogBindings = (
   definitions: CatalogDefinitions,
   roots: DeployedCatalogDefinitions,
@@ -227,7 +145,6 @@ export const deployDatabaseCatalogBindings = (
   Result.gen(function* () {
     const owner = Object.freeze({});
     const byDatabase = new Map<DatabaseId, BoundRoute>();
-
     for (const database of roots.databases()) {
       const root = yield* roots.requireDatabase(database);
       const canonical = yield* definitions.require(root.definition.catalogKey);
@@ -241,63 +158,20 @@ export const deployDatabaseCatalogBindings = (
           message: `configured database '${database}' does not match its immutable catalog definition`,
         }));
       }
-      byDatabase.set(
-        database,
-        makeRoute(owner, database, canonical, Object.freeze({ _tag: "root" })),
-      );
+      byDatabase.set(database, makeRoute(owner, database, canonical));
     }
-
-    let bindings!: DatabaseCatalogBindings;
-    bindings = Object.freeze({
+    const bindings: DatabaseCatalogBindings = Object.freeze({
       [DatabaseCatalogBindingsTypeId]:
         DatabaseCatalogBindingsTypeId as typeof DatabaseCatalogBindingsTypeId,
       root: (database: DatabaseId) => {
         const found = byDatabase.get(database);
-        return found?.source._tag === "root"
-          ? Result.succeed(found.route)
-          : Result.fail(new CatalogMismatch({
+        return found === undefined
+          ? Result.fail(new CatalogMismatch({
             message: "catalog mismatch",
             expectedDatabase: database,
-          }));
+          }))
+          : Result.succeed(found.route);
       },
-      child: Effect.fn("Authorization.resolveDynamicGraphChild")(function* (
-        parent: ResolvedDatabaseRoute,
-        graph: DynamicGraphBinding,
-      ) {
-        const parentBound = yield* Effect.fromResult(boundRoute(bindings, parent));
-        const database = yield* deriveDynamicChildDatabaseId(
-          parentBound.route.database,
-          graph.graphEntity,
-        );
-        const definitionResult = definitions.require(graph.catalogKey);
-        if (Result.isFailure(definitionResult)) {
-          return yield* new DynamicCatalogDefinitionMissing({
-            parentDatabase: parentBound.route.database,
-            graphEntity: graph.graphEntity,
-            catalogKey: graph.catalogKey,
-          });
-        }
-        const definition = definitionResult.success;
-        const source: GraphSource = Object.freeze({
-          _tag: "graph",
-          parentDatabase: parentBound.route.database,
-          graphEntity: graph.graphEntity,
-        });
-        const existing = byDatabase.get(database);
-        if (existing !== undefined) {
-          if (compareBinding(existing, source, definition)) return existing.route;
-          return yield* new DatabaseCatalogBindingConflict({
-            database,
-            expectedCatalogKey: existing.definition.catalogKey,
-            expectedUnitHash: existing.definition.unitHash,
-            actualCatalogKey: definition.catalogKey,
-            actualUnitHash: definition.unitHash,
-          });
-        }
-        const child = makeRoute(owner, database, definition, source);
-        byDatabase.set(database, child);
-        return child.route;
-      }),
     });
     bindingStates.set(bindings, { owner, byDatabase });
     return bindings;
@@ -328,11 +202,5 @@ export const deriveResolvedDatabaseRoute = Effect.fn(
   bindings: DatabaseCatalogBindings,
   derivation: DatabaseRouteDerivation,
 ) {
-  let route = yield* Effect.fromResult(
-    bindings.root(derivation.rootDatabase),
-  );
-  for (const graph of derivation.graphs) {
-    route = yield* bindings.child(route, graph);
-  }
-  return route;
+  return yield* Effect.fromResult(bindings.root(derivation.rootDatabase));
 });

@@ -33,14 +33,12 @@ const identity: ReplicationIdentity = {
   catalog: opaque("D"),
   readView: opaque("E"),
   readCompatibilityHash: compatible,
-  graphLineage: [],
   authenticator: opaque("F"),
 };
 
 const request: ActivationRequest = {
   type: "Activate",
   protocol: REPLICATION_PROTOCOL_VERSION,
-  graphPath: ["organizations", "acme"],
   scope: { type: "database" },
   readCompatibilityHash: compatible,
   resumeRevision: opaque("G"),
@@ -71,7 +69,7 @@ const failureReason = (text: string): string => {
 };
 
 describe("replication activation codec", () => {
-  test("round-trips the versioned path, scope, and opaque resume only", () => {
+  test("round-trips the root database scope and opaque resume only", () => {
     expect(success(decodeActivationRequest(encodeActivationRequest(request))))
       .toEqual(request);
     expect(success(decodeActivationRequest(JSON.stringify({
@@ -80,7 +78,6 @@ describe("replication activation codec", () => {
     })))).toEqual({
       type: "Activate",
       protocol: 3,
-      graphPath: ["organizations", "acme"],
       scope: { type: "database" },
       readCompatibilityHash: compatible,
     });
@@ -92,10 +89,6 @@ describe("replication activation codec", () => {
     expect(failureReason("{not-json")).toBe("malformed");
     expect(failureReason(" ".repeat(MAX_REPLICATION_REQUEST_BYTES + 1)))
       .toBe("oversized");
-    expect(() => encodeActivationRequest({
-      ...request,
-      graphPath: Array.from({ length: 17 }, () => "a".repeat(4_096)),
-    })).toThrow();
   });
 
   test("rejects client-selected identity, catalog proof, unknown scope, and bad bounds", () => {
@@ -104,8 +97,6 @@ describe("replication activation codec", () => {
       { ...request, catalog: "app", unitHash: "a".repeat(64) },
       { ...request, scope: { type: "query", range: [] } },
       { ...request, resumeRevision: "raw-t:42" },
-      { ...request, graphPath: [""] },
-      { ...request, graphPath: ["😀".repeat(1_025)] },
     ]) {
       expect(failureReason(JSON.stringify(invalid))).toBe("malformed");
     }

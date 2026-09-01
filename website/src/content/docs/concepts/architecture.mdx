@@ -1,25 +1,25 @@
 ---
 title: Architecture
-description: The Cloudflare topology behind ordered writes, immutable reads, complete authorized synchronization, graph routing, and MCP.
+description: The Cloudflare topology behind ordered writes, immutable reads, complete authorized synchronization, database routing, and MCP.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
 Ramose separates authority, persistence, and local interaction while keeping one public model. The architecture is optimized for many independent graph databases rather than one globally writable cluster.
 
-<Learn learn={["What runs in the Worker, writer, read copies, object storage, and browser", "Which guarantees come from one ordered writer per graph", "Where scaling and failure boundaries live"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={9} />
+<Learn learn={["What runs in the Worker, writer, read copies, object storage, and browser", "Which guarantees come from one ordered writer per database", "Where scaling and failure boundaries live"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={9} />
 
 ## Request edge
 
-One Cloudflare Worker terminates HTTPS, synchronization, and MCP. It verifies identity, resolves an authorized root or graph path, selects the deployed catalog server-side, applies request limits, and routes work to the graph's stateful components.
+One Cloudflare Worker terminates HTTPS, synchronization, and MCP. It verifies identity, selects the deployed database and catalog server-side, applies request limits, and routes work to the database's stateful components.
 
 The Worker is stateless for correctness. MCP requests do not depend on sticky sessions or in-memory client state.
 
-## One writer per graph
+## One writer per database
 
 Each graph has one authoritative writer that orders operations, checks grants and visible targets, runs operation bodies, validates facts, assigns the next version, and commits all or nothing.
 
-This is the source of simple uniqueness, exact operation receipts, dense ordering, and deterministic history. It is also the per-graph write ceiling. Independent child graphs have independent writers and progress in parallel.
+This is the source of simple uniqueness, exact operation receipts, dense ordering, and deterministic history. It is also the database write ceiling.
 
 ## Immutable read values
 
@@ -29,22 +29,21 @@ Content-addressed index nodes and retained roots live in R2. Stateful coordinati
 
 ## Complete browser replicas
 
-The browser receives logical authorized facts and opaque revisions, not physical indexes or raw transaction metadata. It persists one complete local value per active principal and graph, builds local indexes, and derives query results.
+The browser receives logical authorized facts and opaque revisions, not physical indexes or raw transaction metadata. It persists one complete local value per active principal and database, builds local indexes, and derives query results.
 
 Snapshots install atomically. Resume streams authorized additions and removals. Incompatible catalog or read-view changes reset the committed replica while preserving compatible queued invocation identity.
 
-## Graph routing
+## Database routing
 
-Configured deployment roots establish the first database and catalog binding. Every child binding is derived only after an authorized Graph row is resolved. Stable storage identity follows the parent and row identity; readable path names may change.
+Configured deployments establish the database and catalog binding. Callers cannot select internal database or catalog identities.
 
 ## Failure model
 
-Clients retry transient transport and platform failures. Durable receipts make repeated operation delivery safe. Read copies and browser replicas can reset from a complete snapshot. Child cache eviction discards a whole inactive graph, never part of one.
+Clients retry transient transport and platform failures. Durable receipts make repeated operation delivery safe. Read copies and browser replicas can reset from a complete snapshot.
 
-The design avoids cross-graph transactions. A workflow spanning graphs is a sequence of independently committed operations with application-level compensation or reconciliation.
+Workflows that include external systems are sequences of independently committed operations with application-level compensation or reconciliation.
 
 <Next links={[
   { href: "/concepts/offline/", label: "Offline and sync", why: "follow one authorized value into the browser" },
-  { href: "/best-practices/graph-boundaries/", label: "Graph boundaries", why: "design around the architecture's scale unit" },
   { href: "/reference/server/", label: "Server reference", why: "configuration, routes, limits, and operations" },
 ]} />

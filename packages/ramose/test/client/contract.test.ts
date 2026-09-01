@@ -27,9 +27,8 @@ describe("the ramose/client surface", () => {
       "ClientClosedError",
       "ClientConfigurationError",
       "ClientLocalDataError",
+      "DatabaseReceiverError",
       "EntityWithdrawnError",
-      "GraphPathError",
-      "GraphReceiverError",
       "MutationRejectedError",
       "createClient",
     ]);

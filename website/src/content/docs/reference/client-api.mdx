@@ -1,10 +1,10 @@
 ---
 title: Browser client
-description: Reference for creating a client, opening graphs, observing queries, invoking operations, and tracking synchronization.
+description: Reference for creating a client, opening the database, observing queries, invoking operations, and tracking synchronization.
 ---
 import Next from "../../../components/Next.astro";
 
-`ramose/client` owns authorized browser replicas, graph handles, local query execution, synchronization, the durable outbox, optimistic layers, and receipts. Author the named schema through `ramose/db`, then pass that shared value to the client.
+`ramose/client` owns authorized browser replicas, database handles, local query execution, synchronization, the durable outbox, optimistic layers, and receipts. Author the named schema through `ramose/db`, then pass that shared value to the client.
 
 *New here? Start with [Build your first Ramose web app](/getting-started/quickstart/).*
 
@@ -35,25 +35,11 @@ const rootDb = client.open()
 
 `open()` takes no arguments and returns one interned root handle. Callers cannot choose an internal database or catalog id.
 
-## Traverse to a child graph
-
-```ts
-const projectDb = rootDb.query
-  .from(Project)
-  .where(Project.slug.eq("launch"))
-  .one()
-  .db()
-```
-
-`.db()` exists only on an exactly-one terminal whose entity carries the graph trait, statically from the catalog. Equivalent handles are interned; creating one activates nothing, observing does.
-
-A client installs one catalog. A child bound to a different one is unsupported for now: its queries report `update-required` with no data, and its mutations fail before queueing.
-
 ## Observe a query
 
 ```ts
-const tasks = projectDb.observe(
-  projectDb.query.from(Task).orderBy(Task.createdAt, "desc"),
+const tasks = rootDb.observe(
+  rootDb.query.from(Task).orderBy(Task.createdAt, "desc"),
 )
 
 const unsubscribe = tasks.subscribe(() => render(tasks.getSnapshot()))
@@ -132,7 +118,7 @@ Observe a receipt when the outcome matters; use `.local.pending` for lightweight
 
 ## Persistence and multi-tab behavior
 
-Each activated graph has a persistent IndexedDB replica. Tabs share durable data and elect one network leader per principal and graph; closing a tab does not discard queued work.
+The activated database has a persistent IndexedDB replica. Tabs share durable data and elect one network leader per principal and database; closing a tab does not discard queued work.
 
 <Next links={[
   { href: "/reference/query-language/", label: "Query builder", why: "construct typed local and server queries" },

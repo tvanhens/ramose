@@ -20,7 +20,6 @@ import {
 export type MutationEndpoint = {
   readonly origin: string;
   readonly database: string;
-  readonly graphPath: readonly string[];
   readonly credential: string;
 };
 
@@ -104,9 +103,6 @@ export const buildMutationRequest = (
 ): MutationRequest => Object.freeze({
   endpoint,
   body: Object.freeze({
-    ...(endpoint.graphPath.length === 0
-      ? {}
-      : { at: [...endpoint.graphPath] }),
     invocationId: record.invocation,
     operationVersion: record.operationVersion,
     operation: {

@@ -30,7 +30,6 @@ import {
   CatalogUnitHash,
   CatalogVersionMismatch,
   DigestHex,
-  InvalidIR,
   assembleCatalogDefinitions,
   eq,
   opaqueCatalogDenial,
@@ -46,9 +45,6 @@ const runnable = <S extends AnySchemaDefinition>(schema: S): S => {
 
 const assemble = (root: AnySchemaDefinition, hash = artifactHash) =>
   Effect.runPromise(assembleCatalogDefinitions({ root, artifactHash: hash }));
-
-const assembleFailure = (root: AnySchemaDefinition) =>
-  Effect.runPromise(Effect.flip(assembleCatalogDefinitions({ root, artifactHash })));
 
 describe("Schema", () => {
   test("constructs one frozen permanently keyed runnable definition", async () => {
@@ -76,94 +72,6 @@ describe("Schema", () => {
 });
 
 describe("catalog definition assembly", () => {
-  test("terminates recursive graphs, folds operation writes, and seals each reachable unit once", async () => {
-    const Audit = Entity("audit", { message: string() });
-    const Graph = Trait(
-      "graph",
-      { catalog: string() },
-      {
-        bind: (catalog) => ({
-          values: { catalog: catalog.key },
-          dependencies: [catalog],
-        }),
-        operations: (Operation) => ({
-          inspect: Operation({
-            input: EffectSchema.Struct({}),
-            output: EffectSchema.Struct({}),
-            run() {
-              return {};
-            },
-          }),
-        }),
-      },
-    );
-
-    let root!: AnySchemaDefinition;
-    let child!: AnySchemaDefinition;
-    const RootNode = Entity(
-      "rootNode",
-      { title: string() },
-      {
-        traits: [Graph(() => child)],
-        operations: (Operation) => ({
-          audit: Operation({
-            self: false,
-            writes: [Audit],
-            input: EffectSchema.Struct({}),
-            output: EffectSchema.Struct({}),
-            run() {
-              return {};
-            },
-          }),
-        }),
-      },
-    );
-    const ChildNode = Entity("childNode", {}, {
-      traits: [Graph(() => root)],
-    });
-    root = Schema("root", { rootNode: RootNode });
-    child = Schema("child", { childNode: ChildNode });
-    root.applyPolicy(() => {});
-    child.applyPolicy(() => {});
-
-    const first = await assemble(root);
-    const second = await assemble(root);
-    expect(first.keys().map(String)).toEqual(["child", "root"]);
-    expect(second.keys()).toEqual(first.keys());
-
-    const installedRoot = Result.getOrThrow(first.require(CatalogId.make("root")));
-    const installedChild = Result.getOrThrow(first.require(CatalogId.make("child")));
-    expect(installedRoot.unitHash).toBe(
-      Result.getOrThrow(second.require(CatalogId.make("root"))).unitHash,
-    );
-    expect(installedRoot.unit.catalog.entities.map((entry) => entry.id.name)).toEqual([
-      "audit",
-      "rootNode",
-    ]);
-    expect(installedChild.unit.catalog.entities.map((entry) => entry.id.name)).toEqual([
-      "childNode",
-    ]);
-    expect(installedRoot.unit.catalog.operations.map((entry) =>
-      `${entry.id.owner.kind}:${entry.id.owner.name}.${entry.id.localName}`
-    )).toEqual([
-      "entity:rootNode.audit",
-      "trait:graph.inspect",
-    ]);
-    expect(installedRoot.operations.map((entry) =>
-      entry.descriptor.id.localName
-    )).toEqual(["audit", "inspect"]);
-    expect(installedRoot.operations[0]!.descriptor.writes.map((entry) =>
-      entry.name
-    ))
-      .toEqual(["audit"]);
-    expect(installedRoot.resolveCreationValues(
-      "rootNode",
-      { title: "Root" },
-      { now: new Date(0) },
-    )).toEqual({ title: "Root", catalog: "child" });
-    expect(Object.isFrozen(installedRoot)).toBe(true);
-    expect(Object.isFrozen(installedRoot.unit)).toBe(true);
-  });
 
   test("binds native default implementation identity to the deployed artifact", async () => {
     const definition = runnable(Schema("app", { item: Entity("item", {
@@ -330,7 +238,6 @@ describe("catalog definition assembly", () => {
         calls += 1;
         return {
           values: { value: `${definition.key}:${calls}` },
-          dependencies: [definition],
         };
       },
     });
@@ -510,8 +417,6 @@ describe("catalog definition assembly", () => {
     });
     const Input = EffectSchema.Struct({ value: EffectSchema.String });
     const Output = EffectSchema.Struct({ ok: EffectSchema.Boolean });
-    const child = runnable(Schema("boundary-child", {}));
-    const dependencyRefs: CodeDefinition[] = [child];
     const bindingValues = {
       at: fixedDate,
       data: fixedBytes,
@@ -524,7 +429,6 @@ describe("catalog definition assembly", () => {
     const bindingResult = {
       values: bindingValues,
       defaults: bindingDefaults,
-      dependencies: dependencyRefs,
     };
     let bindingCalls = 0;
     const Bound = Trait("boundaryTrait", {
@@ -541,6 +445,7 @@ describe("catalog definition assembly", () => {
       },
     });
     const Audit = Entity("boundaryAudit", { message: string() });
+    const bindingDefinition = Schema("boundary-binding", {});
     let bodyCapture = "body-original";
     const Item = Entity("boundaryItem", {
       title: string({
@@ -558,7 +463,7 @@ describe("catalog definition assembly", () => {
       }),
       checked: Field(MutableFieldSchema),
     }, {
-      traits: [Bound(child)],
+      traits: [Bound(bindingDefinition)],
       doc: "original entity",
       operations: (Operation) => ({
         check: Operation({
@@ -599,7 +504,6 @@ describe("catalog definition assembly", () => {
       { value: "replacement" },
       (inputs) => inputs.value,
     );
-    dependencyRefs.length = 0;
     bodyCapture = "body-mutated";
     expect(Reflect.set(bindingResult, "values", {})).toBe(true);
     expect(Reflect.set(Item.title, "default", creationDefault(
@@ -667,37 +571,9 @@ describe("catalog definition assembly", () => {
       tags: ["one", "two"],
       label: "binding-original",
     });
-    expect(registry.keys().map(String)).toEqual([
-      "boundary-child",
-      "boundary-root",
-    ]);
+    expect(registry.keys().map(String)).toEqual(["boundary-root"]);
   });
 
-  test("deduplicates stable trait IDs while retaining every bound dependency", async () => {
-    const left = runnable(Schema("left-child", {}));
-    const right = runnable(Schema("right-child", {}));
-    const Graph = Trait("multiGraph", { catalog: string() }, {
-      bind: (catalog) => ({
-        values: { catalog: "shared" },
-        dependencies: [catalog],
-      }),
-    });
-    const Root = Entity("multiRoot", {}, {
-      traits: [Graph(left), Graph(right)],
-    });
-    const root = runnable(Schema("multi-root", { multiRoot: Root }));
-
-    const registry = await assemble(root);
-    expect(registry.keys().map(String)).toEqual([
-      "left-child",
-      "multi-root",
-      "right-child",
-    ]);
-    const installed = Result.getOrThrow(
-      registry.require(CatalogId.make("multi-root")),
-    );
-    expect(installed.unit.catalog.entities[0]!.traits).toHaveLength(1);
-  });
 
   test("executes declared inputs and bare deployed callbacks natively", async () => {
     const make = (value: string) =>
@@ -905,45 +781,6 @@ describe("catalog definition assembly", () => {
       fixed.resolveCreationValues("fixed", {}, { now: new Date(0) }).value,
       -0,
     )).toBe(false);
-  });
-
-  test("rejects duplicate permanent keys with both internal reachability paths", async () => {
-    const left = runnable(Schema("duplicate", {}));
-    const right = runnable(Schema("duplicate", {}));
-    const Graph = Trait("duplicateGraph", { catalog: string() }, {
-      bind: (catalog) => ({
-        values: { catalog: catalog.key },
-        dependencies: [catalog],
-      }),
-    });
-    const Left = Entity("left", {}, { traits: [Graph(left)] });
-    const Right = Entity("right", {}, { traits: [Graph(right)] });
-    const root = runnable(Schema("root", { left: Left, right: Right }));
-
-    const failure = await assembleFailure(root);
-    expect(failure).toBeInstanceOf(InvalidIR);
-    expect(failure.message).toMatch(/permanent key "duplicate" names different definitions/);
-    expect(failure.message).toMatch(/entity:left.*binding:duplicate/);
-    expect(failure.message).toMatch(/entity:right.*binding:duplicate/);
-  });
-
-  test("rejects reachable non-runnable definitions and ignores unreachable imports", async () => {
-    const PlainSchema = Schema("plain-schema", {});
-    const plain: CodeDefinition = { key: "plain", schema: PlainSchema };
-    const Graph = Trait("plainGraph", { catalog: string() }, {
-      bind: (catalog) => ({ dependencies: [catalog] }),
-    });
-    const RootEntity = Entity("root", {}, { traits: [Graph(plain)] });
-    const root = runnable(Schema("root", { root: RootEntity }));
-    const unused = runnable(Schema("unused", {}));
-
-    const failure = await assembleFailure(root);
-    expect(failure.message).toMatch(/key 'plain' has no runnable Schema definition/);
-
-    const isolated = runnable(Schema("isolated", {}));
-    const registry = await assemble(isolated);
-    expect(registry.keys().map(String)).toEqual(["isolated"]);
-    expect(registry.keys().map(String)).not.toContain(unused.key);
   });
 
   test("rejects out-of-schema policy identities and retains explicit operation writes", async () => {

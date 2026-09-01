@@ -11,7 +11,6 @@ export * from "./Errors.ts";
 export * from "./idents.ts";
 export * from "./Entity.ts";
 export * from "./Trait.ts";
-export * from "./Graph.ts";
 export {
   composerIdent,
   conflictingFieldName,

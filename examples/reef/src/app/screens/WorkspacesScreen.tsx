@@ -69,9 +69,8 @@ export const WorkspacesScreen = () => {
         </form>
       </div>
       <p className="hint">
-        A workspace is a child database of the reef root. You only see the
-        workspaces whose member list includes you — that is the read policy,
-        not a UI filter.
+        You only see workspaces whose member list includes you — that is the
+        read policy, not a UI filter.
       </p>
     </main>
   );

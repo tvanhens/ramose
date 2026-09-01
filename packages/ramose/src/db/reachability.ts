@@ -117,9 +117,7 @@ export const collectDefinitionEntities = (
 
 /**
  * Walk root catalog → schema → entities → operations/writes → traits →
- * bindings → dependencies.
- * Definitions are marked by permanent key before descending, so recursive
- * graphs terminate. The result is inert authoring metadata, not a registry.
+ * bindings. A deployment contains exactly one database definition.
  */
 export const collectCodeReachability = (
   rootRef: CodeDefinitionRef,
@@ -171,12 +169,6 @@ export const collectCodeReachability = (
           path: bindingPath,
         }));
 
-        const dependencies = [...use.binding.dependencies].sort(
-          (left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
-        );
-        for (const dependency of dependencies) {
-          visit(dependency, [...bindingPath, "dependencies"]);
-        }
       }
     }
   };

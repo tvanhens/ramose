@@ -1,6 +1,6 @@
 ---
 title: Schema
-description: Reference for named schemas, entities, traits, graphs, fields, relationships, and stored values.
+description: Reference for named schemas, entities, traits, fields, relationships, and stored values.
 ---
 import Next from "../../../components/Next.astro";
 
@@ -22,7 +22,7 @@ AppSchema.applyPolicy(({ policy }) => {
 })
 ```
 
-A named schema is the closed model installed for one graph. It contains entity and trait definitions, graph bindings, operation identities, descriptions, and policy used by the server, browser client, and MCP discovery.
+A named schema is the closed model installed for one database. It contains entity and trait definitions, operation identities, descriptions, and policy used by the server, browser client, and MCP discovery.
 
 Public keys are persistent contract names. Keep them stable once deployed.
 
@@ -54,19 +54,6 @@ const Assignable = Ramose.Trait("assignable", {
 
 A trait is a reusable capability. Entities that implement it are substitutable in trait-rooted queries and inherit its fields, relationships, and operations.
 
-## Graph trait
-
-```ts
-const OrganizationGraph = Ramose.Graph(OrganizationSchema)
-
-const Organization = Ramose.Entity("organization", {
-  fields: { slug: Ramose.string().unique() },
-  traits: [OrganizationGraph],
-})
-```
-
-`Ramose.Graph(schema)` binds each conforming entity to a child graph whose contents use that named schema. The entity lives in the parent; the bound database has a separate identity and lifecycle.
-
 ## Stored fields
 
 Common constructors include:
@@ -89,11 +76,11 @@ Field modifiers declare cardinality, optionality, defaults, uniqueness, indexing
 
 `ref(Target)` stores a checked reference to a compatible entity. A many relationship is modeled as related entities or an explicit many-valued relationship, not an unbounded application array.
 
-References cannot cross graph boundaries. Store a public child path or application-level locator when a workflow must point across graphs, then resolve and authorize it explicitly.
+References stay within one database. Use an application-level locator when a workflow must point into another database, then resolve and authorize it explicitly.
 
 ## Evolution rules
 
-Additive changes are normally compatible. Changes to value representation, cardinality, uniqueness, required fields on existing records, type identity, or graph binding require an explicit migration. Catalog installation refuses incompatible changes by default.
+Additive changes are normally compatible. Changes to value representation, cardinality, uniqueness, required fields on existing records, or type identity require an explicit migration. Catalog installation refuses incompatible changes by default.
 
 <Next links={[
   { href: "/reference/operations/", label: "Operations reference", why: "attach the write surface to entities and traits" },

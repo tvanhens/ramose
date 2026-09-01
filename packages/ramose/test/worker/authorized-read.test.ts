@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
-import { Unauthorized } from "../../src/db/Errors.ts";
 import { CatalogId, CatalogUnitHash } from "../../src/internal/authorization/index.ts";
 import { stringifyJson } from "../../src/internal/core/json.ts";
 import { parseOneShotReadRequest } from "../../src/worker/authorized-read.ts";
@@ -111,8 +110,8 @@ describe("parseOneShotReadRequest", () => {
     expect(error._tag).toBe("Unauthorized");
   });
 
-  test("nested paths are segment arrays and use only the server-owned route", async () => {
-    const parsed = await runParse(
+  test("rejects database selectors", async () => {
+    const bodyPath = runParse(
       new Request("https://peer.test/db/root/query", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -123,44 +122,13 @@ describe("parseOneShotReadRequest", () => {
       }),
       "/query",
     );
-    expect(parsed.path).toEqual(["acme", "design"]);
-    expect(parsed.catalogKey).toBeUndefined();
-    expect(parsed.unitHash).toBeUndefined();
+    await expect(bodyPath).rejects.toThrow("database selector 'at' is not supported");
 
-    const entity = await runParse(
+    const queryPath = runParse(
       new Request("https://peer.test/db/root/entity/42?at=acme&at=design"),
       "/entity/42",
     );
-    expect(entity.path).toEqual(["acme", "design"]);
-    expect(entity.read).toEqual({ kind: "entity", ref: 42 });
-  });
-
-  test("rejects caller-selected catalog proofs on a nested path", async () => {
-    const bodyProof = await runParseFail(
-      new Request("https://peer.test/db/root/query", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          at: ["acme"],
-          catalog,
-          unitHash,
-          query: { find: ["?e"], where: [] },
-        }),
-      }),
-      "/query",
-    );
-    expect(bodyProof).toBeInstanceOf(Unauthorized);
-
-    const headerProof = await runParseFail(
-      new Request("https://peer.test/db/root/entity/42?at=acme", {
-        headers: {
-          "x-ramose-catalog": catalog,
-          "x-ramose-unit-hash": unitHash,
-        },
-      }),
-      "/entity/42",
-    );
-    expect(headerProof).toBeInstanceOf(Unauthorized);
+    await expect(queryPath).rejects.toThrow("database selector 'at' is not supported");
   });
 
   test("query inputs, lookup values, and pull refs decode $inst / $bytes / $uuid", async () => {

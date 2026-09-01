@@ -1,29 +1,24 @@
 ---
 title: The Ramose mental model
-description: Six ideas that make schemas, graphs, queries, offline behavior, authorization, and MCP fit together.
+description: Six ideas that make schemas, databases, queries, offline behavior, authorization, and MCP fit together.
 ---
 import Learn from "../../../components/Learn.astro";
-import GraphModel from "../../../components/GraphModel.astro";
 import SurfaceMap from "../../../components/SurfaceMap.astro";
 import Next from "../../../components/Next.astro";
 
 Ramose is easier to learn if you begin with the whole model. Nearly every API is a consequence of the six ideas on this page.
 
-<Learn learn={["Why a deployment is a graph of databases", "Why queries are local values and writes are named operations", "Why the app and MCP surface can share one security model"]} before={[{ href: "/getting-started/introduction/", label: "What is Ramose?" }]} minutes={8} />
+<Learn learn={["Why one database is a coherent graph", "Why queries are local values and writes are named operations", "Why the app and MCP surface can share one security model"]} before={[{ href: "/getting-started/introduction/", label: "What is Ramose?" }]} minutes={8} />
 
-## 1. A graph is the unit of isolation
+## 1. One database is one graph
 
-A Ramose database is one graph: a set of typed entities and relations governed by one deployed catalog. A row carrying the built-in `Graph` trait opens a child database. Child graphs may contain more graph rows.
-
-<GraphModel />
-
-The path is a sequence of readable names; the stored identity is stable. Every path segment is authorized, and each child applies its own policy. No caller supplies or pairs an internal database with a catalog.
+A Ramose database is a set of typed entities and relations governed by one deployed catalog and policy. Related data stays directly queryable instead of becoming a database-routing hierarchy.
 
 ## 2. The catalog is deployed code
 
 A **catalog** packages a schema, policy, operations, traits, and documentation. It is immutable for one deployment. Deploying code changes the current catalog; application data does not install or select one.
 
-The same catalog definition can back thousands of child graph instances. The definition is code; each instance is separate data, history, synchronization, and write capacity.
+The catalog definition is deployed code; application data cannot install or select a different one.
 
 ## 3. Reads are queries over an immutable value
 
@@ -43,13 +38,11 @@ The server alone checks the grant, resolves a visible target, executes the body,
 
 ## 5. Offline state is a complete authorized replica
 
-The browser persists the complete current value of every graph it activates. It does not persist query results. Queries derive answers from local indexes, so a new query can run offline without having been used before.
-
-Each graph activates lazily. Cached children can be evicted as units. One durable outbox survives restarts and coordinates across tabs. Optimistic layers sit above the committed value and can be removed or replayed without corrupting it.
+The browser persists the complete current authorized database. It does not persist query results. Queries derive answers from local indexes, so a new query can run offline without having been used before. One durable outbox survives restarts and coordinates across tabs.
 
 ## 6. Authorization shapes what exists for a caller
 
-For a principal, Ramose constructs a filtered immutable database before evaluating reads. Hidden facts cannot affect joins, ordering, counts, relations, graph discovery, errors, or synchronization signals. Operation grants are separate and exact.
+For a principal, Ramose constructs a filtered immutable database before evaluating reads. Hidden facts cannot affect joins, ordering, counts, relations, errors, or synchronization signals. Operation grants are separate and exact.
 
 <SurfaceMap />
 
@@ -59,15 +52,13 @@ That is why MCP is a thin surface. `describe`, `query`, and `mutate` discover an
 
 ```text
 deployment
-  └─ authorized root graph
+  └─ authorized database
        ├─ local queries derive views
        ├─ named operations change state
-       ├─ graph rows open authorized children
        └─ app client and MCP share the same policy
 ```
 
 <Next links={[
   { href: "/getting-started/quickstart/", label: "Build a web app", why: "turn the model into a working React screen" },
-  { href: "/concepts/graph-of-graphs/", label: "Graph of graphs", why: "understand paths, identity, boundaries, and lifecycle" },
   { href: "/concepts/offline/", label: "Offline and sync", why: "see how complete replicas and queued operations converge" },
 ]} />

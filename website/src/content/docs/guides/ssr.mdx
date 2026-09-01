@@ -5,7 +5,7 @@ description: Render authorized server data while letting the browser establish i
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Server rendering and offline replication solve different problems. The server can produce an authorized first response; the browser still restores and synchronizes its persistent graph replica after hydration.
+Server rendering and offline replication solve different problems. The server can produce an authorized first response; the browser still restores and synchronizes its persistent database replica after hydration.
 
 <Learn learn={["Where server queries are useful", "Why an HTML payload is not a replica snapshot", "How to avoid mixing principals or hiding stale state"]} before={[{ href: "/guides/workers/", label: "Use Ramose from a Worker" }, { href: "/guides/react/", label: "React and offline UX" }]} minutes={7} />
 
@@ -17,13 +17,12 @@ Do not create a browser `Db` handle in a Server Component. It depends on browser
 
 ## Query with the request principal
 
-Authenticate the request and open the same authorized graph path the page will use:
+Authenticate the request and query the same database the page will use:
 
 ```tsx
 export default async function ProjectPage({ params }) {
   const rootDb = await ramose.open({ principal: await principal() })
-  const projectDb = await openProject(rootDb, params.project)
-  const initial = await projectDb.query(openTasks.page({ first: 50 }))
+  const initial = await rootDb.query(openTasks(params.project).page({ first: 50 }))
 
   return <ProjectClient project={params.project} initial={initial} />
 }
@@ -33,7 +32,7 @@ The server result is scoped to that principal and request. Never place it in a s
 
 ## Hydrate presentation, not storage
 
-Pass plain initial rows to the client for immediate presentation if your adapter supports seeding that exact query. The browser then opens its own graph, restores local state, and validates/catches up through normal synchronization.
+Pass plain initial rows to the client for immediate presentation if your adapter supports seeding that exact query. The browser then opens its database, restores local state, and validates/catches up through normal synchronization.
 
 An HTML payload is not a trusted database snapshot. It has no durable cursor, outbox, policy transition state, or multi-tab ownership. Do not write arbitrary server props directly into IndexedDB as if they came from the synchronization protocol.
 
@@ -45,11 +44,11 @@ If the client reports `stale`, keep the complete result visible and add connecti
 
 ## Protect principal changes
 
-Key the browser client by stable principal/session generation. On sign-out or account switch, close the old client and mount a new one. Never reuse one principal's graph handles, query snapshots, or queued receipts for another principal.
+Key the browser client by stable principal/session generation. On sign-out or account switch, close the old client and mount a new one. Never reuse one principal's database handles, query snapshots, or queued receipts for another principal.
 
 ## Static generation
 
-Use static generation only for truly public, catalog-independent content. Personalized or graph-scoped data should be rendered at request time or loaded by the browser. Revalidation cannot represent arbitrary policy changes safely without an authorization-aware cache design.
+Use static generation only for truly public, catalog-independent content. Personalized data should be rendered at request time or loaded by the browser. Revalidation cannot represent arbitrary policy changes safely without an authorization-aware cache design.
 
 <Next links={[
   { href: "/concepts/offline/", label: "Offline deep dive", why: "understand what the browser replica actually persists" },

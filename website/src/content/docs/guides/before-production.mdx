@@ -1,6 +1,6 @@
 ---
 title: Before production
-description: Launch checklist for identity, policy, graph isolation, query limits, offline recovery, MCP, observability, and data lifecycle.
+description: Launch checklist for identity, policy, database isolation, query limits, offline recovery, MCP, observability, and data lifecycle.
 ---
 import ChecklistState from "../../../components/ChecklistState.astro";
 import Learn from "../../../components/Learn.astro";
@@ -15,7 +15,7 @@ Use this checklist before any real principal or durable data reaches a productio
 ## Identity and edge
 
 - [ ] Verify token issuer, audience, keys, expiry, clock tolerance, and callback origins for the production hostname.
-- [ ] Derive principals and authorized roots from trusted configuration; reject caller-supplied internal graph or catalog ids.
+- [ ] Derive principals and the authorized database from trusted configuration; reject caller-supplied internal database or catalog ids.
 - [ ] Confirm unauthenticated `/db/*` and `/mcp` requests fail closed.
 - [ ] Use short-lived browser and MCP tokens and redact them from logs.
 - [ ] Restrict CORS and OAuth redirect targets to exact production origins.
@@ -24,16 +24,15 @@ Use this checklist before any real principal or durable data reaches a productio
 
 - [ ] Apply read policy and exact operation rules to every production schema.
 - [ ] Test owner, member, viewer, suspended, removed, and newly invited principals with real identity tokens.
-- [ ] Prove hidden facts cannot leak through joins, counts, relationship traversal, graph discovery, errors, or operation target checks.
+- [ ] Prove hidden facts cannot leak through joins, counts, relationship traversal, discovery, errors, or operation target checks.
 - [ ] Review every targetless creation grant and every generated CRUD operation explicitly.
 - [ ] Stage incompatible catalog evolution through additive releases and backfills.
 
-## Graph design and lifecycle
+## Database lifecycle
 
-- [ ] Write a boundary brief for each child graph type: isolation, access, lifecycle, cross-boundary questions, and normal activation count.
-- [ ] Keep root graphs bounded; do not load every tenant or project graph for dashboards.
-- [ ] Test graph path rename, archive, restore, export, and deletion with stable storage identity.
-- [ ] Model cross-graph work as recoverable workflows rather than transactions.
+- [ ] Keep dashboard queries bounded; do not load every tenant or project row eagerly.
+- [ ] Test database archive, restore, export, and deletion.
+- [ ] Model cross-database work as recoverable workflows rather than transactions.
 
 ## Browser and offline
 
@@ -48,7 +47,7 @@ Use this checklist before any real principal or durable data reaches a productio
 - [ ] Measure representative query latency, candidate work, projection width, snapshot size, and incremental update cost.
 - [ ] Bound every page, nested collection, and recursive rule.
 - [ ] Set conservative browser, server, and MCP query budgets.
-- [ ] Load-test the expected number of simultaneously active graphs, not only the number stored.
+- [ ] Load-test the expected number of simultaneously active queries, not only the number of stored entities.
 - [ ] Verify `query_budget_exceeded` provides safe, actionable recovery without internal plans.
 
 ## MCP
@@ -56,7 +55,7 @@ Use this checklist before any real principal or durable data reaches a productio
 - [ ] Publish correct OAuth protected-resource metadata for `POST /mcp`.
 - [ ] Confirm `tools/list` contains exactly `describe`, `query`, and `mutate`.
 - [ ] Review catalog descriptions for agent clarity and sensitive details.
-- [ ] Test discovery pagination, stale catalog tokens, graph traversal, opaque cursors, operation retry, and invocation conflict.
+- [ ] Test discovery pagination, stale catalog tokens, opaque cursors, operation retry, and invocation conflict.
 - [ ] Invoke through MCP and observe the ordinary web app converge.
 
 ## Reliability and operations
@@ -64,7 +63,7 @@ Use this checklist before any real principal or durable data reaches a productio
 - [ ] Alert on health, storage faults, synchronization lag, resnapshot rate, query-budget failures, and rejected/internal operation outcomes.
 - [ ] Correlate requests and receipts with safe opaque identifiers.
 - [ ] Practice restore, export, stage rollback, and catalog rollback procedures using non-production data.
-- [ ] Document retention and deletion behavior for graph data, history, snapshots, and receipts.
+- [ ] Document retention and deletion behavior for database data, history, snapshots, and receipts.
 - [ ] Confirm test hooks and instrumentation routes are inert in production.
 
 ## Final launch test
