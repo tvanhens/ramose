@@ -48,12 +48,13 @@ const json = (
   });
 
 export interface ReplicaTesting {
-  readonly boundaries: RuntimeBoundaries;
+  readonly boundariesOf: (database: () => string) => RuntimeBoundaries;
   readonly enabled: (env: RamoseEnv) => boolean;
   readonly reset: () => void;
   readonly handleAdmin: (
     request: Request,
     path: string,
+    database: string,
     abort: (reason: string) => void,
   ) => Promise<Response | undefined>;
 }
@@ -65,6 +66,7 @@ export const createTestingQueryReplicaDO = (
   env: RamoseEnv,
 ) => DurableObject<RamoseEnv>) => class QueryReplicaDO extends QueryReplicaDOBase {
   private readonly live = new Map<WebSocket, Session>();
+  private readonly boundaries = testing.boundariesOf(() => this.dbName ?? "");
 
   constructor(ctx: DurableObjectState, env: RamoseEnv) {
     super(ctx, env);
@@ -77,13 +79,13 @@ export const createTestingQueryReplicaDO = (
 
   protected override async beforeApplyDatoms(_entry: LogEntry): Promise<void> {
     if (this.testingEnabled) {
-      await testing.boundaries.checkpoint("replica.apply");
+      await this.boundaries.checkpoint("replica.apply");
     }
   }
 
   protected override async notifyAppliedEntry(entry: LogEntry): Promise<void> {
     if (!this.testingEnabled) return super.notifyAppliedEntry(entry);
-    await testing.boundaries.checkpoint("session.notify");
+    await this.boundaries.checkpoint("session.notify");
     await super.notifyAppliedEntry(entry);
     await this.notifySessions(entry);
   }
@@ -413,6 +415,7 @@ export const createTestingQueryReplicaDO = (
       return (await testing.handleAdmin(
         request,
         url.pathname,
+        dbName,
         (reason) => this.ctx.abort(reason),
       )) ?? json({ error: "not found" }, 404);
     }

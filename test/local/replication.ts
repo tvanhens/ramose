@@ -55,6 +55,8 @@ const MULTI_DEVICE_DATABASE = CONFORMANCE_DATABASES[24]!;
 const COMMIT_WAKE_DATABASE = CONFORMANCE_DATABASES[25]!;
 const HIDDEN_WAKE_DATABASE = CONFORMANCE_DATABASES[26]!;
 const WAKE_BURST_DATABASE = CONFORMANCE_DATABASES[27]!;
+const SCOPE_ARMED_DATABASE = CONFORMANCE_DATABASES[28]!;
+const SCOPE_BYSTANDER_DATABASE = CONFORMANCE_DATABASES[29]!;
 
 const HIDDEN_SCALE_COMMITS = 1_000;
 
@@ -1603,6 +1605,52 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
           action: "release",
           name: "replication.wake",
         });
+      }
+    });
+
+    test("checkpoints armed for one database never pause another database's stream", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, SCOPE_BYSTANDER_DATABASE, false);
+      const armedNames = [
+        "replication.snapshot.chunk",
+        "replication.cycle",
+        "replication.wake",
+        "replication.change",
+      ];
+      for (const name of armedNames) {
+        await armCheckpoint(base, SCOPE_ARMED_DATABASE, name);
+      }
+      try {
+        const response = await openReplication(base, world.database, world.member);
+        expect(response.status).toBe(200);
+        const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+        try {
+          const snapshot = await collectCommittedSnapshot(iterator);
+          const renamed = await rename(
+            base,
+            world.database,
+            world.member,
+            world.ids.parent,
+            "Scoped to my database",
+          );
+          expect(renamed.status).toBe(200);
+          const woken = await observed(iterator, "cross-database scoped change");
+          if (woken.frame.type !== "Change") {
+            throw new Error("the scoped stream produced no change");
+          }
+          expect(woken.frame.ordinal).toBe(snapshot.state.committed!.ordinal + 1);
+          expect(woken.wire).toMatch(/Scoped to my database/);
+          for (const name of armedNames) {
+            expect(await checkpointPending(base, SCOPE_ARMED_DATABASE, name))
+              .toBe(false);
+          }
+        } finally {
+          await closeIterator(iterator);
+        }
+      } finally {
+        for (const name of armedNames) {
+          await releaseCheckpoint(base, SCOPE_ARMED_DATABASE, name);
+        }
       }
     });
   });

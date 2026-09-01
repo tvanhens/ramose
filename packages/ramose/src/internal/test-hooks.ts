@@ -1,3 +1,5 @@
+import type { RuntimeBoundaries } from "./runtime-boundaries.ts";
+
 export const TEST_HOOKS_ENV_KEY = "RAMOSE_TEST_HOOKS" as const;
 
 export type TestHooksEnv = {
@@ -171,6 +173,51 @@ export const testRuntimeBoundaries = Object.freeze({
   checkpointCancel: releaseCheckpoint,
 });
 
+const databaseCheckpointKey = (database: string, name: string): string =>
+  `${database}/${name}`;
+
+export const armDatabaseCheckpoint = (
+  database: string,
+  name: string,
+  action: CheckpointAction,
+  error?: string,
+  releaseAfterMs?: number,
+): void =>
+  armCheckpoint(databaseCheckpointKey(database, name), action, error, releaseAfterMs);
+
+export const releaseDatabaseCheckpoint = (
+  database: string,
+  name: string,
+): void => releaseCheckpoint(databaseCheckpointKey(database, name));
+
+export const databaseCheckpointStatus = (
+  database: string,
+): Record<string, CheckpointArm> => {
+  const prefix = databaseCheckpointKey(database, "");
+  const out: Record<string, CheckpointArm> = {};
+  for (const [key, arm] of Object.entries(checkpointStatus())) {
+    if (!key.startsWith(prefix)) continue;
+    out[key.slice(prefix.length)] = arm;
+  }
+  return out;
+};
+
+export const databaseRuntimeBoundaries = (
+  database: string | (() => string),
+): RuntimeBoundaries => {
+  const databaseOf = typeof database === "function" ? database : () => database;
+  return Object.freeze({
+    checkpoint: (name: string) =>
+      checkpoint(databaseCheckpointKey(databaseOf(), name)),
+    checkpointSync: (name: string) =>
+      checkpointSync(databaseCheckpointKey(databaseOf(), name)),
+    checkpointReached: (name: string) =>
+      checkpointReached(databaseCheckpointKey(databaseOf(), name)),
+    checkpointCancel: (name: string) =>
+      releaseCheckpoint(databaseCheckpointKey(databaseOf(), name)),
+  });
+};
+
 const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
     status,
@@ -180,6 +227,7 @@ const json = (body: unknown, status = 200): Response =>
 export const handleIsolateTestAdmin = async (
   request: Request,
   path: string,
+  database: string,
   abort?: (reason: string) => void,
   inspect?: {
     readonly operationReceiptCount: () => number;
@@ -201,7 +249,9 @@ export const handleIsolateTestAdmin = async (
     };
     const action = typeof body.action === "string" ? body.action : "";
     const name = typeof body.name === "string" ? body.name : "";
-    if (action === "status") return json({ ok: true, checkpoints: checkpointStatus() });
+    if (action === "status") {
+      return json({ ok: true, checkpoints: databaseCheckpointStatus(database) });
+    }
     if (name.length === 0) {
       return json({ error: "checkpoint needs name" }, 400);
     }
@@ -215,15 +265,26 @@ export const handleIsolateTestAdmin = async (
           error: `checkpoint releaseAfterMs must be between 0 and ${MAX_CHECKPOINT_RELEASE_DELAY_MS}`,
         }, 400);
       }
-      armCheckpoint(name, "wait", undefined, releaseAfterMs as number | undefined);
+      armDatabaseCheckpoint(
+        database,
+        name,
+        "wait",
+        undefined,
+        releaseAfterMs as number | undefined,
+      );
       return json({ ok: true, name, action: "wait" });
     }
     if (action === "arm-throw") {
-      armCheckpoint(name, "throw", typeof body.error === "string" ? body.error : undefined);
+      armDatabaseCheckpoint(
+        database,
+        name,
+        "throw",
+        typeof body.error === "string" ? body.error : undefined,
+      );
       return json({ ok: true, name, action: "throw" });
     }
     if (action === "release") {
-      releaseCheckpoint(name);
+      releaseDatabaseCheckpoint(database, name);
       return json({ ok: true, name, action: "release" });
     }
     return json({ error: "checkpoint action must be arm-wait|arm-throw|release|status" }, 400);

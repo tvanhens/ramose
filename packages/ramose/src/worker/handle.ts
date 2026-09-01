@@ -249,7 +249,7 @@ export const handle = (
   t0: number,
   info: RequestInfo,
   peer: ServerOptions,
-  boundaries?: RuntimeBoundaries,
+  boundariesOf?: (database: string) => RuntimeBoundaries,
 ): Effect.Effect<Response, RamoseError, JwtVerifier> =>
   Effect.gen(function* () {
     if (!levelApplied) {
@@ -302,6 +302,7 @@ export const handle = (
     if (!isDatabaseName(db)) {
       return yield* new BadRequest({ message: "invalid database name" });
     }
+    const boundaries = boundariesOf?.(db);
     const deployedOperations = peer.operationCatalogs === undefined
       ? undefined
       : deployedOperationCatalogs(peer.operationCatalogs);
@@ -610,7 +611,7 @@ export const runFetch = (
   request: Request,
   env: RamoseEnv,
   peer: ServerOptions,
-  boundaries?: RuntimeBoundaries,
+  boundariesOf?: (database: string) => RuntimeBoundaries,
 ): Promise<Response> => {
   const t0 = Date.now();
   const info: RequestInfo = { db: "-", path: "-", route: "other" };
@@ -619,7 +620,7 @@ export const runFetch = (
     fromBinding(bindingOf(env)),
   ).pipe(Context.add(JwtVerifier, fromEnv(env)));
   return Effect.runPromise(
-    handle(request, env, t0, info, peer, boundaries).pipe(
+    handle(request, env, t0, info, peer, boundariesOf).pipe(
       Effect.catchTags(recover(info, t0, request, env)),
       Effect.tap((res) =>
         recordHttp(request, info, res.status, Date.now() - t0),

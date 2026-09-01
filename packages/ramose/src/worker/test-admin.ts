@@ -14,12 +14,12 @@ import { authenticateRequest } from "./admit.ts";
 import { JwtVerifier, fromEnv } from "./jwt.ts";
 import { dbPrefix, prefixedBucket } from "../internal/storage/index.ts";
 import {
-  armCheckpoint,
-  checkpointStatus,
+  armDatabaseCheckpoint,
+  databaseCheckpointStatus,
   enableTestHooks,
   isCheckpointReleaseDelay,
   MAX_CHECKPOINT_RELEASE_DELAY_MS,
-  releaseCheckpoint,
+  releaseDatabaseCheckpoint,
   type CheckpointScope,
 } from "../internal/test-hooks.ts";
 import { internalHeaders } from "../internal/transactor/internal.ts";
@@ -117,7 +117,7 @@ const handleR2 = async (request: Request, env: RamoseEnv, db: string): Promise<R
   throw new BadRequest({ message: "r2 action must be put|get|head|delete|list" });
 };
 
-const handleCheckpointLocal = (body: {
+const handleCheckpointLocal = (db: string, body: {
   action?: unknown;
   name?: unknown;
   error?: unknown;
@@ -125,7 +125,9 @@ const handleCheckpointLocal = (body: {
 }): Response => {
   const action = typeof body.action === "string" ? body.action : "";
   const name = typeof body.name === "string" ? body.name : "";
-  if (action === "status") return json({ ok: true, checkpoints: checkpointStatus() });
+  if (action === "status") {
+    return json({ ok: true, checkpoints: databaseCheckpointStatus(db) });
+  }
   if (name.length === 0) throw new BadRequest({ message: "checkpoint needs name" });
   if (action === "arm-wait") {
     const releaseAfterMs = body.releaseAfterMs;
@@ -137,15 +139,15 @@ const handleCheckpointLocal = (body: {
         message: `checkpoint releaseAfterMs must be between 0 and ${MAX_CHECKPOINT_RELEASE_DELAY_MS}`,
       });
     }
-    armCheckpoint(name, "wait", undefined, releaseAfterMs as number | undefined);
+    armDatabaseCheckpoint(db, name, "wait", undefined, releaseAfterMs as number | undefined);
     return json({ ok: true, name, action: "wait" });
   }
   if (action === "arm-throw") {
-    armCheckpoint(name, "throw", typeof body.error === "string" ? body.error : undefined);
+    armDatabaseCheckpoint(db, name, "throw", typeof body.error === "string" ? body.error : undefined);
     return json({ ok: true, name, action: "throw" });
   }
   if (action === "release") {
-    releaseCheckpoint(name);
+    releaseDatabaseCheckpoint(db, name);
     return json({ ok: true, name, action: "release" });
   }
   throw new BadRequest({ message: "checkpoint action must be arm-wait|arm-throw|release|status" });
@@ -483,7 +485,7 @@ export const handleTestAdmin = async (
       body.scope === "transactor" || body.scope === "replica" || body.scope === "worker"
         ? body.scope
         : "worker";
-    if (scope === "worker") return handleCheckpointLocal(body);
+    if (scope === "worker") return handleCheckpointLocal(db, body);
     return forward(request, env, db, scope, "/admin/test/checkpoint", raw.length === 0 ? "{}" : raw);
   }
   if (rest === "/abort") {

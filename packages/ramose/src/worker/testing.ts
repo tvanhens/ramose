@@ -1,8 +1,8 @@
 import {
+  databaseRuntimeBoundaries,
   handleIsolateTestAdmin,
   resetTestHooks,
   testHooksEnabled,
-  testRuntimeBoundaries,
 } from "../internal/test-hooks.ts";
 import {
   createTestingQueryReplicaDO,
@@ -56,7 +56,7 @@ const durableObjectEnabled = (env: RamoseEnv): boolean =>
   testHooksEnabled(env) && configured(env) !== undefined;
 
 const durableObjectTesting: ReplicaTesting & TransactorTesting = Object.freeze({
-  boundaries: testRuntimeBoundaries,
+  boundariesOf: databaseRuntimeBoundaries,
   enabled: durableObjectEnabled,
   reset: resetTestHooks,
   handleAdmin: handleIsolateTestAdmin,
@@ -100,7 +100,7 @@ export const createServer = (options: ServerOptions = {}) => ({
       request,
       runtimeEnv,
       options,
-      testRuntimeBoundaries,
+      databaseRuntimeBoundaries,
     );
   },
 });
