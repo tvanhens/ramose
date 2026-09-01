@@ -633,6 +633,149 @@ browserTest(
 );
 
 browserTest(
+  "a fence after the committed basis moved past a queued layer retires it at once",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-advanced-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 3,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("third"),
+            `${label} to adopt the committed change`,
+          ),
+        ).toEqual(["moved", "second", "third"]);
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("server-decided"),
+            `${label} to render the authoritative outcome`,
+          ),
+        ).toEqual(["server-decided", "second", "third"]);
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a tab that never saw the layer queued renders the committed outcome at the fence",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-unseen-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    let reader: TabHandle | undefined;
+    try {
+      await started(writer, name, database);
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the optimistic layer",
+      );
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        output: {},
+        mappings: [],
+      });
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 3,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+
+      reader = await openTab(tabModule);
+      expect(await started(reader, name, database)).toBeDefined();
+      expect(
+        await until(
+          () => titles(reader!),
+          (rows) => rows.includes("third"),
+          "the fresh tab to compose the retained layer",
+        ),
+      ).toEqual(["moved", "second", "third"]);
+
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      expect(
+        await until(
+          () => titles(reader!),
+          (rows) => rows.includes("server-decided"),
+          "the fresh tab to render the authoritative outcome",
+        ),
+      ).toEqual(["server-decided", "second", "third"]);
+    } finally {
+      leader.close();
+      await reader?.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a follower's enqueue wakes the leader's submission loop",
   async ({ browser }) => {
     const name = `ramose-propagation-wakeup-${browser.uniqueId}`;

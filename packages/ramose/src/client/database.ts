@@ -360,6 +360,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private composed: OverlayLayers = emptyOverlayLayers;
   private carried: readonly CarriedLayer[] = [];
   private acknowledged = new Map<InvocationId, number>();
+  private queued = new Map<InvocationId, number>();
   private account: string | undefined;
   private handles: ReadonlyMap<string, number> = new Map();
   private reverse: Map<number, string> | undefined;
@@ -977,6 +978,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.composed = emptyOverlayLayers;
     this.carried = [];
     this.acknowledged = new Map();
+    this.queued = new Map();
   }
 
   private carrying(activation: number): readonly CarriedLayer[] {
@@ -992,6 +994,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.composed = state.layers;
       this.carried = [];
       this.acknowledged.clear();
+      this.queued.clear();
       return;
     }
     const live = new Set(state.layers.map((layer) => layer.invocation));
@@ -1015,10 +1018,19 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     for (const invocation of [...this.acknowledged.keys()]) {
       if (!live.has(invocation)) this.acknowledged.delete(invocation);
     }
+    for (const invocation of [...this.queued.keys()]) {
+      if (!live.has(invocation)) this.queued.delete(invocation);
+    }
     for (const layer of state.layers) {
-      if (layer.state === "committed-unobserved" && !this.acknowledged.has(layer.invocation)) {
-        this.acknowledged.set(layer.invocation, this.basis);
+      if (layer.state === "queued") {
+        if (!this.queued.has(layer.invocation)) {
+          this.queued.set(layer.invocation, this.basis);
+        }
+        continue;
       }
+      if (this.acknowledged.has(layer.invocation)) continue;
+      const anchor = this.queued.get(layer.invocation);
+      if (anchor !== undefined) this.acknowledged.set(layer.invocation, anchor);
     }
     this.composed = state.layers;
   }
