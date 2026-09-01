@@ -119,9 +119,10 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       expect(listed.body.objects.some((o: { key: string }) => o.key === "seg/corrupt")).toBe(true);
     });
 
-    test("worker-scope checkpoints arm, report, and release", async () => {
+    test("worker-scope checkpoints arm, report, and release per database", async () => {
       const urls = localUrls();
       const db = uniqueDb("cpw");
+      const other = uniqueDb("cpw-other");
       const armed = await testAdmin(urls.openUrl, db, "/checkpoint", {
         action: "arm-throw",
         name: "session.open",
@@ -130,6 +131,8 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       expect(armed.status).toBe(200);
       const status = await testAdmin(urls.openUrl, db, "/checkpoint", { action: "status" });
       expect(status.body.checkpoints["session.open"]?.action).toBe("throw");
+      const foreign = await testAdmin(urls.openUrl, other, "/checkpoint", { action: "status" });
+      expect(foreign.body.checkpoints["session.open"]).toBeUndefined();
       const released = await testAdmin(urls.openUrl, db, "/checkpoint", {
         action: "release",
         name: "session.open",
@@ -222,6 +225,36 @@ export function registerInstrumentation(target: { urls: () => LocalUrls }): void
       });
       expect(status.status).toBe(200);
       expect(status.body.checkpoints["transactor.commit"]?.action).toBe("throw");
+    });
+
+    test("a transactor checkpoint armed for one database does not fire for another", async () => {
+      const urls = localUrls();
+      const armedDb = uniqueDb("cps-armed");
+      const bystander = uniqueDb("cps-other");
+      for (const db of [armedDb, bystander]) {
+        const schema = await testAdmin(urls.openUrl, db, "/transact", {
+          tx: [attr(":scoped/value", "string")],
+        });
+        expect(schema.status).toBe(200);
+      }
+      const armed = await testAdmin(urls.openUrl, armedDb, "/checkpoint", {
+        scope: "transactor",
+        action: "arm-throw",
+        name: "transactor.commit",
+        error: "induced-scoped-commit",
+      });
+      expect(armed.status).toBe(200);
+      const unaffected = await testAdmin(urls.openUrl, bystander, "/transact", {
+        tx: [{ ":scoped/value": "bystander" }],
+      });
+      expect(unaffected.status).toBe(200);
+      const blocked = await testAdmin(urls.openUrl, armedDb, "/transact", {
+        tx: [{ ":scoped/value": "armed" }],
+      }).then(
+        (response) => response.status,
+        () => "rejected" as const,
+      );
+      expect(blocked).not.toBe(200);
     });
 
     test("aborting the transactor DO starts a fresh isolate (checkpoint state is gone)", async () => {
