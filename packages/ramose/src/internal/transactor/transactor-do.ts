@@ -36,12 +36,13 @@ export function configFromEnv(env: RamoseEnv): TransactorConfig {
 }
 
 export interface TransactorTesting {
-  readonly boundaries: RuntimeBoundaries;
+  readonly boundariesOf: (database: () => string) => RuntimeBoundaries;
   readonly enabled: (env: RamoseEnv) => boolean;
   readonly reset: () => void;
   readonly handleAdmin: (
     request: Request,
     path: string,
+    database: string,
     abort: (reason: string) => void,
     inspect: {
       readonly operationReceiptCount: () => number;
@@ -99,7 +100,7 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
           now: () => host.now(),
           sealing: () => serverSealingKey(env),
         },
-      testing?.boundaries,
+      testing?.boundariesOf(() => host.dbName),
     );
   }
 
@@ -138,6 +139,7 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       }
     }
     if (!this.dbName) return new Response(JSON.stringify({ error: "missing ?db=" }), { status: 400, headers: { "content-type": "application/json" } });
+    const dbName = this.dbName;
     await this.core.init();
     const testingEnabled = this.testing?.enabled(this.env) === true;
     if (url.pathname === "/subscribe") {
@@ -226,6 +228,7 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       const testAdmin = await this.testing.handleAdmin(
         request,
         url.pathname,
+        dbName,
         (reason) => this.ctx.abort(reason),
         {
           operationReceiptCount: () => this.core.operationReceiptCount(),

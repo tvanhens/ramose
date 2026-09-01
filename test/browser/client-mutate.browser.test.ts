@@ -602,6 +602,7 @@ browserTest(
         (await queued(name, identity)).map((record) => record.input),
       ).toEqual([null, {}]);
 
+      await waitFor(db.sync, (state) => state.status === "offline");
       const seen: string[] = [];
       const watchSync = db.sync.subscribe(() => {
         seen.push(db.sync.getSnapshot().status);
