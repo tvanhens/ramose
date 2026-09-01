@@ -59,7 +59,6 @@ import {
 const encoder = new TextEncoder();
 const ABORTED = Symbol("ramose/replication/aborted");
 const WATCH_FAILED = Symbol("ramose/replication/watch-failed");
-const REPLICATION_CYCLE_INTERVAL_MS = MAX_READ_LEASE_MS;
 
 class ReplicationRuntimeError extends Data.TaggedError(
   "ReplicationRuntimeError",
@@ -673,6 +672,14 @@ const replicationFrames = async function* (
     },
   );
   const events = Stream.toAsyncIterable(watch.changes)[Symbol.asyncIterator]();
+  const observeCommit = (): Promise<"commit" | typeof WATCH_FAILED> =>
+    events.next().then(
+      (event) =>
+        event.done || (event.value !== "ready" && event.value !== "change")
+          ? WATCH_FAILED
+          : "commit" as const,
+      () => WATCH_FAILED,
+    );
   const aborted = abortPromise(signal);
   try {
     const ready = await Promise.race([events.next(), aborted, watchFailed]);
@@ -739,26 +746,28 @@ const replicationFrames = async function* (
     }
 
     effectiveSignal.throwIfAborted();
-    let nextCycleAt = committed.version.leaseExpiresAt;
-    let cycle = scheduledCycle(Math.max(0, nextCycleAt - Date.now()));
+    let renewalAt = committed.version.leaseExpiresAt;
+    let cycle = scheduledCycle(Math.max(0, renewalAt - Date.now()));
+    let commits = observeCommit();
     try {
       while (!signal.aborted) {
         effectiveSignal.throwIfAborted();
-        let next: "cycle" | typeof WATCH_FAILED | typeof ABORTED;
-        if (Date.now() >= nextCycleAt) next = "cycle";
-        else next = await Promise.race([cycle.promise, watchFailed, aborted]);
+        let next: "cycle" | "commit" | typeof WATCH_FAILED | typeof ABORTED;
+        if (Date.now() >= renewalAt) next = "cycle";
+        else {
+          next = await Promise.race([cycle.promise, commits, watchFailed, aborted]);
+        }
         if (next === ABORTED) return;
         effectiveSignal.throwIfAborted();
         if (next === WATCH_FAILED) {
           throw new Error("replication basis watch closed");
         }
+        if (next === "commit") commits = observeCommit();
 
         cycle.cancel();
-        do nextCycleAt += REPLICATION_CYCLE_INTERVAL_MS;
-        while (nextCycleAt <= Date.now());
         await atBoundary(
           input.boundaries,
-          "replication.cycle",
+          next === "commit" ? "replication.wake" : "replication.cycle",
           effectiveSignal,
         );
         const renewed = await authorize();
@@ -784,11 +793,8 @@ const replicationFrames = async function* (
             { initialVersion: renewed },
           );
         }
-        while (nextCycleAt <= Date.now()) {
-          nextCycleAt += REPLICATION_CYCLE_INTERVAL_MS;
-        }
-        nextCycleAt = Math.min(nextCycleAt, committed.version.leaseExpiresAt);
-        cycle = scheduledCycle(Math.max(0, nextCycleAt - Date.now()));
+        renewalAt = committed.version.leaseExpiresAt;
+        cycle = scheduledCycle(Math.max(0, renewalAt - Date.now()));
       }
     } finally {
       cycle.cancel();

@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   armCheckpoint,
+  armDatabaseCheckpoint,
   checkpoint,
   checkpointStatus,
   checkpointSync,
+  databaseCheckpointStatus,
+  databaseRuntimeBoundaries,
   MAX_CHECKPOINT_RELEASE_DELAY_MS,
   releaseCheckpoint,
+  releaseDatabaseCheckpoint,
   resetTestHooks,
   testHooksArmed,
   testHooksEnabled,
@@ -76,5 +80,52 @@ describe("test hooks", () => {
         MAX_CHECKPOINT_RELEASE_DELAY_MS + 1,
       )
     ).toThrow(/between 0 and/);
+  });
+
+  test("a database checkpoint parks only that database's boundaries", async () => {
+    resetTestHooks();
+    armDatabaseCheckpoint("db-a", "replication.wake", "wait");
+    await databaseRuntimeBoundaries("db-b").checkpoint("replication.wake");
+    expect(databaseCheckpointStatus("db-a")["replication.wake"]?.pending).toBe(false);
+    expect(databaseCheckpointStatus("db-b")).toEqual({});
+    let released = false;
+    const parked = databaseRuntimeBoundaries("db-a")
+      .checkpoint("replication.wake")
+      .then(() => {
+        released = true;
+      });
+    await Bun.sleep(5);
+    expect(released).toBe(false);
+    expect(databaseCheckpointStatus("db-a")["replication.wake"]?.pending).toBe(true);
+    releaseDatabaseCheckpoint("db-a", "replication.wake");
+    await parked;
+    expect(released).toBe(true);
+    expect(databaseCheckpointStatus("db-a")).toEqual({});
+  });
+
+  test("database checkpoint status omits other databases and realm-wide names", () => {
+    resetTestHooks();
+    armCheckpoint("replication.wake", "wait");
+    armDatabaseCheckpoint("db-a", "replication.wake", "throw", "induced");
+    expect(databaseCheckpointStatus("db-a")).toEqual({
+      "replication.wake": { action: "throw", error: "induced", pending: false },
+    });
+    expect(databaseCheckpointStatus("db-ab")).toEqual({});
+    expect(checkpointStatus()["replication.wake"]).toEqual({
+      action: "wait",
+      pending: false,
+    });
+    releaseCheckpoint("replication.wake");
+    releaseDatabaseCheckpoint("db-a", "replication.wake");
+  });
+
+  test("a lazily scoped boundary resolves its database at each checkpoint", async () => {
+    resetTestHooks();
+    let database = "db-a";
+    const boundaries = databaseRuntimeBoundaries(() => database);
+    armDatabaseCheckpoint("db-b", "transactor.commit", "throw", "induced");
+    await boundaries.checkpoint("transactor.commit");
+    database = "db-b";
+    await expect(boundaries.checkpoint("transactor.commit")).rejects.toThrow("induced");
   });
 });
