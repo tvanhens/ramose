@@ -52,6 +52,9 @@ const INERT_CHANGE_DATABASE = CONFORMANCE_DATABASES[21]!;
 const HIDDEN_SCALE_DATABASE = CONFORMANCE_DATABASES[22]!;
 const COLD_ISOLATE_DATABASE = CONFORMANCE_DATABASES[23]!;
 const MULTI_DEVICE_DATABASE = CONFORMANCE_DATABASES[24]!;
+const COMMIT_WAKE_DATABASE = CONFORMANCE_DATABASES[25]!;
+const HIDDEN_WAKE_DATABASE = CONFORMANCE_DATABASES[26]!;
+const WAKE_BURST_DATABASE = CONFORMANCE_DATABASES[27]!;
 
 const HIDDEN_SCALE_COMMITS = 1_000;
 
@@ -425,11 +428,13 @@ const observeBackpressuredBurst = async (
   try {
     const snapshot = await collectCommittedSnapshot(iterator);
 
+    await armCheckpoint(base, world.database, "replication.wake");
     await armCheckpoint(base, world.database, "replication.cycle");
     const visibleFrame = iterator.next();
-    await Bun.sleep(750);
-    expect(await checkpointPending(base, world.database, "replication.cycle"))
-      .toBe(false);
+    expect(await Promise.race([
+      visibleFrame.then(() => "frame" as const),
+      Bun.sleep(750).then(() => "pending" as const),
+    ])).toBe("pending");
     await waitForCheckpoint(base, world.database, "replication.cycle");
     checkpoints.push("cycle");
 
@@ -443,10 +448,6 @@ const observeBackpressuredBurst = async (
     checkpoints.push("silent");
     await releaseCheckpoint(base, world.database, "replication.silent");
 
-    await armCheckpoint(base, world.database, "replication.cycle");
-    await waitForCheckpoint(base, world.database, "replication.cycle");
-    checkpoints.push("cycle");
-
     const renamed = await rename(
       base,
       world.database,
@@ -456,8 +457,10 @@ const observeBackpressuredBurst = async (
     );
     expect(renamed.status).toBe(200);
     await currentBasis(base, world.database);
+    await waitForCheckpoint(base, world.database, "replication.wake");
+    checkpoints.push("wake");
     await armCheckpoint(base, world.database, "replication.change");
-    await releaseCheckpoint(base, world.database, "replication.cycle");
+    await releaseCheckpoint(base, world.database, "replication.wake");
     await waitForCheckpoint(base, world.database, "replication.change");
     checkpoints.push("change");
     await releaseCheckpoint(base, world.database, "replication.change");
@@ -477,7 +480,14 @@ const observeBackpressuredBurst = async (
       visibleOrdinal: ordinalOf(next.value.frame),
     };
   } finally {
-    for (const name of ["replication.cycle", "replication.silent", "replication.change"]) {
+    for (
+      const name of [
+        "replication.wake",
+        "replication.cycle",
+        "replication.silent",
+        "replication.change",
+      ]
+    ) {
       await testAdmin(base, world.database, "/checkpoint", {
         scope: "worker",
         action: "release",
@@ -1247,7 +1257,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       await currentBasis(base, world.database);
 
       const hidden = await observeBackpressuredBurst(base, world, 24);
-      expect(zero.checkpoints).toEqual(["cycle", "silent", "cycle", "change"]);
+      expect(zero.checkpoints).toEqual(["cycle", "silent", "wake", "change"]);
       expect(hidden.checkpoints).toEqual(zero.checkpoints);
       expect(hidden.snapshot).toEqual(zero.snapshot);
       expect(hidden.visible).toBe(zero.visible);
@@ -1450,6 +1460,150 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         titles: ["Beta", "Gamma", "Omega"],
         resume: "ready",
       });
+    });
+
+    test("a visible commit wakes the stream without waiting for the lease cycle", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, COMMIT_WAKE_DATABASE, false);
+      const response = await openReplication(base, world.database, world.member);
+      expect(response.status).toBe(200);
+      const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+      try {
+        const snapshot = await collectCommittedSnapshot(iterator);
+        await armCheckpoint(base, world.database, "replication.wake");
+        await armCheckpoint(base, world.database, "replication.cycle");
+
+        const renamed = await rename(
+          base,
+          world.database,
+          world.member,
+          world.ids.parent,
+          "Woken by commit",
+        );
+        expect(renamed.status).toBe(200);
+        await waitForCheckpoint(base, world.database, "replication.wake");
+        expect(await checkpointPending(base, world.database, "replication.cycle"))
+          .toBe(false);
+        await releaseCheckpoint(base, world.database, "replication.wake");
+
+        const woken = await observed(iterator, "commit wake change");
+        expect(woken.frame.type).toBe("Change");
+        if (woken.frame.type !== "Change") throw new Error("expected Change");
+        expect(woken.frame.ordinal).toBe(snapshot.state.committed!.ordinal + 1);
+        expect(woken.wire).toMatch(/Woken by commit/);
+      } finally {
+        await closeIterator(iterator);
+        for (const name of ["replication.wake", "replication.cycle"]) {
+          await testAdmin(base, world.database, "/checkpoint", {
+            scope: "worker",
+            action: "release",
+            name,
+          });
+        }
+      }
+    });
+
+    test("a hidden-only commit wakes the stream and emits nothing", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, HIDDEN_WAKE_DATABASE, false);
+      const response = await openReplication(base, world.database, world.member);
+      expect(response.status).toBe(200);
+      const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+      try {
+        const snapshot = await collectCommittedSnapshot(iterator);
+        const quiet = iterator.next();
+        await armCheckpoint(base, world.database, "replication.wake");
+
+        await commitHidden(base, world, 0);
+        await waitForCheckpoint(base, world.database, "replication.wake");
+        await armCheckpoint(base, world.database, "replication.silent");
+        await releaseCheckpoint(base, world.database, "replication.wake");
+        await waitForCheckpoint(base, world.database, "replication.silent");
+        await releaseCheckpoint(base, world.database, "replication.silent");
+
+        expect(await Promise.race([
+          quiet.then(() => "frame" as const),
+          Bun.sleep(300).then(() => "pending" as const),
+        ])).toBe("pending");
+
+        const renamed = await rename(
+          base,
+          world.database,
+          world.member,
+          world.ids.parent,
+          "Visible after hidden",
+        );
+        expect(renamed.status).toBe(200);
+        const visible = await withTimeout(quiet, 7_000, "visible after hidden");
+        if (visible.done || visible.value.frame.type !== "Change") {
+          throw new Error("the visible commit produced no change");
+        }
+        expect(visible.value.frame.ordinal)
+          .toBe(snapshot.state.committed!.ordinal + 1);
+        expect(visible.value.wire).not.toMatch(/Parked hidden/);
+      } finally {
+        await closeIterator(iterator);
+        for (const name of ["replication.wake", "replication.silent"]) {
+          await testAdmin(base, world.database, "/checkpoint", {
+            scope: "worker",
+            action: "release",
+            name,
+          });
+        }
+      }
+    });
+
+    test("commits landing before the wake releases advance the stream once", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, WAKE_BURST_DATABASE, false);
+      const response = await openReplication(base, world.database, world.member);
+      expect(response.status).toBe(200);
+      const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+      try {
+        const snapshot = await collectCommittedSnapshot(iterator);
+        const first = iterator.next();
+        await armCheckpoint(base, world.database, "replication.wake");
+
+        expect((await rename(
+          base,
+          world.database,
+          world.member,
+          world.ids.parent,
+          "Burst one",
+        )).status).toBe(200);
+        await waitForCheckpoint(base, world.database, "replication.wake");
+        expect((await rename(
+          base,
+          world.database,
+          world.member,
+          world.ids.parent,
+          "Burst two",
+        )).status).toBe(200);
+        await releaseCheckpoint(base, world.database, "replication.wake");
+
+        const coalesced = await withTimeout(first, 7_000, "coalesced change");
+        if (coalesced.done || coalesced.value.frame.type !== "Change") {
+          throw new Error("the burst produced no change");
+        }
+        expect(coalesced.value.frame.ordinal)
+          .toBe(snapshot.state.committed!.ordinal + 1);
+        expect(coalesced.value.wire).toMatch(/Burst two/);
+        expect(coalesced.value.wire).not.toMatch(/Burst one/);
+
+        const following = iterator.next();
+        expect(await Promise.race([
+          following.then(() => "frame" as const),
+          Bun.sleep(300).then(() => "pending" as const),
+        ])).toBe("pending");
+        void following.catch(() => undefined);
+      } finally {
+        await closeIterator(iterator);
+        await testAdmin(base, world.database, "/checkpoint", {
+          scope: "worker",
+          action: "release",
+          name: "replication.wake",
+        });
+      }
     });
   });
 };
