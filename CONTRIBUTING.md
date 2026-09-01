@@ -85,6 +85,21 @@ the stage. It requires:
 
 Set `KEEP_STAGE=1` to retain the temporary stage for investigation.
 
+## Cloudflare benchmark
+
+```sh
+bun run bench:cf [concurrency] [seconds-per-phase]
+```
+
+`bun run bench:cf` deploys a throwaway benchmark stage with test hooks and a
+small operation catalog, drives the raw transaction path and the `/op` path
+from this machine, prints throughput and latency per phase with the
+transactor's batch statistics, and destroys the stage. It requires the same
+Cloudflare variables as the e2e suite. Transactor tuning variables such as
+`RAMOSE_MAX_BATCH` and `RAMOSE_BATCH_BUDGET_MS` are forwarded to the stage, and
+`BENCH_LABEL` tags the printed rows so runs can be compared. `KEEP_STAGE=1`
+retains the stage.
+
 ## Documentation site
 
 ```sh
