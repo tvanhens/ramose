@@ -50,10 +50,7 @@ import {
 } from "./database.ts";
 import {
   fencedReceiver,
-  GraphRegistry,
-  mostRecentlyConfirmed,
-  receiverStableKey,
-} from "./graph.ts";
+} from "./query.ts";
 import { Store, type Subscription } from "./subscription.ts";
 import { aggregateSyncStatus, syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -103,7 +100,6 @@ class RamoseClient implements Client {
   readonly sync = this.syncStore.subscription;
 
   private root: ClientDatabaseHandle | undefined;
-  private graph: GraphRegistry | undefined;
   private catalogBuild: Promise<ClientCatalog> | undefined;
   private storageHandle: Promise<IndexedDbReplicaStorage> | undefined;
   private confirmed: ReplicationIdentity | undefined;
@@ -115,7 +111,6 @@ class RamoseClient implements Client {
   private releaseInvalidation: (() => void) | undefined;
   private releaseNotices: (() => void) | undefined;
   private releaseActivation: (() => void) | undefined;
-  private readonly receivers = new Map<string, ClientDatabaseHandle | undefined>();
   private terminal: "closed" | "cleared" | "fenced" | undefined;
   private termination: Promise<void> | undefined;
   private clearing = false;
@@ -134,17 +129,15 @@ class RamoseClient implements Client {
     if (this.root !== undefined) return this.root;
     const root = new ClientDatabaseHandle({
       ...this.databaseContext(),
-      graphPath: [],
     });
     this.root = root;
     return root;
   }
 
-  private databaseContext(): Omit<DatabaseContext, "graphPath"> {
+  private databaseContext(): DatabaseContext {
     return {
       server: this.server,
       root: this.options.root,
-      graph: () => this.graphRegistry(),
       catalog: () => this.catalog(),
       storage: () => this.storage(),
       credential: () => this.credential(),
@@ -163,10 +156,7 @@ class RamoseClient implements Client {
   }
 
   private handles(): readonly ClientDatabaseHandle[] {
-    return [
-      ...(this.root === undefined ? [] : [this.root]),
-      ...(this.graph?.handles() ?? []),
-    ];
+    return this.root === undefined ? [] : [this.root];
   }
 
   private handleByKey(key: string | undefined): readonly ClientDatabaseHandle[] {
@@ -208,7 +198,6 @@ class RamoseClient implements Client {
         return;
       case "selector":
         for (const handle of this.handles()) {
-          handle.reactivateUnconfirmed();
           handle.reactivateRefused();
         }
         this.submissions().request(scope);
@@ -221,7 +210,6 @@ class RamoseClient implements Client {
     const revalidated = this.revalidate();
     for (const handle of this.handles()) {
       void handle.refreshOptimistic();
-      handle.reactivateUnconfirmed();
       handle.reactivateRefused();
       handle.reactivateOffline();
     }
@@ -340,45 +328,21 @@ class RamoseClient implements Client {
   }
 
   private resolveReceiver(receiver: ReplicaDatabaseScope): void {
-    const key = replicaDatabaseKey(receiver);
     if (this.terminal !== undefined) return;
-    if (this.receivers.has(key)) {
-      this.receivers.get(key)?.reactivateOffline();
-      return;
-    }
-    if (this.databaseFor(receiver) !== undefined) return;
-    this.receivers.set(key, undefined);
-    void this.storage().then(
-      async (storage) => {
-        const record = await storage.graphReceiver(receiver);
-        if (record === undefined || this.terminal !== undefined) {
-          this.receivers.delete(key);
-          return;
-        }
-        const handle = this.graphRegistry()
-          .acquire(receiverStableKey(receiver), record.graphPath, this);
-        this.receivers.set(key, handle);
-        handle.activateGraph();
-      },
-      () => {
-        this.receivers.delete(key);
-      },
-    );
+    this.databaseFor(receiver)?.reactivateOffline();
   }
 
-  private retireReceiver(receiver: ReplicaDatabaseScope): void {
-    const key = replicaDatabaseKey(receiver);
-    if (!this.receivers.delete(key)) return;
-    this.graph?.retire(receiverStableKey(receiver), this);
-  }
+  private retireReceiver(_receiver: ReplicaDatabaseScope): void {}
 
   private databaseFor(
     receiver: ReplicaDatabaseScope,
   ): ClientDatabaseHandle | undefined {
-    return mostRecentlyConfirmed(
-      this.handles(),
-      replicaDatabaseKey(receiver),
-    );
+    const root = this.root;
+    const scope = root?.confirmedScope();
+    return scope !== undefined &&
+        replicaDatabaseKey(scope) === replicaDatabaseKey(receiver)
+      ? root
+      : undefined;
   }
 
   private endpointFor(
@@ -393,26 +357,8 @@ class RamoseClient implements Client {
     return {
       origin: this.server,
       database: this.options.root,
-      graphPath: handle.graphPath(),
       credential: credential.token,
     };
-  }
-
-  private graphRegistry(): GraphRegistry {
-    this.graph ??= new GraphRegistry(
-      ({ graphPath, graphLineage, onConfirmed }) =>
-        new ClientDatabaseHandle({
-          ...this.databaseContext(),
-          graphPath,
-          graphLineage,
-          onConfirmed: (identity) => {
-            onConfirmed(identity);
-            this.confirm(identity, false);
-          },
-        }),
-      () => this.refreshSync(),
-    );
-    return this.graph;
   }
 
   private assertLive(operation: string): void {
@@ -462,13 +408,7 @@ class RamoseClient implements Client {
       this.syncStore.publish(syncState("closed"));
       return;
     }
-    const errands = new Set(this.receivers.values());
-    const statuses = [
-      ...(this.root === undefined ? [] : [this.root.syncStatus()]),
-      ...(this.graph?.handles() ?? [])
-        .filter((handle) => !errands.has(handle))
-        .map((handle) => handle.syncStatus()),
-    ];
+    const statuses = this.root === undefined ? [] : [this.root.syncStatus()];
     this.syncStore.publish(syncState(aggregateSyncStatus(statuses)));
   }
 
@@ -539,7 +479,6 @@ class RamoseClient implements Client {
     this.closeSubmissions();
     await this.submissionLoop?.settled();
     await this.leadership?.release();
-    await this.graph?.close();
     await this.root?.close();
     await this.storageHandle?.then(
       (storage) => storage.close(),
@@ -579,7 +518,6 @@ export const createClient = <const S extends AnySchemaDefinition>(
     server = replicationActivationAddress({
       server: options.url,
       root: options.root,
-      graphPath: [],
     }).origin;
   } catch (cause) {
     throw new ClientConfigurationError({

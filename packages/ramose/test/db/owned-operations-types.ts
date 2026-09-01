@@ -66,14 +66,7 @@ const UnionBoundOperations = Trait(
   "unionBoundOperations",
   { catalog: string() },
   {
-    bind: (
-      definition,
-    ):
-      | { readonly values: { readonly catalog: string } }
-      | { readonly dependencies: readonly [] } =>
-      definition.key === "bound"
-        ? { values: { catalog: definition.key } }
-        : { dependencies: [] },
+    bind: (definition) => ({ values: { catalog: definition.key } }),
     operations: (Operation) => ({
       inspect: Operation({
         input: Schema.Struct({}),

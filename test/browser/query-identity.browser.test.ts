@@ -126,7 +126,6 @@ const seed = async (name: string): Promise<ReplicationIdentity> => {
     catalog: opaque("c"),
     readView: opaque("v"),
     readCompatibilityHash: installed.readCompatibilityHash,
-    graphLineage: [],
     authenticator: opaque("a"),
   };
   const datoms: readonly SnapshotDatom[] = [
@@ -157,7 +156,7 @@ const seed = async (name: string): Promise<ReplicationIdentity> => {
     expect(committed).toBeDefined();
     committed!.release();
     const address = replicationActivationAddress({
-      server: OFFLINE, root: ROOT, graphPath: [],
+      server: OFFLINE, root: ROOT,
     });
     const routeSlot = await rootReplicaRouteSlot();
     await storage.bindAuthenticated({

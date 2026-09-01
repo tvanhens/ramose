@@ -4,7 +4,7 @@ description: Reference for Ramose.Server, public routes, Cloudflare resources, c
 ---
 import Next from "../../../components/Next.astro";
 
-`Ramose.Server` provisions the Cloudflare data plane for one application: the public Worker, authoritative graph writers, query execution, object storage, synchronization, optional MCP endpoint, and test-gated instrumentation.
+`Ramose.Server` provisions the Cloudflare data plane for one application: the public Worker, authoritative database writers, query execution, object storage, synchronization, optional MCP endpoint, and test-gated instrumentation.
 
 *New here? Start with [Deploy Ramose](/guides/deploy/).*
 
@@ -57,27 +57,27 @@ export const TransactorDO = createTransactorDO(operationCatalogs)
 | `POST /mcp` | Optional Streamable HTTP MCP endpoint |
 | OAuth metadata routes | Protected-resource and authorization discovery for MCP clients |
 
-Database and catalog internal identifiers are never public selectors. Requests derive an authorized root from identity and traverse child graphs through public, authorized paths.
+Database and catalog internal identifiers are never public selectors. Requests derive the authorized database from verified identity.
 
-## Graph runtime
+## Database runtime
 
-Each graph has one authoritative commit order and independently scalable read/synchronization state. Storage identity is stable even when a graph's public path changes. A graph archive changes lifecycle state without reusing its identity for another child.
+Each database has one authoritative commit order and independently scalable read/synchronization state.
 
-Queries and operations remain inside one graph. Multi-graph workflows must make intermediate states and recovery explicit.
+Queries and operations remain inside one database. Cross-database workflows must make intermediate states and recovery explicit.
 
 ## Catalog installation
 
-Deployment validates definition identities, stored value representations, trait conformance, graph bindings, operation schemas, and compiled policy. Incompatible catalog changes fail before they can reinterpret existing data.
+Deployment validates definition identities, stored value representations, trait conformance, operation schemas, and compiled policy. Incompatible catalog changes fail before they can reinterpret existing data.
 
 Use staged additive changes and explicit migrations. Offline replicas and old clients may reconnect after a deployment, so compatibility is a protocol concern as well as a storage concern.
 
 ## Synchronization
 
-The browser restores a persistent snapshot, resumes from its durable cursor, and receives authorized changes. If incremental history is unavailable or authorization changes invalidate the view, the server issues a safe resnapshot path. Clients never merge facts from a different principal or graph identity.
+The browser restores a persistent snapshot, resumes from its durable cursor, and receives authorized changes. If incremental history is unavailable or authorization changes invalidate the view, the server issues a safe resnapshot path. Clients never merge facts from a different principal or database identity.
 
 ## MCP
 
-The same catalog, policy, query runtime, graph resolver, and operations back `describe`, `query`, and `mutate`. Configure OAuth metadata and query/discovery budgets before exposing the endpoint publicly.
+The same catalog, policy, query runtime, database target, and operations back `describe`, `query`, and `mutate`. Configure OAuth metadata and query/discovery budgets before exposing the endpoint publicly.
 
 ## Test hooks
 
@@ -85,7 +85,7 @@ Integration instrumentation is inert unless both `RAMOSE_TEST_HOOKS=1` and a non
 
 ## Observability
 
-Collect health, request latency, graph activation, snapshot size, resume/resnapshot frequency, query budget failures, operation receipt outcomes, storage faults, and synchronization lag. Correlate requests and receipts with opaque safe identifiers; redact tokens and application payloads.
+Collect health, request latency, database activation, snapshot size, resume/resnapshot frequency, query budget failures, operation receipt outcomes, storage faults, and synchronization lag. Correlate requests and receipts with opaque safe identifiers; redact tokens and application payloads.
 
 ## Limits and retention
 

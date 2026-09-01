@@ -15,7 +15,7 @@ db.query.from(Task)
 db.query.from(Assignable)
 ```
 
-An entity source returns that exact type. A trait source returns every visible entity that implements the trait. One query belongs to one `db` handle and cannot cross into a child graph.
+An entity source returns that exact type. A trait source returns every visible entity that implements the trait. One query belongs to one `db` handle.
 
 ## Predicates
 
@@ -72,7 +72,7 @@ query
   .page({ first: 50, after: cursor })
 ```
 
-Use a stable tie-breaker for deterministic pages. Cursors are opaque and scoped to the query, graph, authorization view, and basis that produced them.
+Use a stable tie-breaker for deterministic pages. Cursors are opaque and scoped to the query, database, authorization view, and basis that produced them.
 
 ## Cardinality
 

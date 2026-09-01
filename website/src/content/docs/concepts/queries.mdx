@@ -42,7 +42,7 @@ Entity-focused client results become live handles with `.data`, `.local`, and `.
 
 ## Cardinality is explicit
 
-Queries return many by default. `.one()` expresses zero-or-one; `.oneOrFail()` requires exactly one. Never fetch many and choose the first when identity is part of correctness. Graph traversal uses `.one().db()` and rejects ambiguous matches.
+Queries return many by default. `.one()` expresses zero-or-one; `.oneOrFail()` requires exactly one. Never fetch many and choose the first when identity is part of correctness.
 
 ## App and MCP execution differ intentionally
 
@@ -54,7 +54,7 @@ MCP and server-side reads submit `QueryDocumentV1` to the server. They use budge
 
 The dominant costs are candidate facts examined, intermediate rows produced by joins, projection width, nested collection size, recursion, and sorting before a limit. Query budgets fail explicitly instead of returning partial data.
 
-Pagination is part of the query contract. Prefer stable indexed order plus cursor pagination for user-facing feeds. Aggregates operate within one graph and one authorized view; there are no cross-graph aggregates.
+Pagination is part of the query contract. Prefer stable indexed order plus cursor pagination for user-facing feeds. Aggregates operate within the configured database and one authorized view.
 
 <Next links={[
   { href: "/guides/queries/", label: "Read data", why: "build everyday and relational queries" },

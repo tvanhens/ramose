@@ -22,7 +22,7 @@ import type { JsonValue } from "./json.ts";
 import type { InstalledAuthorizationIR } from "./ir.ts";
 
 export const READ_COMPATIBILITY_VERSION = 1 as const;
-export const GRAPH_READ_SEMANTICS_VERSION = "ramose.graph-read/v1" as const;
+export const DATABASE_READ_SEMANTICS_VERSION = "ramose.database-read/v1" as const;
 const HASH_DOMAIN = "ramose.read-compatibility/v1\0";
 const UTF8 = new TextEncoder();
 
@@ -60,7 +60,7 @@ const TraitCompositionReadDescriptor = Schema.Struct({
 
 export const ReadCompatibilityDescriptor = Schema.Struct({
   version: Schema.Literal(READ_COMPATIBILITY_VERSION),
-  graphReadSemantics: Schema.Literal(GRAPH_READ_SEMANTICS_VERSION),
+  readSemantics: Schema.Literal(DATABASE_READ_SEMANTICS_VERSION),
   entities: Schema.Array(EntityReadDescriptor),
   traits: Schema.Array(TraitReadDescriptor),
   fields: Schema.Array(FieldReadDescriptor),
@@ -99,7 +99,7 @@ export const readCompatibilityDescriptor = (
     ]);
     return {
       version: READ_COMPATIBILITY_VERSION,
-      graphReadSemantics: GRAPH_READ_SEMANTICS_VERSION,
+      readSemantics: DATABASE_READ_SEMANTICS_VERSION,
       entities: entities.map(({ id, traits }) => ({
         name: id.name,
         traits: traits.map((trait) => trait.name),

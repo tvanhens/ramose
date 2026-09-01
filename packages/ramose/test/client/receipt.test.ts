@@ -52,7 +52,7 @@ describe("a receipt", () => {
 
   test("fails both promises when it never became durable", async () => {
     const it = driver();
-    const failure = new Error("this graph receiver never resolved");
+    const failure = new Error("this database receiver never resolved");
     it.fail(failure);
     await expect(it.receipt.queued).rejects.toBe(failure);
     await expect(it.receipt.committed).rejects.toBe(failure);

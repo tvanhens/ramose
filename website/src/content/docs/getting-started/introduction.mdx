@@ -1,6 +1,6 @@
 ---
 title: What is Ramose?
-description: A database for offline-first applications and their agents, built around typed graphs, authoritative operations, and one permission model.
+description: A database for offline-first applications and their agents, built around typed data, authoritative operations, and one permission model.
 ---
 import SurfaceMap from "../../../components/SurfaceMap.astro";
 import Next from "../../../components/Next.astro";
@@ -9,7 +9,7 @@ Ramose is a database for TypeScript applications that need to work locally, sync
 
 You define three things in code:
 
-- a **schema** describing entities, traits, fields, relations, and graph boundaries;
+- a **schema** describing entities, traits, fields, and relations;
 - a **policy** deciding which facts and operations each principal may use;
 - **operations** containing every authoritative change the product can make.
 
@@ -19,9 +19,7 @@ From that model, your web app gets typed local queries, durable offline mutation
 
 ## The unusual part
 
-A Ramose deployment is a **graph of graphs**. One database can contain ordinary rows that open child databases. An organization can be a graph containing projects; a project can be a graph containing tasks. Each graph has its own schema, policy, write stream, offline cache boundary, and throughput ceiling.
-
-That gives you an explicit place to put isolation and scale. It also means graph boundaries are an important modeling decision, not just deployment configuration.
+Ramose treats one typed database graph as the shared model for the application, its offline replica, authorization, operations, and MCP. Relations stay directly queryable instead of becoming database-routing boundaries.
 
 ## What the application feels like
 
@@ -40,12 +38,12 @@ Queries run against a complete authorized local database. A cached answer can re
 Choose Ramose when you want:
 
 - an offline-first or realtime product without building a cache and sync protocol;
-- strong tenant or domain isolation through nested graph boundaries;
+- one coherent authorization model for related application data;
 - application and agent access governed by the same rules;
 - typed history, relations, and operations without running a managed database service;
 - deployment into your own Cloudflare account.
 
-Do not choose it for ad-hoc SQL analytics, cross-graph joins, full-text search, or a workload that must atomically update several graphs. Ramose is pre-release and intentionally optimizes for fresh applications over compatibility with earlier APIs.
+Do not choose it for ad-hoc SQL analytics, full-text search, or a workload that exceeds a single database writer's throughput. Ramose is pre-release and intentionally optimizes for fresh applications over compatibility with earlier APIs.
 
 <Next links={[
   { href: "/concepts/mental-model/", label: "Mental model", why: "understand the six ideas everything else builds on" },

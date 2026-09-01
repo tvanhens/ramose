@@ -11,7 +11,6 @@ import {
   type AuthoritativeInvocationResult,
   type AuthoritativeOperationInvocation,
   type AuthenticatedCaller,
-  type DatabaseRouteDerivation,
   type OperationInvocation,
 } from "../internal/authorization/index.ts";
 import { fromJson, toJson } from "../internal/core/json.ts";
@@ -29,7 +28,7 @@ import {
 } from "./errors.ts";
 import {
   isEntityRef,
-  parseGraphPath,
+  rejectNestedDatabaseSelector,
   refuseCatalogProof,
 } from "./authorized-read.ts";
 import { invalidateBasis } from "./peer.ts";
@@ -40,14 +39,10 @@ export type ParsedOperationRequest = Omit<
   | "caller"
   | "catalogKey"
   | "unitHash"
-  | "routeDerivation"
   | "entityIdScope"
-> & {
-  readonly path: readonly string[];
-  readonly invocationId: string;
-};
+> & { readonly invocationId: string };
 
-type RoutedOperationRequest = Omit<ParsedOperationRequest, "path"> & {
+type RoutedOperationRequest = ParsedOperationRequest & {
   readonly catalogKey: OperationInvocation["catalogKey"];
   readonly unitHash: OperationInvocation["unitHash"];
 };
@@ -149,8 +144,8 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
   request: Request,
 ): Effect.fn.Return<ParsedOperationRequest, BadRequest | import("./errors.ts").Unauthorized> {
   const body = yield* readOperationJsonObject(request);
-  const path = yield* Effect.fromResult(
-    parseGraphPath(body, new URL(request.url).searchParams),
+  yield* Effect.fromResult(
+    rejectNestedDatabaseSelector(body, new URL(request.url).searchParams),
   );
   yield* Effect.fromResult(
     refuseCatalogProof(body, request.headers),
@@ -205,7 +200,6 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
     );
   }
   return {
-    path,
     owner,
     localName: record.localName,
     invocationId: body.invocationId,
@@ -299,7 +293,6 @@ export const invokeAuthoritativeOperation = async (
   origin: string,
   parsed: RoutedOperationRequest,
   caller: AuthenticatedCaller,
-  routeDerivation?: DatabaseRouteDerivation,
 ): Promise<AuthoritativeInvocationResult> => {
   const sealingScope = await invocationEntityIdScope(
     env,
@@ -316,7 +309,6 @@ export const invokeAuthoritativeOperation = async (
       entityIdScope: sealingScope.scope,
       entityIdKeyId: sealingScope.sealing.keyId,
     }),
-    ...(routeDerivation === undefined ? {} : { routeDerivation }),
   };
   const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
   let response: Response;

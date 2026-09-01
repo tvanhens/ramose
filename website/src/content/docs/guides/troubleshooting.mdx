@@ -1,10 +1,10 @@
 ---
 title: Troubleshooting
-description: Diagnose setup, catalog, graph traversal, browser synchronization, query, operation, policy, and MCP failures.
+description: Diagnose setup, catalog, browser synchronization, query, operation, policy, and MCP failures.
 ---
 import Next from "../../../components/Next.astro";
 
-Start by identifying the failing layer: deployment, identity, graph resolution, catalog, query, operation, browser synchronization, or MCP protocol. Avoid changing several layers at once.
+Start by identifying the failing layer: deployment, identity, catalog, query, operation, browser synchronization, or MCP protocol. Avoid changing several layers at once.
 
 ## The server is healthy but every request is denied
 
@@ -12,27 +12,19 @@ Start by identifying the failing layer: deployment, identity, graph resolution, 
 
 Do not add an anonymous or administrator fallback. Test with one freshly issued production-shaped token and inspect safe server correlation logs.
 
-## A child graph is inaccessible
-
-Resolve the path one segment at a time from the authorized root. Confirm each parent entity is visible, implements the expected graph trait, and exposes the current public path name. A renamed path does not change storage identity, but old navigation should no longer resolve unless you deliberately preserve an alias.
-
-Missing and unauthorized paths intentionally look alike to callers.
-
 ## A catalog change is rejected
 
-Read the incompatible definition list. Value representation, cardinality, uniqueness, required fields on existing records, definition identity, and graph bindings may require a migration.
+Read the incompatible definition list. Value representation, cardinality, uniqueness, required fields on existing records, definition identity, may require a migration.
 
 Use an additive sequence: introduce the new shape, deploy compatible readers, backfill, switch writers, then remove the old definition. Do not force installation until you have described how existing facts and offline clients transition.
 
 ## A browser query stays pending
 
-`pending` means the local replica has no complete answer. Check that the graph was actually observed, browser storage is available, authentication is current, the snapshot/resume request completed, and no terminal query error is being swallowed.
-
-Constructing a graph handle does not activate it. `useQuery` or a framework-neutral observer does.
+`pending` means the local replica has no complete answer. Check that the database was actually observed, browser storage is available, authentication is current, the snapshot/resume request completed, and no terminal query error is being swallowed.
 
 ## The app says stale while online
 
-Connectivity and catch-up are separate. The socket may be connected while a snapshot restores, a cursor resumes, or policy change forces resnapshot. Keep the complete stale result visible and inspect sync state, graph identity, cursor recovery, and storage errors.
+Connectivity and catch-up are separate. The socket may be connected while a snapshot restores, a cursor resumes, or policy change forces resnapshot. Keep the complete stale result visible and inspect sync state, cursor recovery, and storage errors.
 
 Frequent resnapshots usually point to retention, authorization churn, catalog incompatibility, or a client that fails to persist its cursor.
 
@@ -40,7 +32,7 @@ Frequent resnapshots usually point to retention, authorization churn, catalog in
 
 Trace the `invocationId`. A retry of one intent must reuse the original id across timeouts, reloads, and tab leadership changes. A new user intent must receive a new id.
 
-If the server reports `invocation_conflict`, the caller reused an id with a different graph, operation, target, or input. Fix invocation persistence; do not hide the bug by automatically generating another id.
+If the server reports `invocation_conflict`, the caller reused an id with a different database, operation, target, or input. Fix invocation persistence; do not hide the bug by automatically generating another id.
 
 ## Optimistic state rolls back
 
@@ -57,9 +49,8 @@ Reduce work rather than raising the global limit first:
 - Project fewer fields.
 - Bound nested collections and recursion.
 - Lower the page size.
-- Avoid activating many child graphs to simulate a cross-graph join.
 
-Measure server evaluation separately from graph activation, local evaluation, and React rendering.
+Measure server evaluation separately from database activation, local evaluation, and React rendering.
 
 ## MCP returns `catalog_changed`
 
@@ -71,7 +62,7 @@ Operations never become separate tools. `tools/list` always contains `describe`,
 
 ## Local integration tests cannot reach infrastructure
 
-Run the repository's Alchemy local integration command and confirm the shared local stack is healthy. Keep infrastructure tests on the real Worker, Durable Object, object storage, cache, WebSocket, and auth path. Use unique graph names for isolation rather than replacing platform services.
+Run the repository's Alchemy local integration command and confirm the shared local stack is healthy. Keep infrastructure tests on the real Worker, Durable Object, object storage, cache, WebSocket, and auth path. Use unique database names for isolation rather than replacing platform services.
 
 ## Effect diagnostics disappeared
 

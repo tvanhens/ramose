@@ -92,7 +92,6 @@ const seed = async (
     catalog: opaque("c"),
     readView: opaque("v"),
     readCompatibilityHash: installed.readCompatibilityHash,
-    graphLineage: [],
     authenticator: opaque("a"),
   };
   const datoms: readonly SnapshotDatom[] = notes.flatMap((note) => [
@@ -116,7 +115,7 @@ const seed = async (
     expect(committed).toBeDefined();
     committed!.release();
     const address = replicationActivationAddress({
-      server: OFFLINE, root: ROOT, graphPath: [],
+      server: OFFLINE, root: ROOT,
     });
     const routeSlot = await rootReplicaRouteSlot();
     await storage.bindAuthenticated({
@@ -197,7 +196,7 @@ browserTest("renders an exact bearer binding's replica offline and closes determ
 
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-    const address = replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] });
+    const address = replicationActivationAddress({ server: OFFLINE, root: ROOT });
     const installed = await installClientCatalog(Notes);
     const restored = await storage.restoreBound(
       await replicationCredentialFingerprint(TOKEN, address, await rootReplicaRouteSlot()),
@@ -239,7 +238,7 @@ browserTest("a withdrawn binding stops selecting the replica it named", async ({
   const installed = await installClientCatalog(Notes);
   const fingerprint = await replicationCredentialFingerprint(
     TOKEN,
-    replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] }),
+    replicationActivationAddress({ server: OFFLINE, root: ROOT }),
     await rootReplicaRouteSlot(),
   );
 
@@ -484,7 +483,7 @@ browserTest("clearLocalData deletes only a confirmed scope and is terminal", asy
 
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-    const address = replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] });
+    const address = replicationActivationAddress({ server: OFFLINE, root: ROOT });
     const installed = await installClientCatalog(Notes);
     expect(await storage.restoreBound(
       await replicationCredentialFingerprint(TOKEN, address, await rootReplicaRouteSlot()),
@@ -614,7 +613,7 @@ browserTest("fences a replaced principal before any of its data can be read", as
       fingerprint: await replicationCredentialFingerprint(
         "session-credential",
         replicationActivationAddress({
-          server: globalThis.location.origin, root: "optimistic-fence", graphPath: [],
+          server: globalThis.location.origin, root: "optimistic-fence",
         }),
         await rootReplicaRouteSlot(),
       ),

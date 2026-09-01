@@ -29,7 +29,7 @@ import {
 </RamoseProvider>
 ```
 
-Provides one already-created client. Remount with a new client when the signed-in principal changes. The provider does not silently transfer cached graphs or queued receipts between principals.
+Provides one already-created client. Remount with a new client when the signed-in principal changes. The provider does not silently transfer cached database state or queued receipts between principals.
 
 ## useDb
 
@@ -37,7 +37,7 @@ Provides one already-created client. Remount with a new client when the signed-i
 const rootDb = useDb()
 ```
 
-Returns the authorized root database handle from the nearest provider. Child graph handles are obtained through typed query traversal and `.db()`.
+Returns the authorized database handle from the nearest provider.
 
 A context cannot carry its client's catalog into each component's types, so `useDb()` answers the runtime mutation namespace. Name it — `useDb<DatabaseMutations<typeof AppSchema>>()` — for the catalog's exact operations.
 

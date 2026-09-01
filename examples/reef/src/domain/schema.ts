@@ -5,7 +5,6 @@ import {
   EntityId,
   Enum,
   Field,
-  Graph,
   OperationRejected,
   Ref,
   Schema,
@@ -18,8 +17,6 @@ import { RANK_GAP } from "./rank.ts";
 import { isWorkspaceSlug } from "./shared.ts";
 
 export const ROOT_DATABASE = "reef";
-
-let reefSchema!: Schema.Any;
 
 // docs:person-entity
 export const Person = Entity("person", {
@@ -49,7 +46,6 @@ export const Workspace = Entity("workspace", {
   label: string({ optional: true }),
   members: Field.many(Ref(Person)),
 }, {
-  traits: [Graph(() => reefSchema)],
   operations: (Operation) => ({
     ensureMe: Operation({
       self: false,
@@ -79,7 +75,6 @@ export const Workspace = Entity("workspace", {
         const creator = op.put(Person, callerAttrs(op.principal));
         const workspace = op.create({
           slug: input.slug,
-          name: input.slug,
           label: input.name,
           members: [creator],
         });
@@ -124,13 +119,17 @@ export const Workspace = Entity("workspace", {
 // enddocs:workspace-entity
 
 export const Label = Entity("label", {
-  name: Field.unique(string(), "upsert"),
+  workspace: Ref(Workspace),
+  workspaceSlug: string({ index: true }),
+  name: string(),
   color: string(),
 }, {
   operations: (Operation) => ({
     createLabel: Operation({
       self: false,
       input: EffectSchema.Struct({
+        workspace: EntityId,
+        workspaceSlug: EffectSchema.String,
         name: EffectSchema.String,
         color: EffectSchema.String,
       }),
@@ -138,11 +137,29 @@ export const Label = Entity("label", {
       allocates: { label: ["id"] },
       optimistic: ({ input, tx }) => {
         const label = tx.create("label", Label);
+        tx.set(label, Label.workspace, input.workspace);
+        tx.set(label, Label.workspaceSlug, input.workspaceSlug);
         tx.set(label, Label.name, input.name);
         tx.set(label, Label.color, input.color);
       },
-      run(op, input) {
-        return { id: op.create({ name: input.name, color: input.color }) };
+      async run(op, input) {
+        const workspace = await op.pull(input.workspace, [Workspace.slug.ident]) as {
+          readonly ":workspace/slug"?: unknown;
+        };
+        if (workspace[":workspace/slug"] !== input.workspaceSlug) {
+          throw new OperationRejected({
+            message: "the label workspace does not match its slug",
+            operation: "createLabel",
+          });
+        }
+        return {
+          id: op.create({
+            workspace: input.workspace,
+            workspaceSlug: input.workspaceSlug,
+            name: input.name,
+            color: input.color,
+          }),
+        };
       },
     }),
   }),
@@ -153,6 +170,8 @@ export const PRIORITIES = ["none", "low", "medium", "high", "urgent"] as const;
 
 // docs:issue-entity
 export const Issue = Entity("issue", {
+  workspace: Ref(Workspace),
+  workspaceSlug: string({ index: true }),
   title: string(),
   description: string({ optional: true }),
   status: Enum(STATUSES),
@@ -169,6 +188,8 @@ export const Issue = Entity("issue", {
       self: false,
       writes: [Person],
       input: EffectSchema.Struct({
+        workspace: EntityId,
+        workspaceSlug: EffectSchema.String,
         title: EffectSchema.String,
         status: EffectSchema.Literals(STATUSES),
         rank: EffectSchema.Finite,
@@ -177,15 +198,28 @@ export const Issue = Entity("issue", {
       allocates: { issue: ["id"] },
       optimistic: ({ input, tx }) => {
         const issue = tx.create("issue", Issue);
+        tx.set(issue, Issue.workspace, input.workspace);
+        tx.set(issue, Issue.workspaceSlug, input.workspaceSlug);
         tx.set(issue, Issue.title, input.title);
         tx.set(issue, Issue.status, input.status);
         tx.set(issue, Issue.priority, "none");
         tx.set(issue, Issue.rank, input.rank);
         tx.set(issue, Issue.createdAt, new Date());
       },
-      run(op, input) {
+      async run(op, input) {
+        const workspace = await op.pull(input.workspace, [Workspace.slug.ident]) as {
+          readonly ":workspace/slug"?: unknown;
+        };
+        if (workspace[":workspace/slug"] !== input.workspaceSlug) {
+          throw new OperationRejected({
+            message: "the issue workspace does not match its slug",
+            operation: "createIssue",
+          });
+        }
         const creator = op.put(Person, callerAttrs(op.principal));
         const issue = op.create({
+          workspace: input.workspace,
+          workspaceSlug: input.workspaceSlug,
           title: input.title,
           status: input.status,
           priority: "none",
@@ -359,8 +393,6 @@ export const Reef = Schema("reef", {
   comment: Comment,
 });
 
-reefSchema = Reef;
-
 export type Reef = typeof Reef;
 
 // docs:reef-policy
@@ -390,12 +422,15 @@ Reef.applyPolicy(
     policy.workspace.read.where((workspace) =>
       workspace.members.contains(actor)
     );
-    policy.graph.read.where(signedIn);
-    policy.graph.fields.catalog.read.denyWhere(signedIn);
-
-    policy.label.read.where(signedIn);
-    policy.issue.read.where(signedIn);
-    policy.comment.read.where(signedIn);
+    policy.label.read.where((label) =>
+      label.workspace.members.contains(actor)
+    );
+    policy.issue.read.where((issue) =>
+      issue.workspace.members.contains(actor)
+    );
+    policy.comment.read.where((comment) =>
+      comment.issue.workspace.members.contains(actor)
+    );
     policy.issue.fields.privateNote.read.where((issue) =>
       issue.creator.eq(actor)
     );

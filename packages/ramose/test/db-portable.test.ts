@@ -17,7 +17,7 @@ describe("ramose/db authoring surface", () => {
 
   test("exports authoring definitions, not an online database client", async () => {
     const db = await import("../src/db/index.ts");
-    for (const name of ["Schema", "Field", "Entity", "Trait", "Graph", "Query", "Operation", "tempid"]) expect(name in db).toBe(true);
+    for (const name of ["Schema", "Field", "Entity", "Trait", "Query", "Operation", "tempid"]) expect(name in db).toBe(true);
     for (const name of ["connect", "Db", "token", "openOverlay", "Subscription", "PrefixHalt"]) expect(name in db).toBe(false);
   });
 });

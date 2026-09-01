@@ -5,7 +5,7 @@ import type { OutboxDraft, QueuedTarget } from "../internal/replication/outbox.t
 import { projectionIdentity } from "../internal/replication/projection-binding.ts";
 import type { ReplicaDatabaseScope } from "../internal/replication/replica-lifecycle.ts";
 import type { ClientCatalog } from "./catalog.ts";
-import { resolveGraphReceiver } from "./graph.ts";
+import { resolveDatabaseReceiver } from "./query.ts";
 import type { ClientDatabase } from "./database.ts";
 import { encodedInputRefs, type ClientOperation } from "./operations.ts";
 import type { MutationMethod, MutationNamespace } from "./mutation-schema.ts";
@@ -59,7 +59,7 @@ const enqueue = async (
   input: unknown,
   driver: ReceiptDriver,
 ): Promise<void> => {
-  const receiver = await resolveGraphReceiver(database);
+  const receiver = await resolveDatabaseReceiver(database);
   const [catalog, storage] = await Promise.all([
     context.catalog(),
     context.storage(),

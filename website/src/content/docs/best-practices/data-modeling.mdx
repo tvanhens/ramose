@@ -24,11 +24,11 @@ These answers expose the durable nouns and verbs. UI components rarely map one-t
 
 Use an entity when a fact needs a stable identity, independent updates, references, history, or operations. Keep small immutable value objects—coordinates, money, a date range—inside a field when they are always read and replaced with their owner.
 
-Choose stable, opaque ids. Names, slugs, email addresses, and positions change. They can be unique attributes or graph path segments without becoming identity.
+Choose stable, opaque ids. Names, slugs, email addresses, and positions change. They can be unique attributes without becoming identity.
 
 ## Use traits for substitutable capabilities
 
-A trait describes a reusable capability such as `Assignable`, `Commentable`, or `Graph<Schema>`. Use one when multiple entity types should share fields, relationships, operations, or policy rules.
+A trait describes a reusable capability such as `Assignable` or `Commentable`. Use one when multiple entity types should share fields, relationships, operations, or policy rules.
 
 Do not create a trait only to reduce a few repeated lines. A useful trait has product meaning and allows callers to treat conforming entities uniformly.
 
@@ -41,25 +41,24 @@ Ask which side owns lifecycle and cardinality:
 - A reference is appropriate when one entity points to another independently owned entity.
 - A related entity is appropriate when the related record has its own identity, query needs, or operations.
 - An embedded value is appropriate when the value has no independent lifecycle.
-- A child graph is appropriate only when the boundary needs isolation, authorization, lifecycle, or scale—not merely because two entities are related.
 
 Avoid unbounded arrays of ids inside one entity. They make updates contend on one record and make filtering, pagination, and independent authorization harder.
 
 ## Put invariants on the write path
 
-Declare defaults, fixed graph bindings, required references, protected types, and cascade behavior in the catalog or authoritative operation. Do not rely on every UI and agent caller to remember them.
+Declare defaults, fixed trait bindings, required references, protected types, and cascade behavior in the catalog or authoritative operation. Do not rely on every UI and agent caller to remember them.
 
-Prefer a narrow `moveTask({ column })` operation over a generic patch that lets callers set protected ownership or type fields. The operation can validate the transition and change all affected entities atomically inside one graph.
+Prefer a narrow `moveTask({ column })` operation over a generic patch that lets callers set protected ownership or type fields. The operation can validate the transition and change all affected entities atomically inside one database.
 
 ## Make common queries cheap
 
-Fields used for equality filters, ordering, graph lookup, and relationship traversal should be explicit and consistently typed. Store values you must filter or sort; derive presentation-only strings in the application.
+Fields used for equality filters, ordering, entity lookup, and relationship traversal should be explicit and consistently typed. Store values you must filter or sort; derive presentation-only strings in the application.
 
 Denormalize only after identifying a real read path. If you copy data, decide which operation owns synchronization and what staleness is acceptable. A duplicated display label may be harmless; duplicated authorization state is usually not.
 
 ## Plan evolution
 
-Treat public entity, trait, field, graph, and operation keys as contracts. Prefer additive evolution:
+Treat public entity, trait, field, database, and operation keys as contracts. Prefer additive evolution:
 
 - Add a new optional field or operation.
 - Backfill before making a field required.
@@ -69,7 +68,6 @@ Treat public entity, trait, field, graph, and operation keys as contracts. Prefe
 Stable definitions matter beyond TypeScript. Persisted facts, offline replicas, receipts, and MCP catalog tokens all outlive a single deployment.
 
 <Next links={[
-  { href: "/best-practices/graph-boundaries/", label: "Graph boundaries", why: "decide what belongs in a separate database" },
   { href: "/best-practices/query-performance/", label: "Query performance", why: "shape data around bounded read paths" },
   { href: "/reference/schema/", label: "Schema reference", why: "look up declaration contracts" },
 ]} />

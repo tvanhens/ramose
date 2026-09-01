@@ -26,10 +26,9 @@ const EXPERIMENTAL =
 
 const INSTRUCTIONS = `${EXPERIMENTAL}
 
-Three tools reach this application's whole authorized surface. Every call takes
-"at": a path of graph names relative to your authorized root ([] is the root).
+Three tools reach this application's whole authorized database surface.
 
-1. describe — visible entity names, invocable operations, and child graph names.
+1. describe — visible entity names and invocable operations.
 2. query — read rows of one entity with equality filters and a field projection.
 3. mutate — invoke one discovered operation with the version describe returned
    and your own invocationId. Repeating the same invocationId replays the first
@@ -37,24 +36,16 @@ Three tools reach this application's whole authorized surface. Every call takes
 
 Anything you cannot see is reported as if it did not exist.`;
 
-const AT_SCHEMA = {
-  type: "array",
-  items: { type: "string", minLength: 1 },
-  maxItems: 16,
-  description:
-    "Graph names from your authorized root. [] selects the root itself.",
-} as const;
-
 const TOOLS = Object.freeze([
   {
     name: "describe",
     title: "Describe visible capabilities",
     description:
-      "List the entity names, invocable operations, and child graph names visible " +
-      "to you at one graph path. Names only; lists are capped and report truncated.",
+      "List the entity names and invocable operations visible to you. " +
+      "Names only; lists are capped and report truncated.",
     inputSchema: {
       type: "object",
-      properties: { at: AT_SCHEMA },
+      properties: {},
       additionalProperties: false,
     },
   },
@@ -68,7 +59,6 @@ const TOOLS = Object.freeze([
     inputSchema: {
       type: "object",
       properties: {
-        at: AT_SCHEMA,
         query: {
           type: "object",
           properties: {
@@ -111,7 +101,6 @@ const TOOLS = Object.freeze([
     inputSchema: {
       type: "object",
       properties: {
-        at: AT_SCHEMA,
         operation: {
           type: "object",
           properties: {

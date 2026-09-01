@@ -70,7 +70,7 @@ The domain module exports `deployment` with the named schema as `root` and an ex
 bun alchemy dev
 ```
 
-Local development uses the real Worker, Durable Object, object-storage, cache, WebSocket, and auth topology through Alchemy's local runtime. Give test data unique graph names instead of replacing infrastructure with in-process substitutes.
+Local development uses the real Worker, Durable Object, object-storage, cache, WebSocket, and auth topology through Alchemy's local runtime. Give test data unique database names instead of replacing infrastructure with in-process substitutes.
 
 Use a non-production stage and explicit local identity configuration. Test instrumentation activates only when its flag and non-production stage guard are both present.
 
@@ -80,7 +80,7 @@ Use a non-production stage and explicit local identity configuration. Test instr
 bun alchemy deploy --stage preview
 ```
 
-A stage is an isolated copy of compute, storage, catalogs, and secrets. Do not point a preview application at production graph storage. Set the identity provider's issuer, audience, keys, callback URLs, and allowed origins for the exact stage URL.
+A stage is an isolated copy of compute, storage, catalogs, and secrets. Do not point a preview application at production database storage. Set the identity provider's issuer, audience, keys, callback URLs, and allowed origins for the exact stage URL.
 
 ## Deploy production
 
@@ -111,7 +111,7 @@ Then verify with real principals:
 
 ## Treat teardown as data deletion
 
-Destroying a stage removes the resources Alchemy owns and may delete its graph storage. Export or preserve anything you need before teardown, confirm the exact stage name, and never use a broad production stage as a local scratch environment.
+Destroying a stage removes the resources Alchemy owns and may delete its database storage. Export or preserve anything you need before teardown, confirm the exact stage name, and never use a broad production stage as a local scratch environment.
 
 <Next links={[
   { href: "/guides/before-production/", label: "Before production", why: "complete the launch, recovery, and security checklist" },

@@ -42,29 +42,8 @@ export class ClientLocalDataError extends Data.TaggedError(
   readonly cause?: unknown;
 }> {}
 
-/** Why a graph path does not name a database this client may read. */
-export type GraphPathFailure =
-  | "unavailable"
-  | "ambiguous"
-  | "unauthorized"
-  | "update-required"
-  | "closed"
-  | "query";
-
-/**
- * A graph path could not be resolved to one database.
- *
- * Surfaced as the `error` of every descendant query snapshot, and never as an
- * absence of rows: a path that does not resolve has no rows to be absent.
- */
-export class GraphPathError extends Data.TaggedError("GraphPathError")<{
-  readonly reason: GraphPathFailure;
-  readonly message: string;
-  readonly cause?: unknown;
-}> {}
-
 /** Why an invocation could not be addressed to one stable database. */
-export type GraphReceiverFailure =
+export type DatabaseReceiverFailure =
   | "unresolved"
   | "ambiguous"
   | "unauthorized"
@@ -79,8 +58,8 @@ export type GraphReceiverFailure =
  * from mutable path text or from a guessed receiver, so this failure leaves no
  * durable trace to undo.
  */
-export class GraphReceiverError extends Data.TaggedError("GraphReceiverError")<{
-  readonly reason: GraphReceiverFailure;
+export class DatabaseReceiverError extends Data.TaggedError("DatabaseReceiverError")<{
+  readonly reason: DatabaseReceiverFailure;
   readonly message: string;
   readonly cause?: unknown;
 }> {}

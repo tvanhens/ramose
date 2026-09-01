@@ -7,7 +7,7 @@ export interface CodeDefinition {
   readonly schema: AnySchema;
 }
 
-/** Lazy form permits self-similar and mutually recursive catalog graphs. */
+/** Lazy form permits a database definition declared later in the module. */
 export type CodeDefinitionRef = CodeDefinition | (() => CodeDefinition);
 
 type BoundFieldValue<F extends AnyField> = F["cardinality"] extends "many"
@@ -28,7 +28,6 @@ export interface TraitBindingSpec<
 > {
   readonly values?: BindingValues<Fields>;
   readonly defaults?: BindingDefaults<Fields>;
-  readonly dependencies?: readonly CodeDefinitionRef[];
 }
 
 export type TraitBind<
@@ -103,7 +102,6 @@ export interface ResolvedTraitBinding {
   readonly definition: CodeDefinition;
   readonly values: Readonly<Record<string, unknown>>;
   readonly defaults: Readonly<Record<string, CreationDefault<unknown>>>;
-  readonly dependencies: readonly CodeDefinition[];
 }
 
 export const cloneBindingValue = (
@@ -214,6 +212,11 @@ export const resolveTraitBinding = (
       `ramose/binding: trait ${JSON.stringify(runtime.trait.ns)} bind must return an object`,
     );
   }
+  for (const key of Object.keys(result)) {
+    if (key !== "values" && key !== "defaults") {
+      throw new Error(`ramose/binding: unsupported result field ${JSON.stringify(key)}`);
+    }
+  }
   const values = plainRecord(result.values, "values");
   const defaultValues = plainRecord(result.defaults, "defaults");
   const defaults: Record<string, CreationDefault<unknown>> = {};
@@ -225,11 +228,6 @@ export const resolveTraitBinding = (
     }
     defaults[key] = value as CreationDefault<unknown>;
   }
-  const dependencyRefs = result.dependencies ?? [];
-  if (!Array.isArray(dependencyRefs)) {
-    throw new Error("ramose/binding: dependencies must be an array");
-  }
-  const dependencies = dependencyRefs.map(resolveCodeDefinition);
   for (const key of [...Object.keys(values), ...Object.keys(defaults)]) {
     if (!Object.hasOwn(runtime.trait.fields, key)) {
       throw new Error(
@@ -246,7 +244,6 @@ export const resolveTraitBinding = (
     definition,
     values: Object.freeze(snapshotValues),
     defaults: Object.freeze(defaults),
-    dependencies: Object.freeze(dependencies),
   });
 };
 

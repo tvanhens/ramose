@@ -76,7 +76,6 @@ const identity = (overrides: Partial<ReplicationIdentity> = {}): ReplicationIden
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: READ_COMPATIBILITY,
-  graphLineage: [],
   authenticator: opaque("a"),
   ...overrides,
 });
@@ -1257,7 +1256,6 @@ browserTest("no adversarial mapping can reach the mapping store", async ({ brows
 const UNREACHABLE: MutationEndpoint = Object.freeze({
   origin: "http://127.0.0.1:1",
   database: "movies",
-  graphPath: [],
   credential: "token",
 });
 
@@ -2252,7 +2250,7 @@ browserTest(
       });
 
       const prior = await ReplicationSession.open({
-        activation: { server: "http://127.0.0.1:1", root: "root", graphPath: [] },
+        activation: { server: "http://127.0.0.1:1", root: "root" },
         credential: "queued-credential",
         attributes: [{ ident: ":item/name", valueType: ":db.type/string", index: true }],
         readCompatibilityHash: left.readCompatibilityHash,

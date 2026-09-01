@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ClientDatabase } from "ramose/client";
+import type { MutationRef } from "ramose/db";
 import { useQuery } from "ramose/react";
 import { boardLabels, issueComments } from "../../domain/queries.ts";
 import {
@@ -56,6 +57,8 @@ const LABEL_COLORS = ["#5e6ad2", "#26b5ce", "#4cb782", "#f2c94c", "#eb5757"];
 export const IssueDetail = (props: {
   readonly board: ReefDb;
   readonly issue: IssueRow;
+  readonly workspaceId: MutationRef;
+  readonly workspaceSlug: string;
   readonly peopleById: ReadonlyMap<string, PersonRow>;
   readonly members: readonly Member[];
   readonly onClose: () => void;
@@ -86,7 +89,10 @@ export const IssueDetail = (props: {
   }, [issue.data.title, issue.data.description, issue.data.privateNote]);
 
   const comments = useQuery(issueComments(props.board, issueId), props.board);
-  const labels = useQuery(boardLabels(props.board), props.board);
+  const labels = useQuery(
+    boardLabels(props.board, props.workspaceSlug),
+    props.board,
+  );
   const allLabels = labels.status === "ready" || labels.status === "stale"
     ? (labels.data as unknown as readonly LabelRow[])
     : [];
@@ -204,6 +210,8 @@ export const IssueDetail = (props: {
                 return;
               }
               props.board.mutate.createLabel({
+                workspace: props.workspaceId,
+                workspaceSlug: props.workspaceSlug,
                 name,
                 color: LABEL_COLORS[allLabels.length % LABEL_COLORS.length]!,
               });

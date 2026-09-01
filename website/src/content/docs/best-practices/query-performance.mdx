@@ -1,13 +1,13 @@
 ---
 title: Query performance
-description: Keep browser, server, and MCP queries selective, bounded, index-friendly, and local to one graph.
+description: Keep browser, server, and MCP queries selective, bounded, and index-friendly.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Ramose queries are incremental and relational, but they still obey physical limits. Performance comes from reducing the candidate set early, bounding every collection, and activating only the graphs a view needs.
+Ramose queries are incremental and relational, but they still obey physical limits. Performance comes from reducing the candidate set early and bounding every collection.
 
-<Learn learn={["How to reason about query cost", "How graph activation changes browser cost", "How to diagnose and reshape an expensive query"]} before={[{ href: "/concepts/queries/", label: "Query model" }]} minutes={12} />
+<Learn learn={["How to reason about query cost", "How synchronization changes browser cost", "How to diagnose and reshape an expensive query"]} before={[{ href: "/concepts/queries/", label: "Query model" }]} minutes={12} />
 
 ## Start with the smallest source
 
@@ -31,11 +31,9 @@ Every list needs a deterministic order and page size. Use the opaque continuatio
 
 Nested collections need their own limits. Recursive rules need an explicit maximum depth. If the product truly needs every record, make that an export or background workflow rather than an interactive query.
 
-## Keep work inside one graph
+## Keep work selective
 
-One query executes against one graph. This makes cost and authorization understandable and keeps incremental maintenance local. Do not compensate for a poor graph boundary by activating every child and joining results in the browser.
-
-For a parent dashboard, prefer bounded parent summaries or lazy per-child detail. When the user opens one project, activate that project graph and release observers when the view unmounts.
+One query executes against the configured database. Prefer bounded summaries and lazy detail, and release observers when a view unmounts.
 
 ## Design indexes from real read paths
 
@@ -55,7 +53,7 @@ Share a query definition when several components need the same result shape; der
 
 Offline-capable queries execute against a persistent browser replica. They avoid network latency, not computation. Broad queries consume CPU and maintain indexes as new facts arrive.
 
-Keep inactive graphs dormant. A component that renders 100 graph links should not call `useQuery` inside every destination graph. Constructing a handle is cheap; observing a query activates synchronization.
+Keep inactive views dormant. A component that renders 100 rows should not establish a separate live query for each row. Constructing a query is cheap; observing it activates synchronization.
 
 ## Give agents explicit budgets
 
@@ -67,13 +65,13 @@ An agent should narrow and retry rather than request an exception. This is why c
 
 When a view is slow, separate:
 
-1. Graph activation and snapshot restore.
+1. Database activation and snapshot restore.
 2. Catch-up synchronization.
 3. Local query compilation and initial evaluation.
 4. Incremental maintenance after changes.
 5. React rendering.
 
-Changing the query will not fix a component that activates 200 graphs; changing the component will not fix a full scan. Diagnose the stage before redesigning the model.
+Changing the query will not fix a component that activates 200 observers; changing the component will not fix a full scan. Diagnose the stage before redesigning the model.
 
 <Next links={[
   { href: "/best-practices/operations/", label: "Operation design", why: "balance authoritative writes with responsive offline UI" },

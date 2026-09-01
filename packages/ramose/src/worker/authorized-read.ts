@@ -5,8 +5,6 @@ import {
   CatalogId,
   CatalogUnitHash,
   DatabaseId,
-  MAX_COLLECTION_SIZE,
-  MAX_STRING_LENGTH,
   type DatabaseRouteDerivation,
   type ResolvedDatabaseRoute,
   type AuthorizedRequestView,
@@ -31,9 +29,8 @@ const UNIT_HASH_HEADER = "x-ramose-unit-hash";
 export type ParsedOneShotRead = {
   readonly read: OneShotRead;
   readonly view: AuthorizedRequestView;
-  readonly path: readonly string[];
-  readonly catalogKey?: CatalogId;
-  readonly unitHash?: CatalogUnitHash;
+  readonly catalogKey: CatalogId;
+  readonly unitHash: CatalogUnitHash;
 };
 
 const asRecord = (value: unknown): Result.Result<Record<string, unknown>, BadRequest> =>
@@ -66,36 +63,18 @@ export const parseCatalogProof = (
   return Result.succeed({ catalogKey: catalogKey.success, unitHash: hash.success });
 };
 
-export const parseGraphPath = (
+export const rejectNestedDatabaseSelector = (
   body: Record<string, unknown> | undefined,
   search: URLSearchParams,
-): Result.Result<readonly string[], BadRequest> => {
+): Result.Result<void, BadRequest> => {
   const queryPath = search.getAll("at");
   const bodyPath = body?.at;
-  if (bodyPath !== undefined && queryPath.length > 0) {
+  if (bodyPath !== undefined || queryPath.length > 0) {
     return Result.fail(new BadRequest({
-      message: "graph path must be supplied once",
+      message: "database selector 'at' is not supported",
     }));
   }
-  const path = bodyPath === undefined ? queryPath : bodyPath;
-  if (!Array.isArray(path) || path.length > MAX_COLLECTION_SIZE) {
-    return Result.fail(new BadRequest({
-      message: "at must be a bounded string array",
-    }));
-  }
-  const segments: string[] = [];
-  for (const segment of path) {
-    if (
-      typeof segment !== "string" || segment.length === 0 ||
-      segment.length > MAX_STRING_LENGTH
-    ) {
-      return Result.fail(new BadRequest({
-        message: "at must contain bounded non-empty strings",
-      }));
-    }
-    segments.push(segment);
-  }
-  return Result.succeed(Object.freeze(segments));
+  return Result.succeed(undefined);
 };
 
 export const carriesCatalogProof = (
@@ -113,19 +92,6 @@ export const refuseCatalogProof = (
   carriesCatalogProof(body, headers)
     ? Result.fail(deny())
     : Result.succeed(undefined);
-
-export const parseCatalogProofForPath = (
-  path: readonly string[],
-  body: Record<string, unknown> | undefined,
-  headers: Headers,
-): Result.Result<
-  { readonly catalogKey?: CatalogId; readonly unitHash?: CatalogUnitHash },
-  Unauthorized
-> => {
-  if (path.length === 0) return parseCatalogProof(body, headers);
-  if (carriesCatalogProof(body, headers)) return Result.fail(deny());
-  return Result.succeed({});
-};
 
 const viewOf = (
   body: Record<string, unknown> | undefined,
@@ -241,15 +207,13 @@ export const parseOneShotReadRequest = Effect.fn("parseOneShotReadRequest")(func
   const url = new URL(request.url);
   const method = request.method;
   const body = method === "GET" ? undefined : yield* readJsonObject(request);
-  const path = yield* Effect.fromResult(parseGraphPath(body, url.searchParams));
-  const proof = yield* Effect.fromResult(
-    parseCatalogProofForPath(path, body, request.headers),
-  );
+  yield* Effect.fromResult(rejectNestedDatabaseSelector(body, url.searchParams));
+  const proof = yield* Effect.fromResult(parseCatalogProof(body, request.headers));
   const read =
     method === "GET"
       ? yield* Effect.fromResult(entityFromPath(rest))
       : yield* Effect.fromResult(readFromBody(rest, method, body));
-  return { read, view: viewOf(body, url.searchParams), path, ...proof };
+  return { read, view: viewOf(body, url.searchParams), ...proof };
 });
 
 export const acquireCurrentDb = (

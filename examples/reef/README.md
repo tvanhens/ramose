@@ -38,15 +38,12 @@ Identity is deployment-global: every signed-in account mints the same class
 (`user`), and the JWT carries no database or role. What a principal can reach
 is data:
 
-- The root database holds `person` rows (the directory, upserted from the
-  JWT by operations) and `workspace` rows. A workspace composes the `Graph`
-  trait, so it *is* a child database.
+- The database holds `person`, `workspace`, issue, comment, and label rows.
 - `policy.workspace.read.where((ws) => ws.members.contains(actor))` is the
-  tenancy rule. The graph walk resolves a workspace through the filtered
-  database, so a non-member cannot see the workspace, its name, or activate
-  its child database — that is the read policy, not a UI filter.
-- Inside a workspace database the walk itself is the boundary; issues,
-  comments and labels are readable by any activated principal, and
+  tenancy rule. A non-member cannot see the workspace or its related rows —
+  that is the read policy, not a UI filter.
+- Required workspace references scope issues and labels; comments inherit the
+  workspace through their issue. Membership policy follows those references, and
   `issue.privateNote` shows a field-level rule (creator only).
 - Writes are catalog-bound operations. `createIssue` declares an optimistic
   projection, so an offline device renders its own writes until the server

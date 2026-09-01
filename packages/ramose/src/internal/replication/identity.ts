@@ -1,11 +1,11 @@
 import * as Effect from "effect/Effect";
 import type { AuthenticatedCaller } from "../authorization/request.ts";
-import type { GraphPathLeaseIdentity } from "../authorization/graph-path.ts";
+import type { DatabaseLeaseIdentity } from "../authorization/database-target.ts";
 import type { ResolvedDatabaseRoute } from "../authorization/database-bindings.ts";
 import { canonicalizeJson } from "../authorization/canonical-json.ts";
 import {
   canonicalizeReadPolicy,
-  GRAPH_READ_SEMANTICS_VERSION,
+  DATABASE_READ_SEMANTICS_VERSION,
   hashReadCompatibility,
 } from "../authorization/read-compatibility.ts";
 import type { JsonValue } from "../authorization/json.ts";
@@ -72,38 +72,11 @@ const callerMaterial = (caller: AuthenticatedCaller): JsonValue => ({
   classes: [...caller.classes].sort(),
 });
 
-const graphLineage = async (
-  sealing: ServerSealingKey,
-  path: GraphPathLeaseIdentity,
-): Promise<readonly OpaqueReplicationId[]> => {
-  if (path.dependencies.length === 0) return Object.freeze([]);
-  const lineage: OpaqueReplicationId[] = [];
-  let parent = await opaqueHmac(
-    sealing,
-    "ramose:replication:graph-lineage-root:v1",
-    path.rootDatabase,
-  );
-  for (const dependency of path.dependencies) {
-    const sealed = await opaqueHmac(
-      sealing,
-      "ramose:replication:graph-lineage:v1",
-      {
-        parent,
-        parentDatabase: dependency.parentDatabase,
-        entity: dependency.graphEntity,
-      },
-    );
-    lineage.push(sealed);
-    parent = sealed;
-  }
-  return Object.freeze(lineage);
-};
-
 export type ReplicationIdentityInput = {
   readonly sealing: ServerSealingKey;
   readonly origin: string;
   readonly caller: AuthenticatedCaller;
-  readonly path: GraphPathLeaseIdentity;
+  readonly path: DatabaseLeaseIdentity;
   readonly readRoutes: readonly ReplicationReadRouteIdentity[];
 };
 
@@ -161,8 +134,7 @@ export const entityIdScopeOf = (
 export const makeReplicationIdentity = async (
   input: ReplicationIdentityInput,
 ): Promise<ReplicationIdentity> => {
-  const target = input.path.routes[input.path.routes.length - 1];
-  if (target === undefined) throw new Error("replication path has no target");
+  const target = input.path.route;
   const { server, principal, database } = await makeEntityIdScope(
     input.sealing,
     {
@@ -178,20 +150,16 @@ export const makeReplicationIdentity = async (
   );
   const readCompatibilityHash = input.readRoutes[input.readRoutes.length - 1]
     ?.readCompatibilityHash;
-  if (readCompatibilityHash === undefined) throw new Error("replication path has no read route");
+  if (readCompatibilityHash === undefined) throw new Error("replication database has no read route");
   const readView = await opaqueHmac(
     input.sealing,
     "ramose:replication:read-view:v2",
     {
-      graphReadSemantics: GRAPH_READ_SEMANTICS_VERSION,
+      readSemantics: DATABASE_READ_SEMANTICS_VERSION,
       routes: input.readRoutes.map((route) => ({
         database: route.database,
         compatibility: route.readCompatibilityHash,
         policy: route.readPolicy,
-      })),
-      dependencies: input.path.dependencies.map((dependency) => ({
-        parent: dependency.parentDatabase,
-        entity: dependency.graphEntity,
       })),
     },
   );
@@ -203,7 +171,6 @@ export const makeReplicationIdentity = async (
     catalog,
     readView,
     readCompatibilityHash,
-    graphLineage: await graphLineage(input.sealing, input.path),
   };
   const authenticator = await opaqueHmac(
     input.sealing,
