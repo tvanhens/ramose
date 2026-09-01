@@ -26,7 +26,6 @@ import {
   type Change,
   type EntityHandleBinding,
   type ReplicationIdentity,
-  type ResumeReady,
   type SnapshotChunk,
   type SnapshotCommit,
   type SnapshotDatom,
@@ -310,7 +309,10 @@ const supersedesStoredHead = (
   stored: CommittedHeadRecord | undefined,
   candidate: CommittedRecord,
 ): boolean =>
-  !isReplicationOrdinal(stored?.ordinal) || candidate.ordinal >= stored.ordinal;
+  stored === undefined ||
+  !sameReplicationIdentity(stored.identity, candidate.identity) ||
+  !isReplicationOrdinal(stored.ordinal) ||
+  candidate.ordinal >= stored.ordinal;
 
 export type RestoredReplica = {
   readonly db: Db;
@@ -332,6 +334,13 @@ export type BoundRestoredReplica = RestoredReplica & {
 export type ReplicaCacheCandidate = {
   readonly identity: ReplicationIdentity;
   readonly revision: string;
+  readonly ordinal: number;
+};
+
+export type ReplicaOrdinalAcknowledgement = {
+  readonly identity: ReplicationIdentity;
+  readonly revision: string;
+  readonly ordinal: number;
 };
 
 export type ReplicaCacheCandidateKey = {
@@ -1861,6 +1870,7 @@ export class IndexedDbReplicaStorage {
       head.partition !== replicaPartitionKey(binding.identity) ||
       head.readCompatibilityHash !== readCompatibilityHash ||
       head.identity.readCompatibilityHash !== readCompatibilityHash ||
+      !isReplicationOrdinal(head.ordinal) ||
       !sameReplicationIdentity(head.identity, binding.identity)
     ) {
       return undefined;
@@ -1868,6 +1878,7 @@ export class IndexedDbReplicaStorage {
     return Object.freeze({
       identity: binding.identity,
       revision: head.revision,
+      ordinal: head.ordinal,
     });
   }
 
@@ -2457,13 +2468,13 @@ export class IndexedDbReplicaStorage {
     };
   }
 
-  async acknowledgeResume(
-    frame: ResumeReady,
+  async acknowledgeOrdinal(
+    acknowledgement: ReplicaOrdinalAcknowledgement,
     options: ReplicaInstallOptions = {},
   ): Promise<number | undefined> {
-    this.assertScopeLive(replicaScopeOf(frame.identity));
-    const fence = replicaFence(options.lease, frame.identity);
-    const partition = replicaPartitionKey(frame.identity);
+    this.assertScopeLive(replicaScopeOf(acknowledgement.identity));
+    const fence = replicaFence(options.lease, acknowledgement.identity);
+    const partition = replicaPartitionKey(acknowledgement.identity);
     const sweep = await this.sweepGeneration(partition);
     options.signal?.throwIfAborted();
     await this.boundaries.checkpoint("replica.installing");
@@ -2479,24 +2490,28 @@ export class IndexedDbReplicaStorage {
         write.objectStore(COMMITTED).get(partition),
       );
       if (
-        current === undefined || current.revision !== frame.revision ||
-        !sameReplicationIdentity(current.identity, frame.identity)
+        current === undefined ||
+        current.revision !== acknowledgement.revision ||
+        !sameReplicationIdentity(current.identity, acknowledgement.identity)
       ) {
         await abortTransaction(write);
         return undefined;
       }
-      if (current.ordinal >= frame.ordinal) {
+      if (current.ordinal >= acknowledgement.ordinal) {
         await transactionDone(write);
         return current.ordinal;
       }
-      const acknowledged: CommittedRecord = { ...current, ordinal: frame.ordinal };
+      const acknowledged: CommittedRecord = {
+        ...current,
+        ordinal: acknowledgement.ordinal,
+      };
       write.objectStore(COMMITTED).put(acknowledged);
       write.objectStore(COMMITTED_HEADS).put(committedHead(acknowledged));
       await this.boundaries.checkpoint("replica.install");
       await commitTransaction(write);
       this.meter.manifests++;
       this.meter.heads++;
-      return frame.ordinal;
+      return acknowledgement.ordinal;
     } catch (error) {
       await abortTransaction(write);
       throw error;

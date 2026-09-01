@@ -21,25 +21,35 @@ const identity: ReplicationIdentity = {
   graphLineage: [],
   authenticator: opaque("a"),
 };
-const change = (from: string, revision: string) => (changeFrame({
+const change = (from: string, revision: string, ordinal = 2) => (changeFrame({
   type: "Change" as const,
   protocol: 2 as const,
   identity,
   from,
   revision,
-  ordinal: 2,
+  ordinal,
   datoms: [],
 }));
 
 describe("replication change sequencing", () => {
   test("distinguishes an exact duplicate from a gap", () => {
-    const prior = { identity, revision: opaque("1") };
+    const prior = { identity, revision: opaque("1"), ordinal: 2 };
     expect(classifyReplicationChange(prior, change(opaque("0"), opaque("1"))))
       .toBe("duplicate");
     expect(classifyReplicationChange(prior, change(opaque("0"), opaque("2"))))
       .toBe("gap");
     expect(classifyReplicationChange(prior, change(opaque("1"), opaque("2"))))
       .toBe("apply");
+  });
+
+  test("a revision the identity has since re-reached acknowledges its new ordinal", () => {
+    const prior = { identity, revision: opaque("1"), ordinal: 2 };
+    expect(classifyReplicationChange(prior, change(opaque("2"), opaque("1"), 3)))
+      .toBe("acknowledge");
+    for (const ordinal of [1, 2]) {
+      expect(classifyReplicationChange(prior, change(opaque("2"), opaque("1"), ordinal)))
+        .toBe("duplicate");
+    }
   });
 });
 
@@ -82,7 +92,7 @@ test("protocol terminal reasons remain observable to later reconnect policy", ()
 
 describe("metadata-only cache candidate confirmation", () => {
   const revision = opaque("1");
-  const candidate = { identity, revision };
+  const candidate = { identity, revision, ordinal: 2 };
 
   test("accepts only frames that establish a valid initial transition", () => {
     expect(classifyReplicationCandidateFrame(candidate, {
@@ -92,6 +102,8 @@ describe("metadata-only cache candidate confirmation", () => {
       .toBe("change");
     expect(classifyReplicationCandidateFrame(candidate, change(opaque("0"), revision)))
       .toBe("duplicate");
+    expect(classifyReplicationCandidateFrame(candidate, change(opaque("0"), revision, 3)))
+      .toBe("acknowledge");
     expect(classifyReplicationCandidateFrame(candidate, change(opaque("0"), opaque("2"))))
       .toBe("invalid");
     expect(classifyReplicationCandidateFrame(undefined, {

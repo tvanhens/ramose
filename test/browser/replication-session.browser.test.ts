@@ -50,6 +50,7 @@ import {
   buildReceipt,
   mutationPartitionKey,
 } from "../../packages/ramose/src/internal/replication/outbox.ts";
+import { sameReplicationIdentity } from "../../packages/ramose/src/internal/replication/state.ts";
 import { invocationId } from "../../packages/ramose/src/db/refs.ts";
 import type { OperationVersion } from "../../packages/ramose/src/internal/authorization/identities.ts";
 import { browserTest } from "./fixtures.ts";
@@ -387,9 +388,7 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
     op,
   });
   const acknowledge = (revision: string, ordinal: number) =>
-    storage.acknowledgeResume({
-      type: "ResumeReady",
-      protocol: 2,
+    storage.acknowledgeOrdinal({
       identity: selected,
       revision,
       ordinal,
@@ -401,12 +400,17 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
     expect(await acknowledge(opaque("9"), 5)).toBeUndefined();
     expect(await storedOrdinal()).toBe(1);
 
+    storage.resetWriteCounts();
     expect(await acknowledge(installed, 3)).toBe(3);
     expect(await storedOrdinal()).toBe(3);
+    expect(storage.writeCounts()).toMatchObject({ manifests: 1, heads: 1 });
+
+    storage.resetWriteCounts();
     for (const ordinal of [1, 3]) {
       expect(await acknowledge(installed, ordinal)).toBe(3);
       expect(await storedOrdinal()).toBe(3);
     }
+    expect(storage.writeCounts()).toMatchObject({ manifests: 0, heads: 0 });
     const advanced = await storage.restore(
       selected,
       attributes,
@@ -475,6 +479,90 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
     expect(current?.ordinal).toBe(4);
     expect(await named(current!.db)).toEqual(["current"]);
     current!.release();
+    expect(await storedOrdinal()).toBe(4);
+  } finally {
+    storage.close();
+    await deleteDatabase(name);
+  }
+});
+
+browserTest("a rotated identity sharing a partition is not wedged by the prior counter", async ({ browser }) => {
+  const name = `ramose-session-rotated-ordinal-${browser.uniqueId}`;
+  const storage = await IndexedDbReplicaStorage.open(name);
+  const rotated: ReplicationIdentity = {
+    ...selected,
+    catalog: opaque("C"),
+    authenticator: opaque("A"),
+  };
+  const replacement = opaque("5");
+  const partition = replicaPartitionKey(selected);
+  const storedOrdinal = async (): Promise<number | undefined> => {
+    const database = await openNative(name);
+    const read = database.transaction("replica-committed-heads-v1", "readonly");
+    const head = await requestResult<{ readonly ordinal?: number } | undefined>(
+      read.objectStore("replica-committed-heads-v1").get(partition),
+    );
+    await transactionDone(read);
+    database.close();
+    return head?.ordinal;
+  };
+  try {
+    expect(replicaPartitionKey(rotated)).toBe(partition);
+    expect(sameReplicationIdentity(rotated, selected)).toBe(false);
+
+    await install(storage);
+    expect(await storage.acknowledgeOrdinal({
+      identity: selected,
+      revision: opaque("r"),
+      ordinal: 5,
+    })).toBe(5);
+    expect(await storedOrdinal()).toBe(5);
+
+    await install(storage, opaque("Q"), replacement, rotated, "rotated");
+    expect(await storedOrdinal()).toBe(1);
+    const installed = await storage.restore(
+      rotated,
+      attributes,
+      rotated.readCompatibilityHash,
+    );
+    expect(installed?.revision).toBe(replacement);
+    expect(installed?.ordinal).toBe(1);
+    installed!.release();
+
+    expect(await storage.acknowledgeOrdinal({
+      identity: rotated,
+      revision: replacement,
+      ordinal: 4,
+    })).toBe(4);
+    await storage.startSnapshot({
+      type: "SnapshotStart",
+      protocol: 2,
+      identity: rotated,
+      snapshot: opaque("P"),
+      revision: opaque("6"),
+    });
+    await storage.stageSnapshotChunk(snapshotChunk({
+      type: "SnapshotChunk",
+      protocol: 2,
+      identity: rotated,
+      snapshot: opaque("P"),
+      index: 0,
+      datoms: [{
+        entity: opaque("e"),
+        field: ":item/name",
+        value: { type: "string", value: "regressed" },
+        op: "add",
+      }],
+    }));
+    expect(await storage.commitSnapshot({
+      type: "SnapshotCommit",
+      protocol: 2,
+      identity: rotated,
+      snapshot: opaque("P"),
+      revision: opaque("6"),
+      ordinal: 2,
+      chunks: 1,
+    }, attributes)).toBeUndefined();
     expect(await storedOrdinal()).toBe(4);
   } finally {
     storage.close();
@@ -576,7 +664,11 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       "replica-cache-candidates-v1",
       "replica-committed-heads-v1",
     ]]);
-    expect(candidate).toEqual({ identity: selected, revision: opaque("r") });
+    expect(candidate).toEqual({
+      identity: selected,
+      revision: opaque("r"),
+      ordinal: 1,
+    });
     expect(candidate === undefined || "db" in candidate).toBe(false);
     expect(await storage.selectCacheCandidate(
       oldKey,
@@ -681,7 +773,11 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
       oldKey,
       selected.readCompatibilityHash,
     );
-    expect(rebound).toEqual({ identity: other, revision: opaque("2") });
+    expect(rebound).toEqual({
+      identity: other,
+      revision: opaque("2"),
+      ordinal: 1,
+    });
     expect((await storage.restore(
       other,
       attributes,

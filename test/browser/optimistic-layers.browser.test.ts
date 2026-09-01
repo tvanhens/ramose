@@ -15,13 +15,17 @@ import {
   sealEntityId,
   type EntityIdScope,
 } from "../../packages/ramose/src/internal/replication/entity-id.ts";
-import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
+import {
+  IndexedDbReplicaStorage,
+  replicaPartitionKey,
+} from "../../packages/ramose/src/internal/replication/indexeddb.ts";
 import type { OutboxDraft } from "../../packages/ramose/src/internal/replication/outbox.ts";
 import { mutationPartitionKey } from "../../packages/ramose/src/internal/replication/outbox.ts";
 import { makeClientProjectionCatalog } from "../../packages/ramose/src/internal/replication/projection-binding.ts";
 import type { ClientProjectionCatalog } from "../../packages/ramose/src/internal/replication/projection-binding.ts";
 import { OptimisticReconciler } from "../../packages/ramose/src/internal/replication/reconciliation.ts";
 import {
+  classifyReplicationAdoption,
   ReplicationSession,
   type ReplicationSessionSnapshot,
 } from "../../packages/ramose/src/internal/replication/session.ts";
@@ -1081,6 +1085,83 @@ browserTest(
   },
 );
 
+const storedOrdinal = async (
+  database: string,
+  ordinal?: number,
+): Promise<number | undefined> => {
+  const connection = await openNative(database);
+  const partition = replicaPartitionKey(identity());
+  const transaction = connection.transaction(
+    ["replica-committed-v1", "replica-committed-heads-v1"],
+    ordinal === undefined ? "readonly" : "readwrite",
+  );
+  const manifests = transaction.objectStore("replica-committed-v1");
+  const heads = transaction.objectStore("replica-committed-heads-v1");
+  const [manifest, head] = await Promise.all([
+    requestResult<Record<string, unknown> | undefined>(manifests.get(partition)),
+    requestResult<Record<string, unknown> | undefined>(heads.get(partition)),
+  ]);
+  if (ordinal !== undefined && manifest !== undefined && head !== undefined) {
+    manifests.put({ ...manifest, ordinal });
+    heads.put({ ...head, ordinal });
+  }
+  await transactionDone(transaction);
+  connection.close();
+  return head?.ordinal as number | undefined;
+};
+
+browserTest(
+  "a change re-reaching the published revision acknowledges its higher ordinal",
+  async ({ browser }) => {
+    const database = `ramose-layer-change-acknowledge-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    let session: ReplicationSession | undefined;
+    try {
+      await installRecorded(storage, "optimistic-fence-change");
+      const acknowledging = await recordedChange();
+      dropped(await storage.applyChange(acknowledging));
+      expect(await storedOrdinal(database)).toBe(acknowledging.ordinal);
+
+      await storedOrdinal(database, acknowledging.ordinal - 1);
+      const behind = await storage.restore(identity(), ATTRIBUTES, READ_COMPATIBILITY);
+      expect(behind?.revision).toBe(acknowledging.revision);
+      expect(behind?.ordinal).toBe(acknowledging.ordinal - 1);
+      behind!.release();
+
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence-change",
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const observed = settledSnapshots(session);
+      await observed.failed;
+
+      expect(observed.seen.map((snapshot) => snapshot.status)).toContain("open");
+      expect(session.snapshot().value).toMatchObject({
+        revision: acknowledging.revision,
+        ordinal: acknowledging.ordinal,
+        stale: false,
+      });
+      expect(await storedOrdinal(database)).toBe(acknowledging.ordinal);
+
+      expect(classifyReplicationAdoption(session.snapshot().value, {
+        identity: identity(),
+        ordinal: acknowledging.ordinal - 1,
+      })).toBe("refuse");
+    } finally {
+      await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
 browserTest(
   "a change the durable replica has already advanced past reconnects at that frame",
   async ({ browser }) => {
@@ -1090,9 +1171,7 @@ browserTest(
     try {
       await installRecorded(storage, "optimistic-fence-change");
       const delayed = await recordedChange();
-      expect(await storage.acknowledgeResume({
-        type: "ResumeReady",
-        protocol: 2,
+      expect(await storage.acknowledgeOrdinal({
         identity: identity(),
         revision: recorded.revision,
         ordinal: delayed.ordinal + 1,

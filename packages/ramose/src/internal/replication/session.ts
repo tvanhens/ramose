@@ -6,6 +6,7 @@ import {
   type BoundRestoredReplica,
   type ReplicaCacheCandidate,
   type ReplicaCacheCandidateKey,
+  type ReplicaOrdinalAcknowledgement,
   type RestoredReplica,
 } from "./indexeddb.ts";
 import {
@@ -77,6 +78,7 @@ type TerminalFrame = Extract<ReplicationFrame, { readonly type: "TerminalError" 
 export type ReplicationCandidateFrameAction =
   | "resume"
   | "change"
+  | "acknowledge"
   | "duplicate"
   | "reset"
   | "snapshot"
@@ -85,13 +87,17 @@ export type ReplicationCandidateFrameAction =
   | "invalid";
 
 export const classifyReplicationChange = (
-  prior: Pick<ReplicationSessionValue, "identity" | "revision"> | undefined,
+  prior:
+    | Pick<ReplicationSessionValue, "identity" | "revision" | "ordinal">
+    | undefined,
   frame: ChangeFrame,
-): "apply" | "duplicate" | "gap" => {
+): "apply" | "acknowledge" | "duplicate" | "gap" => {
   if (prior === undefined || !sameReplicationIdentity(prior.identity, frame.identity)) {
     return "gap";
   }
-  if (prior.revision === frame.revision) return "duplicate";
+  if (prior.revision === frame.revision) {
+    return frame.ordinal > prior.ordinal ? "acknowledge" : "duplicate";
+  }
   return prior.revision === frame.from ? "apply" : "gap";
 };
 
@@ -111,7 +117,9 @@ export const classifyReplicationAdoption = (
     : "adopt";
 
 export const classifyReplicationCandidateFrame = (
-  prior: Pick<ReplicaCacheCandidate, "identity" | "revision"> | undefined,
+  prior:
+    | Pick<ReplicaCacheCandidate, "identity" | "revision" | "ordinal">
+    | undefined,
   frame: ReplicationFrame,
 ): ReplicationCandidateFrameAction => {
   switch (frame.type) {
@@ -124,11 +132,9 @@ export const classifyReplicationCandidateFrame = (
       return "invalid";
     case "Change": {
       const disposition = classifyReplicationChange(prior, frame);
-      return disposition === "gap"
-        ? "invalid"
-        : disposition === "apply"
-          ? "change"
-          : "duplicate";
+      return disposition === "gap" ? "invalid" : disposition === "apply"
+        ? "change"
+        : disposition;
     }
     case "ResumeReady":
       return prior !== undefined && prior.revision === frame.revision &&
@@ -563,6 +569,22 @@ export class ReplicationSession {
       "adopt";
   }
 
+  private async acknowledge(
+    acknowledgement: ReplicaOrdinalAcknowledgement,
+    generation: number,
+  ): Promise<number | undefined> {
+    const acknowledged = await this.storage.acknowledgeOrdinal(acknowledgement, {
+      signal: this.controller.signal,
+      lease: this.lease,
+    });
+    if (!this.current(generation)) return undefined;
+    if (acknowledged === undefined) {
+      this.quarantine(generation);
+      throw new Error("replication acknowledgement does not match the durable revision");
+    }
+    return acknowledged;
+  }
+
   private adopt(replica: RestoredReplica): void {
     if (replica.db === this.retainedDb) {
       replica.release();
@@ -637,7 +659,7 @@ export class ReplicationSession {
   }
 
   private async confirmedCandidate(
-    prior: Pick<ReplicaCacheCandidate, "identity" | "revision">,
+    prior: Pick<ReplicaCacheCandidate, "identity" | "revision" | "ordinal">,
   ): Promise<BoundRestoredReplica> {
     return this.confirmed(
       await this.storage.restoreCandidateOutcome(
@@ -663,29 +685,28 @@ export class ReplicationSession {
 
   private async acceptConfirmedInitial(
     frame: ReplicationFrame,
-    prior: Pick<ReplicaCacheCandidate, "identity" | "revision"> | undefined,
+    prior:
+      | Pick<ReplicaCacheCandidate, "identity" | "revision" | "ordinal">
+      | undefined,
     action: Exclude<ReplicationCandidateFrameAction, "invalid">,
     generation: number,
   ): Promise<boolean> {
     switch (action) {
       case "resume":
+      case "acknowledge":
       case "duplicate": {
         if (
           prior === undefined ||
           (action === "resume" && frame.type !== "ResumeReady") ||
-          (action === "duplicate" && frame.type !== "Change")
+          (action !== "resume" && frame.type !== "Change")
         ) {
           throw new Error("authenticated resume has no cached replica candidate");
         }
-        if (frame.type === "ResumeReady") {
-          const acknowledged = await this.storage.acknowledgeResume(frame, {
-            signal: this.controller.signal,
-            lease: this.lease,
-          });
-          if (!this.current(generation)) return false;
-          if (acknowledged === undefined) {
-            throw new Error("resume acknowledgement does not match the durable replica");
-          }
+        if (
+          action !== "duplicate" &&
+          (frame.type === "ResumeReady" || frame.type === "Change")
+        ) {
+          if (await this.acknowledge(frame, generation) === undefined) return false;
         }
         const restored = await this.confirmedCandidate(prior);
         this.publishReplica(restored.identity, restored, false, generation);
@@ -814,12 +835,26 @@ export class ReplicationSession {
       case "Change": {
         const prior = this.state.value;
         const disposition = classifyReplicationChange(prior, frame);
+        if (prior === undefined || disposition === "gap") {
+          throw new Error("replication change does not continue the committed revision");
+        }
         if (disposition === "duplicate") {
           await this.settled(frame, generation);
           return false;
         }
-        if (disposition === "gap") {
-          throw new Error("replication change does not continue the committed revision");
+        if (disposition === "acknowledge") {
+          const acknowledged = await this.acknowledge(frame, generation);
+          if (acknowledged === undefined) return true;
+          this.publish({
+            status: "open",
+            value: Object.freeze({
+              ...prior,
+              ordinal: Math.max(prior.ordinal, acknowledged),
+              stale: false,
+            }),
+          });
+          await this.settled(frame, generation);
+          return false;
         }
         const installed = await this.storage.applyChange(frame, {
           signal: this.controller.signal,
@@ -842,15 +877,8 @@ export class ReplicationSession {
           this.quarantine(generation);
           throw new Error("resume acknowledgement does not match the restored replica");
         }
-        const acknowledged = await this.storage.acknowledgeResume(frame, {
-          signal: this.controller.signal,
-          lease: this.lease,
-        });
-        if (!this.current(generation)) return true;
-        if (acknowledged === undefined) {
-          this.quarantine(generation);
-          throw new Error("resume acknowledgement does not match the durable replica");
-        }
+        const acknowledged = await this.acknowledge(frame, generation);
+        if (acknowledged === undefined) return true;
         this.publish({
           status: "open",
           value: Object.freeze({
