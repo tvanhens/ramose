@@ -207,15 +207,26 @@ export type ActivationFenceOutcome = {
 const confirmCommittedHead = async (
   transaction: IDBTransaction,
   receiver: ReplicaDatabaseScope,
-): Promise<string> => {
+): Promise<{ readonly revision: string; readonly settled: number }> => {
   const heads = await requestResult<unknown[]>(
     transaction.objectStore(REPLICA_COMMITTED_HEADS_STORE).getAll(
       prefixRange(replicaDatabasePartitionPrefix(receiver)),
     ),
   );
   for (const head of heads) {
-    const revision = (head as { readonly revision?: unknown } | null)?.revision;
-    if (typeof revision === "string" && revision.length > 0) return revision;
+    const stored = head as {
+      readonly revision?: unknown;
+      readonly settled?: unknown;
+    } | null;
+    const revision = stored?.revision;
+    if (typeof revision === "string" && revision.length > 0) {
+      return {
+        revision,
+        settled: typeof stored?.settled === "number" && stored.settled >= 0
+          ? stored.settled
+          : 0,
+      };
+    }
   }
   throw new OutboxRecordInvalid({
     reason: "no committed replica of this receiver database confirms the fenced outcome",
@@ -899,14 +910,15 @@ export class IndexedDbOutbox {
     if (stored === undefined) return;
     const layer = decodeOptimisticLayer(stored);
     if (layer === undefined) return;
+    const outcome = layer.state === "retired" ? "retired" : "committed-unobserved";
     if (
-      layer.state === "committed-unobserved" && layer.activation === activation &&
+      layer.state === outcome && layer.activation === activation &&
       layer.settled !== undefined && layer.settled >= settled
     ) return;
     layers.put(withLayerState(
       layer,
-      "committed-unobserved",
-      activation,
+      outcome,
+      layer.state === "retired" ? layer.activation : activation,
       layer.settled === undefined ? settled : Math.max(layer.settled, settled),
     ));
   }
@@ -1095,6 +1107,22 @@ export class IndexedDbOutbox {
           continue;
         }
         if (fenced.has(layer.invocation)) {
+          if (
+            layer.state === "committed-unobserved" &&
+            (layer.settled === undefined || layer.settled > confirmed.settled)
+          ) {
+            const held = withLayerState(layer, "retired", layer.activation);
+            layerStore.put(held);
+            remaining.push(held);
+          } else {
+            layerStore.delete([layer.partition, layer.sequence]);
+          }
+          continue;
+        }
+        if (
+          layer.state === "retired" && layer.settled !== undefined &&
+          layer.settled <= confirmed.settled
+        ) {
           layerStore.delete([layer.partition, layer.sequence]);
           continue;
         }
@@ -1110,7 +1138,7 @@ export class IndexedDbOutbox {
         receiver,
         activation,
         fenced: Object.freeze([...fenced]),
-        confirmed,
+        confirmed: confirmed.revision,
         layers: Object.freeze(remaining),
         unreadable,
       });
@@ -1120,15 +1148,20 @@ export class IndexedDbOutbox {
     }
   }
 
-  async recoverPendingSettlements(
+  async sweepDurableLayers(
     receiver: ReplicaDatabaseScope,
-  ): Promise<readonly InvocationId[]> {
+  ): Promise<{ readonly recovered: readonly InvocationId[] }> {
     this.assertScopeLive(receiver);
     const scopeKey = replicaScopeKey(receiver);
     const partition = mutationPartitionKey(receiver);
     const observed = await this.preflightScope(receiver);
     const transaction = this.database.transaction(
-      [MUTATION_LAYERS, MUTATION_OUTBOX, MUTATION_QUEUES, REPLICA_GENERATIONS_STORE],
+      [
+        MUTATION_LAYERS,
+        MUTATION_OUTBOX,
+        MUTATION_QUEUES,
+        REPLICA_GENERATIONS_STORE,
+      ],
       "readwrite",
     );
     try {
@@ -1178,7 +1211,7 @@ export class IndexedDbOutbox {
       }
       if (recovered.length === 0) {
         await transactionDone(transaction);
-        return Object.freeze([]);
+        return Object.freeze({ recovered: Object.freeze([]) });
       }
       transaction.objectStore(MUTATION_QUEUES).put(buildQueueCursor({
         partition,
@@ -1191,7 +1224,7 @@ export class IndexedDbOutbox {
       }));
       await commitTransaction(transaction);
       this.announceReceiver("layer", receiver);
-      return Object.freeze(recovered);
+      return Object.freeze({ recovered: Object.freeze(recovered) });
     } catch (error) {
       await abortTransaction(transaction);
       throw error;

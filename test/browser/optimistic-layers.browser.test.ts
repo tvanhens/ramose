@@ -380,6 +380,7 @@ browserTest(
       await reconciler.refresh();
       expect(await names(reconciler, storage, selected)).toEqual(["requested"]);
 
+      await storedSettlement(database, 1);
       const activation = await reconciler.restart();
       await reconciler.outcome(activation)();
       expect(await names(reconciler, storage, selected)).toEqual(["server-decided"]);
@@ -522,6 +523,7 @@ browserTest(
         { state: "committed-unobserved" },
       ]);
 
+      await storedSettlement(database, 1);
       const activation = await restarted.restart();
       expect(activation).toBe(1);
       await restarted.outcome(activation)();
@@ -572,6 +574,7 @@ browserTest(
       await reconciler.refresh();
       expect(reconciler.snapshot().layers).toHaveLength(2);
 
+      await storedSettlement(database, early.sequence);
       await reconciler.outcome(activation)();
       expect(reconciler.snapshot().layers.map((layer) => layer.invocation))
         .toEqual([late.invocation]);
@@ -626,6 +629,7 @@ browserTest(
         .toBe("unobserved");
       expect(await rawLayers(database)).toHaveLength(1);
 
+      await storedSettlement(database, 1);
       await reconciler.outcome(activation)();
       expect((await outbox.receipt(receiver, record.invocation))?.observation)
         .toBe("observed");
@@ -673,6 +677,7 @@ browserTest(
       expect(await rawLayers(database)).toHaveLength(1);
 
       await install(storage, selected, "left", "reinstalled");
+      await storedSettlement(database, 1);
       await reconciler.outcome(activation)();
       expect((await outbox.receipt(receiver, record.invocation))?.observation)
         .toBe("observed");
@@ -856,7 +861,7 @@ browserTest(
 
       const fenced = new Promise<void>((resolve, reject) => {
         const stop = reconciler.observe((state) => {
-          if (state.layers.length === 0) {
+          if (state.layers.length === 0 || state.layers[0]?.state === "retired") {
             stop();
             resolve();
           }
@@ -872,6 +877,10 @@ browserTest(
 
       expect((await outbox.receipt(receiver, record.invocation))?.observation)
         .toBe("observed");
+      expect(reconciler.snapshot().layers).toMatchObject([{ state: "retired" }]);
+      await storedSettlement(database, 1);
+      const covered = await reconciler.restart();
+      await reconciler.outcome(covered)();
       expect(await rawLayers(database)).toEqual([]);
       expect(reconciler.snapshot().layers).toEqual([]);
 
@@ -930,7 +939,7 @@ const fenced = (
 ): Promise<void> =>
   new Promise<void>((resolve, reject) => {
     const stop = reconciler.observe((state) => {
-      if (state.layers.length === 0) {
+      if (state.layers.length === 0 || state.layers[0]?.state === "retired") {
         stop();
         resolve();
       }
@@ -998,6 +1007,9 @@ browserTest(
       });
       expect((await storage.outbox().receipt(receiver, invocation))?.observation)
         .toBe("observed");
+      await storedSettlement(database, 1);
+      const covered = await reconciler.restart();
+      await reconciler.outcome(covered)();
       expect(await rawLayers(database)).toEqual([]);
     } finally {
       await refused?.close();
@@ -1184,6 +1196,51 @@ browserTest(
       expect(await storedSettlement(database)).toBe(acknowledging.settled);
     } finally {
       await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+const storedHeadSettlement = async (
+  database: string,
+  settled: number,
+): Promise<void> => {
+  const connection = await openNative(database);
+  const partition = replicaPartitionKey(identity());
+  const transaction = connection.transaction("replica-committed-heads-v1", "readwrite");
+  const heads = transaction.objectStore("replica-committed-heads-v1");
+  const head = await requestResult<Record<string, unknown> | undefined>(
+    heads.get(partition),
+  );
+  if (head !== undefined) heads.put({ ...head, settled });
+  await transactionDone(transaction);
+  connection.close();
+};
+
+browserTest(
+  "an install never regresses a watermark the durable head already carries",
+  async ({ browser }) => {
+    const database = `ramose-layer-watermark-merge-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    try {
+      await installRecorded(storage, "optimistic-fence-change");
+      const delayed = await recordedChange();
+      expect(delayed.settled).toBe(1);
+
+      await storedHeadSettlement(database, 5);
+      expect(await storedSettlement(database)).toBe(5);
+
+      const installed = await storage.applyChange(delayed);
+      expect(installed?.revision).toBe(delayed.revision);
+      expect(installed?.settled).toBe(5);
+      installed?.release();
+
+      expect(await storedSettlement(database)).toBe(5);
+      const restored = await storage.restore(identity(), ATTRIBUTES, READ_COMPATIBILITY);
+      expect(restored?.settled).toBe(5);
+      restored!.release();
+    } finally {
       storage.close();
       await deleteDatabase(database);
     }
@@ -1380,6 +1437,8 @@ browserTest(
       expect(authoritative).not.toContain("committed-unobserved");
       expect((await storage.outbox().receipt(receiver, invocation))?.observation)
         .toBe("observed");
+      await storedSettlement(database, 1);
+      await reconciler.refresh();
       expect(await rawLayers(database)).toEqual([]);
       expect(await names(reconciler, storage, identity())).toEqual(authoritative);
     } finally {

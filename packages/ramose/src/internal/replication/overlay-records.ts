@@ -60,7 +60,8 @@ export type OptimisticLayerRecord = {
 export const settlementRecoverable = (
   record: OptimisticLayerRecord,
 ): boolean =>
-  record.state === "committed-unobserved" && record.settled === undefined &&
+  (record.state === "committed-unobserved" || record.state === "retired") &&
+  record.settled === undefined &&
   record.target.type !== "client-ref" && !record.refs.some(isClientRef);
 
 export type OptimisticLayerDraft = {
@@ -241,7 +242,10 @@ export const decodeOptimisticLayer = (
     supplied.add(ref);
     refs.push(ref as MutationRef);
   }
-  if (value.state !== "queued" && value.state !== "committed-unobserved") return undefined;
+  if (
+    value.state !== "queued" && value.state !== "committed-unobserved" &&
+    value.state !== "retired"
+  ) return undefined;
   if (
     typeof value.activation !== "number" || !Number.isSafeInteger(value.activation) ||
     value.activation < 0

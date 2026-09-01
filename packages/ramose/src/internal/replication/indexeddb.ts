@@ -21,6 +21,7 @@ import {
 } from "../runtime-boundaries.ts";
 import {
   isReplicationOrdinal,
+  isReplicationSettlement,
   REPLICA_STORAGE_VERSION,
   REPLICATION_PROTOCOL_VERSION,
   type Change,
@@ -312,6 +313,18 @@ const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
   ordinal: record.ordinal,
   settled: record.settled,
 });
+
+const mergedSettlement = (
+  record: CommittedRecord,
+  ...priors: readonly ({ readonly settled?: unknown } | undefined)[]
+): CommittedRecord => {
+  let settled = record.settled;
+  for (const prior of priors) {
+    const stored = prior?.settled;
+    if (isReplicationSettlement(stored) && stored > settled) settled = stored;
+  }
+  return settled === record.settled ? record : { ...record, settled };
+};
 
 const recordOrdinal = (record: unknown): number | undefined => {
   const ordinal = (record as { readonly ordinal?: unknown } | undefined)?.ordinal;
@@ -2442,6 +2455,7 @@ export class IndexedDbReplicaStorage {
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
+    let settled = built.record.settled;
     try {
       await enforceFence(transaction, fence);
       await this.confirmNoSweep(transaction, partition, sweep);
@@ -2471,8 +2485,10 @@ export class IndexedDbReplicaStorage {
           ordinal: frame.ordinal,
         });
       }
-      transaction.objectStore(COMMITTED).put(built.record);
-      transaction.objectStore(COMMITTED_HEADS).put(committedHead(built.record));
+      const installed = mergedSettlement(built.record, currentCommitted, head);
+      settled = installed.settled;
+      transaction.objectStore(COMMITTED).put(installed);
+      transaction.objectStore(COMMITTED_HEADS).put(committedHead(installed));
       transaction.objectStore(STAGING).delete(built.record.partition);
       transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(built.record.partition));
       await this.boundaries.checkpoint("replica.install");
@@ -2489,7 +2505,7 @@ export class IndexedDbReplicaStorage {
       db: built.db,
       revision: built.record.revision,
       ordinal: built.record.ordinal,
-      settled: built.record.settled,
+      settled,
       handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };
@@ -2528,7 +2544,12 @@ export class IndexedDbReplicaStorage {
         await abortTransaction(write);
         return undefined;
       }
-      const settled = Math.max(current.settled, acknowledgement.settled);
+      const merged = mergedSettlement(
+        { ...current, settled: acknowledgement.settled },
+        current,
+        head,
+      );
+      const settled = merged.settled;
       if (
         current.ordinal >= acknowledgement.ordinal &&
         settled === current.settled
@@ -2543,9 +2564,8 @@ export class IndexedDbReplicaStorage {
         return positionOf(current);
       }
       const acknowledged: CommittedRecord = {
-        ...current,
+        ...merged,
         ordinal: Math.max(current.ordinal, acknowledgement.ordinal),
-        settled,
       };
       write.objectStore(COMMITTED).put(acknowledged);
       write.objectStore(COMMITTED_HEADS).put(committedHead(acknowledged));
@@ -2654,6 +2674,7 @@ export class IndexedDbReplicaStorage {
       "readwrite",
     );
     const removeAbort = abortWithSignal(write, options.signal);
+    let settled = built.record.settled;
     try {
       await enforceFence(write, fence);
       await this.confirmNoSweep(write, partition, sweep);
@@ -2675,8 +2696,10 @@ export class IndexedDbReplicaStorage {
           ordinal: frame.ordinal,
         });
       }
-      write.objectStore(COMMITTED).put(built.record);
-      write.objectStore(COMMITTED_HEADS).put(committedHead(built.record));
+      const installed = mergedSettlement(built.record, current, head);
+      settled = installed.settled;
+      write.objectStore(COMMITTED).put(installed);
+      write.objectStore(COMMITTED_HEADS).put(committedHead(installed));
       await this.boundaries.checkpoint("replica.install");
       await commitTransaction(write);
       this.meter.manifests++;
@@ -2691,7 +2714,7 @@ export class IndexedDbReplicaStorage {
       db: built.db,
       revision: built.record.revision,
       ordinal: built.record.ordinal,
-      settled: built.record.settled,
+      settled,
       handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };

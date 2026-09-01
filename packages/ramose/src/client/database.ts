@@ -7,12 +7,10 @@ import {
   type LoweredKernelQuery,
   type QueryObject,
 } from "../db/query/index.ts";
-import type { InvocationId } from "../db/refs.ts";
 import type { Db } from "../internal/core/db.ts";
 import { query as runQuery } from "../internal/core/query/engine.ts";
 import {
   emptyOverlayLayers,
-  type OverlayLayer,
   type OverlayLayers,
 } from "../internal/replication/overlay-layers.ts";
 import type { ReplicationIdentity } from "../internal/replication/protocol.ts";
@@ -138,13 +136,14 @@ type RetiredObservation = {
 
 const composedLayers = (
   layers: OverlayLayers,
-  carried: readonly OverlayLayer[],
-): OverlayLayers =>
-  carried.length === 0 ? layers : Object.freeze(
-    [...layers, ...carried].sort(
-      (left, right) => left.sequence - right.sequence,
-    ),
+  settled: number,
+): OverlayLayers => {
+  const composed = layers.filter((layer) =>
+    layer.state !== "retired" || layer.settled === undefined ||
+    layer.settled > settled
   );
+  return composed.length === layers.length ? layers : Object.freeze(composed);
+};
 
 export type DatabaseContext = {
   readonly server: string;
@@ -350,8 +349,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private releaseOverlay: (() => void) | undefined;
   private identity: ReplicationIdentity | undefined;
   private committed: Db | undefined;
-  private composed: OverlayLayers = emptyOverlayLayers;
-  private carried: readonly OverlayLayer[] = [];
   private settled = 0;
   private account: string | undefined;
   private handles: ReadonlyMap<string, number> = new Map();
@@ -891,7 +888,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     const state = reconciler?.snapshot();
     const layers = state === undefined
       ? emptyOverlayLayers
-      : composedLayers(state.layers, this.carrying(state.settlements));
+      : composedLayers(state.layers, this.settled);
     let view = committed;
     let speculative = new Map<number, string>();
     if (committed !== undefined && reconciler !== undefined && layers.length > 0) {
@@ -966,55 +963,9 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
 
   private forgetLayers(): void {
-    this.composed = emptyOverlayLayers;
-    this.carried = [];
     this.settled = 0;
   }
 
-  private carrying(
-    settlements: ReadonlyMap<InvocationId, number>,
-  ): readonly OverlayLayer[] {
-    const kept = this.carried
-      .map((held) => this.settlementOf(held, settlements))
-      .filter((held) => this.uncovered(held));
-    this.carried = Object.freeze(kept);
-    return this.carried;
-  }
-
-  private uncovered(layer: OverlayLayer): boolean {
-    return layer.settled === undefined || layer.settled > this.settled;
-  }
-
-  private settlementOf(
-    layer: OverlayLayer,
-    settlements: ReadonlyMap<InvocationId, number>,
-  ): OverlayLayer {
-    const durable = settlements.get(layer.invocation);
-    if (durable === undefined) return layer;
-    return layer.settled === undefined || durable > layer.settled
-      ? { ...layer, settled: durable }
-      : layer;
-  }
-
-  private carry(state: OptimisticOverlayState): void {
-    if (state.updateRequired.length > 0) {
-      this.composed = state.layers;
-      this.carried = [];
-      return;
-    }
-    const live = new Set(state.layers.map((layer) => layer.invocation));
-    const kept = this.carrying(state.settlements)
-      .filter((held) => !live.has(held.invocation));
-    const retired = this.composed
-      .map((layer) => this.settlementOf(layer, state.settlements))
-      .filter(
-        (layer) =>
-          !live.has(layer.invocation) && this.uncovered(layer) &&
-          !kept.some((held) => held.invocation === layer.invocation),
-      );
-    this.carried = Object.freeze([...kept, ...retired]);
-    this.composed = state.layers;
-  }
 
   private withdrawEntities(): void {
     this.registry?.clear();
@@ -1060,7 +1011,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
 
   private overlay(state: OptimisticOverlayState): void {
     if (this.closed) return;
-    this.carry(state);
     const moved = this.registry?.observe(state.pending);
     if (moved !== undefined && moved.size > 0) this.republishLocal(moved);
     const mappings = this.reconciler?.mappings();

@@ -2048,8 +2048,8 @@ browserTest(
       expect(layersBefore.layers).toHaveLength(1);
       expect(layersBefore.layers[0]!.settled).toBeUndefined();
 
-      const recovered = await outbox.recoverPendingSettlements(receiver);
-      expect(recovered).toEqual([original.invocation]);
+      expect(await outbox.sweepDurableLayers(receiver))
+        .toMatchObject({ recovered: [original.invocation] });
 
       const restored = await outbox.restore(scope);
       expect(restored.records).toHaveLength(1);
@@ -2059,7 +2059,7 @@ browserTest(
       expect(resubmitted.target).toEqual({ type: "none" });
       expect(resubmitted.input).toEqual({ title: "offline" });
 
-      expect(await outbox.recoverPendingSettlements(receiver)).toEqual([]);
+      expect(await outbox.sweepDurableLayers(receiver)).toMatchObject({ recovered: [] });
       expect((await outbox.restore(scope)).records).toHaveLength(1);
 
       const replayed = await outbox.acknowledge(resubmitted, {
@@ -2073,7 +2073,7 @@ browserTest(
       const layersAfter = await outbox.optimisticLayers(receiver);
       expect(layersAfter.layers).toHaveLength(1);
       expect(layersAfter.layers[0]!.settled).toBe(9);
-      expect(await outbox.recoverPendingSettlements(receiver)).toEqual([]);
+      expect(await outbox.sweepDurableLayers(receiver)).toMatchObject({ recovered: [] });
       expect((await outbox.observationState(receiver)).settlements)
         .toEqual(new Map([[original.invocation, 9]]));
     } finally {

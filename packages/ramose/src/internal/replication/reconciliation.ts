@@ -48,6 +48,7 @@ export const pendingLayerState = (layers: OverlayLayers): OptimisticPending => {
     created: boolean;
   }>();
   for (const layer of layers) {
+    if (layer.state === "retired") continue;
     for (const op of layer.changeset) {
       const refs: MutationRef[] = [op.entity];
       if ((op.op === "set" || op.op === "remove") && op.value?.type === "ref") {
@@ -96,9 +97,9 @@ export type ReconciliationStore = ActivationFenceStore & {
   readonly mappedHandles: (
     receiver: ReplicaDatabaseScope,
   ) => Promise<ReadonlyMap<string, EntityId>>;
-  readonly recoverPendingSettlements: (
+  readonly sweepDurableLayers: (
     receiver: ReplicaDatabaseScope,
-  ) => Promise<readonly InvocationId[]>;
+  ) => Promise<{ readonly recovered: readonly InvocationId[] }>;
 };
 
 export type ReconciliationOptions = {
@@ -184,7 +185,7 @@ export class OptimisticReconciler {
   }
 
   private async readDurableLayers(): Promise<OptimisticOverlayState> {
-    await this.store.recoverPendingSettlements(this.receiver).catch(() => undefined);
+    await this.store.sweepDurableLayers(this.receiver).catch(() => undefined);
     const [rows, handles] = await Promise.all([
       this.store.optimisticLayers(this.receiver),
       this.store.mappedHandles(this.receiver),

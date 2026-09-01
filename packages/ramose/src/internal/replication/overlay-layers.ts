@@ -1,7 +1,7 @@
 import type { ProjectionChangeset } from "../../db/Projection.ts";
 import type { InvocationId, MutationRef } from "../../db/refs.ts";
 
-export type OverlayLayerState = "queued" | "committed-unobserved";
+export type OverlayLayerState = "queued" | "committed-unobserved" | "retired";
 
 export type OverlayLayer = {
   readonly invocation: InvocationId;

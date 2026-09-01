@@ -546,8 +546,11 @@ browserTest(
       const activation = await leader.outbox().beginActivation(receiver);
       const fenced = await leader.outbox().fenceActivation(receiver, activation);
       expect(fenced.fenced).toEqual([queued.records[0]!.invocation]);
-      expect(fenced.layers.map((layer) => layer.invocation))
-        .toEqual([queued.records[1]!.invocation]);
+      expect(fenced.layers.map((layer) => [layer.invocation, layer.state]))
+        .toEqual([
+          [queued.records[0]!.invocation, "retired"],
+          [queued.records[1]!.invocation, "queued"],
+        ]);
 
       await steady(
         async () => ({
@@ -1282,7 +1285,7 @@ browserTest(
       );
       expect(requeued[0]!.invocation).toBe(invocation);
       expect(requeued[0]!.input).toEqual(queued.records[0]!.input);
-      expect(await leader.outbox().recoverPendingSettlements(receiver)).toEqual([]);
+      expect(await leader.outbox().sweepDurableLayers(receiver)).toMatchObject({ recovered: [] });
 
       const activation = await leader.outbox().beginActivation(receiver);
       await leader.outbox().fenceActivation(receiver, activation);
@@ -1355,6 +1358,138 @@ browserTest(
     } finally {
       leader.close();
       await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a tab opened after the fence renders the retired layer until coverage",
+  async ({ browser }) => {
+    const name = `ramose-propagation-post-fence-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    let reader: TabHandle | undefined;
+    try {
+      await started(writer, name, database);
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the optimistic layer",
+      );
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+      expect((await dumpStore(name, "mutation-layers-v1")).map((row) =>
+        (row as Record<string, unknown>).state
+      )).toEqual(["retired"]);
+
+      reader = await openTab(tabModule);
+      expect((await started(reader, name, database)).titles)
+        .toEqual(["moved", "second"]);
+      await steady(
+        () => titles(reader!),
+        (rows) => rows.length === 0 || rows.includes("moved"),
+        "the post-fence tab's first render",
+        15,
+      );
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("server-decided"),
+            `${label} to retire the layer on coverage`,
+          ),
+        ).toEqual(["server-decided", "second", "third"]);
+        await monotone(tab, label, ["first"], "moved");
+      }
+    } finally {
+      leader.close();
+      await reader?.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a rejected legacy queued layer drops its optimistic value at once",
+  async ({ browser }) => {
+    const name = `ramose-propagation-legacy-rejected-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(writer, name, database);
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the optimistic layer",
+      );
+
+      expect(await stripSettlements(name)).toBeGreaterThan(0);
+      writer.wake();
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the settlement-pending queued layer",
+      );
+
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Rejected",
+        code: "invocation_conflict",
+      });
+      expect(await dumpStore(name, "mutation-layers-v1")).toEqual([]);
+
+      writer.wake();
+      expect(
+        await until(
+          () => titles(writer),
+          (rows) => !rows.includes("moved"),
+          "the writer to drop the rejected optimistic value",
+        ),
+      ).toEqual(["first", "second"]);
+      await steady(
+        () => titles(writer),
+        (rows) => rows.length === 0 || !rows.includes("moved"),
+        "the rejected layer staying gone",
+        15,
+      );
+    } finally {
+      leader.close();
       await writer.close();
       await deleteDatabase(name);
     }
