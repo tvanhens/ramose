@@ -79,7 +79,7 @@ describe("replication activation codec", () => {
       resumeRevision: undefined,
     })))).toEqual({
       type: "Activate",
-      protocol: 1,
+      protocol: 2,
       graphPath: ["organizations", "acme"],
       scope: { type: "database" },
       readCompatibilityHash: compatible,
@@ -87,7 +87,7 @@ describe("replication activation codec", () => {
   });
 
   test("separates incompatible versions from malformed and oversized input", () => {
-    expect(failureReason(JSON.stringify({ ...request, protocol: 2 })))
+    expect(failureReason(JSON.stringify({ ...request, protocol: 1 })))
       .toBe("incompatible-version");
     expect(failureReason("{not-json")).toBe("malformed");
     expect(failureReason(" ".repeat(MAX_REPLICATION_REQUEST_BYTES + 1)))
@@ -117,10 +117,10 @@ describe("replication frame codec", () => {
   const revision = opaque("K");
   const nextRevision = opaque("L");
   const frames: readonly ReplicationFrame[] = [
-    { type: "SnapshotStart", protocol: 1, identity, snapshot, revision },
+    { type: "SnapshotStart", protocol: 2, identity, snapshot, revision },
     snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 1,
+      protocol: 2,
       identity,
       snapshot,
       index: 0,
@@ -128,7 +128,7 @@ describe("replication frame codec", () => {
     }),
     snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 1,
+      protocol: 2,
       identity,
       snapshot,
       index: 1,
@@ -145,21 +145,22 @@ describe("replication frame codec", () => {
         op: "add",
       }],
     }),
-    { type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1 },
+    { type: "SnapshotCommit", protocol: 2, identity, snapshot, revision, ordinal: 1, chunks: 1 },
     changeFrame({
       type: "Change",
-      protocol: 1,
+      protocol: 2,
       identity,
       from: revision,
       revision: nextRevision,
+      ordinal: 2,
       datoms: [{ ...values[0]!, op: "retract" }],
     }),
-    { type: "ResumeReady", protocol: 1, identity, revision },
-    { type: "Reset", protocol: 1, identity },
-    { type: "KeepAlive", protocol: 1, identity },
-    { type: "TerminalError", protocol: 1, code: "closed", identity },
-    { type: "TerminalError", protocol: 1, code: "incompatible-version" },
-    { type: "TerminalError", protocol: 1, code: "update-required" },
+    { type: "ResumeReady", protocol: 2, identity, revision, ordinal: 3 },
+    { type: "Reset", protocol: 2, identity },
+    { type: "KeepAlive", protocol: 2, identity },
+    { type: "TerminalError", protocol: 2, code: "closed", identity },
+    { type: "TerminalError", protocol: 2, code: "incompatible-version" },
+    { type: "TerminalError", protocol: 2, code: "update-required" },
   ];
 
   test("round-trips every exact envelope and canonical logical value", () => {
@@ -169,7 +170,7 @@ describe("replication frame codec", () => {
     }
     const incompatible = decodeReplicationFrame(JSON.stringify({
       ...frames[0],
-      protocol: 2,
+      protocol: 1,
     }));
     expect(Result.isFailure(incompatible)).toBe(true);
     if (Result.isFailure(incompatible)) {
@@ -184,7 +185,7 @@ describe("replication frame codec", () => {
     ]) {
       const maximum: ReplicationFrame = snapshotChunk({
         type: "SnapshotChunk",
-        protocol: 1,
+        protocol: 2,
         identity,
         snapshot,
         index: Number.MAX_SAFE_INTEGER,
@@ -244,10 +245,11 @@ describe("replication frame codec", () => {
       },
       {
         type: "Change",
-        protocol: 1,
+        protocol: 2,
         identity,
         from: opaque("K"),
         revision: opaque("L"),
+        ordinal: 2,
         datoms: [{
           entity: opaque("H"),
           field: ":issue/body",
@@ -271,9 +273,9 @@ describe("replication frame codec", () => {
         }],
       },
       { ...base, identity: { ...identity, principal: "not-opaque" } },
-      { type: "ResumeReady", protocol: 1, identity },
-      { type: "ResumeReady", protocol: 1, identity, revision: "raw-t:42" },
-      { type: "ResumeReady", protocol: 1, identity, revision, basisT: 42 },
+      { type: "ResumeReady", protocol: 2, identity },
+      { type: "ResumeReady", protocol: 2, identity, revision: "raw-t:42" },
+      { type: "ResumeReady", protocol: 2, identity, revision, basisT: 42 },
       oversizedChunk,
       tooManyUtf8Bytes,
     ]) {

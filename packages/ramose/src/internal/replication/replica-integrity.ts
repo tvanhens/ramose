@@ -7,6 +7,7 @@ import type { Roots } from "../core/db.ts";
 import { FIRST_USER_EID, Schema } from "../core/schema.ts";
 import { NodeKind, type NodeRef, type TreeNode } from "../core/tree.ts";
 import {
+  isReplicationOrdinal,
   REPLICA_STORAGE_VERSION,
   type LogicalDatom,
   type LogicalValue,
@@ -25,6 +26,7 @@ export type ReplicaManifest = {
   readonly identity: ReplicationIdentity;
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly revision: string;
+  readonly ordinal: number;
   readonly datoms: readonly LogicalDatom[];
   readonly attributes: readonly ReplicaAttributeSpec[];
   readonly entityIds: readonly (readonly [string, number])[];
@@ -85,6 +87,14 @@ export class ReplicaCorruptError extends Data.TaggedError("ReplicaCorruptError")
   readonly partition: string;
   readonly reason: ReplicaUnusableReason;
   readonly detail: string;
+}> {}
+
+export class ReplicaSupersededError extends Data.TaggedError(
+  "ReplicaSupersededError",
+)<{
+  readonly partition: string;
+  readonly revision: string;
+  readonly ordinal: number;
 }> {}
 
 export type ReplicaRestoreOutcome<A> =
@@ -348,6 +358,11 @@ export const validateReplicaManifest = (
     if (!isReplicationIdentityShape(identity) || typeof record.revision !== "string") {
       return yield* Result.fail(
         failure("manifest-undecodable", "manifest has no complete identity or revision"),
+      );
+    }
+    if (!isReplicationOrdinal(record.ordinal)) {
+      return yield* Result.fail(
+        failure("manifest-undecodable", "manifest has no visible-change ordinal"),
       );
     }
     if (

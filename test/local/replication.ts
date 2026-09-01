@@ -9,6 +9,7 @@ import {
   emptyClientReplicationState,
   readReplicationFrames,
   type ClientReplicationState,
+  type ReplicationFrame,
 } from "../../packages/ramose/src/internal/replication/index.ts";
 import {
   applyObservedFrame,
@@ -78,7 +79,7 @@ export const openReplication = (
   database: string,
   token: string,
   resumeRevision?: string,
-  protocol = 1,
+  protocol = 2,
   signal?: AbortSignal,
   readCompatibilityHash = conformanceReadCompatibilityHash,
 ): Promise<Response> => fetchPastProxyBlip(
@@ -211,6 +212,18 @@ type BurstObservation = {
   readonly checkpoints: readonly string[];
   readonly snapshot: readonly string[];
   readonly visible: string;
+  readonly committedOrdinal: number;
+  readonly visibleOrdinal: number;
+};
+
+const withoutOrdinal = (wire: string): string =>
+  wire.replace(/"ordinal":\d+/, '"ordinal":0');
+
+const ordinalOf = (frame: ReplicationFrame): number => {
+  if (frame.type !== "SnapshotCommit" && frame.type !== "Change") {
+    throw new Error(`${frame.type} carries no visible-change ordinal`);
+  }
+  return frame.ordinal;
 };
 
 type RetentionObservation = {
@@ -256,6 +269,7 @@ const observeFirstSeenRetention = async (
   const first = await collectCommittedSnapshot(firstIterator);
   await closeIterator(firstIterator);
   const revision = first.state.committed!.revision;
+  const ordinal = first.state.committed!.ordinal;
 
   await armCheckpoint(base, world.database, "replication.resume.ready");
   const controller = new AbortController();
@@ -264,7 +278,7 @@ const observeFirstSeenRetention = async (
     world.database,
     world.member,
     revision,
-    1,
+    2,
     controller.signal,
   );
   const resumed = readReplicationNdjson(resumedResponse)[Symbol.asyncIterator]();
@@ -274,7 +288,11 @@ const observeFirstSeenRetention = async (
     await releaseCheckpoint(base, world.database, "replication.resume.ready");
     const ready = await withTimeout(next, 7_000, "first-seen resume ready");
     expect(ready.done).toBe(false);
-    expect(ready.value?.frame.type).toBe("ResumeReady");
+    expect(ready.value?.frame).toMatchObject({
+      type: "ResumeReady",
+      revision,
+      ordinal,
+    });
     const following = resumed.next();
     const publicOutcome = await Promise.race([
       following.then(() => "frame" as const),
@@ -302,9 +320,10 @@ type ResumeObservation = {
 const observeUnchangedResume = async (
   base: string,
   world: World,
-  revision: string,
+  committed: { readonly revision: string; readonly ordinal: number },
   attempts = 320,
 ): Promise<ResumeObservation> => {
+  const { revision, ordinal } = committed;
   const checkpoints: string[] = [];
   const controller = new AbortController();
   await armCheckpoint(base, world.database, "replication.resume.reconstruct");
@@ -313,7 +332,7 @@ const observeUnchangedResume = async (
     world.database,
     world.member,
     revision,
-    1,
+    2,
     controller.signal,
   );
   const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
@@ -348,6 +367,7 @@ const observeUnchangedResume = async (
       throw new Error(`unchanged resume did not acknowledge: ${JSON.stringify(ready)}`);
     }
     expect(ready.value.frame.revision).toBe(revision);
+    expect(ready.value.frame.ordinal).toBe(ordinal);
     const following = iterator.next();
     const afterReady = await Promise.race([
       following.then(() => "frame" as const),
@@ -446,10 +466,15 @@ const observeBackpressuredBurst = async (
     if (next.done || next.value.frame.type !== "Change") {
       throw new Error("visible burst did not produce one committed change");
     }
+    const commit = snapshot.frames.at(-1)!;
     return {
       checkpoints: Object.freeze(checkpoints),
-      snapshot: Object.freeze(snapshot.frames.map((item) => item.wire)),
-      visible: next.value.wire,
+      snapshot: Object.freeze(
+        snapshot.frames.map((item) => withoutOrdinal(item.wire)),
+      ),
+      visible: withoutOrdinal(next.value.wire),
+      committedOrdinal: ordinalOf(commit.frame),
+      visibleOrdinal: ordinalOf(next.value.frame),
     };
   } finally {
     for (const name of ["replication.cycle", "replication.silent", "replication.change"]) {
@@ -475,13 +500,13 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         undefined,
-        1,
+        2,
         undefined,
         ReadCompatibilityHash.make("z".repeat(43)),
       );
       expect(mismatched.status).toBe(409);
       expect(await mismatched.text()).toBe(
-        `${JSON.stringify({ type: "TerminalError", protocol: 1, code: "update-required" })}\n`,
+        `${JSON.stringify({ type: "TerminalError", protocol: 2, code: "update-required" })}\n`,
       );
 
       const unauthenticated = await openReplication(
@@ -489,7 +514,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         "not-a-token",
         undefined,
-        1,
+        2,
         undefined,
         ReadCompatibilityHash.make("z".repeat(43)),
       );
@@ -501,7 +526,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         {
           ...post({
             type: "Activate",
-            protocol: 1,
+            protocol: 2,
             graphPath: ["missing"],
             scope: { type: "database" },
             readCompatibilityHash: "z".repeat(43),
@@ -576,7 +601,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       if (Result.isSuccess(terminal)) {
         expect(terminal.success).toEqual({
           type: "TerminalError",
-          protocol: 1,
+          protocol: 2,
           code: "incompatible-version",
         });
       }
@@ -723,8 +748,12 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       const initial = await collectCommittedSnapshot(initialIterator);
       await closeIterator(initialIterator);
       const revision = initial.state.committed!.revision;
+      const committed = {
+        revision,
+        ordinal: initial.state.committed!.ordinal,
+      };
 
-      const zero = await observeUnchangedResume(base, world, revision);
+      const zero = await observeUnchangedResume(base, world, committed);
       await create(base, world.database, world.admin, ConformanceIssue.ns, {
         key: "resume-ready-hidden",
         title: "Resume ready hidden",
@@ -732,7 +761,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         org: "other",
       });
       await currentBasis(base, world.database);
-      const hidden = await observeUnchangedResume(base, world, revision);
+      const hidden = await observeUnchangedResume(base, world, committed);
 
       expect(zero.checkpoints).toEqual(["resume.reconstruct", "resume.ready"]);
       expect(hidden.checkpoints).toEqual(zero.checkpoints);
@@ -748,7 +777,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        1,
+        2,
         controller.signal,
       );
       const production = readReplicationFrames(
@@ -806,7 +835,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         const reset = await observed(recovery, "unreconstructable resume reset");
         expect(reset.frame).toEqual({
           type: "Reset",
-          protocol: 1,
+          protocol: 2,
           identity: initialIdentity,
         });
         state = applyObservedFrame(state, reset);
@@ -983,7 +1012,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(terminal.done).toBe(false);
         expect(terminal.value?.frame).toEqual({
           type: "TerminalError",
-          protocol: 1,
+          protocol: 2,
           code: "closed",
           identity: baseline.state.identity,
         });
@@ -1122,7 +1151,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         baseline.state.committed!.revision,
-        1,
+        2,
         cancelled.signal,
       );
       const cancelledIterator = readReplicationNdjson(
@@ -1223,6 +1252,8 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(hidden.snapshot).toEqual(zero.snapshot);
       expect(hidden.visible).toBe(zero.visible);
       expect(hidden.visible).not.toMatch(/Parked hidden/);
+      expect(zero.visibleOrdinal).toBe(zero.committedOrdinal + 1);
+      expect(hidden.visibleOrdinal).toBe(hidden.committedOrdinal + 1);
     });
 
     test("a documentation-only client build resumes without a reset or snapshot", async () => {
@@ -1240,6 +1271,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       await closeIterator(initialIterator);
       const identity = snapshot.state.identity!;
       const revision = snapshot.state.committed!.revision;
+      const resumeOrdinal = snapshot.state.committed!.ordinal;
 
       const controller = new AbortController();
       const resumedResponse = await openReplication(
@@ -1247,7 +1279,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        1,
+        2,
         controller.signal,
         conformanceInertReadCompatibilityHash,
       );
@@ -1259,9 +1291,10 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(ready.done).toBe(false);
         expect(ready.value?.frame).toEqual({
           type: "ResumeReady",
-          protocol: 1,
+          protocol: 2,
           identity,
           revision,
+          ordinal: resumeOrdinal,
         });
         const following = resumed.next();
         const quiet = await Promise.race([
@@ -1281,7 +1314,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        1,
+        2,
         undefined,
         conformanceRotatedReadCompatibilityHash,
       );
@@ -1289,7 +1322,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(await rotated.text()).toBe(
         `${JSON.stringify({
           type: "TerminalError",
-          protocol: 1,
+          protocol: 2,
           code: "update-required",
         })}\n`,
       );
@@ -1311,13 +1344,17 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         const initial = await collectCommittedSnapshot(initialIterator);
         await closeIterator(initialIterator);
         const revision = initial.state.committed!.revision;
+        const committed = {
+          revision,
+          ordinal: initial.state.committed!.ordinal,
+        };
         const initialWire = initial.frames.map((item) => item.wire);
 
         const scaleAttempts = 320 + HIDDEN_SCALE_COMMITS * 4;
         const zero = await observeUnchangedResume(
           base,
           world,
-          revision,
+          committed,
           scaleAttempts,
         );
         for (let index = 0; index < HIDDEN_SCALE_COMMITS; index++) {
@@ -1327,7 +1364,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         const hidden = await observeUnchangedResume(
           base,
           world,
-          revision,
+          committed,
           scaleAttempts,
         );
 
@@ -1359,6 +1396,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       await closeIterator(initialIterator);
       const identity = snapshot.state.identity!;
       const revision = snapshot.state.committed!.revision;
+      const resumeOrdinal = snapshot.state.committed!.ordinal;
 
       for (const target of ["transactor", "replica"] as const) {
         const aborted = await testAdmin(base, world.database, "/abort", { target });
@@ -1372,7 +1410,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        1,
+        2,
         controller.signal,
       );
       expect(resumedResponse.status).toBe(200);
@@ -1383,9 +1421,10 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(ready.done).toBe(false);
         expect(ready.value?.frame).toEqual({
           type: "ResumeReady",
-          protocol: 1,
+          protocol: 2,
           identity,
           revision,
+          ordinal: resumeOrdinal,
         });
       } finally {
         controller.abort();

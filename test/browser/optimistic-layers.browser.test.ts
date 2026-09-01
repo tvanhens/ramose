@@ -15,13 +15,20 @@ import {
   sealEntityId,
   type EntityIdScope,
 } from "../../packages/ramose/src/internal/replication/entity-id.ts";
-import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
+import {
+  IndexedDbReplicaStorage,
+  replicaPartitionKey,
+} from "../../packages/ramose/src/internal/replication/indexeddb.ts";
 import type { OutboxDraft } from "../../packages/ramose/src/internal/replication/outbox.ts";
 import { mutationPartitionKey } from "../../packages/ramose/src/internal/replication/outbox.ts";
 import { makeClientProjectionCatalog } from "../../packages/ramose/src/internal/replication/projection-binding.ts";
 import type { ClientProjectionCatalog } from "../../packages/ramose/src/internal/replication/projection-binding.ts";
 import { OptimisticReconciler } from "../../packages/ramose/src/internal/replication/reconciliation.ts";
-import { ReplicationSession } from "../../packages/ramose/src/internal/replication/session.ts";
+import {
+  classifyReplicationAdoption,
+  ReplicationSession,
+  type ReplicationSessionSnapshot,
+} from "../../packages/ramose/src/internal/replication/session.ts";
 import {
   replicaDatabaseScopeOf,
   replicaScopeOf,
@@ -30,6 +37,7 @@ import {
 } from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
 import {
   decodeReplicationFrame,
+  type Change,
   type ReplicationIdentity,
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
 import { rootReplicaRouteSlot } from "../../packages/ramose/src/internal/replication/route-slot.ts";
@@ -43,6 +51,8 @@ import {
 } from "../../packages/ramose/src/internal/replication/server-identity.ts";
 import {
   armCheckpoint,
+  checkpointStatus,
+  releaseCheckpoint,
   resetTestHooks,
   testRuntimeBoundaries,
 } from "../../packages/ramose/src/internal/test-hooks.ts";
@@ -196,11 +206,11 @@ const install = async (
   const snapshot = `snapshot-${label}`.padEnd(43, "0");
   const revision = `revision-${label}`.padEnd(43, "0");
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
+    type: "SnapshotStart", protocol: 2, identity: selected, snapshot, revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
-    protocol: 1,
+    protocol: 2,
     identity: selected,
     snapshot,
     index: 0,
@@ -212,7 +222,7 @@ const install = async (
     }],
   }));
   dropped(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
+    type: "SnapshotCommit", protocol: 2, identity: selected, snapshot, revision, ordinal: 1, chunks: 1,
   }, ATTRIBUTES));
 };
 
@@ -984,6 +994,334 @@ browserTest(
       expect(await rawLayers(database)).toEqual([]);
     } finally {
       await refused?.close();
+      await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+const settledSnapshots = (
+  session: ReplicationSession,
+): { readonly seen: readonly ReplicationSessionSnapshot[]; readonly failed: Promise<void> } => {
+  const seen: ReplicationSessionSnapshot[] = [];
+  const failed = new Promise<void>((resolve) => {
+    session.observe((snapshot) => {
+      seen.push(snapshot);
+      if (snapshot.status === "failed" || snapshot.status === "terminal") resolve();
+    });
+  });
+  return { seen, failed };
+};
+
+const reached = async (name: string): Promise<void> => {
+  for (let attempt = 0; attempt < 600; attempt++) {
+    if (checkpointStatus()[name]?.pending === true) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`storage did not reach ${name}`);
+};
+
+const recordedChange = async (): Promise<Change> => {
+  const [frame] = await recordedFrames("optimistic-fence-change");
+  if (frame?.type !== "Change") throw new Error("the recorded change is not a Change");
+  return frame;
+};
+
+browserTest(
+  "a resume the durable replica has moved past reconnects instead of publishing fresh",
+  async ({ browser }) => {
+    const database = `ramose-layer-resume-moved-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database, testRuntimeBoundaries);
+    const writer = await IndexedDbReplicaStorage.open(database);
+    let session: ReplicationSession | undefined;
+    try {
+      await installRecorded(storage, "optimistic-fence-resume");
+      const delayed = await recordedChange();
+      expect(delayed.from).toBe(recorded.revision);
+
+      armCheckpoint("replica.installing", "wait");
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence-resume",
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const observed = settledSnapshots(session);
+      await reached("replica.installing");
+
+      dropped(await writer.applyChange(delayed));
+      releaseCheckpoint("replica.installing");
+      await observed.failed;
+
+      expect(observed.seen.map((snapshot) => snapshot.status))
+        .not.toContain("open");
+      for (const snapshot of observed.seen) {
+        expect(snapshot.value?.stale).not.toBe(false);
+      }
+      expect(session.snapshot().status).toBe("failed");
+      expect(session.snapshot().value).toBeUndefined();
+
+      const durable = await writer.restore(
+        identity(),
+        ATTRIBUTES,
+        READ_COMPATIBILITY,
+      );
+      expect(durable?.revision).toBe(delayed.revision);
+      expect(durable?.ordinal).toBe(delayed.ordinal);
+      durable!.release();
+    } finally {
+      resetTestHooks();
+      await session?.close();
+      writer.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+const storedOrdinal = async (
+  database: string,
+  ordinal?: number,
+): Promise<number | undefined> => {
+  const connection = await openNative(database);
+  const partition = replicaPartitionKey(identity());
+  const transaction = connection.transaction(
+    ["replica-committed-v1", "replica-committed-heads-v1"],
+    ordinal === undefined ? "readonly" : "readwrite",
+  );
+  const manifests = transaction.objectStore("replica-committed-v1");
+  const heads = transaction.objectStore("replica-committed-heads-v1");
+  const [manifest, head] = await Promise.all([
+    requestResult<Record<string, unknown> | undefined>(manifests.get(partition)),
+    requestResult<Record<string, unknown> | undefined>(heads.get(partition)),
+  ]);
+  if (ordinal !== undefined && manifest !== undefined && head !== undefined) {
+    manifests.put({ ...manifest, ordinal });
+    heads.put({ ...head, ordinal });
+  }
+  await transactionDone(transaction);
+  connection.close();
+  return head?.ordinal as number | undefined;
+};
+
+browserTest(
+  "a response whose claim lost the succession restarts instead of proceeding",
+  async ({ browser }) => {
+    const database = `ramose-layer-claim-lost-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    const successor: ReplicationIdentity = {
+      ...identity(),
+      authenticator: "z".repeat(43),
+    };
+    const elsewhere: ReplicationIdentity = {
+      ...identity(),
+      principal: "y".repeat(43),
+    };
+    let session: ReplicationSession | undefined;
+    try {
+      await installRecorded(storage, "optimistic-fence");
+      const fingerprint = await replicationCredentialFingerprint(
+        CREDENTIAL,
+        replicationActivationAddress({
+          server: globalThis.location.origin,
+          root: "optimistic-fence",
+          graphPath: [],
+        }),
+        await rootReplicaRouteSlot(),
+      );
+      expect(await storage.boundIdentity(fingerprint)).toEqual(identity());
+
+      expect(await storage.bindAuthenticated({
+        fingerprint: "w".repeat(43),
+        identity: successor,
+        expected: await storage.partitionExpectation(successor),
+      })).toBe("claimed");
+      expect(await storage.bindAuthenticated({
+        fingerprint,
+        identity: elsewhere,
+        claimsPartition: false,
+      })).toBe("confirmed");
+      expect(await storage.boundIdentity(fingerprint)).toEqual(elsewhere);
+
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence",
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const observed = settledSnapshots(session);
+      await observed.failed;
+
+      expect(session.snapshot().status).toBe("failed");
+      expect(observed.seen.map((snapshot) => snapshot.status)).not.toContain("open");
+      expect(await storage.boundIdentity(fingerprint)).toEqual(elsewhere);
+      expect(await storage.partitionExpectation(successor))
+        .toMatchObject({ succession: 2 });
+    } finally {
+      await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+browserTest(
+  "a snapshot the identity has advanced past reconnects instead of being consumed",
+  async ({ browser }) => {
+    const database = `ramose-layer-snapshot-superseded-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    let session: ReplicationSession | undefined;
+    try {
+      await installRecorded(storage, "optimistic-fence");
+      expect(await storage.acknowledgeOrdinal({
+        identity: identity(),
+        revision: recorded.revision,
+        ordinal: 5,
+      })).toBe(5);
+      expect(await storedOrdinal(database)).toBe(5);
+
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence",
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const observed = settledSnapshots(session);
+      await observed.failed;
+
+      expect(session.snapshot().status).toBe("failed");
+      expect(observed.seen.map((snapshot) => snapshot.status)).not.toContain("open");
+      for (const snapshot of observed.seen) {
+        expect(snapshot.value?.stale).not.toBe(false);
+      }
+      expect(await storedOrdinal(database)).toBe(5);
+      const held = await storage.restore(identity(), ATTRIBUTES, READ_COMPATIBILITY);
+      expect(held?.revision).toBe(recorded.revision);
+      expect(held?.ordinal).toBe(5);
+      held!.release();
+    } finally {
+      await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+browserTest(
+  "a change re-reaching the published revision acknowledges its higher ordinal",
+  async ({ browser }) => {
+    const database = `ramose-layer-change-acknowledge-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    let session: ReplicationSession | undefined;
+    try {
+      await installRecorded(storage, "optimistic-fence-change");
+      const acknowledging = await recordedChange();
+      dropped(await storage.applyChange(acknowledging));
+      expect(await storedOrdinal(database)).toBe(acknowledging.ordinal);
+
+      await storedOrdinal(database, acknowledging.ordinal - 1);
+      const behind = await storage.restore(identity(), ATTRIBUTES, READ_COMPATIBILITY);
+      expect(behind?.revision).toBe(acknowledging.revision);
+      expect(behind?.ordinal).toBe(acknowledging.ordinal - 1);
+      behind!.release();
+
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence-change",
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const observed = settledSnapshots(session);
+      await observed.failed;
+
+      expect(observed.seen.map((snapshot) => snapshot.status)).toContain("open");
+      expect(session.snapshot().value).toMatchObject({
+        revision: acknowledging.revision,
+        ordinal: acknowledging.ordinal,
+        stale: false,
+      });
+      expect(await storedOrdinal(database)).toBe(acknowledging.ordinal);
+
+      expect(classifyReplicationAdoption(session.snapshot().value, {
+        identity: identity(),
+        ordinal: acknowledging.ordinal - 1,
+      })).toBe("refuse");
+    } finally {
+      await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+browserTest(
+  "a change the durable replica has already advanced past reconnects at that frame",
+  async ({ browser }) => {
+    const database = `ramose-layer-change-refused-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    let session: ReplicationSession | undefined;
+    try {
+      await installRecorded(storage, "optimistic-fence-change");
+      const delayed = await recordedChange();
+      expect(await storage.acknowledgeOrdinal({
+        identity: identity(),
+        revision: recorded.revision,
+        ordinal: delayed.ordinal + 1,
+      })).toBe(delayed.ordinal + 1);
+
+      const skipped = await storage.applyChange(delayed);
+      expect(skipped?.revision).toBe(recorded.revision);
+      expect(skipped?.ordinal).toBe(delayed.ordinal + 1);
+      skipped!.release();
+
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence-change",
+          graphPath: [],
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const observed = settledSnapshots(session);
+      await observed.failed;
+
+      expect(session.snapshot().status).toBe("failed");
+      for (const snapshot of observed.seen) {
+        expect(snapshot.value?.revision).not.toBe(delayed.revision);
+      }
+      const durable = await storage.restore(
+        identity(),
+        ATTRIBUTES,
+        READ_COMPATIBILITY,
+      );
+      expect(durable?.revision).toBe(recorded.revision);
+      expect(durable?.ordinal).toBe(delayed.ordinal + 1);
+      durable!.release();
+    } finally {
       await session?.close();
       storage.close();
       await deleteDatabase(database);

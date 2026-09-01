@@ -15,6 +15,7 @@ export const emptyEntityHandles: EntityHandles = new Map();
 
 export type CommittedReplica = {
   readonly revision: string;
+  readonly ordinal: number;
   readonly datoms: readonly LogicalDatom[];
   readonly handles: EntityHandles;
 };
@@ -251,6 +252,7 @@ const commitSnapshot = (
     identity: frame.identity,
     committed: Object.freeze({
       revision: frame.revision,
+      ordinal: frame.ordinal,
       datoms: Object.freeze(datoms),
       handles: retainHandles(staging.handles, datoms),
     }),
@@ -266,6 +268,7 @@ const applyChange = (
   if (committed === undefined) return fail("change arrived before a committed value");
   if (frame.revision === committed.revision) return Result.succeed(state);
   if (frame.from !== committed.revision) return Result.succeed(state);
+  if (frame.ordinal < committed.ordinal) return Result.succeed(state);
 
   const operations = new Map<string, LogicalDatom["op"]>();
   for (const datom of frame.datoms) {
@@ -302,6 +305,7 @@ const applyChange = (
     identity: frame.identity,
     committed: Object.freeze({
       revision: frame.revision,
+      ordinal: frame.ordinal,
       datoms,
       handles: retainHandles(handles, datoms),
     }),
@@ -389,10 +393,15 @@ export const applyReplicationFrame = (
     case "ResumeReady": {
       const identity = requireIdentity(state, frame.identity);
       if (Result.isFailure(identity)) return Result.fail(identity.failure);
-      if (state.committed?.revision !== frame.revision) {
+      const committed = state.committed;
+      if (committed?.revision !== frame.revision) {
         return fail("resume-ready revision does not match the committed value");
       }
-      return Result.succeed(state);
+      if (frame.ordinal <= committed.ordinal) return Result.succeed(state);
+      return Result.succeed({
+        ...state,
+        committed: Object.freeze({ ...committed, ordinal: frame.ordinal }),
+      });
     }
     case "KeepAlive": {
       const identity = requireIdentity(state, frame.identity);

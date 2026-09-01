@@ -20,7 +20,9 @@ import {
   type RuntimeBoundaries,
 } from "../runtime-boundaries.ts";
 import {
+  isReplicationOrdinal,
   REPLICA_STORAGE_VERSION,
+  REPLICATION_PROTOCOL_VERSION,
   type Change,
   type EntityHandleBinding,
   type ReplicationIdentity,
@@ -54,6 +56,8 @@ import {
 } from "./outbox-storage.ts";
 import {
   classifyReplicaStorageFailure,
+  replicaOwnerKey,
+  replicaOwnerPrefix,
   replicaQuotaRecovery,
   replicaSweepKey,
   replicaSweepPrefix,
@@ -104,6 +108,7 @@ import {
   expectedReplicaContents,
   replicaAbsent,
   replicaContended,
+  ReplicaSupersededError,
   replicaManifestFingerprint,
   replicaManifestIdentity,
   replicaRestored,
@@ -134,7 +139,8 @@ export const REPLICA_MANIFEST_STORAGE_VERSION =
   OPTIMISTIC_LAYER_DATABASE_VERSION + 1;
 const MANIFEST_V3_DATABASE_VERSION = REPLICA_MANIFEST_STORAGE_VERSION;
 const GRAPH_RECEIVER_DATABASE_VERSION = MANIFEST_V3_DATABASE_VERSION + 1;
-export const REPLICA_DATABASE_VERSION = GRAPH_RECEIVER_DATABASE_VERSION;
+const MANIFEST_V4_DATABASE_VERSION = GRAPH_RECEIVER_DATABASE_VERSION + 1;
+export const REPLICA_DATABASE_VERSION = MANIFEST_V4_DATABASE_VERSION;
 const DATABASE_VERSION = REPLICA_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
 const COMMITTED_HEADS = REPLICA_COMMITTED_HEADS_STORE;
@@ -190,6 +196,7 @@ type CommittedHeadRecord = {
   readonly identity: ReplicationIdentity;
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly revision: string;
+  readonly ordinal: number;
 };
 
 type StagingRecord = {
@@ -240,6 +247,15 @@ export type ReplicaGraphReceiver = {
   readonly route: string;
   readonly graphPath: readonly string[];
   readonly graphLineage: readonly string[];
+  readonly confirmedAt: number;
+};
+
+type PartitionOwnerRecord = {
+  readonly key: string;
+  readonly kind: "partition";
+  readonly scope: string;
+  readonly identity: ReplicationIdentity;
+  readonly succession: number;
   readonly confirmedAt: number;
 };
 
@@ -298,11 +314,88 @@ const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
   identity: record.identity,
   readCompatibilityHash: record.readCompatibilityHash,
   revision: record.revision,
+  ordinal: record.ordinal,
 });
+
+export type ReplicaPartitionClaim =
+  | "claimed"
+  | "already-owner"
+  | "confirmed"
+  | "lost";
+
+const observedSuccession = (
+  expected: ReplicaPartitionExpectation | undefined,
+  partition: string,
+): ReplicaPartitionSuccession | undefined => {
+  if (expected === undefined) return undefined;
+  return expected.partition === undefined || expected.partition === partition
+    ? expected.succession
+    : "absent";
+};
+
+const classifyReplicaPartitionClaim = (
+  binding: ReplicaAuthenticatedBinding,
+  partition: string,
+  owner: PartitionOwnerRecord | undefined,
+): ReplicaPartitionClaim => {
+  if (binding.claimsPartition === false) return "confirmed";
+  if (
+    owner !== undefined &&
+    sameReplicationIdentity(owner.identity, binding.identity)
+  ) return "already-owner";
+  const observed = observedSuccession(binding.expected, partition);
+  if (observed === undefined) return "claimed";
+  const succeeds = observed === "absent"
+    ? owner === undefined
+    : owner?.succession === observed;
+  return succeeds ? "claimed" : "lost";
+};
+
+const shadowsBoundIdentity = (
+  existing: { readonly identity: ReplicationIdentity } | undefined,
+  identity: ReplicationIdentity,
+): boolean =>
+  existing !== undefined && !sameReplicationIdentity(existing.identity, identity);
+
+const ownsPartition = (
+  owner: PartitionOwnerRecord | undefined,
+  identity: ReplicationIdentity,
+): boolean =>
+  owner === undefined || sameReplicationIdentity(owner.identity, identity);
+
+type StoredProgress = {
+  readonly identity: ReplicationIdentity;
+  readonly ordinal: number;
+};
+
+const recordProgress = (record: unknown): StoredProgress | undefined => {
+  const identity = replicaManifestIdentity(record);
+  const ordinal = (record as { readonly ordinal?: unknown } | undefined)?.ordinal;
+  return identity === undefined || !isReplicationOrdinal(ordinal)
+    ? undefined
+    : { identity, ordinal };
+};
+
+const storedProgress = (
+  head: CommittedHeadRecord | undefined,
+  manifest: CommittedRecord | undefined,
+): StoredProgress | undefined =>
+  recordProgress(head) ?? recordProgress(manifest);
+
+const supersedesStoredHead = (
+  owner: PartitionOwnerRecord | undefined,
+  stored: StoredProgress | undefined,
+  candidate: CommittedRecord,
+): boolean =>
+  ownsPartition(owner, candidate.identity) &&
+  (stored === undefined ||
+    !sameReplicationIdentity(stored.identity, candidate.identity) ||
+    candidate.ordinal >= stored.ordinal);
 
 export type RestoredReplica = {
   readonly db: Db;
   readonly revision: string;
+  readonly ordinal: number;
   readonly handles: ReadonlyMap<string, number>;
   readonly release: () => void;
 };
@@ -319,6 +412,13 @@ export type BoundRestoredReplica = RestoredReplica & {
 export type ReplicaCacheCandidate = {
   readonly identity: ReplicationIdentity;
   readonly revision: string;
+  readonly ordinal: number;
+};
+
+export type ReplicaOrdinalAcknowledgement = {
+  readonly identity: ReplicationIdentity;
+  readonly revision: string;
+  readonly ordinal: number;
 };
 
 export type ReplicaCacheCandidateKey = {
@@ -326,9 +426,18 @@ export type ReplicaCacheCandidateKey = {
   readonly routeSlot: ReplicaRouteSlot;
 };
 
+export type ReplicaPartitionSuccession = number | "absent";
+
+export type ReplicaPartitionExpectation = {
+  readonly partition?: string | undefined;
+  readonly succession: ReplicaPartitionSuccession;
+};
+
 export type ReplicaAuthenticatedBinding = {
   readonly fingerprint: string;
   readonly identity: ReplicationIdentity;
+  readonly claimsPartition?: boolean | undefined;
+  readonly expected?: ReplicaPartitionExpectation | undefined;
   readonly candidateKey?: ReplicaCacheCandidateKey | undefined;
   readonly route?: (ReplicaRouteObservation & {
     readonly slot: ReplicaRouteSlot;
@@ -615,6 +724,7 @@ const materialize = async (
     identity,
     readCompatibilityHash: identity.readCompatibilityHash,
     revision: committed.revision,
+    ordinal: committed.ordinal,
     datoms: Object.freeze([...committed.datoms]),
     attributes: Object.freeze(specs),
     entityIds: Object.freeze([...entities]),
@@ -949,7 +1059,7 @@ export class IndexedDbReplicaStorage {
         seedConfirmedGenerations(request.transaction);
       }
       if (
-        oldVersion > 0 && oldVersion < MANIFEST_V3_DATABASE_VERSION &&
+        oldVersion > 0 && oldVersion < MANIFEST_V4_DATABASE_VERSION &&
         request.transaction !== null
       ) {
         const upgrade = request.transaction;
@@ -1190,6 +1300,7 @@ export class IndexedDbReplicaStorage {
       transaction.objectStore(family).delete(compoundPrefixRange(prefix));
     }
     generations.delete(prefixRange(replicaSweepPrefix(prefix)));
+    generations.delete(prefixRange(replicaOwnerPrefix(prefix)));
     const bindingStore = transaction.objectStore(CREDENTIAL_BINDINGS);
     const candidateStore = transaction.objectStore(CACHE_CANDIDATES);
     const routeStore = transaction.objectStore(ROUTE_SLOTS);
@@ -1309,6 +1420,7 @@ export class IndexedDbReplicaStorage {
       transaction.objectStore(family).delete(compoundPrefixRange(prefix));
     }
     generations.delete(prefixRange(replicaSweepPrefix(prefix)));
+    generations.delete(prefixRange(replicaOwnerPrefix(prefix)));
     const bindingStore = transaction.objectStore(CREDENTIAL_BINDINGS);
     const candidateStore = transaction.objectStore(CACHE_CANDIDATES);
     const [bindingRecords, candidateRecords] = await Promise.all([
@@ -1803,6 +1915,7 @@ export class IndexedDbReplicaStorage {
     return replicaRestored({
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      ordinal: validated.replica.record.ordinal,
       handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
@@ -1846,6 +1959,7 @@ export class IndexedDbReplicaStorage {
       head.partition !== replicaPartitionKey(binding.identity) ||
       head.readCompatibilityHash !== readCompatibilityHash ||
       head.identity.readCompatibilityHash !== readCompatibilityHash ||
+      !isReplicationOrdinal(head.ordinal) ||
       !sameReplicationIdentity(head.identity, binding.identity)
     ) {
       return undefined;
@@ -1853,6 +1967,7 @@ export class IndexedDbReplicaStorage {
     return Object.freeze({
       identity: binding.identity,
       revision: head.revision,
+      ordinal: head.ordinal,
     });
   }
 
@@ -1883,6 +1998,7 @@ export class IndexedDbReplicaStorage {
       identity: candidate.identity,
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      ordinal: validated.replica.record.ordinal,
       handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
@@ -1926,7 +2042,7 @@ export class IndexedDbReplicaStorage {
   async bindAuthenticated(
     binding: ReplicaAuthenticatedBinding,
     options: ReplicaInstallOptions = {},
-  ): Promise<void> {
+  ): Promise<ReplicaPartitionClaim> {
     const scopeKey = this.assertScopeLive(replicaScopeOf(binding.identity));
     const databaseKey = replicaDatabaseKey(replicaDatabaseScopeOf(binding.identity));
     const transaction = this.database.transaction(
@@ -1960,12 +2076,62 @@ export class IndexedDbReplicaStorage {
           throw error;
         }
       }
+      const bindingPartition = replicaPartitionKey(binding.identity);
+      const ownerKey = replicaOwnerKey(bindingPartition);
+      const owner = await requestResult<PartitionOwnerRecord | undefined>(
+        generations.get(ownerKey),
+      );
+      const claim = classifyReplicaPartitionClaim(binding, bindingPartition, owner);
+      if (claim === "claimed") {
+        generations.put({
+          key: ownerKey,
+          kind: "partition",
+          scope: scopeKey,
+          identity: binding.identity,
+          succession: (owner?.succession ?? 0) + 1,
+          confirmedAt: Date.now(),
+        } satisfies PartitionOwnerRecord);
+      }
+      const bindings = transaction.objectStore(CREDENTIAL_BINDINGS);
+      const [boundRecord, candidateRecord] = await Promise.all([
+        requestResult<CredentialBindingRecord | undefined>(
+          bindings.get(binding.fingerprint),
+        ),
+        binding.candidateKey === undefined
+          ? undefined
+          : requestResult<CacheCandidateRecord | undefined>(
+            candidates.get([
+              binding.candidateKey.selector,
+              binding.candidateKey.routeSlot,
+            ]),
+          ),
+      ]);
+      if (claim === "lost") {
+        if (!shadowsBoundIdentity(boundRecord, binding.identity)) {
+          bindings.put({
+            fingerprint: binding.fingerprint,
+            identity: binding.identity,
+          } satisfies CredentialBindingRecord);
+        }
+        if (
+          binding.candidateKey !== undefined &&
+          !shadowsBoundIdentity(candidateRecord, binding.identity)
+        ) {
+          candidates.put({
+            selector: binding.candidateKey.selector,
+            routeSlot: binding.candidateKey.routeSlot,
+            identity: binding.identity,
+          } satisfies CacheCandidateRecord);
+        }
+        await commitTransaction(transaction);
+        return claim;
+      }
       const replaced = await this.stageReplacedPrincipals(
         transaction,
         binding.identity,
         binding.candidateKey?.selector,
       );
-      transaction.objectStore(CREDENTIAL_BINDINGS).put({
+      bindings.put({
         fingerprint: binding.fingerprint,
         identity: binding.identity,
       } satisfies CredentialBindingRecord);
@@ -2007,6 +2173,7 @@ export class IndexedDbReplicaStorage {
       await commitTransaction(transaction);
       for (const scope of replaced) this.announce(replicaNotice("reset", scope));
       this.announce(identityNotice("selector", binding.identity));
+      return claim;
     } finally {
       removeAbort();
     }
@@ -2068,12 +2235,28 @@ export class IndexedDbReplicaStorage {
     return generation;
   }
 
+  async partitionExpectation(
+    identity: ReplicationIdentity,
+  ): Promise<ReplicaPartitionExpectation> {
+    const partition = replicaPartitionKey(identity);
+    const transaction = this.database.transaction(GENERATIONS, "readonly");
+    const owner = await requestResult<PartitionOwnerRecord | undefined>(
+      transaction.objectStore(GENERATIONS).get(replicaOwnerKey(partition)),
+    );
+    await transactionDone(transaction);
+    return { partition, succession: owner?.succession ?? "absent" };
+  }
+
   async bindCredential(
     fingerprint: string,
     identity: ReplicationIdentity,
     options: ReplicaInstallOptions = {},
   ): Promise<void> {
-    await this.bindAuthenticated({ fingerprint, identity }, options);
+    await this.bindAuthenticated({
+      fingerprint,
+      identity,
+      expected: await this.partitionExpectation(identity),
+    }, options);
   }
 
   async restoreBoundOutcome(
@@ -2114,6 +2297,7 @@ export class IndexedDbReplicaStorage {
       identity: binding.identity,
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      ordinal: validated.replica.record.ordinal,
       handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
@@ -2137,14 +2321,16 @@ export class IndexedDbReplicaStorage {
     const fence = replicaFence(options.lease, identity);
     const partition = replicaPartitionKey(identity);
     const transaction = this.database.transaction(
-      fence === undefined
-        ? [STAGING, STAGING_CHUNKS]
-        : [STAGING, STAGING_CHUNKS, GENERATIONS],
+      [STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       await enforceFence(transaction, fence);
+      if (!await this.owns(transaction, partition, identity)) {
+        await abortTransaction(transaction);
+        return;
+      }
       transaction.objectStore(STAGING).delete(partition);
       transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
       await commitTransaction(transaction);
@@ -2162,14 +2348,16 @@ export class IndexedDbReplicaStorage {
     const fence = replicaFence(options.lease, frame.identity);
     const partition = replicaPartitionKey(frame.identity);
     const transaction = this.database.transaction(
-      fence === undefined
-        ? [COMMITTED, STAGING, STAGING_CHUNKS]
-        : [COMMITTED, STAGING, STAGING_CHUNKS, GENERATIONS],
+      [COMMITTED, STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       await enforceFence(transaction, fence);
+      if (!await this.owns(transaction, partition, frame.identity)) {
+        await abortTransaction(transaction);
+        return;
+      }
       const staging = transaction.objectStore(STAGING);
       const [current, committed] = await Promise.all([
         requestResult<StagingRecord | undefined>(staging.get(partition)),
@@ -2209,14 +2397,16 @@ export class IndexedDbReplicaStorage {
     const fence = replicaFence(options.lease, frame.identity);
     const partition = replicaPartitionKey(frame.identity);
     const transaction = this.database.transaction(
-      fence === undefined
-        ? [STAGING, STAGING_CHUNKS]
-        : [STAGING, STAGING_CHUNKS, GENERATIONS],
+      [STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       await enforceFence(transaction, fence);
+      if (!await this.owns(transaction, partition, frame.identity)) {
+        await abortTransaction(transaction);
+        return;
+      }
       const staging = await requestResult<StagingRecord | undefined>(
         transaction.objectStore(STAGING).get(partition),
       );
@@ -2272,7 +2462,7 @@ export class IndexedDbReplicaStorage {
     }
     let state = transition(emptyClientReplicationState(), {
       type: "SnapshotStart",
-      protocol: 1,
+      protocol: REPLICATION_PROTOCOL_VERSION,
       identity: staging.identity,
       snapshot: staging.snapshot,
       revision: staging.revision,
@@ -2280,7 +2470,7 @@ export class IndexedDbReplicaStorage {
     for (const chunk of chunks.sort((a, b) => a.index - b.index)) {
       state = transition(state, {
         type: "SnapshotChunk",
-        protocol: 1,
+        protocol: REPLICATION_PROTOCOL_VERSION,
         identity: staging.identity,
         snapshot: staging.snapshot,
         index: chunk.index,
@@ -2404,6 +2594,14 @@ export class IndexedDbReplicaStorage {
       const currentCommitted = await requestResult<CommittedRecord | undefined>(
         transaction.objectStore(COMMITTED).get(built.record.partition),
       );
+      const [head, owner] = await Promise.all([
+        requestResult<CommittedHeadRecord | undefined>(
+          transaction.objectStore(COMMITTED_HEADS).get(built.record.partition),
+        ),
+        requestResult<PartitionOwnerRecord | undefined>(
+          transaction.objectStore(GENERATIONS).get(replicaOwnerKey(partition)),
+        ),
+      ]);
       if (
         current === undefined || current.snapshot !== frame.snapshot ||
         current.revision !== frame.revision ||
@@ -2412,6 +2610,20 @@ export class IndexedDbReplicaStorage {
       ) {
         await abortTransaction(transaction);
         return undefined;
+      }
+      if (
+        !supersedesStoredHead(
+          owner,
+          storedProgress(head, currentCommitted),
+          built.record,
+        )
+      ) {
+        await abortTransaction(transaction);
+        throw new ReplicaSupersededError({
+          partition,
+          revision: frame.revision,
+          ordinal: frame.ordinal,
+        });
       }
       transaction.objectStore(COMMITTED).put(built.record);
       transaction.objectStore(COMMITTED_HEADS).put(committedHead(built.record));
@@ -2430,9 +2642,90 @@ export class IndexedDbReplicaStorage {
     return {
       db: built.db,
       revision: built.record.revision,
+      ordinal: built.record.ordinal,
       handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };
+  }
+
+  private async owns(
+    transaction: IDBTransaction,
+    partition: string,
+    identity: ReplicationIdentity,
+  ): Promise<boolean> {
+    return ownsPartition(
+      await requestResult<PartitionOwnerRecord | undefined>(
+        transaction.objectStore(GENERATIONS).get(replicaOwnerKey(partition)),
+      ),
+      identity,
+    );
+  }
+
+  async acknowledgeOrdinal(
+    acknowledgement: ReplicaOrdinalAcknowledgement,
+    options: ReplicaInstallOptions = {},
+  ): Promise<number | undefined> {
+    this.assertScopeLive(replicaScopeOf(acknowledgement.identity));
+    const fence = replicaFence(options.lease, acknowledgement.identity);
+    const partition = replicaPartitionKey(acknowledgement.identity);
+    const sweep = await this.sweepGeneration(partition);
+    options.signal?.throwIfAborted();
+    await this.boundaries.checkpoint("replica.installing");
+    const write = this.database.transaction(
+      [COMMITTED, COMMITTED_HEADS, GENERATIONS],
+      "readwrite",
+    );
+    const removeAbort = abortWithSignal(write, options.signal);
+    try {
+      await enforceFence(write, fence);
+      await this.confirmNoSweep(write, partition, sweep);
+      const [current, head, owner] = await Promise.all([
+        requestResult<CommittedRecord | undefined>(
+          write.objectStore(COMMITTED).get(partition),
+        ),
+        requestResult<CommittedHeadRecord | undefined>(
+          write.objectStore(COMMITTED_HEADS).get(partition),
+        ),
+        requestResult<PartitionOwnerRecord | undefined>(
+          write.objectStore(GENERATIONS).get(replicaOwnerKey(partition)),
+        ),
+      ]);
+      if (
+        current === undefined ||
+        current.revision !== acknowledgement.revision ||
+        !ownsPartition(owner, acknowledgement.identity) ||
+        !sameReplicationIdentity(current.identity, acknowledgement.identity)
+      ) {
+        await abortTransaction(write);
+        return undefined;
+      }
+      if (current.ordinal >= acknowledgement.ordinal) {
+        if (recordProgress(head) === undefined) {
+          write.objectStore(COMMITTED_HEADS).put(committedHead(current));
+          await commitTransaction(write);
+          this.meter.heads++;
+          return current.ordinal;
+        }
+        await transactionDone(write);
+        return current.ordinal;
+      }
+      const acknowledged: CommittedRecord = {
+        ...current,
+        ordinal: acknowledgement.ordinal,
+      };
+      write.objectStore(COMMITTED).put(acknowledged);
+      write.objectStore(COMMITTED_HEADS).put(committedHead(acknowledged));
+      await this.boundaries.checkpoint("replica.install");
+      await commitTransaction(write);
+      this.meter.manifests++;
+      this.meter.heads++;
+      return acknowledgement.ordinal;
+    } catch (error) {
+      await abortTransaction(write);
+      throw error;
+    } finally {
+      removeAbort();
+    }
   }
 
   async applyChange(
@@ -2467,6 +2760,7 @@ export class IndexedDbReplicaStorage {
       identity: prior.identity,
       committed: {
         revision: prior.revision,
+        ordinal: prior.ordinal,
         datoms: prior.datoms,
         handles: new Map(prior.entityHandles),
       },
@@ -2476,6 +2770,7 @@ export class IndexedDbReplicaStorage {
       return {
         db: dbFromRecord(this.database, prior, frame.identity.readCompatibilityHash),
         revision: prior.revision,
+        ordinal: prior.ordinal,
         handles: recordHandles(prior),
         release: this.retainRoots(frame.identity, prior.roots),
       };
@@ -2529,9 +2824,25 @@ export class IndexedDbReplicaStorage {
       const current = await requestResult<CommittedRecord | undefined>(
         write.objectStore(COMMITTED).get(partition),
       );
+      const [head, owner] = await Promise.all([
+        requestResult<CommittedHeadRecord | undefined>(
+          write.objectStore(COMMITTED_HEADS).get(partition),
+        ),
+        requestResult<PartitionOwnerRecord | undefined>(
+          write.objectStore(GENERATIONS).get(replicaOwnerKey(partition)),
+        ),
+      ]);
       if (current?.revision !== prior.revision) {
         await abortTransaction(write);
         return undefined;
+      }
+      if (!supersedesStoredHead(owner, storedProgress(head, current), built.record)) {
+        await abortTransaction(write);
+        throw new ReplicaSupersededError({
+          partition,
+          revision: frame.revision,
+          ordinal: frame.ordinal,
+        });
       }
       write.objectStore(COMMITTED).put(built.record);
       write.objectStore(COMMITTED_HEADS).put(committedHead(built.record));
@@ -2548,6 +2859,7 @@ export class IndexedDbReplicaStorage {
     return {
       db: built.db,
       revision: built.record.revision,
+      ordinal: built.record.ordinal,
       handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };

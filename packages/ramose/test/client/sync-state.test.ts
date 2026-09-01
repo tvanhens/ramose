@@ -23,6 +23,7 @@ const value = (stale: boolean) => ({
   db: {} as Db,
   identity,
   revision: opaque("r"),
+  ordinal: 1,
   handles: new Map<string, number>(),
   stale,
 });

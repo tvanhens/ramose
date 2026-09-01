@@ -6,6 +6,7 @@ import {
   type BoundRestoredReplica,
   type ReplicaCacheCandidate,
   type ReplicaCacheCandidateKey,
+  type ReplicaOrdinalAcknowledgement,
   type RestoredReplica,
 } from "./indexeddb.ts";
 import {
@@ -46,6 +47,7 @@ export type ReplicationSessionValue = {
   readonly db: Db;
   readonly identity: ReplicationIdentity;
   readonly revision: string;
+  readonly ordinal: number;
   readonly handles: ReadonlyMap<string, number>;
   readonly stale: boolean;
 };
@@ -76,6 +78,7 @@ type TerminalFrame = Extract<ReplicationFrame, { readonly type: "TerminalError" 
 export type ReplicationCandidateFrameAction =
   | "resume"
   | "change"
+  | "acknowledge"
   | "duplicate"
   | "reset"
   | "snapshot"
@@ -84,18 +87,39 @@ export type ReplicationCandidateFrameAction =
   | "invalid";
 
 export const classifyReplicationChange = (
-  prior: Pick<ReplicationSessionValue, "identity" | "revision"> | undefined,
+  prior:
+    | Pick<ReplicationSessionValue, "identity" | "revision" | "ordinal">
+    | undefined,
   frame: ChangeFrame,
-): "apply" | "duplicate" | "gap" => {
+): "apply" | "acknowledge" | "duplicate" | "gap" => {
   if (prior === undefined || !sameReplicationIdentity(prior.identity, frame.identity)) {
     return "gap";
   }
-  if (prior.revision === frame.revision) return "duplicate";
+  if (prior.revision === frame.revision) {
+    return frame.ordinal > prior.ordinal ? "acknowledge" : "duplicate";
+  }
   return prior.revision === frame.from ? "apply" : "gap";
 };
 
+export type ReplicationPublication = Pick<
+  ReplicationSessionValue,
+  "identity" | "ordinal"
+>;
+
+export const classifyReplicationAdoption = (
+  published: ReplicationPublication | undefined,
+  candidate: ReplicationPublication,
+): "adopt" | "refuse" =>
+  published !== undefined &&
+    sameReplicationIdentity(published.identity, candidate.identity) &&
+    candidate.ordinal < published.ordinal
+    ? "refuse"
+    : "adopt";
+
 export const classifyReplicationCandidateFrame = (
-  prior: Pick<ReplicaCacheCandidate, "identity" | "revision"> | undefined,
+  prior:
+    | Pick<ReplicaCacheCandidate, "identity" | "revision" | "ordinal">
+    | undefined,
   frame: ReplicationFrame,
 ): ReplicationCandidateFrameAction => {
   switch (frame.type) {
@@ -108,11 +132,9 @@ export const classifyReplicationCandidateFrame = (
       return "invalid";
     case "Change": {
       const disposition = classifyReplicationChange(prior, frame);
-      return disposition === "gap"
-        ? "invalid"
-        : disposition === "apply"
-          ? "change"
-          : "duplicate";
+      return disposition === "gap" ? "invalid" : disposition === "apply"
+        ? "change"
+        : disposition;
     }
     case "ResumeReady":
       return prior !== undefined && prior.revision === frame.revision &&
@@ -149,6 +171,7 @@ const valueFrom = (
   db: replica.db,
   identity,
   revision: replica.revision,
+  ordinal: replica.ordinal,
   handles: replica.handles,
   stale,
 });
@@ -184,6 +207,7 @@ export class ReplicationSession {
   private trackedDatabase: string | undefined;
   private releaseRetention: (() => void) | undefined;
   private retainedDb: Db | undefined;
+  private publication: ReplicationPublication | undefined;
   private confirmedIdentity: ReplicationIdentity | undefined;
   private bound: string | undefined;
   private refreshing: Promise<void> = Promise.resolve();
@@ -212,6 +236,7 @@ export class ReplicationSession {
         ? {}
         : { value: valueFrom(initial.identity, initial, true) }),
     });
+    this.publication = this.state.value;
     if (registration !== undefined) {
       this.trackedDatabase = registration.database;
       this.tracking = registration.releases;
@@ -250,7 +275,8 @@ export class ReplicationSession {
     if (
       !this.current(generation) ||
       (restored.revision === published?.revision &&
-        sameReplicationIdentity(identity, published.identity))
+        sameReplicationIdentity(identity, published.identity)) ||
+      !this.admits(identity, restored.ordinal)
     ) {
       restored.release();
       return false;
@@ -387,6 +413,11 @@ export class ReplicationSession {
         let bindingConfirmed = restored !== undefined && candidateKey === undefined &&
           slotConfirmed;
         try {
+          const established = restored?.identity ?? candidate?.identity ??
+            await options.storage.boundIdentity(fingerprint).catch(() => undefined);
+          const expected = established === undefined
+            ? { succession: "absent" as const }
+            : await options.storage.partitionExpectation(established);
           const response = await openReplicationResponse({
             activation,
             credential: options.credential,
@@ -436,9 +467,11 @@ export class ReplicationSession {
                     activation,
                     confirmedSlot,
                   );
-                await options.storage.bindAuthenticated({
+                const claim = await options.storage.bindAuthenticated({
                   fingerprint: confirmedFingerprint,
                   identity: frameIdentity,
+                  claimsPartition: action !== "terminal",
+                  expected,
                   ...(candidateKey === undefined
                     ? {}
                     : { candidateKey: { selector: candidateKey.selector, routeSlot: confirmedSlot } }),
@@ -449,6 +482,10 @@ export class ReplicationSession {
                   },
                 }, { signal: session.controller.signal, lease: session.lease });
                 if (!session.current(generation)) return;
+                if (claim === "lost") {
+                  session.quarantine(generation);
+                  throw new Error("replication response lost the partition succession");
+                }
                 session.bound = confirmedFingerprint;
                 bindingConfirmed = true;
                 if (session.state.value === undefined) {
@@ -533,8 +570,30 @@ export class ReplicationSession {
 
   private publish(snapshot: ReplicationSessionSnapshot): void {
     if (snapshot.value === undefined) this.release();
+    this.publication = snapshot.value;
     this.state = Object.freeze(snapshot);
     for (const observer of this.observers) this.notify(observer);
+  }
+
+  private admits(identity: ReplicationIdentity, ordinal: number): boolean {
+    return classifyReplicationAdoption(this.publication, { identity, ordinal }) ===
+      "adopt";
+  }
+
+  private async acknowledge(
+    acknowledgement: ReplicaOrdinalAcknowledgement,
+    generation: number,
+  ): Promise<number | undefined> {
+    const acknowledged = await this.storage.acknowledgeOrdinal(acknowledgement, {
+      signal: this.controller.signal,
+      lease: this.lease,
+    });
+    if (!this.current(generation)) return undefined;
+    if (acknowledged === undefined) {
+      this.quarantine(generation);
+      throw new Error("replication acknowledgement does not match the durable revision");
+    }
+    return acknowledged;
   }
 
   private adopt(replica: RestoredReplica): void {
@@ -586,7 +645,7 @@ export class ReplicationSession {
     stale: boolean,
     generation: number,
   ): void {
-    if (!this.current(generation)) {
+    if (!this.current(generation) || !this.admits(identity, replica.ordinal)) {
       replica.release();
       return;
     }
@@ -599,7 +658,7 @@ export class ReplicationSession {
     replica: RestoredReplica,
     generation: number,
   ): void {
-    if (!this.current(generation)) {
+    if (!this.current(generation) || !this.admits(identity, replica.ordinal)) {
       replica.release();
       return;
     }
@@ -611,7 +670,7 @@ export class ReplicationSession {
   }
 
   private async confirmedCandidate(
-    prior: Pick<ReplicaCacheCandidate, "identity" | "revision">,
+    prior: Pick<ReplicaCacheCandidate, "identity" | "revision" | "ordinal">,
   ): Promise<BoundRestoredReplica> {
     return this.confirmed(
       await this.storage.restoreCandidateOutcome(
@@ -637,19 +696,28 @@ export class ReplicationSession {
 
   private async acceptConfirmedInitial(
     frame: ReplicationFrame,
-    prior: Pick<ReplicaCacheCandidate, "identity" | "revision"> | undefined,
+    prior:
+      | Pick<ReplicaCacheCandidate, "identity" | "revision" | "ordinal">
+      | undefined,
     action: Exclude<ReplicationCandidateFrameAction, "invalid">,
     generation: number,
   ): Promise<boolean> {
     switch (action) {
       case "resume":
+      case "acknowledge":
       case "duplicate": {
         if (
           prior === undefined ||
           (action === "resume" && frame.type !== "ResumeReady") ||
-          (action === "duplicate" && frame.type !== "Change")
+          (action !== "resume" && frame.type !== "Change")
         ) {
           throw new Error("authenticated resume has no cached replica candidate");
+        }
+        if (
+          action !== "duplicate" &&
+          (frame.type === "ResumeReady" || frame.type === "Change")
+        ) {
+          if (await this.acknowledge(frame, generation) === undefined) return false;
         }
         const restored = await this.confirmedCandidate(prior);
         this.publishReplica(restored.identity, restored, false, generation);
@@ -767,35 +835,48 @@ export class ReplicationSession {
           { signal: this.controller.signal, lease: this.lease },
         );
         if (installed === undefined) return false;
-        if (installed.revision === frame.revision) {
-          this.publishReplica(frame.identity, installed, false, generation);
-          await this.settled(frame, generation);
-        } else {
+        if (installed.revision !== frame.revision) {
           installed.release();
+          throw new Error("replication snapshot does not install the committed revision");
         }
+        this.publishReplica(frame.identity, installed, false, generation);
+        await this.settled(frame, generation);
         return false;
       }
       case "Change": {
         const prior = this.state.value;
         const disposition = classifyReplicationChange(prior, frame);
+        if (prior === undefined || disposition === "gap") {
+          throw new Error("replication change does not continue the committed revision");
+        }
         if (disposition === "duplicate") {
           await this.settled(frame, generation);
           return false;
         }
-        if (disposition === "gap") {
-          throw new Error("replication change does not continue the committed revision");
+        if (disposition === "acknowledge") {
+          const acknowledged = await this.acknowledge(frame, generation);
+          if (acknowledged === undefined) return true;
+          this.publish({
+            status: "open",
+            value: Object.freeze({
+              ...prior,
+              ordinal: Math.max(prior.ordinal, acknowledged),
+              stale: false,
+            }),
+          });
+          await this.settled(frame, generation);
+          return false;
         }
         const installed = await this.storage.applyChange(frame, {
           signal: this.controller.signal,
           lease: this.lease,
         });
-        if (installed === undefined) return false;
-        if (installed.revision === frame.revision) {
-          this.publishReplica(frame.identity, installed, false, generation);
-          await this.settled(frame, generation);
-        } else {
-          installed.release();
+        if (installed === undefined || installed.revision !== frame.revision) {
+          installed?.release();
+          throw new Error("replication change does not continue the durable revision");
         }
+        this.publishReplica(frame.identity, installed, false, generation);
+        await this.settled(frame, generation);
         return false;
       }
       case "ResumeReady": {
@@ -807,9 +888,15 @@ export class ReplicationSession {
           this.quarantine(generation);
           throw new Error("resume acknowledgement does not match the restored replica");
         }
+        const acknowledged = await this.acknowledge(frame, generation);
+        if (acknowledged === undefined) return true;
         this.publish({
           status: "open",
-          value: Object.freeze({ ...prior, stale: false }),
+          value: Object.freeze({
+            ...prior,
+            ordinal: Math.max(prior.ordinal, acknowledged),
+            stale: false,
+          }),
         });
         await this.settled(frame, generation);
         return false;

@@ -76,10 +76,11 @@ const datom = (e: number, a: number, v: string): Datom => ({
 
 const manifest = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   partition: replicaPartitionKey(identity()),
-  storageVersion: 3,
+  storageVersion: 4,
   identity: identity(),
   readCompatibilityHash: READ_COMPATIBILITY,
   revision: opaque("r"),
+  ordinal: 1,
   datoms: [
     { entity: opaque("e"), field: ":item/name", value: { type: "string", value: "x" }, op: "add" },
     { entity: opaque("e"), field: ":item/friend", value: { type: "ref", value: opaque("f") }, op: "add" },
@@ -211,11 +212,17 @@ describe("manifest validation", () => {
   test("a complete manifest of the requested partition validates", () => {
     const result = validated();
     expect(Result.isSuccess(result)).toBe(true);
-    if (Result.isSuccess(result)) expect(result.success.revision).toBe(opaque("r"));
+    if (Result.isSuccess(result)) {
+      expect(result.success.revision).toBe(opaque("r"));
+      expect(result.success.ordinal).toBe(1);
+    }
   });
 
   test("a record that cannot state its shape is undecodable", () => {
     expect(reasonOf(validated({ identity: undefined }))).toBe("manifest-undecodable");
+    for (const ordinal of [undefined, 0, -1, 1.5, "1"]) {
+      expect(reasonOf(validated({ ordinal }))).toBe("manifest-undecodable");
+    }
     expect(reasonOf(validated({ datoms: undefined }))).toBe("manifest-undecodable");
     expect(reasonOf(validated({ attributes: "not an array" }))).toBe("manifest-undecodable");
     expect(reasonOf(validated({ entityIds: [["only one element"]] })))

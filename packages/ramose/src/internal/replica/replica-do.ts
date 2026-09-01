@@ -17,6 +17,8 @@ import { type Basis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
 import {
   decideReplicationRevisionRetention,
+  isReplicationProgression,
+  issueReplicationOrdinal,
 } from "./revision-retention.ts";
 import {
   decideServerIdentityBinding,
@@ -740,6 +742,15 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         if (storedBinding !== undefined && storedBinding !== body.binding) {
           return json({ error: "replication binding mismatch" }, 409);
         }
+        const progressed = this.getMeta<unknown>("replication-progression");
+        const issuance = issueReplicationOrdinal(
+          isReplicationProgression(progressed) ? progressed : undefined,
+          { revision: body.revision, basisT: body.basisT as number },
+        );
+        if (issuance.type === "refused") {
+          return json({ ok: true, stored: false, refused: "stale-basis" });
+        }
+        this.setMeta("replication-progression", issuance.progression);
         if (storedBinding === undefined) {
           this.setMeta("replication-binding", body.binding);
         }
@@ -769,7 +780,11 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
             body.revision,
             body.binding,
           );
-          return json({ ok: true, stored: true });
+          return json({
+            ok: true,
+            stored: true,
+            ordinal: issuance.progression.ordinal,
+          });
         }
         const priorTouched = this.sql.exec(
           `SELECT MAX(touched) AS touched FROM replication_revisions
@@ -801,7 +816,11 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
             decision.evictCount,
           );
         }
-        return json({ ok: true, stored: true });
+        return json({
+          ok: true,
+          stored: true,
+          ordinal: issuance.progression.ordinal,
+        });
       }
       default:
         return json({ error: "not found" }, 404);

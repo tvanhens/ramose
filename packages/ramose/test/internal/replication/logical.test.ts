@@ -86,7 +86,7 @@ describe("large logical replication values", () => {
     const revision = opaque("H");
     let state = apply(emptyClientReplicationState(), {
       type: "SnapshotStart",
-      protocol: 1,
+      protocol: 2,
       identity,
       snapshot,
       revision,
@@ -94,7 +94,7 @@ describe("large logical replication values", () => {
     for (let index = 0; index < values.length; index++) {
       const frame: ReplicationFrame = snapshotChunk({
         type: "SnapshotChunk",
-        protocol: 1,
+        protocol: 2,
         identity,
         snapshot,
         index,
@@ -114,10 +114,11 @@ describe("large logical replication values", () => {
     }
     state = apply(state, {
       type: "SnapshotCommit",
-      protocol: 1,
+      protocol: 2,
       identity,
       snapshot,
       revision,
+      ordinal: 1,
       chunks: values.length,
     });
 
@@ -157,14 +158,14 @@ describe("large logical replication values", () => {
     const revision = opaque("K");
     let state = apply(emptyClientReplicationState(), {
       type: "SnapshotStart",
-      protocol: 1,
+      protocol: 2,
       identity,
       snapshot,
       revision,
     });
     const chunk: ReplicationFrame = snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 1,
+      protocol: 2,
       identity,
       snapshot,
       index: 0,
@@ -180,10 +181,11 @@ describe("large logical replication values", () => {
     if (Result.isSuccess(decoded)) state = apply(state, decoded.success);
     state = apply(state, {
       type: "SnapshotCommit",
-      protocol: 1,
+      protocol: 2,
       identity,
       snapshot,
       revision,
+      ordinal: 1,
       chunks: 1,
     });
     expect(state.committed?.datoms.map((datom) => datom.value)).toEqual([

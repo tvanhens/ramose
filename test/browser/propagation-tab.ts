@@ -194,14 +194,15 @@ export const seedDatabases = async (
       const graphPath = entry.graphPath ?? [];
       const snapshot = opaque("q");
       await storage.startSnapshot({
-        type: "SnapshotStart", protocol: 1, identity, snapshot, revision: REVISION,
+        type: "SnapshotStart", protocol: 2, identity, snapshot, revision: REVISION,
       });
       await storage.stageSnapshotChunk(snapshotChunk({
-        type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0,
+        type: "SnapshotChunk", protocol: 2, identity, snapshot, index: 0,
         datoms: entry.datoms,
       }));
       (await storage.commitSnapshot({
-        type: "SnapshotCommit", protocol: 1, identity, snapshot, revision: REVISION,
+        type: "SnapshotCommit", protocol: 2, identity, snapshot, revision: REVISION,
+        ordinal: 1,
         chunks: 1,
       }, installed.attributes))?.release();
       const address = replicationActivationAddress({
@@ -458,8 +459,8 @@ export const serve = (id: string): void =>
         replicaRouteScope(address),
         replicaRoutePathKey(child ? CHILD_PATH : []),
       ]);
-      return outcome(() =>
-        store.bindAuthenticated({
+      return outcome(async () => {
+        await store.bindAuthenticated({
           fingerprint,
           identity,
           candidateKey: { selector, routeSlot },
@@ -469,8 +470,8 @@ export const serve = (id: string): void =>
             slot: routeSlot,
             ...(child ? { graphPath: CHILD_PATH } : {}),
           },
-        }, { lease: held })
-      );
+        }, { lease: held });
+      });
     },
 
     installHeld: async (
@@ -484,14 +485,14 @@ export const serve = (id: string): void =>
       const revision = opaque("i");
       return outcome(async () => {
         await store.startSnapshot({
-          type: "SnapshotStart", protocol: 1, identity, snapshot, revision,
+          type: "SnapshotStart", protocol: 2, identity, snapshot, revision,
         }, { lease: held });
         await store.stageSnapshotChunk(snapshotChunk({
-          type: "SnapshotChunk", protocol: 1, identity, snapshot, index: 0,
+          type: "SnapshotChunk", protocol: 2, identity, snapshot, index: 0,
           datoms: noteDatoms([note]),
         }), { lease: held });
         (await store.commitSnapshot({
-          type: "SnapshotCommit", protocol: 1, identity, snapshot, revision, chunks: 1,
+          type: "SnapshotCommit", protocol: 2, identity, snapshot, revision, ordinal: 1, chunks: 1,
         }, (await installClientCatalog(NotesSchema)).attributes, {
           lease: held,
         }))?.release();
@@ -586,7 +587,8 @@ export const serve = (id: string): void =>
         seeded: SeededNote,
       ): Promise<string> => {
         const installed = await opened.applyChange(changeFrame({
-          type: "Change", protocol: 1, identity, from: base, revision: at,
+          type: "Change", protocol: 2, identity, from: base, revision: at,
+          ordinal: 2,
           datoms: noteDatoms([seeded]),
         }));
         const landed = installed?.revision ?? "";
