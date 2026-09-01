@@ -98,7 +98,9 @@ transactor's batch statistics, and destroys the stage. It requires the same
 Cloudflare variables as the e2e suite. Transactor tuning variables such as
 `RAMOSE_MAX_BATCH` and `RAMOSE_BATCH_BUDGET_MS` are forwarded to the stage, and
 `BENCH_LABEL` tags the printed rows so runs can be compared. `KEEP_STAGE=1`
-retains the stage.
+retains the stage. `bun run bench:cf:compare` runs the same benchmark twice,
+first against the `master` package source and then against the current
+branch, so the two result tables can be compared directly.
 
 ## Documentation site
 
