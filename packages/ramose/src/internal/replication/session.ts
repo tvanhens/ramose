@@ -465,6 +465,7 @@ export class ReplicationSession {
                 await options.storage.bindAuthenticated({
                   fingerprint: confirmedFingerprint,
                   identity: frameIdentity,
+                  claimsPartition: action !== "terminal",
                   ...(candidateKey === undefined
                     ? {}
                     : { candidateKey: { selector: candidateKey.selector, routeSlot: confirmedSlot } }),
