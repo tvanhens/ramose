@@ -6,13 +6,13 @@ import type { RamoseEnv } from "../RamoseEnv.ts";
 import {
   MAX_READ_LEASE_MS,
   constructAuthorizedResolvedRequestContext,
-  executeAuthorizedGraphPathTarget,
-  graphPathLeaseIdentity,
-  sameGraphPathLeaseIdentity,
+  executeAuthorizedDatabaseTarget,
+  databaseLeaseIdentity,
+  sameDatabaseLeaseIdentity,
   type AuthenticatedCaller,
-  type AuthorizedGraphPathTarget,
+  type AuthorizedDatabaseTarget,
   type DatabaseCatalogBindings,
-  type GraphPathLeaseIdentity,
+  type DatabaseLeaseIdentity,
   type ResolvedDatabaseRoute,
 } from "../internal/authorization/index.ts";
 import type { Db } from "../internal/core/db.ts";
@@ -77,8 +77,8 @@ const makeStreamAbortController = (): AbortController => new AbortController();
 
 type AuthorizedVersion = {
   readonly caller: AuthenticatedCaller;
-  readonly target: AuthorizedGraphPathTarget;
-  readonly pathIdentity: GraphPathLeaseIdentity;
+  readonly target: AuthorizedDatabaseTarget;
+  readonly pathIdentity: DatabaseLeaseIdentity;
   readonly identity: ReplicationIdentity;
   readonly leaseExpiresAt: number;
 };
@@ -96,7 +96,7 @@ export type AuthorizedReplicationInput = {
   readonly bindings: DatabaseCatalogBindings;
   readonly root: ResolvedDatabaseRoute;
   readonly initialCaller: AuthenticatedCaller;
-  readonly initialTarget: AuthorizedGraphPathTarget;
+  readonly initialTarget: AuthorizedDatabaseTarget;
   readonly headers: Record<string, string>;
   readonly boundaries?: RuntimeBoundaries;
 };
@@ -302,17 +302,17 @@ const remember = (
   );
 
 const sameVersion = (
-  expectedPath: GraphPathLeaseIdentity,
+  expectedPath: DatabaseLeaseIdentity,
   expectedIdentity: ReplicationIdentity,
   version: AuthorizedVersion,
 ): boolean =>
-  sameGraphPathLeaseIdentity(expectedPath, version.pathIdentity) &&
+  sameDatabaseLeaseIdentity(expectedPath, version.pathIdentity) &&
   sameReplicationIdentity(expectedIdentity, version.identity);
 
 const snapshotFrames = async function* (
   input: ReplicationRun,
   authorize: () => Promise<AuthorizedVersion>,
-  expectedPath: GraphPathLeaseIdentity,
+  expectedPath: DatabaseLeaseIdentity,
   expectedIdentity: ReplicationIdentity,
   signal: AbortSignal,
 ): AsyncGenerator<ReplicationFrame, ServerReplicaState, undefined> {
@@ -440,7 +440,7 @@ const snapshotFrames = async function* (
 const resetFrames = async function* (
   input: ReplicationRun,
   authorize: () => Promise<AuthorizedVersion>,
-  expectedPath: GraphPathLeaseIdentity,
+  expectedPath: DatabaseLeaseIdentity,
   expectedIdentity: ReplicationIdentity,
   signal: AbortSignal,
 ): AsyncGenerator<ReplicationFrame, ServerReplicaState, undefined> {
@@ -467,7 +467,7 @@ const advanceFrames = async function* (
   input: ReplicationRun,
   authorize: () => Promise<AuthorizedVersion>,
   authorizeAt: (version: AuthorizedVersion, basisT: number) => Promise<Db>,
-  expectedPath: GraphPathLeaseIdentity,
+  expectedPath: DatabaseLeaseIdentity,
   expectedIdentity: ReplicationIdentity,
   previous: { readonly basisT: number; readonly revision: OpaqueReplicationId },
   signal: AbortSignal,
@@ -656,10 +656,7 @@ const replicationFrames = async function* (
   context: Context.Context<JwtVerifier>,
   signal: AbortSignal,
 ): AsyncGenerator<ReplicationFrame, void, undefined> {
-  const expectedPath = graphPathLeaseIdentity(
-    input.initialTarget,
-    input.activation.graphPath,
-  );
+  const expectedPath = databaseLeaseIdentity(input.initialTarget);
   let effectiveSignal = signal;
   const run = <A>(effect: Effect.Effect<A, unknown, JwtVerifier>): Promise<A> =>
     Effect.runPromise(effect.pipe(Effect.provide(context)), {
@@ -676,28 +673,24 @@ const replicationFrames = async function* (
         caller.exp * 1_000,
         leaseStartedAt + MAX_READ_LEASE_MS,
       );
-      const target = yield* executeAuthorizedGraphPathTarget({
+      const target = yield* executeAuthorizedDatabaseTarget({
         authenticate: Effect.succeed(caller),
         bindings: input.bindings,
         root: input.root,
-        path: input.activation.graphPath,
         currentDb: acquireCurrentDb(input.env, input.request, {
           bypassBasisCache: true,
           authoritativeBasisFence: true,
         }),
         provision: () => Effect.void,
       }, (authorized) => Effect.succeed(authorized));
-      const pathIdentity = graphPathLeaseIdentity(
-        target,
-        input.activation.graphPath,
-      );
+      const pathIdentity = databaseLeaseIdentity(target);
       const identity = yield* Effect.tryPromise({
         try: async () => makeReplicationIdentity({
           sealing: input.sealing,
           origin,
           caller,
           path: pathIdentity,
-          readRoutes: await replicationReadRouteIdentities(target.routes),
+          readRoutes: await replicationReadRouteIdentities([target.route]),
         }),
         catch: (cause) => runtimeError("replication identity derivation failed", cause),
       });
@@ -966,10 +959,7 @@ export const authorizedReplicationResponse = (
         reason: "replication identity bindings unavailable",
       });
     }
-    const initialPath = graphPathLeaseIdentity(
-      input.initialTarget,
-      input.activation.graphPath,
-    );
+    const initialPath = databaseLeaseIdentity(input.initialTarget);
     const identityRoot = yield* Effect.tryPromise({
       try: () => serverIdentityRoot(input.env),
       catch: (cause) => runtimeError("server identity root unavailable", cause),
@@ -986,7 +976,7 @@ export const authorizedReplicationResponse = (
         origin: new URL(input.request.url).origin,
         caller: input.initialCaller,
         path: initialPath,
-        readRoutes: await replicationReadRouteIdentities(input.initialTarget.routes),
+        readRoutes: await replicationReadRouteIdentities([input.initialTarget.route]),
       }),
       catch: (cause) => runtimeError("replication identity derivation failed", cause),
     });

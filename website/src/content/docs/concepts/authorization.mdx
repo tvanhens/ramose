@@ -1,19 +1,19 @@
 ---
 title: Authorization
-description: How Ramose filters immutable database values, grants exact operations, seals metadata, and composes access across graph paths.
+description: How Ramose filters immutable database values, grants exact operations, and seals metadata.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
 Authorization is one invariant: every external read runs against an immutable database value filtered for the verified principal before query semantics begin.
 
-<Learn learn={["Why filtering precedes queries and synchronization", "How read rules narrow from entity to trait to field", "Why operation grants and graph-path access are separate checks"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={9} />
+<Learn learn={["Why filtering precedes queries and synchronization", "How read rules narrow from entity to trait to field", "Why operation grants are separate checks"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={9} />
 
 ## Authentication names a principal
 
 A deployment verifies a JWT's signature, issuer, audience, lifetime, and subject. The token identifies a principal across the deployment; it does not select a database, catalog, or policy.
 
-Trusted root routing and authorized Graph rows establish server-owned graph bindings. Callers cannot combine an internal database with another catalog.
+Trusted routing selects a server-owned database and catalog. Callers cannot combine an internal database with another catalog.
 
 ## Filtering precedes query semantics
 
@@ -30,10 +30,6 @@ Read rules may use stable roles, claims, subject identity, the current resource,
 ## Operations have exact grants
 
 Read rules do not authorize mutations. Every owned operation has its own session-only allow or deny decision. Targeted operations also require a visible compatible target in the current filtered database. The server repeats those checks at commit time; discovery and client method presence are not authority.
-
-## Paths compose authorization
-
-Every Graph path segment must remain readable. Long-lived synchronization holds a bounded lease over the complete path and stops output after expiry until every segment is authorized again. Archive, rename, membership, policy, catalog, and token changes participate in that decision.
 
 ## Public observations are sealed
 

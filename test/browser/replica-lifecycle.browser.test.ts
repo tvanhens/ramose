@@ -46,7 +46,6 @@ const identity = (overrides: Partial<ReplicationIdentity> = {}): ReplicationIden
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: READ_COMPATIBILITY,
-  graphLineage: [],
   authenticator: opaque("a"),
   ...overrides,
 });
@@ -653,7 +652,6 @@ browserTest("destructive maintenance closes the sessions bound to the affected r
   const address = replicationActivationAddress({
     server: "http://127.0.0.1:1",
     root: "root",
-    graphPath: [],
   });
   const routeSlot = await rootReplicaRouteSlot();
   let leftSession: ReplicationSession | undefined;
@@ -674,7 +672,7 @@ browserTest("destructive maintenance closes the sessions bound to the affected r
 
     const openSession = (credential: string): Promise<ReplicationSession> =>
       ReplicationSession.open({
-        activation: { server: "http://127.0.0.1:1", root: "root", graphPath: [] },
+        activation: { server: "http://127.0.0.1:1", root: "root" },
         credential,
         attributes,
         readCompatibilityHash: READ_COMPATIBILITY,

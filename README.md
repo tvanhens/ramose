@@ -23,8 +23,8 @@ authoritative Worker and storage topology into your account.
 
 - **A typed schema.** One TypeScript file your app, your rules, and your deploy
   all import. A wrong write is a red squiggle, not a bad row.
-- **Graphs of graphs.** Keep related facts queryable together, then introduce
-  child databases only where isolation, authorization, or lifecycle demands it.
+- **One coherent graph.** Keep related facts queryable together in one typed,
+  authorized database instead of coordinating a hierarchy of databases.
 - **Portable authoring.** Schemas, queries, and operation declarations are
   ordinary values shared by browser, server, policy, and MCP.
 - **Permissions in the database.** Who may read or write each field is checked
@@ -48,7 +48,7 @@ Effect Schemas. `alchemy` comes with Ramose for deploys. Apps using
 ## Learn more
 
 - [What is Ramose?](https://ramose.ai/getting-started/introduction/) — the one-minute version
-- [Mental model](https://ramose.ai/concepts/mental-model/) — graphs, catalogs, queries, operations, and replicas
+- [Mental model](https://ramose.ai/concepts/mental-model/) — databases, catalogs, queries, operations, and replicas
 - [Getting started](https://ramose.ai/getting-started/quickstart/) — build a small offline-first web app
 - [Connect an agent](https://ramose.ai/getting-started/connect-an-agent/) — use the same model through MCP
 - [How it compares](https://ramose.ai/getting-started/compare/) — against Convex, Supabase, Instant, Firebase, and D1

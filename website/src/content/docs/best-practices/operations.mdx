@@ -26,7 +26,7 @@ Do not expose a universal patch operation. It weakens authorization, lets caller
 
 Put validation, defaults, fixed bindings, reference checks, derived writes, and related entity changes in the authoritative operation. UI code and MCP callers provide intent; they do not reproduce the transaction.
 
-An operation may update multiple entities atomically when they are in the same graph and permitted by its declared write scope. If work crosses graphs or external systems, model a workflow with durable state and compensating actions. Do not pretend it is one transaction.
+An operation may update multiple entities atomically when permitted by its declared write scope. If work crosses into external systems, model a workflow with durable state and compensating actions. Do not pretend it is one transaction.
 
 ## Separate targeted and targetless actions
 
@@ -34,7 +34,7 @@ A targeted operation acts on a visible compatible entity. Its invocation needs b
 
 A targetless operation creates or initiates something without an existing target, such as `createTask`. It needs the exact operation grant and belongs on the database mutation namespace.
 
-Keep creation inputs minimal. Server-side defaults and graph bindings should stamp fields the caller is not allowed to choose.
+Keep creation inputs minimal. Server-side defaults and fixed bindings should stamp fields the caller is not allowed to choose.
 
 ## Make optimism deterministic
 
@@ -62,7 +62,7 @@ Use entity-level pending state for quiet row feedback. Observe the exact receipt
 
 Generate an invocation id before queueing. Retry the same intent with the same id after timeouts, restarts, or reconnects. Generate a new id only for a genuinely new action.
 
-The stored receipt is scoped to the principal, graph, operation, target, and input. Reusing an id with a different intent returns `invocation_conflict`; never catch that error and silently mint another id.
+The stored receipt is scoped to the principal, database, operation, target, and input. Reusing an id with a different intent returns `invocation_conflict`; never catch that error and silently mint another id.
 
 ## Document consequences
 

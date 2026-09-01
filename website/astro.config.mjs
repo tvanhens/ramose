@@ -26,7 +26,6 @@ export default defineConfig({
     "/reference/configuration/": "/reference/server/#configuration",
     "/reference/runbook/": "/reference/server/#operations",
     "/getting-started/first-app/": "/getting-started/quickstart/",
-    "/guides/workspaces/": "/guides/subgraphs/",
     "/guides/live-queries/": "/guides/react/",
   },
   integrations: [
@@ -118,7 +117,6 @@ export default defineConfig({
           label: "Build",
           items: [
             { label: "Schemas and traits", slug: "guides/catalog" },
-            { label: "Graphs and subgraphs", slug: "guides/subgraphs" },
             { label: "Read data", slug: "guides/queries" },
             { label: "Mutate data", slug: "guides/transactions" },
             { label: "React and offline UX", slug: "guides/react" },
@@ -130,7 +128,6 @@ export default defineConfig({
         {
           label: "Deep dives",
           items: [
-            { label: "Graph of graphs", slug: "concepts/graph-of-graphs" },
             { label: "Data model", slug: "concepts/data-model" },
             { label: "Query model", slug: "concepts/queries" },
             { label: "Operations", slug: "concepts/operations" },
@@ -145,7 +142,6 @@ export default defineConfig({
           label: "Best practices",
           items: [
             { label: "Model domains", slug: "best-practices/data-modeling" },
-            { label: "Graph boundaries", slug: "best-practices/graph-boundaries" },
             { label: "Query performance", slug: "best-practices/query-performance" },
             { label: "Operations and offline", slug: "best-practices/operations" },
             { label: "Security", slug: "best-practices/security" },

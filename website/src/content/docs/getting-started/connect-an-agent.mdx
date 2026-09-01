@@ -6,7 +6,7 @@ import Learn from "../../../components/Learn.astro";
 import SurfaceMap from "../../../components/SurfaceMap.astro";
 import Next from "../../../components/Next.astro";
 
-Every Ramose deployment exposes one MCP endpoint at `POST /mcp`. It lists exactly three tools—`describe`, `query`, and `mutate`—regardless of how many entities, operations, or child graphs your application contains.
+Every Ramose deployment exposes one MCP endpoint at `POST /mcp`. It lists exactly three tools—`describe`, `query`, and `mutate`—regardless of how many entities or operations your application contains.
 
 This guide connects to the task app from [Build your first Ramose web app](/getting-started/quickstart/).
 
@@ -45,16 +45,15 @@ After initialization, `tools/list` returns only:
 
 ```text
 describe   Browse or search the visible application model
-query      Execute one bounded QueryDocument against an authorized graph
+query      Execute one bounded QueryDocument against the authorized database
 mutate     Invoke one exact authorized operation with a durable receipt
 ```
 
-The agent begins at its authorized root with `describe`:
+The agent begins with `describe` with `describe`:
 
 ```json
 {
-  "at": [],
-  "browse": { "kinds": ["entity", "operation", "graph"] },
+  "browse": { "kinds": ["entity", "operation"] },
   "page": { "limit": 20 }
 }
 ```
@@ -67,7 +66,6 @@ The agent can now call `query` with the exact entity reference returned by `desc
 
 ```json
 {
-  "at": [],
   "ifCatalog": "cat_opaque",
   "query": {
     "version": 1,
@@ -96,7 +94,6 @@ Suppose the query returned task `task_01H…`. The agent marks it done by invoki
 
 ```json
 {
-  "at": [],
   "ifCatalog": "cat_opaque",
   "operation": {
     "kind": "operation",
@@ -109,13 +106,11 @@ Suppose the query returned task `task_01H…`. The agent marks it done by invoki
 }
 ```
 
-`mutate` does not expose raw writes. Ramose re-resolves the graph path, operation, target visibility, input schema, and grant at execution time. An identical retry with the same `invocationId` returns the original result and receipt. Reusing that id for different input returns `invocation_conflict`.
+`mutate` does not expose raw writes. Ramose re-resolves the operation, target visibility, input schema, and grant at execution time. An identical retry with the same `invocationId` returns the original result and receipt. Reusing that id for different input returns `invocation_conflict`.
 
 ## 5. Watch the app converge
 
 The React task list updates from its normal synchronization stream. There is no agent-only callback, webhook, or second permission model. The MCP call and the UI mutation both pass through `Task.setDone` and the same policy.
-
-When the app later introduces project subgraphs, the tool list remains unchanged. Discovery may return a child path such as `at: ["acme", "launch"]`; the agent uses that path in later calls. Every segment is authorized again.
 
 ## Recovery agents should implement
 
@@ -127,7 +122,7 @@ When the app later introduces project subgraphs, the tool list remains unchanged
 | `invocation_conflict` | generate a new invocation id only for a genuinely new intent |
 
 <Next links={[
-  { href: "/guides/mcp/", label: "MCP guide", why: "graph traversal, paging, safety, and production setup" },
+  { href: "/guides/mcp/", label: "MCP guide", why: "paging, safety, and production setup" },
   { href: "/reference/mcp/", label: "MCP reference", why: "the exact three-tool contracts and errors" },
   { href: "/reference/query-document/", label: "QueryDocument v1", why: "the portable query grammar used by agents" },
 ]} />

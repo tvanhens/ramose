@@ -19,7 +19,6 @@ const Bound = Trait("typedBound", {
   bind: (catalog) => ({
     values: { catalog: catalog.key },
     defaults: { compositionLabel: () => "composition" },
-    dependencies: [catalog],
   }),
 });
 

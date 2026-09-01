@@ -30,56 +30,19 @@ import {
   type QueryDocumentV1,
 } from "./contract.ts";
 
-const GRAPH_TRAIT_IDENT = ":graph";
-const GRAPH_NAME_IDENT = ":graph/name";
-
 export type DescribeResultV1 = {
-  readonly at: readonly string[];
   readonly entities: readonly string[];
   readonly operations: readonly {
     readonly owner: { readonly kind: "entity" | "trait"; readonly name: string };
     readonly name: string;
     readonly version: string;
   }[];
-  readonly graphs: readonly string[];
   readonly truncated: boolean;
 };
 
-const visibleGraphNames = async (
-  context: AuthorizedRequestContext,
-  limit: number,
-): Promise<{ names: string[]; truncated: boolean }> => {
-  const attribute = context.currentDb.attr(GRAPH_NAME_IDENT);
-  const composition = context.filteredDb.composition;
-  if (attribute === undefined || composition === undefined) {
-    return { names: [], truncated: false };
-  }
-  const found = new Set<string>();
-  let truncated = false;
-  outer: for await (
-    const chunk of context.filteredDb.datoms(Index.AEVT, { a: attribute.id })
-  ) {
-    for (const datom of chunk) {
-      if (typeof datom.v !== "string") continue;
-      const row = await context.filteredDb.entity(datom.e);
-      const type = row?.[RAMOSE_TYPE_IDENT];
-      if (typeof type !== "string" || !composition.isEntityIdent(type)) continue;
-      if (!composition.transitiveTraits(type).includes(GRAPH_TRAIT_IDENT)) continue;
-      if (found.has(datom.v)) continue;
-      if (found.size >= limit) {
-        truncated = true;
-        break outer;
-      }
-      found.add(datom.v);
-    }
-  }
-  return { names: [...found].sort(), truncated };
-};
-
-export const describeGraph = async (
+export const describeDatabase = async (
   context: AuthorizedRequestContext,
   caller: AuthenticatedCaller,
-  at: readonly string[],
 ): Promise<DescribeResultV1> => {
   const catalog = context.unit.catalog;
   const typeAttribute = context.currentDb.attr(RAMOSE_TYPE_IDENT);
@@ -123,13 +86,10 @@ export const describeGraph = async (
       version: encodeOperationVersionToken(descriptor.version),
     }));
   }
-  const graphs = await visibleGraphNames(context, MAX_DESCRIBE_ITEMS);
   return Object.freeze({
-    at: Object.freeze([...at]),
     entities: Object.freeze(entities.sort()),
     operations: Object.freeze(operations),
-    graphs: Object.freeze(graphs.names),
-    truncated: truncated || graphs.truncated,
+    truncated,
   });
 };
 

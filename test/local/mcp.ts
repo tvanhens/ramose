@@ -2,7 +2,6 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { schemaTx } from "../../packages/ramose/src/db/internal.ts";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { json, testAdmin, type LocalUrls } from "./fixtures.ts";
-import { GRAPH_PATH_ROOT_DATABASE, GraphPathRootSchema } from "./graph-path-catalog.ts";
 import { OperationSchema } from "./operation-catalog.ts";
 
 const MCP_HEADERS = {
@@ -122,7 +121,7 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       const database = "operations-mcp-describe";
       await install(base, database, schemaTx(OperationSchema));
 
-      const discovered = await ok(base, database, member, "describe", { at: [] });
+      const discovered = await ok(base, database, member, "describe", {});
       expect(discovered.operations.length).toBeGreaterThan(0);
       const createItem = ref(discovered, "nativeItem", "create");
       const createOther = ref(discovered, "nativeOther", "create");
@@ -140,14 +139,13 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
         invocationId: crypto.randomUUID(),
       });
 
-      const asMember = await ok(base, database, member, "describe", { at: [] });
+      const asMember = await ok(base, database, member, "describe", {});
       expect(asMember.entities).toEqual(["nativeItem"]);
-      expect(asMember.graphs).toEqual([]);
 
       expect(asMember.truncated).toBe(false);
       expect(JSON.stringify(asMember)).not.toContain(database);
 
-      const asReader = await ok(base, database, reader, "describe", { at: [] });
+      const asReader = await ok(base, database, reader, "describe", {});
       expect(asReader.entities.sort()).toEqual(["nativeItem", "nativeOther"]);
 
       expect(asReader.operations).toEqual([]);
@@ -157,7 +155,7 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       const base = ctx.urls().nativeOperationsUrl;
       const database = "operations-mcp-query";
       await install(base, database, schemaTx(OperationSchema));
-      const discovered = await ok(base, database, member, "describe", { at: [] });
+      const discovered = await ok(base, database, member, "describe", {});
       const read = (query: unknown) => ok(base, database, member, "query", { query });
 
       for (const title of ["alpha", "beta"]) {
@@ -312,7 +310,7 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       const base = ctx.urls().nativeOperationsUrl;
       const database = "operations-mcp-mutate";
       await install(base, database, schemaTx(OperationSchema));
-      const discovered = await ok(base, database, member, "describe", { at: [] });
+      const discovered = await ok(base, database, member, "describe", {});
       const create = ref(discovered, "nativeItem", "create");
       const invocationId = crypto.randomUUID();
       const call = (title: string, id = invocationId, operation = create) => ({
@@ -426,7 +424,7 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
 
       const exp = Math.floor(Date.now() / 1_000) + 4;
       const expiring = await signToken(database, "member", "user_ada", undefined, { exp });
-      const discovered = await ok(base, database, expiring, "describe", { at: [] });
+      const discovered = await ok(base, database, expiring, "describe", {});
       const armed = await testAdmin(base, database, "/checkpoint", {
         scope: "worker",
         action: "arm-wait",
@@ -483,7 +481,7 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       const base = ctx.urls().mcpBudgetUrl;
       const database = "operations-mcp-budget";
       await install(base, database, schemaTx(OperationSchema));
-      const discovered = await ok(base, database, member, "describe", { at: [] });
+      const discovered = await ok(base, database, member, "describe", {});
       await ok(base, database, member, "mutate", {
         operation: ref(discovered, "nativeEncoded", "create"),
         input: { label: "budgeted" },
@@ -527,44 +525,5 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
       })).toEqual(unknown);
     });
 
-    test("at traverses the authorized graph of graphs", async () => {
-      const base = ctx.urls().graphPathsUrl;
-      const database = GRAPH_PATH_ROOT_DATABASE;
-      await install(base, database, schemaTx(GraphPathRootSchema));
-      const root = await ok(base, database, member, "describe", { at: [] });
-      const name = `mcp-${crypto.randomUUID().slice(0, 8)}`;
-      await ok(base, database, member, "mutate", {
-        at: [],
-        operation: ref(root, "localWorkspace", "create"),
-        input: { name },
-        invocationId: crypto.randomUUID(),
-      });
-
-      const withChild = await ok(base, database, member, "describe", { at: [] });
-      expect(withChild.entities).toContain("localWorkspace");
-      expect(withChild.graphs).toContain(name);
-
-      expect(withChild.entities).not.toContain("localPrivateWorkspace");
-
-      const child = await ok(base, database, member, "describe", { at: [name] });
-      expect(child.operations.map((operation: any) => operation.owner.name))
-        .toContain("localProject");
-      expect(child.entities).toEqual([]);
-
-      await ok(base, database, member, "mutate", {
-        at: [name],
-        operation: ref(child, "localProject", "create"),
-        input: { name: "nested" },
-        invocationId: crypto.randomUUID(),
-      });
-      const populated = await ok(base, database, member, "describe", { at: [name] });
-      expect(populated.entities).toContain("localProject");
-
-      expect(await callTool(base, database, member, "describe", { at: ["no-such-graph"] }))
-        .toMatchObject({
-          isError: true,
-          value: { code: "inaccessible", retryable: false },
-        });
-    });
   });
 };

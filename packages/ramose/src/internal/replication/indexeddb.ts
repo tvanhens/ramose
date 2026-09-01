@@ -136,8 +136,8 @@ const OPTIMISTIC_LAYER_DATABASE_VERSION = 10;
 export const REPLICA_MANIFEST_STORAGE_VERSION =
   OPTIMISTIC_LAYER_DATABASE_VERSION + 1;
 const MANIFEST_V3_DATABASE_VERSION = REPLICA_MANIFEST_STORAGE_VERSION;
-const GRAPH_RECEIVER_DATABASE_VERSION = MANIFEST_V3_DATABASE_VERSION + 1;
-const MANIFEST_V4_DATABASE_VERSION = GRAPH_RECEIVER_DATABASE_VERSION + 1;
+const DATABASE_ROUTE_DATABASE_VERSION = MANIFEST_V3_DATABASE_VERSION + 1;
+const MANIFEST_V4_DATABASE_VERSION = DATABASE_ROUTE_DATABASE_VERSION + 1;
 const MANIFEST_V5_DATABASE_VERSION = MANIFEST_V4_DATABASE_VERSION + 1;
 export const REPLICA_DATABASE_VERSION = MANIFEST_V5_DATABASE_VERSION;
 const DATABASE_VERSION = REPLICA_DATABASE_VERSION;
@@ -149,7 +149,6 @@ const NODES = "replica-nodes-v1";
 const CREDENTIAL_BINDINGS = "replica-credential-bindings-v1";
 const CACHE_CANDIDATES = "replica-cache-candidates-v1";
 const ROUTE_SLOTS = "replica-route-slots-v1";
-const GRAPH_RECEIVERS = "replica-graph-receivers-v1";
 const GENERATIONS = REPLICA_GENERATIONS_STORE;
 const USER_T = 2;
 
@@ -162,7 +161,6 @@ const REPLICA_STORE_FAMILIES = [
   CREDENTIAL_BINDINGS,
   CACHE_CANDIDATES,
   ROUTE_SLOTS,
-  GRAPH_RECEIVERS,
   GENERATIONS,
 ] as const;
 
@@ -235,18 +233,6 @@ type RouteSlotRecord = {
   readonly pathKey: string;
   readonly slot: ReplicaRouteSlot;
   readonly replicaScopes?: readonly string[];
-};
-
-export const REPLICA_GRAPH_RECEIVER_VERSION = 1 as const;
-
-export type ReplicaGraphReceiver = {
-  readonly key: string;
-  readonly version: typeof REPLICA_GRAPH_RECEIVER_VERSION;
-  readonly scope: string;
-  readonly route: string;
-  readonly graphPath: readonly string[];
-  readonly graphLineage: readonly string[];
-  readonly confirmedAt: number;
 };
 
 type GenerationRecord = {
@@ -362,7 +348,6 @@ export type ReplicaAuthenticatedBinding = {
   readonly candidateKey?: ReplicaCacheCandidateKey | undefined;
   readonly route?: (ReplicaRouteObservation & {
     readonly slot: ReplicaRouteSlot;
-    readonly graphPath?: readonly string[];
   }) | undefined;
 };
 
@@ -956,9 +941,6 @@ export class IndexedDbReplicaStorage {
       if (!database.objectStoreNames.contains(ROUTE_SLOTS)) {
         database.createObjectStore(ROUTE_SLOTS, { keyPath: ["scope", "pathKey"] });
       }
-      if (!database.objectStoreNames.contains(GRAPH_RECEIVERS)) {
-        database.createObjectStore(GRAPH_RECEIVERS, { keyPath: "key" });
-      }
       if (!database.objectStoreNames.contains(GENERATIONS)) {
         database.createObjectStore(GENERATIONS, { keyPath: "key" });
       }
@@ -1240,14 +1222,6 @@ export class IndexedDbReplicaStorage {
       if (!identityInScope(candidate.identity, scope)) continue;
       candidateStore.delete([candidate.selector, candidate.routeSlot]);
       candidates++;
-    }
-    const receiverStore = transaction.objectStore(GRAPH_RECEIVERS);
-    for (
-      const receiver of await requestResult<ReplicaGraphReceiver[]>(
-        receiverStore.getAll(),
-      )
-    ) {
-      if (receiver.scope === scopeKey) receiverStore.delete(receiver.key);
     }
     let routeObservations = 0;
     for (const observation of routeRecords) {
@@ -1933,20 +1907,6 @@ export class IndexedDbReplicaStorage {
     );
   }
 
-  async graphReceiver(
-    receiver: ReplicaDatabaseScope,
-  ): Promise<ReplicaGraphReceiver | undefined> {
-    const transaction = this.database.transaction(GRAPH_RECEIVERS, "readonly");
-    const record = await requestResult<ReplicaGraphReceiver | undefined>(
-      transaction.objectStore(GRAPH_RECEIVERS).get(replicaDatabaseKey(receiver)),
-    );
-    await transactionDone(transaction);
-    return record?.version === REPLICA_GRAPH_RECEIVER_VERSION &&
-        record.graphPath.length > 0
-      ? record
-      : undefined;
-  }
-
   async observedRouteSlot(
     observation: ReplicaRouteObservation,
   ): Promise<ReplicaRouteSlot | undefined> {
@@ -1965,7 +1925,7 @@ export class IndexedDbReplicaStorage {
     const scopeKey = this.assertScopeLive(replicaScopeOf(binding.identity));
     const databaseKey = replicaDatabaseKey(replicaDatabaseScopeOf(binding.identity));
     const transaction = this.database.transaction(
-      [CREDENTIAL_BINDINGS, CACHE_CANDIDATES, ROUTE_SLOTS, GRAPH_RECEIVERS, GENERATIONS],
+      [CREDENTIAL_BINDINGS, CACHE_CANDIDATES, ROUTE_SLOTS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
@@ -2023,21 +1983,6 @@ export class IndexedDbReplicaStorage {
             scopeKey,
           ),
         } satisfies RouteSlotRecord);
-        const graphPath = binding.route.graphPath ?? [];
-        if (
-          graphPath.length > 0 &&
-          graphPath.length === binding.identity.graphLineage.length
-        ) {
-          transaction.objectStore(GRAPH_RECEIVERS).put({
-            key: databaseKey,
-            version: REPLICA_GRAPH_RECEIVER_VERSION,
-            scope: scopeKey,
-            route: binding.route.scope,
-            graphPath: [...graphPath],
-            graphLineage: [...binding.identity.graphLineage],
-            confirmedAt: Date.now(),
-          } satisfies ReplicaGraphReceiver);
-        }
       }
       await commitTransaction(transaction);
       for (const scope of replaced) this.announce(replicaNotice("reset", scope));

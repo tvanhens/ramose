@@ -33,14 +33,11 @@ import type { ClientCatalog } from "./catalog.ts";
 import {
   clientQueryFrom,
   entityFocusOf,
-  GraphDatabaseHandle,
   type ClientQuery,
   type ClientValue,
   type EntityFocused,
   type EntityResult,
-  type GraphAncestor,
-  type GraphRegistry,
-} from "./graph.ts";
+} from "./query.ts";
 import { mutationNamespace, type MutationContext } from "./mutation.ts";
 import type { MutationNamespace } from "./mutation-schema.ts";
 import {
@@ -134,9 +131,6 @@ type RetiredObservation = {
 export type DatabaseContext = {
   readonly server: string;
   readonly root: string;
-  readonly graphPath: readonly string[];
-  readonly graphLineage?: (() => readonly string[] | undefined) | undefined;
-  readonly graph: () => GraphRegistry;
   readonly catalog: () => Promise<ClientCatalog>;
   readonly storage: () => Promise<IndexedDbReplicaStorage>;
   readonly credential: () => Promise<{
@@ -302,8 +296,8 @@ const activationStep = async <A>(
   }
 };
 
-export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
-  readonly query = { from: clientQueryFrom(this) };
+export class ClientDatabaseHandle implements ClientDatabase {
+  readonly query = { from: clientQueryFrom };
   private mutations: MutationNamespace | undefined;
 
   get mutate(): MutationNamespace {
@@ -316,11 +310,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   }
   private readonly syncStore = new Store<SyncState>(syncState("idle"));
   readonly sync = this.syncStore.subscription;
-  readonly binding: Subscription<unknown> = Object.freeze({
-    subscribe: () => () => undefined,
-    getSnapshot: () => this,
-  });
-  private readonly graphChildren = new Map<string, GraphDatabaseHandle>();
 
   private readonly observers = new Map<string, QueryObserver>();
   private readonly retired = new Map<string, RetiredObservation>();
@@ -350,7 +339,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private closed = false;
   private refused = false;
   private wakePending = false;
-  private awaitedRoute = false;
   private generation = 0;
   private confirmation = 0;
 
@@ -487,36 +475,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     return this.account !== undefined && this.account === credential.cacheKey;
   }
 
-  graphPath(): readonly string[] {
-    return this.context.graphPath;
-  }
-
-  activateGraph(): void {
-    void this.activate();
-  }
-
-  boundDatabase(): ClientDatabaseHandle | undefined {
-    return this.closed ? undefined : this;
-  }
-
-  bindingFailure(): Error | undefined {
-    return undefined;
-  }
-
-  graphChild(key: string, canonical: AnyQueryObject): GraphDatabaseHandle {
-    const existing = this.graphChildren.get(key);
-    if (existing !== undefined) return existing;
-    const child = new GraphDatabaseHandle(
-      this,
-      canonical,
-      this.context.graph(),
-      (operation) => this.context.assertLive(operation),
-      this.context.mutations,
-    );
-    this.graphChildren.set(key, child);
-    return child;
-  }
-
   activate(): Promise<void> {
     if (this.activation !== undefined) return this.activation;
     const opening = this.open().catch((cause: unknown) => {
@@ -627,17 +585,14 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       () => this.context.credential(),
     );
     if (!this.live()) return;
-    const lineage = this.context.graphLineage?.();
     this.account = credential.cacheKey;
     const session = await ReplicationSession.open({
       activation: {
         server: this.context.server,
         root: this.context.root,
-        graphPath: this.context.graphPath,
       },
       credential: credential.token,
       cacheKey: credential.cacheKey,
-      ...(lineage === undefined ? {} : { graphLineage: lineage }),
       attributes: catalog.attributes,
       readCompatibilityHash: catalog.readCompatibilityHash,
       storage,
@@ -659,24 +614,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   async refreshOptimistic(): Promise<void> {
     if (!this.live()) return;
     await this.reconciler?.refresh().catch(() => undefined);
-  }
-
-  reactivateUnconfirmed(): void {
-    if (!this.live() || this.identity !== undefined) return;
-    if (this.activation === undefined || this.context.graphPath.length === 0) return;
-    const session = this.session;
-    if (session === undefined) {
-      this.awaitedRoute = true;
-      return;
-    }
-    const status = session.snapshot().status;
-    if (status !== "failed" && status !== "terminal" && status !== "closed") return;
-    this.releaseSession?.();
-    this.releaseSession = undefined;
-    this.session = undefined;
-    this.activation = undefined;
-    this.spawn(session.close());
-    void this.activate();
   }
 
   async reconcileSubmissions(
@@ -750,16 +687,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
     this.publishStatus(this.statusOf(snapshot));
     this.spawn(this.recompute());
-    this.retryAwaitedRoute();
     this.answerWake();
-  }
-
-  private retryAwaitedRoute(): void {
-    if (!this.awaitedRoute || this.identity !== undefined) return;
-    const status = this.session?.snapshot().status;
-    if (status !== "failed" && status !== "terminal" && status !== "closed") return;
-    this.awaitedRoute = false;
-    this.reactivateUnconfirmed();
   }
 
   private fence(): void {
@@ -781,13 +709,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
     this.observers.clear();
     this.retired.clear();
-    this.closeGraphChildren();
     this.syncStore.publish(syncState("closed"));
-  }
-
-  private closeGraphChildren(): void {
-    for (const child of this.graphChildren.values()) child.close();
-    this.graphChildren.clear();
   }
 
   private transition(status: SyncStatus = "authentication-required"): void {
@@ -1047,7 +969,6 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
     this.observers.clear();
     this.retired.clear();
-    this.closeGraphChildren();
     this.syncStore.publish(syncState("closed"));
     const session = this.session;
     this.session = undefined;

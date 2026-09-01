@@ -14,7 +14,7 @@
  *   retries at once.
  * - `update-required` — this client build is behind, and no retry helps; ship a
  *   new build. Two causes, and they differ in what stays readable. The server
- *   rotated the authorized view (a schema, trait, read-policy, or graph-read
+ *   rotated the authorized view (a schema, trait, read-policy, or database-read
  *   change): nothing is published, because this build cannot read what the
  *   server now serves. Or this build cannot replay its own durable queued work
  *   — a record, an acknowledgement or an allocation it cannot read or apply:

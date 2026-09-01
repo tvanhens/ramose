@@ -1,13 +1,13 @@
 ---
 title: React and offline UX
-description: Observe local queries and receipts, traverse graphs safely during render, and design honest stale, pending, and reconnect states.
+description: Observe local queries and receipts, and design honest stale, pending, and reconnect states.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
 `ramose/react` is a thin adapter over the framework-neutral client. It adds React subscriptions, not another cache, query language, or mutation state machine.
 
-<Learn learn={["How to render the QueryState union", "How entity handles and receipts update components", "How to navigate graphs without downloading every child"]} before={[{ href: "/getting-started/quickstart/", label: "Build the starter app" }]} minutes={10} />
+<Learn learn={["How to render the QueryState union", "How entity handles and receipts update components", "How synchronization stays independent from query state"]} before={[{ href: "/getting-started/quickstart/", label: "Build the starter app" }]} minutes={10} />
 
 ## Observe a query
 
@@ -66,23 +66,9 @@ const sync = useSyncState(client)
 
 Connectivity is not query validity. A ready or stale query can be useful while offline. A connected client may still have a rejected receipt. Keep the two signals distinct in UI copy.
 
-## Traverse child graphs during render
-
-Equivalent graph handles are interned and safe to construct during render:
-
-```tsx
-const projectDb = organizationDb.query
-  .from(Project)
-  .where({ name: projectName })
-  .one()
-  .db()
-```
-
-Construction does not activate the child. `useQuery` does. Keep routing and selection narrow so a list of projects does not accidentally observe every child database.
-
 ## React guarantees
 
-Hooks use React's external-store contract, so snapshots are stable under concurrent rendering. Strict Mode does not duplicate activation, subscriptions, or operations. Unmounting a component removes its observer; a graph already activated in the session remains synchronized.
+Hooks use React's external-store contract, so snapshots are stable under concurrent rendering. Strict Mode does not duplicate activation, subscriptions, or operations. Unmounting a component removes its observer; the database in the session remains synchronized.
 
 Server Components may render ordinary server-side queries, but browser database handles and offline replicas belong in Client Components. There is no persisted SSR query-result cache.
 

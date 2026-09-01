@@ -23,13 +23,7 @@ import {
   replicationCacheSelector,
   replicationCredentialFingerprint,
 } from "../../packages/ramose/src/internal/replication/transport.ts";
-import {
-  provisionalReplicaRouteSlot,
-  replicaRoutePathKey,
-  replicaRouteScope,
-  rootReplicaRouteSlot,
-  stableReplicaRouteSlot,
-} from "../../packages/ramose/src/internal/replication/route-slot.ts";
+import { rootReplicaRouteSlot } from "../../packages/ramose/src/internal/replication/route-slot.ts";
 import {
   REPLICA_CLEAR_BARRIER_KEY,
   REPLICA_GENERATIONS_STORE,
@@ -64,7 +58,6 @@ const selected: ReplicationIdentity = {
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: ReadCompatibilityHash.make(opaque("k")),
-  graphLineage: [],
   authenticator: opaque("a"),
 };
 const attributes: readonly AttributeSpec[] = [
@@ -73,7 +66,6 @@ const attributes: readonly AttributeSpec[] = [
 const activation = {
   server: "http://127.0.0.1:1",
   root: "root",
-  graphPath: [] as const,
 };
 
 const deleteDatabase = (name: string): Promise<void> =>
@@ -688,16 +680,16 @@ browserTest("a damaged head recovers its order from the manifest and is rebuilt"
   }
 });
 
-browserTest("keeps rotated-token candidates quarantined and safely rebinds collisions and renamed paths", async ({ browser }) => {
+browserTest("keeps rotated-token candidates quarantined and safely rebinds slot collisions", async ({ browser }) => {
   const name = `ramose-session-candidate-${browser.uniqueId}`;
   const storage = await IndexedDbReplicaStorage.open(name);
   const rawCacheKey = "principal-local-selector";
   const oldAddress = replicationActivationAddress(activation);
   const rootSlot = await rootReplicaRouteSlot();
-  const otherSlot = await provisionalReplicaRouteSlot(["renamed"]);
+  const otherSlot = "alternate-slot";
   const selector = await replicationCacheSelector(rawCacheKey, oldAddress);
   const oldKey = { selector, routeSlot: rootSlot };
-  const renamedKey = { selector, routeSlot: otherSlot };
+  const alternateKey = { selector, routeSlot: otherSlot };
   const originalFingerprint = await replicationCredentialFingerprint(
     "token-before-refresh",
     oldAddress,
@@ -903,7 +895,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
     ))?.revision).toBe(opaque("2"));
 
     expect(await storage.selectCacheCandidate(
-      renamedKey,
+      alternateKey,
       selected.readCompatibilityHash,
     )).toBeUndefined();
     const start = {
@@ -926,10 +918,10 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds colli
         otherSlot,
       ),
       identity: selected,
-      candidateKey: renamedKey,
+      candidateKey: alternateKey,
     });
     expect((await storage.selectCacheCandidate(
-      renamedKey,
+      alternateKey,
       selected.readCompatibilityHash,
     ))?.identity).toEqual(selected);
 
@@ -955,7 +947,7 @@ browserTest("a replaced principal leaves no candidate slot to re-fence", async (
   const storage = await IndexedDbReplicaStorage.open(name);
   const address = replicationActivationAddress(activation);
   const rootSlot = await rootReplicaRouteSlot();
-  const childSlot = await provisionalReplicaRouteSlot(["child"]);
+  const alternateSlot = "alternate-slot";
   const selector = await replicationCacheSelector("shared-local-user", address);
   const other: ReplicationIdentity = {
     ...selected,
@@ -977,7 +969,7 @@ browserTest("a replaced principal leaves no candidate slot to re-fence", async (
   try {
     await install(storage);
     await install(storage, opaque("u"), opaque("2"), other, "other-principal");
-    for (const routeSlot of [rootSlot, childSlot]) {
+    for (const routeSlot of [rootSlot, alternateSlot]) {
       await storage.bindAuthenticated({
         fingerprint: routeSlot === rootSlot
           ? held
@@ -988,9 +980,9 @@ browserTest("a replaced principal leaves no candidate slot to re-fence", async (
     }
 
     await storage.bindAuthenticated({
-      fingerprint: await replicationCredentialFingerprint("other-token", address, childSlot),
+      fingerprint: await replicationCredentialFingerprint("other-token", address, alternateSlot),
       identity: other,
-      candidateKey: { selector, routeSlot: childSlot },
+      candidateKey: { selector, routeSlot: alternateSlot },
     });
     const fenced = await generationOf(replaced);
     const barrier = await generationOf(REPLICA_CLEAR_BARRIER_KEY);
@@ -1002,7 +994,7 @@ browserTest("a replaced principal leaves no candidate slot to re-fence", async (
       selected.readCompatibilityHash,
     )).toBeUndefined();
     expect((await storage.selectCacheCandidate(
-      { selector, routeSlot: childSlot },
+      { selector, routeSlot: alternateSlot },
       selected.readCompatibilityHash,
     ))?.identity).toEqual(other);
 
@@ -1362,125 +1354,6 @@ browserTest(
     }
   },
 );
-
-browserTest("stable route slots survive a rename and refuse a delete/recreate", async ({ browser }) => {
-  const name = `ramose-session-route-slots-${browser.uniqueId}`;
-  const storage = await IndexedDbReplicaStorage.open(name);
-  const address = replicationActivationAddress(activation);
-  const scope = await replicaRouteScope(address);
-
-  const boardLineage = [opaque("1")];
-  const recreatedLineage = [opaque("2")];
-  const boardSlot = await stableReplicaRouteSlot(boardLineage);
-  const recreatedSlot = await stableReplicaRouteSlot(recreatedLineage);
-  const child: ReplicationIdentity = {
-    ...selected,
-    database: opaque("D"),
-    graphLineage: boardLineage,
-    authenticator: opaque("A"),
-  };
-  const recreated: ReplicationIdentity = {
-    ...selected,
-    database: opaque("E"),
-    graphLineage: recreatedLineage,
-    authenticator: opaque("B"),
-  };
-  const credential = "one-exact-token";
-  const boundFingerprint = await replicationCredentialFingerprint(
-    credential,
-    address,
-    boardSlot,
-  );
-  try {
-    expect(boardSlot).not.toBe(recreatedSlot);
-    expect(boardSlot).not.toBe(await rootReplicaRouteSlot());
-    await install(storage, opaque("q"), opaque("r"), child, "child-value");
-    await storage.bindAuthenticated({
-      fingerprint: boundFingerprint,
-      identity: child,
-      route: {
-        scope,
-        pathKey: await replicaRoutePathKey(["board"]),
-        slot: boardSlot,
-      },
-    });
-
-    const renamedPathKey = await replicaRoutePathKey(["board-renamed"]);
-    await storage.bindAuthenticated({
-      fingerprint: boundFingerprint,
-      identity: child,
-      route: { scope, pathKey: renamedPathKey, slot: boardSlot },
-    });
-    expect(await storage.observedRouteSlot({ scope, pathKey: renamedPathKey }))
-      .toBe(boardSlot);
-    expect((await storage.restoreBound(
-      await replicationCredentialFingerprint(
-        credential,
-        replicationActivationAddress({ ...activation, graphPath: ["board-renamed"] }),
-        boardSlot,
-      ),
-      attributes,
-      selected.readCompatibilityHash,
-    ))?.revision).toBe(opaque("r"));
-
-    expect(await storage.restoreBound(
-      await replicationCredentialFingerprint(credential, address, recreatedSlot),
-      attributes,
-      selected.readCompatibilityHash,
-    )).toBeUndefined();
-    expect(await storage.restore(
-      recreated,
-      attributes,
-      selected.readCompatibilityHash,
-    )).toBeUndefined();
-
-    const unobservedPathKey = await replicaRoutePathKey(["board-never-observed"]);
-    expect(await storage.observedRouteSlot({ scope, pathKey: unobservedPathKey }))
-      .toBeUndefined();
-    const provisional = await provisionalReplicaRouteSlot(["board-never-observed"]);
-    expect(provisional).not.toBe(boardSlot);
-    expect(await storage.restoreBound(
-      await replicationCredentialFingerprint(credential, address, provisional),
-      attributes,
-      selected.readCompatibilityHash,
-    )).toBeUndefined();
-
-    const renamed = await ReplicationSession.open({
-      activation: { ...activation, graphPath: ["board-renamed"] },
-      credential,
-      attributes,
-      readCompatibilityHash: selected.readCompatibilityHash,
-      storage,
-    });
-    expect(renamed.snapshot()).toMatchObject({
-      status: "connecting",
-      value: { revision: opaque("r"), stale: true },
-    });
-    await renamed.close();
-    const undiscovered = await ReplicationSession.open({
-      activation: { ...activation, graphPath: ["board-never-observed"] },
-      credential,
-      attributes,
-      readCompatibilityHash: selected.readCompatibilityHash,
-      storage,
-    });
-    expect(undiscovered.snapshot().value).toBeUndefined();
-    await undiscovered.close();
-
-    const inspected = await openNative(name);
-    const tx = inspected.transaction("replica-route-slots-v1", "readonly");
-    const records = await requestResult<unknown[]>(
-      tx.objectStore("replica-route-slots-v1").getAll(),
-    );
-    await transactionDone(tx);
-    inspected.close();
-    expect(records).toHaveLength(2);
-    expect(JSON.stringify(records)).not.toContain("board");
-  } finally {
-    storage.close();
-    await deleteDatabase(name);
-  }
-});
 
 browserTest("quarantines mismatched and legacy manifests before constructing a Db", async ({ browser }) => {
   const mismatchName = `ramose-session-mismatch-${browser.uniqueId}`;

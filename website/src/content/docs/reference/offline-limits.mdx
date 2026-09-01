@@ -10,10 +10,10 @@ Everything here is a limit of the current release, not of the model. Each is sta
 
 ## What is stored
 
-Per signed-in account, per server, per graph:
+Per signed-in account, per server, per database:
 
 - the **committed replica** — one complete authorized value at one opaque revision;
-- the **outbox** — queued invocations, their order per graph, and the references this device minted for entities it created;
+- the **outbox** — queued invocations, their order, and the references this device minted for entities it created;
 - **receipts** — the authoritative answer to each invocation, so a lost acknowledgement never commits twice;
 - **optimistic layers** — the declared projection for each invocation still in flight.
 
@@ -34,18 +34,17 @@ A stored replica becomes visible in exactly two ways.
 | What changed | What happens |
 |---|---|
 | Documentation, defaults, an operation body, a deployment | Nothing. The replica is reused with no reset and no download. |
-| Field schema, entity or trait composition, read policy, graph-read semantics | The replica's representation is quarantined and replaced. Queued work, receipts and reference mappings survive. |
-| The graph path was renamed | Nothing, if it is the same graph entity. A same-named graph that was deleted and recreated is a different one, and is not reused. |
+| Field schema, entity or trait composition, or read policy | The replica's representation is quarantined and replaced. Queued work, receipts and reference mappings survive. |
 | A different principal was authenticated under the *same* `cacheKey` | Every tab holding the previous principal is fenced through storage before the replacement renders. It is fenced, not deleted: the previous principal's own bearer can still restore it in a later session. |
 | The application signed out, or signed in under a different `cacheKey` | Nothing. There is no authentication to carry the replacement, so the previous account's data stays until it is cleared. |
-| Storage pressure | Stored content nothing reaches any more is reclaimed and the write is retried. If that is not enough the write fails with a typed quota error: no graph is discarded to make room for another. |
+| Storage pressure | Stored content nothing reaches any more is reclaimed and the write is retried. If that is not enough the write fails with a typed quota error rather than discarding the replica. |
 | `await client.clearLocalData()` | Everything for the confirmed account, across every tab. The client is terminal afterwards; construct a new one. |
 
 Sign-out is therefore explicit: **call `clearLocalData()` before dropping the client**, while the account is still confirmed — with none confirmed it fails and deletes nothing rather than guessing which data was yours.
 
 ## Limits
 
-**One catalog per client.** A client installs exactly one catalog and uses it for every database it opens. A child graph bound to a *different* catalog fails closed: its queries report `update-required` with no data, and its mutations fail before queueing. Bind each `Graph` back to the catalog the client installs.
+**One catalog per client.** A client installs one catalog for its one authorized database.
 
 **Optimistic updates are declared, never inferred.** An operation with no declared projection shows nothing locally until the server answers. The projection is a separate, explicit changeset because the operation body is deployed code the browser neither has nor may run.
 

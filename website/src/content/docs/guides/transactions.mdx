@@ -33,7 +33,7 @@ const Task = Ramose.Entity(
 
 `op.create` is available because the operation is targetless and entity-owned. It requires every non-defaulted field and applies protected type and fixed trait bindings inside the authoritative transaction.
 
-The client call is graph-scoped:
+The client call is database-scoped:
 
 ```ts
 const receipt = db.mutate.createTask({ title: "Write the guide" })

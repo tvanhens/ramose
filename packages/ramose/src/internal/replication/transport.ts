@@ -20,14 +20,12 @@ const NDJSON_CONTENT_TYPE = "application/x-ndjson";
 export type ReplicationActivationAddress = {
   readonly origin: string;
   readonly root: string;
-  readonly graphPath: readonly string[];
   readonly endpoint: string;
 };
 
 export type ReplicationActivationInput = {
   readonly server: string;
   readonly root: string;
-  readonly graphPath: readonly string[];
 };
 
 export class ReplicationTransportError extends Error {
@@ -64,12 +62,10 @@ export const replicationActivationAddress = (
   if (input.root.length === 0 || input.root.includes("/")) {
     return fail("replication root must be one non-empty database name");
   }
-  const graphPath = Object.freeze([...input.graphPath]);
   const origin = server.origin;
   return Object.freeze({
     origin,
     root: input.root,
-    graphPath,
     endpoint: `${origin}/db/${encodeURIComponent(input.root)}/replicate`,
   });
 };
@@ -119,7 +115,6 @@ export const openReplicationResponse = (
   body: encodeActivationRequest({
     type: "Activate",
     protocol: REPLICATION_PROTOCOL_VERSION,
-    graphPath: input.activation.graphPath,
     scope: { type: "database" },
     readCompatibilityHash: input.readCompatibilityHash,
     ...(input.resumeRevision === undefined

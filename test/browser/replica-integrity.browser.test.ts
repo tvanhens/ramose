@@ -47,7 +47,6 @@ const identity = (overrides: Partial<ReplicationIdentity> = {}): ReplicationIden
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: READ_COMPATIBILITY,
-  graphLineage: [],
   authenticator: opaque("a"),
   ...overrides,
 });

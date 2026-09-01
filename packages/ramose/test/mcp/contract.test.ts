@@ -3,7 +3,6 @@ import {
   McpToolFailure,
   decodeOperationVersionToken,
   encodeOperationVersionToken,
-  parseAt,
   parseMutateArgs,
   parseQueryDocument,
 } from "../../src/mcp/contract.ts";
@@ -60,21 +59,6 @@ describe("operation version token", () => {
 
     const token = encodeOperationVersionToken(digest("00"));
     expect(decodeOperationVersionToken(`${token.slice(0, 45)}B`)).toBeUndefined();
-  });
-});
-
-describe("at", () => {
-  test("defaults to the authorized root and accepts bounded names", () => {
-    expect(parseAt(undefined)).toEqual([]);
-    expect(parseAt(["acme", "support"])).toEqual(["acme", "support"]);
-  });
-
-  test("rejects non-arrays, empty segments, and oversized paths", () => {
-    expect(codeOf(() => parseAt("acme"))).toBe("invalid_input");
-    expect(codeOf(() => parseAt([""]))).toBe("invalid_input");
-    expect(codeOf(() => parseAt([1]))).toBe("invalid_input");
-    expect(codeOf(() => parseAt(Array.from({ length: 17 }, () => "a"))))
-      .toBe("invalid_input");
   });
 });
 
@@ -148,7 +132,6 @@ describe("minimal query document", () => {
 describe("mutate arguments", () => {
   const version = encodeOperationVersionToken(digest("9c"));
   const valid = {
-    at: [],
     operation: {
       owner: { kind: "entity" as const, name: "issue" },
       name: "close",

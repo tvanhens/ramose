@@ -5,7 +5,7 @@ description: Build a typed, offline-first React task list, deploy its authoritat
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-This guide builds a small React task list. It has one root graph, one entity, a live local query, and two authoritative operations. The result is also the starter app used by [Connect an agent](/getting-started/connect-an-agent/).
+This guide builds a small React task list. It has one database, one entity, a live local query, and two authoritative operations. The result is also the starter app used by [Connect an agent](/getting-started/connect-an-agent/).
 
 <Learn learn={["How schema, policy, operations, client, and React fit together", "How cached data renders and offline mutations queue", "Which URL becomes the app's MCP server"]} before={[{ href: "/concepts/mental-model/", label: "Mental model" }]} minutes={20} />
 
@@ -246,6 +246,5 @@ https://your-ramose-origin.example/mcp
 
 <Next links={[
   { href: "/getting-started/connect-an-agent/", label: "Connect an agent", why: "use describe, query, and mutate against this app" },
-  { href: "/guides/subgraphs/", label: "Add subgraphs", why: "grow the starter into organizations and projects" },
   { href: "/guides/react/", label: "React and offline UX", why: "handle stale, pending, rejection, and reconnect states well" },
 ]} />

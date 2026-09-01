@@ -8,18 +8,17 @@ export const workspaces = (db: ClientDatabase) =>
 export const people = (db: ClientDatabase) =>
   db.query.from(Person).orderBy(Person.sub, "asc");
 
-export const boardIssues = (db: ClientDatabase) =>
-  db.query.from(Issue).orderBy(Issue.rank, "asc");
+export const boardIssues = (db: ClientDatabase, workspace: string) =>
+  db.query.from(Issue)
+    .where({ workspaceSlug: workspace })
+    .orderBy(Issue.rank, "asc");
 
-export const boardLabels = (db: ClientDatabase) =>
-  db.query.from(Label).orderBy(Label.name, "asc");
+export const boardLabels = (db: ClientDatabase, workspace: string) =>
+  db.query.from(Label)
+    .where({ workspaceSlug: workspace })
+    .orderBy(Label.name, "asc");
 
 export const issueComments = (db: ClientDatabase, issue: string) =>
   db.query.from(Comment).where({ issue: issue as never }).orderBy(Comment.at, "asc");
 
-export const workspaceDb = (
-  rootDb: ClientDatabase,
-  slug: string,
-): ClientDatabase =>
-  rootDb.query.from(Workspace).where({ slug }).one().db();
 // enddocs:reef-queries

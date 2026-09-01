@@ -91,7 +91,6 @@ export type CompiledCreationField = {
 export type CompiledBindingIdentity = {
   readonly trait: string;
   readonly definition: string;
-  readonly dependencies: readonly string[];
 };
 
 export type CompiledCreationPlan = {
@@ -365,9 +364,6 @@ export const compileCreationPlan = (
   const bindings = metadata.bindings.map((use) => Object.freeze({
     trait: use.binding.trait.ns,
     definition: use.binding.definition.key,
-    dependencies: Object.freeze(
-      use.binding.dependencies.map((dependency) => dependency.key).sort(),
-    ),
   }));
   return Object.freeze({
     plan: Object.freeze({

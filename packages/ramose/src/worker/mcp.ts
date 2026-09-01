@@ -1,25 +1,23 @@
 import * as Effect from "effect/Effect";
-import * as Result from "effect/Result";
 import {
-  executeAuthorizedGraphPathTarget,
+  constructAuthorizedResolvedRequestContext,
   type AuthenticatedCaller,
-  type AuthorizedGraphPathTarget,
+  type AuthorizedRequestContext,
   type DatabaseRouteDerivation,
   type ResolvedDatabaseRoute,
   type DatabaseCatalogBindings,
 } from "../internal/authorization/index.ts";
 import {
   decodeOperationVersionToken,
-  parseAt,
   parseMutateArgs,
   parseQueryDocument,
   requireArgs,
   toolFailure,
 } from "../mcp/contract.ts";
-import { describeGraph, publicMutateResult, runQueryDocument } from "../mcp/kernel.ts";
+import { describeDatabase, publicMutateResult, runQueryDocument } from "../mcp/kernel.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import type { RuntimeBoundaries } from "../internal/runtime-boundaries.ts";
-import { acquireCurrentDb, provisionResolvedDatabase, queryMaxCells } from "./authorized-read.ts";
+import { acquireCurrentDb, queryMaxCells } from "./authorized-read.ts";
 import { invokeAuthoritativeOperation } from "./authorized-operation.ts";
 import { Internal, OperationRejected, UpstreamError, Unauthorized } from "./errors.ts";
 
@@ -36,46 +34,35 @@ export type McpRouteInput = {
 const inaccessible = () =>
   toolFailure("inaccessible", "nothing addressable is available there");
 
-class ToolBodyFailure {
-  constructor(readonly cause: unknown) {}
-}
+type AuthorizedDatabase = {
+  readonly context: AuthorizedRequestContext;
+  readonly route: ResolvedDatabaseRoute;
+  readonly derivation: DatabaseRouteDerivation;
+};
 
-const withAuthorizedTarget = async <A>(
+const withAuthorizedDatabase = async <A>(
   input: McpRouteInput,
-  at: readonly string[],
-  use: (target: AuthorizedGraphPathTarget) => Promise<A>,
+  use: (target: AuthorizedDatabase) => Promise<A>,
 ): Promise<A> => {
-  let resolved;
+  let context: AuthorizedRequestContext;
   try {
-    resolved = await Effect.runPromise(
-      executeAuthorizedGraphPathTarget(
-        {
-          authenticate: Effect.succeed(input.caller),
-          bindings: input.bindings,
-          root: input.root,
-          path: at,
-          currentDb: acquireCurrentDb(input.env, input.request, {
-            bypassBasisCache: true,
-            authoritativeBasisFence: true,
-          }),
-          provision: (
-            route: ResolvedDatabaseRoute,
-            derivation: DatabaseRouteDerivation,
-          ) => provisionResolvedDatabase(input.env, route, derivation),
-        },
-        (target) =>
-          Effect.tryPromise({
-            try: () => use(target),
-            catch: (cause) => new ToolBodyFailure(cause),
-          }),
-      ).pipe(Effect.result),
-    );
+    context = await Effect.runPromise(constructAuthorizedResolvedRequestContext({
+      authenticate: Effect.succeed(input.caller),
+      bindings: input.bindings,
+      route: input.root,
+      currentDb: acquireCurrentDb(input.env, input.request, {
+        bypassBasisCache: true,
+        authoritativeBasisFence: true,
+      }),
+    }, input.caller));
   } catch {
-    throw toolFailure("internal_error", "the graph could not be read");
+    throw inaccessible();
   }
-  if (Result.isSuccess(resolved)) return resolved.success;
-  if (resolved.failure instanceof ToolBodyFailure) throw resolved.failure.cause;
-  throw inaccessible();
+  return use({
+    context,
+    route: input.root,
+    derivation: { rootDatabase: input.root.database },
+  });
 };
 
 const mutateTransportFailure = (cause: unknown): never => {
@@ -97,16 +84,14 @@ const mutateTransportFailure = (cause: unknown): never => {
 
 const mcpTools = (input: McpRouteInput) => ({
   describe: (raw: unknown) => {
-    const args = requireArgs(raw ?? {});
-    const at = parseAt(args.at);
-    return withAuthorizedTarget(input, at, (target) =>
-      describeGraph(target.context, input.caller, at));
+    requireArgs(raw ?? {});
+    return withAuthorizedDatabase(input, (target) =>
+      describeDatabase(target.context, input.caller));
   },
   query: (raw: unknown) => {
     const args = requireArgs(raw);
-    const at = parseAt(args.at);
     const document = parseQueryDocument(args.query);
-    return withAuthorizedTarget(input, at, (target) =>
+    return withAuthorizedDatabase(input, (target) =>
       runQueryDocument(target.context, input.caller, document, {
         maxCells: queryMaxCells(input.env),
       }));
@@ -114,7 +99,7 @@ const mcpTools = (input: McpRouteInput) => ({
   mutate: async (raw: unknown) => {
     const args = parseMutateArgs(raw);
     const operationVersion = decodeOperationVersionToken(args.operation.version)!;
-    const resolved = await withAuthorizedTarget(input, args.at, (target) => {
+    const resolved = await withAuthorizedDatabase(input, (target) => {
       const descriptor = target.context.unit.catalog.operations.find(
         (candidate) =>
           candidate.id.owner.kind === args.operation.owner.kind &&
@@ -142,7 +127,6 @@ const mcpTools = (input: McpRouteInput) => ({
         input: args.input,
       },
       input.caller,
-      resolved.derivation,
     ).catch(mutateTransportFailure);
     await input.boundaries?.checkpoint("operation.response");
     if (

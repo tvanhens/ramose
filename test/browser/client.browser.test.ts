@@ -94,7 +94,6 @@ const seed = async (
     catalog: opaque("c"),
     readView: opaque("v"),
     readCompatibilityHash: installed.readCompatibilityHash,
-    graphLineage: [],
     authenticator: opaque("a"),
   };
   const datoms: readonly SnapshotDatom[] = notes.flatMap((note) => [
@@ -118,7 +117,7 @@ const seed = async (
     expect(committed).toBeDefined();
     committed!.release();
     const address = replicationActivationAddress({
-      server: OFFLINE, root: ROOT, graphPath: [],
+      server: OFFLINE, root: ROOT,
     });
     const routeSlot = await rootReplicaRouteSlot();
     await storage.bindAuthenticated({
@@ -199,7 +198,7 @@ browserTest("renders an exact bearer binding's replica offline and closes determ
 
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-    const address = replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] });
+    const address = replicationActivationAddress({ server: OFFLINE, root: ROOT });
     const installed = await installClientCatalog(Notes);
     const restored = await storage.restoreBound(
       await replicationCredentialFingerprint(TOKEN, address, await rootReplicaRouteSlot()),
@@ -241,7 +240,7 @@ browserTest("a withdrawn binding stops selecting the replica it named", async ({
   const installed = await installClientCatalog(Notes);
   const fingerprint = await replicationCredentialFingerprint(
     TOKEN,
-    replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] }),
+    replicationActivationAddress({ server: OFFLINE, root: ROOT }),
     await rootReplicaRouteSlot(),
   );
 
@@ -486,7 +485,7 @@ browserTest("clearLocalData deletes only a confirmed scope and is terminal", asy
 
   const storage = await IndexedDbReplicaStorage.open(name);
   try {
-    const address = replicationActivationAddress({ server: OFFLINE, root: ROOT, graphPath: [] });
+    const address = replicationActivationAddress({ server: OFFLINE, root: ROOT });
     const installed = await installClientCatalog(Notes);
     expect(await storage.restoreBound(
       await replicationCredentialFingerprint(TOKEN, address, await rootReplicaRouteSlot()),
@@ -585,9 +584,27 @@ browserTest("a committed value enters a query already being observed", async ({ 
   }
 });
 
+const untouched = (): { readonly count: () => number; readonly release: () => void } => {
+  let interactions = 0;
+  const observed = (): void => {
+    interactions += 1;
+  };
+  const events = ["focus", "pageshow", "online"] as const;
+  for (const type of events) globalThis.addEventListener(type, observed);
+  document.addEventListener("visibilitychange", observed);
+  return {
+    count: () => interactions,
+    release: () => {
+      for (const type of events) globalThis.removeEventListener(type, observed);
+      document.removeEventListener("visibilitychange", observed);
+    },
+  };
+};
+
 browserTest("re-establishes a stream the server ended with no activation event", async ({ browser }) => {
   const name = `ramose-client-reconnect-${browser.uniqueId}`;
   expect(document.visibilityState).toBe("visible");
+  const idle = untouched();
   const client = createClient({
     url: globalThis.location.origin,
     root: "optimistic-fence",
@@ -621,10 +638,12 @@ browserTest("re-establishes a stream the server ended with no activation event",
       expect(seen).not.toContain("offline");
       expect(seen.filter((status) => status === "live").length)
         .toBeGreaterThanOrEqual(2);
+      expect(idle.count()).toBe(0);
     } finally {
       release();
     }
   } finally {
+    idle.release();
     await client.close();
     await deleteDatabase(name);
   }
@@ -740,7 +759,7 @@ browserTest("fences a replaced principal before any of its data can be read", as
       fingerprint: await replicationCredentialFingerprint(
         "session-credential",
         replicationActivationAddress({
-          server: globalThis.location.origin, root: "optimistic-fence", graphPath: [],
+          server: globalThis.location.origin, root: "optimistic-fence",
         }),
         await rootReplicaRouteSlot(),
       ),

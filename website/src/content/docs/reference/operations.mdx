@@ -4,7 +4,7 @@ description: Reference for owned operations, authoritative writers, optimistic p
 ---
 import Next from "../../../components/Next.astro";
 
-Operations are the only public mutation surface. They are owned by an entity or trait, have stable catalog identities, and execute authoritatively inside one graph.
+Operations are the only public mutation surface. They are owned by an entity or trait, have stable catalog identities, and execute authoritatively inside one database.
 
 *New here? Start with [Mutate data](/guides/transactions/).*
 
@@ -46,7 +46,7 @@ const createTask = Operation({
 })
 ```
 
-Targetless operations are invoked from `db.mutate`. Use them for creation and graph-scoped commands without an existing target.
+Targetless operations are invoked from `db.mutate`. Use them for creation and database-wide commands without an existing target.
 
 ## Input and output
 
@@ -54,7 +54,7 @@ Targetless operations are invoked from `db.mutate`. Use them for creation and gr
 
 ## Authoritative writer
 
-The writer can create compatible entities, set or retract allowed fields, and delete according to declared ownership and cascade rules. The commit applies required fields, defaults, fixed graph bindings, protected types, reference checks, uniqueness, and policy constraints atomically.
+The writer can create compatible entities, set or retract allowed fields, and delete according to declared ownership and cascade rules. The commit applies required fields, defaults, fixed trait bindings, protected types, reference checks, uniqueness, and policy constraints atomically.
 
 Operation-thrown domain rejections become `operation_rejected`. Unexpected faults remain internal errors and do not expose implementation details.
 
@@ -70,7 +70,7 @@ It is a preview only. The server body is the authority and its receipt reconcile
 const receipt = task.mutate.setDone({ done: true })
 ```
 
-Every invocation has a client-generated `invocationId`. The server scopes the stored receipt to principal, graph, operation, target, and input. Repeating the same invocation returns its original outcome. Reusing the id for a different intent returns `invocation_conflict`.
+Every invocation has a client-generated `invocationId`. The server scopes the stored receipt to principal, database, operation, target, and input. Repeating the same invocation returns its original outcome. Reusing the id for a different intent returns `invocation_conflict`.
 
 Receipt states are `queued`, `committed`, and `rejected`. Committed receipts include decoded output; rejected receipts include a public operation error.
 

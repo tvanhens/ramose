@@ -28,7 +28,6 @@ const identity = (overrides: Partial<ReplicationIdentity> = {}): ReplicationIden
   catalog: opaque("c"),
   readView: opaque("v"),
   readCompatibilityHash: ReadCompatibilityHash.make(opaque("k")),
-  graphLineage: [],
   authenticator: opaque("a"),
   ...overrides,
 });
@@ -51,7 +50,6 @@ describe("replica lifecycle scope selection", () => {
         identity({ catalog: opaque("C") }),
         identity({ readView: opaque("V") }),
         identity({ readCompatibilityHash: ReadCompatibilityHash.make(opaque("K")) }),
-        identity({ graphLineage: [opaque("g")] }),
         identity({ authenticator: opaque("A") }),
       ]
     ) {

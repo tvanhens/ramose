@@ -2,18 +2,12 @@ import { isDatabaseName } from "../db/DatabaseName.ts";
 import {
   callerFromVerified,
   DatabaseId,
-  executeAuthorizedGraphPathLive,
-  executeAuthorizedGraphPathTarget,
+  executeAuthorizedDatabaseTarget,
   executeAuthorizedRead,
-  graphPathLeaseIdentity,
   hashReadCompatibility,
   OneShotReadError,
-  runOneShotRead,
-  type AuthorizedGraphPathTarget,
   type CatalogId,
   type CatalogUnitHash,
-  type DatabaseRouteDerivation,
-  type ResolvedDatabaseRoute,
 } from "../internal/authorization/index.ts";
 import {
   Histogram,
@@ -43,7 +37,6 @@ import {
 } from "./authorized-read.ts";
 import {
   authorizedLiveResponse,
-  liveResponseFromStream,
 } from "./authorized-live.ts";
 import {
   authorizedReplicationResponse,
@@ -329,11 +322,10 @@ export const handle = (
         databaseBindings.root(DatabaseId.make(db)),
       ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
       const caller = callerFromVerified(verified);
-      const initialTarget = yield* executeAuthorizedGraphPathTarget({
+      const initialTarget = yield* executeAuthorizedDatabaseTarget({
         authenticate: Effect.succeed(caller),
         bindings: databaseBindings,
         root,
-        path: decoded.success.graphPath,
         currentDb: acquireCurrentDb(env, request, {
           bypassBasisCache: true,
           authoritativeBasisFence: true,
@@ -394,7 +386,6 @@ export const handle = (
         database: string,
         catalogKey: CatalogId,
         unitHash: CatalogUnitHash,
-        routeDerivation?: DatabaseRouteDerivation,
       ) => Effect.tryPromise({
         try: () => invokeAuthoritativeOperation(
           env,
@@ -419,54 +410,24 @@ export const handle = (
             input: parsed.input,
           },
           caller,
-          routeDerivation,
         ),
         catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
           stacks: env.RAMOSE_STAGE !== "prod",
         }),
       });
       const rootProof = deployedCatalogProof(peer.operationCatalogs, db);
-      const ack = parsed.path.length === 0
-        ? rootProof === undefined
-          ? yield* new Unauthorized({ status: 403 })
-          : yield* Effect.gen(function* () {
-            if (databaseBindings !== undefined) {
-              const root = yield* Effect.fromResult(
-                databaseBindings.root(DatabaseId.make(db)),
-              ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
-              yield* provisionResolvedDatabase(env, root, {
-                rootDatabase: root.database,
-                graphs: [],
-              });
-            }
-            return yield* invoke(db, rootProof.catalogKey, rootProof.unitHash);
-          })
-        : databaseBindings === undefined
-          ? yield* new Unauthorized({ status: 403 })
-          : yield* Effect.gen(function* () {
-            const root = yield* Effect.fromResult(
-              databaseBindings.root(DatabaseId.make(db)),
-            ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
-            const currentDb = acquireCurrentDb(env, request, {
-              bypassBasisCache: true,
-              authoritativeBasisFence: true,
-            });
-            const target = yield* executeAuthorizedGraphPathTarget({
-              authenticate: Effect.succeed(caller),
-              bindings: databaseBindings,
-              root,
-              path: parsed.path,
-              currentDb,
-              provision: (route, derivation) =>
-                provisionResolvedDatabase(env, route, derivation),
-            }, (authorized) => Effect.succeed(authorized));
-            return yield* invoke(
-              target.route.database,
-              target.route.deployed.catalogKey,
-              target.route.deployed.unitHash,
-              target.derivation,
-            );
+      if (rootProof === undefined) return yield* new Unauthorized({ status: 403 });
+      const ack = yield* Effect.gen(function* () {
+        if (databaseBindings !== undefined) {
+          const root = yield* Effect.fromResult(
+            databaseBindings.root(DatabaseId.make(db)),
+          ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
+          yield* provisionResolvedDatabase(env, root, {
+            rootDatabase: root.database,
           });
+        }
+        return yield* invoke(db, rootProof.catalogKey, rootProof.unitHash);
+      });
       yield* Effect.tryPromise({
         try: () => boundaries?.checkpoint("operation.response") ?? Promise.resolve(),
         catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
@@ -502,70 +463,6 @@ export const handle = (
       if (error instanceof OneShotReadError) return fromThrown(error.cause, { stacks });
       return fromThrown(error, { stacks });
     };
-    if (parsed.path.length > 0) {
-      if (databaseBindings === undefined) {
-        return yield* new Unauthorized({ status: 403 });
-      }
-      const root = yield* Effect.fromResult(
-        databaseBindings.root(DatabaseId.make(db)),
-      ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
-      const pathInput = {
-        authenticate: Effect.succeed(callerFromVerified(verified)),
-        bindings: databaseBindings,
-        root,
-        path: parsed.path,
-        currentDb: acquireCurrentDb(env, request, {
-          bypassBasisCache: true,
-          authoritativeBasisFence: true,
-        }),
-        provision: (
-          route: ResolvedDatabaseRoute,
-          derivation: DatabaseRouteDerivation,
-        ) =>
-          provisionResolvedDatabase(env, route, derivation),
-        view: parsed.view,
-      };
-      const readTarget = (target: AuthorizedGraphPathTarget) => Effect.tryPromise({
-        try: () => runOneShotRead(target.context.filteredDb, parsed.read, {
-          maxCells: queryMaxCells(env),
-        }),
-        catch: (cause) => new OneShotReadError({ cause }),
-      });
-      if (rest === "/live") {
-        const target = yield* executeAuthorizedGraphPathTarget(
-          pathInput,
-          (authorized) => readTarget(authorized).pipe(Effect.as(authorized)),
-        ).pipe(Effect.mapError(mapReadError));
-        const liveWatch = watchBasisChanges(
-          env,
-          target.route.database,
-          request,
-        );
-        const stream = executeAuthorizedGraphPathLive({
-          ...pathInput,
-          authenticate: authenticateRequest(request).pipe(
-            Effect.map(callerFromVerified),
-          ),
-          currentDb: acquireCurrentDb(env, request, {
-            bypassBasisCache: true,
-            authoritativeBasisFence: true,
-          }),
-          provision: () => Effect.void,
-          basisChanges: liveWatch.changes,
-          expectedLeaseIdentity: graphPathLeaseIdentity(target, parsed.path),
-          ...(boundaries === undefined ? {} : { boundaries }),
-        }, parsed.read, { maxCells: queryMaxCells(env) });
-        return yield* liveResponseFromStream(stream, cors);
-      }
-      const result = yield* executeAuthorizedGraphPathTarget(
-        pathInput,
-        readTarget,
-      ).pipe(Effect.mapError(mapReadError));
-      return json({ result }, 200, request, env);
-    }
-    if (parsed.catalogKey === undefined || parsed.unitHash === undefined) {
-      return yield* new Unauthorized({ status: 403 });
-    }
     const liveWatch = rest === "/live" ? watchBasisChanges(env, db, request) : undefined;
     const admissionCurrentDb = acquireCurrentDb(env, request, {
       bypassBasisCache: rest === "/live",

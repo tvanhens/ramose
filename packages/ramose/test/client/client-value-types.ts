@@ -3,7 +3,7 @@ import { Entity, Field, Query, Ref, string } from "../../src/db/internal.ts";
 import type { AllRow } from "../../src/db/Pull.ts";
 import type { ClientRef, EntityId, MutationRef } from "../../src/db/refs.ts";
 import type { ClientValue, EntityHandle } from "../../src/client/index.ts";
-import type { EntityResult } from "../../src/client/graph.ts";
+import type { EntityResult } from "../../src/client/query.ts";
 
 const Issue = Entity("issue", { title: Field(string()) });
 type IssueEntity = typeof Issue;

@@ -7,7 +7,7 @@ import Next from "../../../components/Next.astro";
 
 Application Workers can call Ramose through a Cloudflare service binding. The same catalogs, query language, operations, and policy apply; the binding removes public network hops, not authorization.
 
-<Learn learn={["How to bind the Ramose service", "How server queries and operations differ from browser replicas", "How to preserve principal context and graph boundaries"]} before={[{ href: "/guides/deploy/", label: "Deploy Ramose" }]} minutes={8} />
+<Learn learn={["How to bind the Ramose service", "How server queries and operations differ from browser replicas", "How to preserve principal context and database boundaries"]} before={[{ href: "/guides/deploy/", label: "Deploy Ramose" }]} minutes={8} />
 
 ## Bind the service
 
@@ -30,7 +30,7 @@ Authenticate the incoming request, derive the principal, and open its authorized
 const rootDb = await ramose.open({ principal })
 ```
 
-Do not accept an internal database id from the request. Traverse child graphs through typed, authorized parent queries just as the browser does.
+Do not accept an internal database id from the request. Resolve the authorized database from verified identity.
 
 ## Query on the server
 
@@ -56,10 +56,10 @@ Background jobs need an explicit service principal whose grants match the job—
 
 ## Long-running workflows
 
-One operation transacts inside one graph. For work that spans graphs or external services:
+One operation transacts inside the configured database. For work that spans external services:
 
-1. Commit a workflow entity and current state in its owning graph.
-2. Perform one external or cross-graph step.
+1. Commit a workflow entity and current state.
+2. Perform one external step.
 3. Invoke another operation to record success or a recoverable failure.
 4. Resume by stable workflow identity after retries.
 
@@ -71,6 +71,6 @@ Translate unauthenticated and inaccessible results without leaking hidden resour
 
 <Next links={[
   { href: "/guides/ssr/", label: "Server rendering", why: "combine server reads with an offline browser replica honestly" },
-  { href: "/best-practices/operations/", label: "Operation design", why: "model retry-safe server and multi-graph workflows" },
+  { href: "/best-practices/operations/", label: "Operation design", why: "model retry-safe server and external workflows" },
   { href: "/reference/server/", label: "Server reference", why: "inspect runtime boundaries and observability" },
 ]} />
