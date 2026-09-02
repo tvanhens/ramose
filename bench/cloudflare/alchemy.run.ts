@@ -15,7 +15,7 @@ const tuning = (...names: string[]): Record<string, string> =>
 
 export const Server = Ramose.Server("Bench", {
   peer: "BenchPeer",
-  storage: "BenchStore",
+  storage: Cloudflare.R2.Bucket("BenchStore", { forceDestroy: true }),
   main: import.meta.resolve("./worker.ts"),
   auth: { jwksJson: JWKS, issuers: ISS, aud: AUD },
   env: {
