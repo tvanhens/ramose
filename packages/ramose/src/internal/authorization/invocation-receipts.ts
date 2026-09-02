@@ -292,16 +292,6 @@ export const invocationDigestMaterial = (
     }),
 });
 
-const hashCanonical = Effect.fn("Authorization.hashInvocationReceiptMaterial")(
-  function* (domain: string, material: JsonValue) {
-    return yield* Effect.tryPromise({
-      try: () => sha256Hex(
-        UTF8.encode(`${domain}${canonicalizeJson(material)}`),
-      ),
-      catch: () => invalid("operation invocation must contain canonical JSON data"),
-    });
-  },
-);
 
 const SCOPE_DIGEST_CACHE_LIMIT = 256;
 const scopeDigests = new Map<string, string>();
@@ -366,22 +356,11 @@ export const prepareInvocationReceipt = Effect.fn(
   invocation: AuthoritativeOperationInvocation,
   operationVersion: OperationVersion,
 ): Effect.fn.Return<PreparedInvocationReceipt, InvalidRequest> {
-  const invocationId = requireInvocationId(invocation.invocationId);
-  const principalId = invocationPrincipalId(invocation);
-  const [scopeDigest, invocationDigest] = yield* Effect.all([
-    hashCanonical(INVOCATION_SCOPE_DIGEST_DOMAIN, invocationScopeMaterial(invocation)),
-    hashCanonical(
-      INVOCATION_DIGEST_DOMAIN,
-      invocationDigestMaterial(invocation, operationVersion),
-    ),
-  ]);
-  return Object.freeze({
-    version: INVOCATION_RECEIPT_VERSION,
-    principalId,
-    invocationId,
-    scopeDigest,
-    operationVersion,
-    invocationDigest,
+  return yield* Effect.tryPromise({
+    try: () => prepareInvocationReceiptDirect(invocation, operationVersion),
+    catch: (cause) => cause instanceof InvalidRequest
+      ? cause
+      : invalid("operation invocation must contain canonical JSON data"),
   });
 });
 

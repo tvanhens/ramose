@@ -94,7 +94,8 @@ bun run bench:op [concurrency] [seconds] [transact|operation|both]
 `bun run bench:op` drives the Cloudflare bench catalog through the
 in-process transactor over a local SQLite file, so the raw transaction path
 and the operation path can be compared and profiled without a deployment,
-for example with `bun --cpu-prof`.
+for example with `bun --cpu-prof`. `BENCH_INDEX=1` keeps the production
+index thresholds instead of suppressing index runs.
 
 ## Cloudflare benchmark
 
@@ -115,7 +116,10 @@ lane invocations running at once, each with `parallel` requests in flight
 (at most 6, the Workers simultaneous connection limit), so the transactor sees
 `lanes × parallel` concurrent writers. Each lane invocation returns after
 `BENCH_LANE_REQUESTS` requests (default 500) and is relaunched until the phase
-ends. Each phase prints client-side throughput and latency, the peer's warn
+ends. `BENCH_PING=1` adds a phase that only reads transactor info, which
+measures the request ceiling of one Durable Object, and `BENCH_SOCKET=1`
+adds ping and write phases over a WebSocket into the same object. Each phase
+prints client-side throughput and latency, the peer's warn
 and error telemetry captured inside the stage, and the transactor's batch
 counters. Batch cadence is reported as wall-clock time per batch and per
 transaction because Workers do not advance timers during synchronous work.

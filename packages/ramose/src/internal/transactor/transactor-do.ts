@@ -69,7 +69,7 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
   ) {
     super(ctx, env);
     const testingOn = testing?.enabled(env) === true;
-    if (testingOn) testing!.reset();
+    if (testingOn) testing?.reset();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
     if (row) this.dbName = JSON.parse(row.v as string) as string;

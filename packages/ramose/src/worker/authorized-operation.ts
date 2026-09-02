@@ -49,22 +49,14 @@ type RoutedOperationRequest = ParsedOperationRequest & {
   readonly unitHash: OperationInvocation["unitHash"];
 };
 
-export const serializeOperationInvocation = (
-  invocation: AuthoritativeOperationInvocation,
-): string => {
-  const wireInvocation = {
-    ...invocation,
-    ...(invocation.target === undefined
-      ? {}
-      : { target: toJson(invocation.target) }),
-  };
-  return JSON.stringify({ invocation: wireInvocation });
-};
-
 const wireInvocation = (invocation: AuthoritativeOperationInvocation) => ({
   ...invocation,
   ...(invocation.target === undefined ? {} : { target: toJson(invocation.target) }),
 });
+
+export const serializeOperationInvocation = (
+  invocation: AuthoritativeOperationInvocation,
+): string => JSON.stringify({ invocation: wireInvocation(invocation) });
 
 export const serializeOperationInvocationBatch = (
   invocations: readonly AuthoritativeOperationInvocation[],
