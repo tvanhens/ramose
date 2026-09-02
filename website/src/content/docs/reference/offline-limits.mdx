@@ -58,7 +58,7 @@ Sign-out is therefore explicit: **call `clearLocalData()` before dropping the cl
 
 **Without a lock manager, every tab synchronizes for itself.** Where the browser offers no lock manager, correctness is unchanged — concurrent writers converge on the same durable records and one invocation still commits once — but the network work is duplicated per tab.
 
-**Reading resumes when the tab is activated again, not the instant the network returns.** A database left `offline` activates again the next time the tab is focused, shown, restored from the back/forward cache, or told the device is online. A hidden tab waits to be looked at; what was already committed stays readable throughout, and no new client is needed.
+**A hidden tab waits to be looked at.** A visible tab whose device reports itself online re-establishes a dropped stream on its own, with a bounded backoff; a hidden one waits, and activates again the next time it is focused, shown, restored from the back/forward cache, or told the device is online. What was already committed stays readable throughout, and no new client is needed.
 
 <Next links={[
   { href: "/concepts/offline/", label: "Offline and synchronization", why: "the model these limits belong to" },

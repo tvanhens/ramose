@@ -116,6 +116,17 @@ export const readReplicationNdjson = (
   });
 };
 
+export const nextVisibleFrame = async (
+  iterator: AsyncIterator<ObservedReplicationFrame, void>,
+  keepAlives?: string[],
+): Promise<IteratorResult<ObservedReplicationFrame, void>> => {
+  for (;;) {
+    const next = await iterator.next();
+    if (next.done || next.value.frame.type !== "KeepAlive") return next;
+    keepAlives?.push(next.value.wire);
+  }
+};
+
 export const applyObservedFrame = (
   state: ClientReplicationState,
   observed: ObservedReplicationFrame,
@@ -175,6 +186,7 @@ export const collectCommittedSnapshot = async (
       throw error;
     }
     if (next.done) throw new Error("replication closed before snapshot commit");
+    if (next.value.frame.type === "KeepAlive") continue;
     frames.push(next.value);
     state = applyObservedFrame(state, next.value);
     if (next.value.frame.type === "SnapshotCommit") {

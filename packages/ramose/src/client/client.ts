@@ -15,7 +15,7 @@ import {
   type ReplicaDatabaseScope,
 } from "../internal/replication/replica-lifecycle.ts";
 import type { ReplicaNotice } from "../internal/replication/notices.ts";
-import { observeActivation } from "./activation.ts";
+import { activationEligible, observeActivation } from "./activation.ts";
 import {
   platformLocks,
   replicaLeaderKey,
@@ -95,6 +95,13 @@ const settled = (status: SyncStatus): boolean =>
 
 const SCOPE_CONFIRMATION_TIMEOUT_MS = 10_000;
 
+const RECONNECT_DELAY_MS = 300;
+const RECONNECT_MAX_DELAY_MS = 30_000;
+const RECONNECT_SETTLED_MS = 5_000;
+
+const reconnectDelay = (attempts: number): number =>
+  Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_DELAY_MS * 2 ** attempts);
+
 class RamoseClient implements Client {
   private readonly syncStore = new Store<SyncState>(syncState("idle"));
   readonly sync = this.syncStore.subscription;
@@ -114,6 +121,9 @@ class RamoseClient implements Client {
   private terminal: "closed" | "cleared" | "fenced" | undefined;
   private termination: Promise<void> | undefined;
   private clearing = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconnectAttempts = 0;
+  private liveAt = 0;
 
   constructor(
     private readonly options: ClientOptions,
@@ -144,6 +154,7 @@ class RamoseClient implements Client {
       assertLive: (operation) => this.assertLive(operation),
       live: () => this.terminal === undefined,
       onSyncChange: () => this.refreshSync(),
+      reconnecting: () => this.terminal === undefined && activationEligible(),
       onConfirmed: (identity) => {
         this.confirm(identity);
         this.elect(identity);
@@ -207,12 +218,15 @@ class RamoseClient implements Client {
 
   private wake(): void {
     if (this.terminal !== undefined) return;
+    this.reconnectAttempts = 0;
+    this.disarmReconnect();
     const revalidated = this.revalidate();
     for (const handle of this.handles()) {
       void handle.refreshOptimistic();
       handle.reactivateRefused();
       handle.reactivateOffline();
     }
+    this.armReconnect();
     void revalidated.then(() => {
       if (this.terminal !== undefined) return;
       for (const handle of this.handles()) void handle.refreshCommitted();
@@ -405,11 +419,55 @@ class RamoseClient implements Client {
 
   private refreshSync(): void {
     if (this.terminal !== undefined) {
+      this.disarmReconnect();
       this.syncStore.publish(syncState("closed"));
       return;
     }
     const statuses = this.root === undefined ? [] : [this.root.syncStatus()];
-    this.syncStore.publish(syncState(aggregateSyncStatus(statuses)));
+    const status = aggregateSyncStatus(statuses);
+    this.observeLiveness(status);
+    this.armReconnect();
+    this.syncStore.publish(syncState(status));
+  }
+
+  private observeLiveness(status: SyncStatus): void {
+    if (status === "live") {
+      if (this.liveAt === 0) this.liveAt = Date.now();
+      return;
+    }
+    if (this.liveAt === 0) return;
+    if (Date.now() - this.liveAt >= RECONNECT_SETTLED_MS) this.reconnectAttempts = 0;
+    this.liveAt = 0;
+  }
+
+  private reconnects(): boolean {
+    return this.terminal === undefined && activationEligible() &&
+      this.handles().some((handle) => handle.reconnects());
+  }
+
+  private armReconnect(): void {
+    if (!this.reconnects()) {
+      this.disarmReconnect();
+      return;
+    }
+    if (this.reconnectTimer !== undefined) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.reconnect();
+    }, reconnectDelay(this.reconnectAttempts));
+  }
+
+  private disarmReconnect(): void {
+    if (this.reconnectTimer === undefined) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+  }
+
+  private reconnect(): void {
+    if (!this.reconnects()) return;
+    this.reconnectAttempts += 1;
+    for (const handle of this.handles()) handle.reactivateOffline();
+    this.armReconnect();
   }
 
   async close(): Promise<void> {
@@ -470,6 +528,7 @@ class RamoseClient implements Client {
     reason: "closed" | "cleared" | "fenced",
   ): Promise<void> {
     this.terminal = reason;
+    this.disarmReconnect();
     this.releaseActivation?.();
     this.releaseActivation = undefined;
     this.releaseNotices?.();

@@ -14,6 +14,12 @@ const hidden = (): boolean =>
   (globalThis as { readonly document?: { readonly visibilityState?: string } })
     .document?.visibilityState === "hidden";
 
+const disconnected = (): boolean =>
+  (globalThis as { readonly navigator?: { readonly onLine?: boolean } })
+    .navigator?.onLine === false;
+
+export const activationEligible = (): boolean => !hidden() && !disconnected();
+
 export const observeActivation = (wake: () => void): (() => void) => {
   const target = eventTarget(globalThis);
   const document = eventTarget(

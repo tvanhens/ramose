@@ -25,7 +25,11 @@ import {
   ReplicaLease,
   replicaScopeOf,
 } from "./replica-lifecycle.ts";
-import type { ReplicationFrame, ReplicationIdentity } from "./protocol.ts";
+import {
+  REPLICATION_SILENCE_DEADLINE_MS,
+  type ReplicationFrame,
+  type ReplicationIdentity,
+} from "./protocol.ts";
 import { satisfiesActivationFence } from "./activation-fence.ts";
 import {
   openReplicationResponse,
@@ -69,6 +73,7 @@ export type ReplicationSessionOptions = {
   readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly storage: IndexedDbReplicaStorage;
   readonly onActivationOutcome?: (() => void | Promise<void>) | undefined;
+  readonly silenceDeadlineMs?: number | undefined;
 };
 
 type ChangeFrame = Extract<ReplicationFrame, { readonly type: "Change" }>;
@@ -416,7 +421,13 @@ export class ReplicationSession {
             signal: session.controller.signal,
             readCompatibilityHash: options.readCompatibilityHash,
           });
-          for await (const frame of readReplicationFrames(response, session.controller.signal)) {
+          for await (
+            const frame of readReplicationFrames(
+              response,
+              session.controller.signal,
+              options.silenceDeadlineMs ?? REPLICATION_SILENCE_DEADLINE_MS,
+            )
+          ) {
             if (!session.current(generation)) return;
             const frameIdentity = identityOf(frame);
             if (frameIdentity !== undefined) {
