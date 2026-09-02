@@ -6,8 +6,9 @@ cd "$(dirname "$0")/.."
 
 fail() { echo "error: $*" >&2; exit 1; }
 
-[ -n "${CLOUDFLARE_API_TOKEN:-}" ] || fail "CLOUDFLARE_API_TOKEN is not set."
-[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || fail "CLOUDFLARE_ACCOUNT_ID is not set."
+if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] && [ ! -f "${HOME}/.alchemy/profiles.json" ]; then
+  fail "set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or log in with 'bun alchemy login'."
+fi
 command -v bun >/dev/null 2>&1 || fail "bun is not on PATH."
 
 LANES="${1:-32}"

@@ -18,6 +18,7 @@ export interface LaneRequest {
 
 export interface LaneReport {
   readonly colo: string;
+  readonly serverEvents: Record<string, number>;
   readonly ok: number;
   readonly errors: number;
   readonly failures: Record<string, number>;
@@ -69,6 +70,7 @@ export const runLane = async (
   origin: string,
   capability: string,
   colo: string,
+  serverEvents: () => Record<string, number>,
 ): Promise<LaneReport> => {
   const parallel = Math.max(1, Math.min(MAX_LANE_PARALLEL, Math.floor(req.parallel)));
   const maxRequests = Math.max(1, Math.min(MAX_LANE_REQUESTS, Math.floor(req.maxRequests)));
@@ -101,5 +103,5 @@ export const runLane = async (
     }
   });
   await Promise.all(slots);
-  return { colo, ok, errors, failures, latencies, startedAt, endedAt: Date.now() };
+  return { colo, serverEvents: serverEvents(), ok, errors, failures, latencies, startedAt, endedAt: Date.now() };
 };

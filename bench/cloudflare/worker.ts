@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import { deployOperationCatalogs } from "ramose/worker";
+import { setTelemetrySink, type TelemetryEvent } from "../../packages/ramose/src/internal/core/telemetry.ts";
 import type { RamoseEnv } from "../../packages/ramose/src/RamoseEnv.ts";
 import {
   QueryReplicaDO,
@@ -22,6 +23,22 @@ const operationCatalogs = await Effect.runPromise(
 );
 
 const server = createServer({ operationCatalogs });
+
+const SERVER_EVENT_LIMIT = 200;
+const serverEvents = new Map<string, number>();
+setTelemetrySink((e: TelemetryEvent) => {
+  console.log(JSON.stringify(e));
+  if (e.level !== "warn" && e.level !== "error") return;
+  const detail = typeof e.error === "string" ? e.error : typeof e.code === "string" ? e.code : "";
+  const key = `${e.component}.${e.event}${detail === "" ? "" : `: ${detail.slice(0, 160)}`}`;
+  if (serverEvents.size >= SERVER_EVENT_LIMIT && !serverEvents.has(key)) return;
+  serverEvents.set(key, (serverEvents.get(key) ?? 0) + 1);
+});
+const drainServerEvents = (): Record<string, number> => {
+  const out = Object.fromEntries(serverEvents);
+  serverEvents.clear();
+  return out;
+};
 
 const sameSecret = (left: string, right: string): boolean => {
   if (left.length !== right.length) return false;
@@ -49,7 +66,7 @@ export default {
       if (capability === undefined) return new Response("not found", { status: 404 });
       const lane = (await request.json()) as LaneRequest;
       const colo = (request.cf as { colo?: string } | undefined)?.colo ?? "unknown";
-      const report = await runLane(lane, env.BENCH_SELF, url.origin, capability, colo);
+      const report = await runLane(lane, env.BENCH_SELF, url.origin, capability, colo, drainServerEvents);
       return new Response(JSON.stringify(report), {
         headers: { "content-type": "application/json" },
       });

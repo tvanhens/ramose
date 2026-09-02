@@ -59,6 +59,24 @@ const requireOk = (what: string, r: Exchange): any => {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const settle = async (what: string, attempt: () => Promise<Exchange>, deadlineMs = 90_000): Promise<any> => {
+  const deadline = Date.now() + deadlineMs;
+  let last: Exchange | undefined;
+  while (true) {
+    try {
+      last = await attempt();
+      if (last.status === 200) return last.body;
+      if (last.status < 500 && last.status !== 404) break;
+    } catch (e) {
+      last = { status: 0, body: null, text: e instanceof Error ? e.message : String(e) };
+    }
+    if (Date.now() >= deadline) break;
+    console.log(`  ${what}: ${last.status} ${last.text.slice(0, 120)}; retrying while the deployment settles`);
+    await sleep(2_000);
+  }
+  return requireOk(what, last!);
+};
+
 const run = Date.now().toString(36);
 let laneCounter = 0;
 
@@ -92,6 +110,7 @@ const load = async (name: string, target: LaneTarget, db: string, token?: string
   const lat: number[] = [];
   const failures = new Map<string, number>();
   const colos = new Map<string, number>();
+  const serverEvents = new Map<string, number>();
   let done = 0, errors = 0, invocations = 0, laneErrors = 0;
   const t0 = performance.now();
   const deadline = Date.now() + seconds * 1000;
@@ -109,6 +128,9 @@ const load = async (name: string, target: LaneTarget, db: string, token?: string
           failures.set(error, (failures.get(error) ?? 0) + count);
         }
         colos.set(report.colo, (colos.get(report.colo) ?? 0) + 1);
+        for (const [event, count] of Object.entries(report.serverEvents)) {
+          serverEvents.set(event, (serverEvents.get(event) ?? 0) + count);
+        }
       } catch (e) {
         laneErrors++;
         const message = e instanceof Error ? e.message : String(e);
@@ -127,7 +149,10 @@ const load = async (name: string, target: LaneTarget, db: string, token?: string
   for (const [error, count] of [...failures.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)) {
     console.log(`  error ×${count}: ${error}`);
   }
-  return { done, errors, rate: (done / ms) * 1000, p50: percentile(lat, 50), p95: percentile(lat, 95), p99: percentile(lat, 99) };
+  for (const [event, count] of [...serverEvents.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)) {
+    console.log(`  server ×${count}: ${event}`);
+  }
+  return { done, errors, ms, rate: (done / ms) * 1000, p50: percentile(lat, 50), p95: percentile(lat, 95), p99: percentile(lat, 99) };
 };
 
 const transactorStats = async (db: string) => {
@@ -139,7 +164,9 @@ const transactorStats = async (db: string) => {
     avgBatch: s.batches ? s.txs / s.batches : 0,
     maxBatch: s.maxBatch as number,
     rejected: s.rejected as number,
+    indexRuns: s.indexRuns as number,
     txPerSec: info.metrics.txPerSec as number,
+    queueDepth: info.metrics.queueDepth as number,
     novelty: info.novelty as number,
     opts: info.opts,
   };
@@ -147,11 +174,24 @@ const transactorStats = async (db: string) => {
 
 type Stats = Awaited<ReturnType<typeof transactorStats>>;
 
-const serverSide = (before: Stats, after: Stats) => ({
-  "server txs": after.txs - before.txs,
-  "server tx/s": after.txPerSec,
-  novelty: after.novelty,
-});
+const serverSide = (before: Stats, after: Stats, wallMs: number) => {
+  const restarted = after.txs < before.txs || after.batches < before.batches;
+  if (restarted) {
+    console.log("  transactor restarted during the phase; server-side counters cover only the new instance");
+  }
+  const txs = restarted ? after.txs : after.txs - before.txs;
+  const batches = restarted ? after.batches : after.batches - before.batches;
+  return {
+    "server txs": txs,
+    "server tx/s": after.txPerSec,
+    restarted,
+    rejected: restarted ? after.rejected : after.rejected - before.rejected,
+    "index runs": restarted ? after.indexRuns : after.indexRuns - before.indexRuns,
+    "wall ms/batch": +fmt(batches ? wallMs / batches : 0, 1),
+    "wall ms/tx": +fmt(txs ? wallMs / txs : 0, 2),
+    novelty: after.novelty,
+  };
+};
 
 const attribute = (ident: string, type: string, extra: Record<string, unknown> = {}) => ({
   ":db/ident": ident,
@@ -165,26 +205,26 @@ const rows: Record<string, unknown>[] = [];
 
 {
   const db = `bench-tx-${run}`;
-  requireOk("transact schema", await admin(db, "/transact", {
+  await settle("transact schema", () => admin(db, "/transact", {
     tx: [attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" }), attribute(":k/v", "string")],
   }));
   const before = await transactorStats(db);
   const r = await load("transact", "transact", db);
   const after = await transactorStats(db);
-  const batches = after.batches - before.batches;
-  rows.push({ phase: "transact", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch, ...serverSide(before, after) });
+  const batches = Math.max(0, after.batches - before.batches);
+  rows.push({ phase: "transact", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch, ...serverSide(before, after, r.ms) });
   console.log(`  transactor opts ${JSON.stringify(after.opts)} batches=${batches} maxBatch=${after.maxBatch}`);
 }
 
 {
   const db = BENCH_DATABASE;
-  requireOk("operation schema", await admin(db, "/transact", { tx: schemaTx(BenchSchema) }));
+  await settle("operation schema", () => admin(db, "/transact", { tx: schemaTx(BenchSchema) }));
   const token = await signToken(db, "writer", "bench-writer", undefined, { exp: `${seconds + 300}s` });
   const before = await transactorStats(db);
   const r = await load("operation", "operation", db, token);
   const after = await transactorStats(db);
-  const batches = after.batches - before.batches;
-  rows.push({ phase: "operation", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch, ...serverSide(before, after) });
+  const batches = Math.max(0, after.batches - before.batches);
+  rows.push({ phase: "operation", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch, ...serverSide(before, after, r.ms) });
   console.log(`  transactor opts ${JSON.stringify(after.opts)} batches=${batches} maxBatch=${after.maxBatch}`);
 }
 

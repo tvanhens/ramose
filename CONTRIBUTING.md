@@ -104,7 +104,15 @@ lane invocations running at once, each with `parallel` requests in flight
 (at most 6, the Workers simultaneous connection limit), so the transactor sees
 `lanes × parallel` concurrent writers. Each lane invocation returns after
 `BENCH_LANE_REQUESTS` requests (default 500) and is relaunched until the phase
-ends. Transactor tuning variables such as `RAMOSE_MAX_BATCH` and
+ends. Each phase prints client-side throughput and latency, the peer's warn
+and error telemetry captured inside the stage, and the transactor's batch
+counters. Batch cadence is reported as wall-clock time per batch and per
+transaction because Workers do not advance timers during synchronous work.
+Past a few hundred concurrent writers the platform sheds load with
+"Durable Object is overloaded" errors, which the bench reports as server
+events, so raise `lanes` until that appears to find the ceiling of a single
+transactor.
+Transactor tuning variables such as `RAMOSE_MAX_BATCH` and
 `RAMOSE_BATCH_BUDGET_MS` are forwarded to the stage, and `BENCH_LABEL` tags
 the printed rows so runs can be compared. `KEEP_STAGE=1` retains the stage.
 `bun run bench:cf:compare` runs the same benchmark twice, first against the
