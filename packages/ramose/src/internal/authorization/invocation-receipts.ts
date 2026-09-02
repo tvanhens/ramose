@@ -303,6 +303,53 @@ const hashCanonical = Effect.fn("Authorization.hashInvocationReceiptMaterial")(
   },
 );
 
+const SCOPE_DIGEST_CACHE_LIMIT = 256;
+const scopeDigests = new Map<string, string>();
+
+const scopeDigestFor = async (
+  invocation: AuthoritativeOperationInvocation,
+): Promise<string> => {
+  const canonical = canonicalizeJson(invocationScopeMaterial(invocation));
+  const cached = scopeDigests.get(canonical);
+  if (cached !== undefined) return cached;
+  const digest = await sha256Hex(
+    UTF8.encode(`${INVOCATION_SCOPE_DIGEST_DOMAIN}${canonical}`),
+  );
+  if (scopeDigests.size >= SCOPE_DIGEST_CACHE_LIMIT) {
+    scopeDigests.delete(scopeDigests.keys().next().value!);
+  }
+  scopeDigests.set(canonical, digest);
+  return digest;
+};
+
+export const prepareInvocationReceiptDirect = async (
+  invocation: AuthoritativeOperationInvocation,
+  operationVersion: OperationVersion,
+): Promise<PreparedInvocationReceipt> => {
+  const invocationId = requireInvocationId(invocation.invocationId);
+  const principalId = invocationPrincipalId(invocation);
+  let scopeDigest: string;
+  let invocationDigest: string;
+  try {
+    [scopeDigest, invocationDigest] = await Promise.all([
+      scopeDigestFor(invocation),
+      sha256Hex(UTF8.encode(
+        `${INVOCATION_DIGEST_DOMAIN}${canonicalizeJson(invocationDigestMaterial(invocation, operationVersion))}`,
+      )),
+    ]);
+  } catch {
+    throw invalid("operation invocation must contain canonical JSON data");
+  }
+  return Object.freeze({
+    version: INVOCATION_RECEIPT_VERSION,
+    principalId,
+    invocationId,
+    scopeDigest,
+    operationVersion,
+    invocationDigest,
+  });
+};
+
 export const requireSuppliedOperationVersion = (
   value: unknown,
 ): OperationVersion | undefined => {

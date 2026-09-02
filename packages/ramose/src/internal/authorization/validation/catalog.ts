@@ -209,7 +209,32 @@ const validateOperationShape = (
     }
   });
 
+const preparedCatalogs = new WeakMap<
+  CatalogDescriptor,
+  Map<string, Result.Result<PreparedAuthorizationCatalog, ValidateFailure>>
+>();
+
+const bindingTargetKey = (target: CatalogBindingTarget): string =>
+  `${target.database}\0${target.catalog}\0${target.catalogVersion}\0${target.schemaFingerprint}`;
+
 export const prepareAuthorizationCatalog = (
+  target: CatalogBindingTarget,
+  descriptor: CatalogDescriptor,
+): Result.Result<PreparedAuthorizationCatalog, ValidateFailure> => {
+  let byTarget = preparedCatalogs.get(descriptor);
+  if (byTarget === undefined) {
+    byTarget = new Map();
+    preparedCatalogs.set(descriptor, byTarget);
+  }
+  const key = bindingTargetKey(target);
+  const cached = byTarget.get(key);
+  if (cached !== undefined) return cached;
+  const prepared = prepareAuthorizationCatalogUncached(target, descriptor);
+  byTarget.set(key, prepared);
+  return prepared;
+};
+
+const prepareAuthorizationCatalogUncached = (
   target: CatalogBindingTarget,
   descriptor: CatalogDescriptor,
 ): Result.Result<PreparedAuthorizationCatalog, ValidateFailure> =>

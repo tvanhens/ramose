@@ -192,6 +192,39 @@ export const uniqueCanonicalTypeName = (
 const viewKey = (db: Db): string =>
   `${db.basisT}:${db.asOfT ?? ""}:${db.isHistory ? 1 : 0}`;
 
+type PolicyTables = {
+  readonly rules: ReadonlyMap<string, CanonicalAuthorizationExpr>;
+  readonly entityDecisions: ReadonlyMap<string, Decision>;
+  readonly traitDecisions: ReadonlyMap<string, Decision>;
+  readonly fieldDecisions: ReadonlyMap<string, Decision>;
+};
+
+const policyTablesByUnit = new WeakMap<InstalledCatalogUnitV2, PolicyTables>();
+
+const policyTables = (unit: InstalledCatalogUnitV2): PolicyTables => {
+  const cached = policyTablesByUnit.get(unit);
+  if (cached !== undefined) return cached;
+  const rules = new Map<string, CanonicalAuthorizationExpr>();
+  for (const rule of unit.policy.rules) {
+    rules.set(rule.id, rule.expr);
+  }
+  const entityDecisions = new Map<string, Decision>();
+  for (const entry of unit.policy.decisions.entities) {
+    entityDecisions.set(entry.target.name, entry.decision);
+  }
+  const traitDecisions = new Map<string, Decision>();
+  for (const entry of unit.policy.decisions.traits) {
+    traitDecisions.set(entry.target.name, entry.decision);
+  }
+  const fieldDecisions = new Map<string, Decision>();
+  for (const entry of unit.policy.decisions.fields) {
+    fieldDecisions.set(fieldKey(entry.target), entry.decision);
+  }
+  const tables: PolicyTables = { rules, entityDecisions, traitDecisions, fieldDecisions };
+  policyTablesByUnit.set(unit, tables);
+  return tables;
+};
+
 export const compileReadFilter = (input: CompileReadFilterInput): DatomPredicate => {
   try {
     return compilePredicate(input);
@@ -220,23 +253,7 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     if (attr !== undefined) attrFields.set(attr.id, field);
   }
 
-  const rules = new Map<string, CanonicalAuthorizationExpr>();
-  for (const rule of unit.policy.rules) {
-    rules.set(rule.id, rule.expr);
-  }
-
-  const entityDecisions = new Map<string, Decision>();
-  for (const entry of unit.policy.decisions.entities) {
-    entityDecisions.set(entry.target.name, entry.decision);
-  }
-  const traitDecisions = new Map<string, Decision>();
-  for (const entry of unit.policy.decisions.traits) {
-    traitDecisions.set(entry.target.name, entry.decision);
-  }
-  const fieldDecisions = new Map<string, Decision>();
-  for (const entry of unit.policy.decisions.fields) {
-    fieldDecisions.set(fieldKey(entry.target), entry.decision);
-  }
+  const { rules, entityDecisions, traitDecisions, fieldDecisions } = policyTables(unit);
 
   const typeMemo = new Map<string, Promise<EntityId | undefined>>();
   const rowMemo = new Map<string, Promise<boolean>>();

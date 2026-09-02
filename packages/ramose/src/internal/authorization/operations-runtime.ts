@@ -28,7 +28,7 @@ import {
 } from "../../db/entityArg.ts";
 import { markEngineTypeAssertion } from "../core/tx-provenance.ts";
 import type { Connection, TxReport } from "../core/conn.ts";
-import { Index } from "../core/datom.ts";
+import { type Datom, Index } from "../core/datom.ts";
 import type { Db, EntityRef } from "../core/db.ts";
 import { toWireDatom } from "../core/log.ts";
 import { query } from "../core/query/engine.ts";
@@ -140,6 +140,46 @@ export type CatalogOperationAdmission = {
   readonly expiresAtSeconds: number;
   readonly authoritativeNowMs: number;
   readonly target?: { readonly eid: number; readonly type: string };
+  readonly targetWitness?: TargetVisibilityWitness;
+};
+
+type TargetVisibilityWitness = {
+  readonly eid: number;
+  readonly observations: readonly ReadAuthorizationObservation[];
+  readonly lookupAttributeId: number | undefined;
+};
+
+const lookupAttributeIdOf = (db: Db, target: EntityRef): number | undefined => {
+  if (typeof target === "number") return undefined;
+  const ident = typeof target === "string" ? ":db/ident" : target[0];
+  return db.schema.attr(ident)?.id;
+};
+
+const witnessTouchedBy = (
+  witness: TargetVisibilityWitness,
+  db: Db,
+  datoms: readonly Datom[],
+): boolean => {
+  const fieldAttributeId = (observation: ReadAuthorizationObservation & { readonly _tag: "field" }) =>
+    observation.attributeId ?? db.schema.attr(observation.ident)?.id;
+  for (const datom of datoms) {
+    if (datom.e === witness.eid) return true;
+    if (witness.lookupAttributeId !== undefined && datom.a === witness.lookupAttributeId) return true;
+    for (const observation of witness.observations) {
+      if (observation.eid !== datom.e) continue;
+      switch (observation._tag) {
+        case "exists":
+          return true;
+        case "type":
+          if (datom.a === RAMOSE_TYPE) return true;
+          break;
+        case "field":
+          if (datom.a === fieldAttributeId(observation)) return true;
+          break;
+      }
+    }
+  }
+  return false;
 };
 
 export const resolveOperationCatalog = Effect.fn(
@@ -1223,6 +1263,7 @@ const targetAuthorizationState = async (
 const captureInvocationReplayFence = async (
   admission: CatalogOperationAdmission,
   dbAfter: Db,
+  txData: readonly Datom[],
 ): Promise<InvocationReplayFenceV1> => {
   const originalDb = admission.context.currentDb;
   const typeCache = new Map<number, Promise<string | undefined>>();
@@ -1298,13 +1339,19 @@ const captureInvocationReplayFence = async (
         }),
       });
     } else {
-      const authorization = await targetAuthorizationState(
-        admission.resolved.deployed.definition,
-        admission.context.principal,
-        dbAfter,
-        admission.target.eid,
-        invocationTarget,
-      );
+      const witness = admission.targetWitness;
+      const unchanged = witness !== undefined &&
+        witness.eid === admission.target.eid &&
+        !witnessTouchedBy(witness, originalDb, txData);
+      const authorization = unchanged
+        ? { visible: true as const, digest: "" }
+        : await targetAuthorizationState(
+          admission.resolved.deployed.definition,
+          admission.context.principal,
+          dbAfter,
+          admission.target.eid,
+          invocationTarget,
+        );
       target = Object.freeze({
         ...admission.target,
         referenceEid,
@@ -1512,6 +1559,7 @@ const authorizeCatalogOperationOnDb = async (
   }
 
   let target: { readonly eid: number; readonly type: string } | undefined;
+  let targetWitness: TargetVisibilityWitness | undefined;
   if (descriptor.id.target === "required") {
     if (invocation.target === undefined) throw deny();
     if (replayFence !== undefined) {
@@ -1582,8 +1630,26 @@ const authorizeCatalogOperationOnDb = async (
         }
       }
     } else {
-      target = await resolveVisibleTarget(context, invocation.target);
-      if (target === undefined) throw deny();
+      const eid = typeof invocation.target === "number"
+        ? invocation.target
+        : await context.currentDb.entid(invocation.target);
+      if (eid === undefined) throw deny();
+      const authorization = await targetAuthorizationState(
+        deployed.definition,
+        context.principal,
+        context.currentDb,
+        eid,
+        invocation.target,
+      );
+      if (!authorization.visible) throw deny();
+      const concrete = await typeName(context.currentDb, eid);
+      if (concrete === undefined) throw deny();
+      target = { eid, type: concrete };
+      targetWitness = {
+        eid,
+        observations: authorization.observations,
+        lookupAttributeId: lookupAttributeIdOf(context.currentDb, invocation.target),
+      };
     }
     if (target === undefined || !typeCompatible(deployed.definition, descriptor.id.owner, target.type)) {
       throw deny();
@@ -1630,6 +1696,7 @@ const authorizeCatalogOperationOnDb = async (
     expiresAtSeconds,
     authoritativeNowMs,
     ...(target === undefined ? {} : { target }),
+    ...(targetWitness === undefined ? {} : { targetWitness }),
   });
 };
 
@@ -1793,6 +1860,7 @@ export const executeCatalogOperation = async (
       const replayFence = await captureInvocationReplayFence(
         admission,
         report.dbAfter,
+        report.txData,
       );
       const requested = invocation.allocations ?? [];
       const extraction = extractAllocations(

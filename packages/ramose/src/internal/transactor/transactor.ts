@@ -34,6 +34,7 @@ import {
 } from "../../db/Errors.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { BadRequest, NotFound, TransactorDeadError, Unavailable, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
@@ -63,9 +64,10 @@ import {
   parseEntityIdScope,
   parseInvocationAllocations,
   parseStoredInvocationReceipt,
-  prepareInvocationReceipt,
+  prepareInvocationReceiptDirect,
   requireSuppliedOperationVersion,
-  resolveOperationCatalog,
+  resolveDeployedCatalogDefinition,
+  type ResolvedOperationCatalog,
   resolveSealedInputRefs,
   resolveSealedTarget,
   transitionInvocationReceipt,
@@ -332,22 +334,40 @@ export class Transactor {
     );
   }
 
+  private completeClaimedReceipt(receipt: TerminalInvocationReceipt): void {
+    const updated = this.host.sql.exec(
+      `UPDATE operation_receipts SET status = ?, receipt = ?
+       WHERE principal_id = ? AND invocation_id = ? AND status = 'claimed'
+       RETURNING invocation_id`,
+      receipt.status,
+      JSON.stringify(receipt),
+      receipt.principalId,
+      receipt.invocationId,
+    ).toArray();
+    if (updated.length !== 1) {
+      throw new Error("durable invocation claim changed before completion");
+    }
+  }
+
   private claimInvocationReceipt(
     prepared: PreparedInvocationReceipt,
+    inspected?: ReturnType<typeof decideInvocationReceipt>,
   ) {
-    return this.host.transactionSync(() => {
-      const stored = this.readInvocationReceipt(
-        prepared.principalId,
-        prepared.invocationId,
-      );
-      const decision = decideInvocationReceipt(stored, prepared);
+    const apply = (decision: ReturnType<typeof decideInvocationReceipt>) => {
       if (decision._tag === "Claim") {
         this.insertInvocationReceipt(decision.receipt);
       } else if (decision._tag === "Recover") {
         this.replaceInvocationReceipt(decision.receipt);
       }
       return decision;
-    });
+    };
+    if (inspected !== undefined) return apply(inspected);
+    return this.host.transactionSync(() =>
+      apply(decideInvocationReceipt(
+        this.readInvocationReceipt(prepared.principalId, prepared.invocationId),
+        prepared,
+      ))
+    );
   }
 
   private inspectInvocationReceipt(
@@ -376,36 +396,14 @@ export class Transactor {
     });
   }
 
-  private assertClaimIdentity(
-    stored: StoredInvocationReceipt | LegacyInvocationReceiptRow | undefined,
-    claim: ClaimedInvocationReceipt,
-  ): asserts stored is ClaimedInvocationReceipt {
-    if (
-      stored === undefined || isLegacyInvocationReceiptRow(stored) ||
-      stored.status !== "claimed" || stored.version !== claim.version ||
-      stored.principalId !== claim.principalId ||
-      stored.invocationId !== claim.invocationId ||
-      stored.scopeDigest !== claim.scopeDigest ||
-      stored.operationVersion !== claim.operationVersion ||
-      stored.invocationDigest !== claim.invocationDigest
-    ) {
-      throw new Error("durable invocation claim changed before completion");
-    }
-  }
-
   private finishInvocationReceipt(
     claim: ClaimedInvocationReceipt,
     event: InvocationReceiptEvent,
     insideTransaction = false,
   ): TerminalInvocationReceipt {
     const finish = () => {
-      const stored = this.readInvocationReceipt(
-        claim.principalId,
-        claim.invocationId,
-      );
-      this.assertClaimIdentity(stored, claim);
-      const terminal = transitionInvocationReceipt(stored, event);
-      this.replaceInvocationReceipt(terminal);
+      const terminal = transitionInvocationReceipt(claim, event);
+      this.completeClaimedReceipt(terminal);
       return terminal;
     };
     return insideTransaction ? finish() : this.host.transactionSync(finish);
@@ -771,9 +769,18 @@ export class Transactor {
               const supplied = requireSuppliedOperationVersion(
                 p.operation.operationVersion,
               );
-              const resolved = await Effect.runPromise(
-                resolveOperationCatalog(this.operationRuntime, p.operation),
+              const resolvedCatalog = resolveDeployedCatalogDefinition(
+                this.operationRuntime.catalogs,
+                {
+                  database: p.operation.database,
+                  catalogKey: p.operation.catalogKey,
+                  unitHash: p.operation.unitHash,
+                },
               );
+              if (Result.isFailure(resolvedCatalog)) throw opaqueOperationDenial();
+              const resolved: ResolvedOperationCatalog = Object.freeze({
+                deployed: resolvedCatalog.success,
+              });
               this.bindComposition(
                 resolved.deployed.definition.unitHash,
                 resolved.deployed.definition.composition,
@@ -856,8 +863,9 @@ export class Transactor {
                 await resolveCompatibility("UpdateRequired");
                 continue;
               }
-              const prepared = await Effect.runPromise(
-                prepareInvocationReceipt(operation, operationVersion),
+              const prepared = await prepareInvocationReceiptDirect(
+                operation,
+                operationVersion,
               );
               const receiptKey = `${prepared.principalId}\0${prepared.invocationId}`;
               if (claimedInBatch.has(receiptKey)) {
@@ -933,7 +941,7 @@ export class Transactor {
                   resolved,
                 );
 
-              const decision = this.claimInvocationReceipt(prepared);
+              const decision = this.claimInvocationReceipt(prepared, inspected);
               if (
                 decision._tag === "Conflict" ||
                 decision._tag === "OperationChanged" ||
