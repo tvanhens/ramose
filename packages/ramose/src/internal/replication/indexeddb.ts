@@ -356,6 +356,10 @@ export type AcknowledgedReplicaPosition = {
   readonly settled: number;
 };
 
+export type ReplicaCommittedPosition = AcknowledgedReplicaPosition & {
+  readonly revision: string;
+};
+
 export type ReplicaOrdinalAcknowledgement = {
   readonly identity: ReplicationIdentity;
   readonly revision: string;
@@ -1889,6 +1893,33 @@ export class IndexedDbReplicaStorage {
       identity: binding.identity,
       revision: head.revision,
       ordinal: head.ordinal,
+    });
+  }
+
+  async committedPosition(
+    identity: ReplicationIdentity,
+  ): Promise<ReplicaCommittedPosition | undefined> {
+    const partition = replicaPartitionKey(identity);
+    const transaction = this.database.transaction(COMMITTED_HEADS, "readonly");
+    const head = await requestResult<CommittedHeadRecord | undefined>(
+      transaction.objectStore(COMMITTED_HEADS).get(partition),
+    );
+    await transactionDone(transaction);
+    if (
+      head === undefined ||
+      head.storageVersion !== REPLICA_STORAGE_VERSION ||
+      head.partition !== partition ||
+      head.readCompatibilityHash !== identity.readCompatibilityHash ||
+      !isReplicationOrdinal(head.ordinal) ||
+      !isReplicationSettlement(head.settled) ||
+      !sameReplicationIdentity(head.identity, identity)
+    ) {
+      return undefined;
+    }
+    return Object.freeze({
+      revision: head.revision,
+      ordinal: head.ordinal,
+      settled: head.settled,
     });
   }
 

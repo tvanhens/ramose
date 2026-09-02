@@ -10,9 +10,11 @@ import { openTab, type TabHandle } from "./tab-harness.ts";
 import {
   identityFor,
   noteDatoms,
+  OFFLINE_ORIGIN,
   opaque,
   REVISION,
   seed,
+  type ReplicaOrigin,
 } from "./propagation-tab.ts";
 
 const tabModule = new URL("./propagation-tab.ts", import.meta.url).href;
@@ -154,6 +156,29 @@ const started = async (
     () => tab.call<string>("sync"),
     (status) => status === "offline",
     "the tab's own stream to end",
+  );
+  return rendered;
+};
+
+const LIVE = ["live", "stale"] as const;
+
+const heldOrigin = (uniqueId: string): ReplicaOrigin => ({
+  server: globalThis.location.origin,
+  root: `quiet${uniqueId.replaceAll("-", "")}-held`,
+});
+
+const startedLive = async (
+  tab: TabHandle,
+  storageName: string,
+  database: string,
+  origin: ReplicaOrigin,
+): Promise<QueryReport> => {
+  await tab.call("start", { storageName, database, origin });
+  const rendered = await rendering(tab);
+  await until(
+    () => tab.call<string>("sync"),
+    (status) => (LIVE as readonly string[]).includes(status),
+    "the tab's stream to hold open",
   );
   return rendered;
 };
@@ -1299,6 +1324,82 @@ browserTest(
     } finally {
       leader.close();
       await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a settlement advance reaches a tab whose stream stays open and sends nothing",
+  async ({ browser }) => {
+    const name = `ramose-propagation-live-notice-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    const origin = heldOrigin(browser.uniqueId);
+    await seed(name, identity, NOTES, [OFFLINE_ORIGIN, origin]);
+    const writer = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    let reader: TabHandle | undefined;
+    const layerStates = async (): Promise<readonly unknown[]> =>
+      (await dumpStore(name, "mutation-layers-v1"))
+        .map((row) => (row as Record<string, unknown>).state);
+    try {
+      await started(writer, name, database);
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the optimistic layer",
+      );
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+      expect(await layerStates()).toEqual(["retired"]);
+
+      reader = await openTab(tabModule);
+      expect((await startedLive(reader, name, database, origin)).titles)
+        .toEqual(["moved", "second"]);
+      await steady(
+        async () => ({
+          rendered: await titles(reader!),
+          sync: await reader!.call<string>("sync"),
+        }),
+        (observed) =>
+          observed.rendered.includes("moved") &&
+          (LIVE as readonly string[]).includes(observed.sync),
+        "the live follower before its settlement is covered",
+        15,
+      );
+
+      expect(await leader.acknowledgeOrdinal({
+        identity,
+        revision: REVISION,
+        ordinal: 1,
+        settled: 1,
+      })).toEqual({ ordinal: 1, settled: 1 });
+
+      expect(
+        await until(
+          () => titles(reader!),
+          (rows) => !rows.includes("moved"),
+          "the live follower to adopt the announced settlement",
+        ),
+      ).toEqual(["first", "second"]);
+      expect((LIVE as readonly string[]))
+        .toContain(await reader.call<string>("sync"));
+      expect(await layerStates()).toEqual(["retired"]);
+    } finally {
+      leader.close();
+      await reader?.close();
       await writer.close();
       await deleteDatabase(name);
     }

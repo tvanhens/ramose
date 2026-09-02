@@ -261,7 +261,9 @@ export class ReplicationSession {
 
   private async readDurableHead(): Promise<boolean> {
     const status = this.state.status;
-    if (status !== "failed" && status !== "terminal") return false;
+    if (status !== "failed" && status !== "terminal") {
+      return status === "closed" ? false : await this.adoptDurableWatermark();
+    }
     const held = this.state.value?.identity ?? this.confirmedIdentity;
     if (held === undefined) return false;
     const generation = this.generation;
@@ -291,6 +293,30 @@ export class ReplicationSession {
     this.publish(Object.freeze({
       ...this.state,
       value: valueFrom(identity, restored, published?.stale ?? true),
+    }));
+    return true;
+  }
+
+  private async adoptDurableWatermark(): Promise<boolean> {
+    const published = this.state.value;
+    if (published === undefined) return false;
+    const generation = this.generation;
+    const position = await this.storage.committedPosition(published.identity);
+    if (
+      position === undefined || !this.current(generation) ||
+      this.state.value !== published ||
+      position.revision !== published.revision ||
+      position.settled <= published.settled
+    ) {
+      return false;
+    }
+    this.publish(Object.freeze({
+      ...this.state,
+      value: Object.freeze({
+        ...published,
+        ordinal: Math.max(published.ordinal, position.ordinal),
+        settled: position.settled,
+      }),
     }));
     return true;
   }

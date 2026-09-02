@@ -112,13 +112,35 @@ export const noteDatoms = (
 
 export const REVISION = opaque("r");
 
-const rootAddress = (): ReturnType<typeof replicationActivationAddress> =>
-  replicationActivationAddress({ server: OFFLINE, root: ROOT });
+export type ReplicaOrigin = {
+  readonly server: string;
+  readonly root: string;
+};
+
+export const OFFLINE_ORIGIN: ReplicaOrigin = { server: OFFLINE, root: ROOT };
+
+const bind = async (
+  storage: IndexedDbReplicaStorage,
+  identity: ReplicationIdentity,
+  origin: ReplicaOrigin,
+): Promise<void> => {
+  const address = replicationActivationAddress(origin);
+  const routeSlot = await rootReplicaRouteSlot();
+  await storage.bindAuthenticated({
+    fingerprint: await replicationCredentialFingerprint(TOKEN, address, routeSlot),
+    identity,
+    candidateKey: {
+      selector: await replicationCacheSelector(CACHE_KEY, address),
+      routeSlot,
+    },
+  });
+};
 
 export const seed = async (
   name: string,
   identity: ReplicationIdentity,
   notes: readonly SeededNote[],
+  origins: readonly ReplicaOrigin[] = [OFFLINE_ORIGIN],
 ): Promise<void> => {
   const installed = await installClientCatalog(NotesSchema);
   const storage = await IndexedDbReplicaStorage.open(name);
@@ -137,16 +159,7 @@ export const seed = async (
       settled: 0,
       chunks: 1,
     }, installed.attributes))?.release();
-    const address = rootAddress();
-    const routeSlot = await rootReplicaRouteSlot();
-    await storage.bindAuthenticated({
-      fingerprint: await replicationCredentialFingerprint(TOKEN, address, routeSlot),
-      identity,
-      candidateKey: {
-        selector: await replicationCacheSelector(CACHE_KEY, address),
-        routeSlot,
-      },
-    });
+    for (const origin of origins) await bind(storage, identity, origin);
   } finally {
     storage.close();
   }
@@ -155,6 +168,7 @@ export const seed = async (
 type StartInput = {
   readonly storageName: string;
   readonly database: string;
+  readonly origin?: ReplicaOrigin;
 };
 
 type CommitInput = {
@@ -222,10 +236,13 @@ const report = (): QueryReport => ({
   pending: rows().map((row) => row.local.pending),
 });
 
-const open = (storageName: string): ClientDatabase => {
+const open = (
+  storageName: string,
+  origin: ReplicaOrigin = OFFLINE_ORIGIN,
+): ClientDatabase => {
   client = createClient({
-    url: OFFLINE,
-    root: ROOT,
+    url: origin.server,
+    root: origin.root,
     catalog: NotesSchema,
     auth: () => ({ token: TOKEN, cacheKey: CACHE_KEY }),
     storageName,
@@ -281,8 +298,8 @@ export const serve = (id: string): void =>
         .BroadcastChannel === undefined;
     },
 
-    start: async ({ storageName }: StartInput): Promise<QueryReport> => {
-      database = open(storageName);
+    start: async ({ storageName, origin }: StartInput): Promise<QueryReport> => {
+      database = open(storageName, origin);
       return observeNotes(database);
     },
 

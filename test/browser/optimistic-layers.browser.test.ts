@@ -1275,6 +1275,81 @@ browserTest(
   },
 );
 
+const published = async (
+  session: ReplicationSession,
+  ready: (snapshot: ReplicationSessionSnapshot) => boolean,
+  label: string,
+): Promise<ReplicationSessionSnapshot> => {
+  for (let attempt = 0; attempt < 400; attempt++) {
+    const snapshot = session.snapshot();
+    if (ready(snapshot)) return snapshot;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`the session never reached ${label}`);
+};
+
+browserTest(
+  "an open session adopts a settlement its own stream will never send",
+  async ({ browser }) => {
+    const database = `ramose-layer-open-watermark-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    const writer = await IndexedDbReplicaStorage.open(database);
+    let session: ReplicationSession | undefined;
+    const refreshing: Promise<boolean>[] = [];
+    let release: (() => void) | undefined;
+    try {
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence-held",
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const live = session;
+      release = storage.notices((notice) => {
+        if (notice.kind === "replica") refreshing.push(live.refreshFromDurable());
+      });
+
+      const opened = await published(
+        live,
+        (snapshot) => snapshot.status === "open" && snapshot.value !== undefined,
+        "an open replica over the held stream",
+      );
+      expect(opened.value?.revision).toBe(recorded.revision);
+      expect(opened.value?.settled).toBe(0);
+
+      const later = opened.value!.ordinal + 1;
+      expect(await writer.acknowledgeOrdinal({
+        identity: identity(),
+        revision: recorded.revision,
+        ordinal: later,
+        settled: 3,
+      })).toEqual({ ordinal: later, settled: 3 });
+
+      const advanced = await published(
+        live,
+        (snapshot) => snapshot.value?.settled === 3,
+        "the announced settlement",
+      );
+      expect(advanced.status).toBe("open");
+      expect(advanced.value?.revision).toBe(recorded.revision);
+      expect(advanced.value?.ordinal).toBe(later);
+      expect(advanced.value?.db).toBe(opened.value?.db);
+      expect(advanced.value?.handles).toBe(opened.value?.handles);
+      await Promise.all(refreshing);
+    } finally {
+      release?.();
+      await session?.close();
+      writer.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
 browserTest(
   "a snapshot the identity has advanced past reconnects instead of being consumed",
   async ({ browser }) => {
