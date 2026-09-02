@@ -62,6 +62,7 @@ const SCOPE_BYSTANDER_DATABASE = CONFORMANCE_DATABASES[29]!;
 const KEEPALIVE_DATABASE = CONFORMANCE_DATABASES[30]!;
 const KEEPALIVE_ADVANCE_DATABASE = CONFORMANCE_DATABASES[31]!;
 const KEEPALIVE_WAKE_DATABASE = CONFORMANCE_DATABASES[32]!;
+const KEEPALIVE_SILENT_DATABASE = CONFORMANCE_DATABASES[33]!;
 
 const HIDDEN_SCALE_COMMITS = 1_000;
 
@@ -1489,6 +1490,77 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
           scope: "worker",
           action: "release",
           name: "replication.wake",
+        });
+        await closeIterator(iterator);
+      }
+    });
+
+    test("a hidden advance parked at its silent boundary keeps beating", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, KEEPALIVE_SILENT_DATABASE, false);
+      const controller = new AbortController();
+      const response = await openReplication(
+        base,
+        world.database,
+        world.member,
+        undefined,
+        3,
+        controller.signal,
+      );
+      expect(response.status).toBe(200);
+      const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+      try {
+        await collectCommittedSnapshot(iterator);
+        const opening = await withTimeout(
+          iterator.next(),
+          12_000,
+          "the steady-state keep-alive",
+        );
+        expect(opening.value?.frame.type).toBe("KeepAlive");
+
+        await armCheckpoint(base, world.database, "replication.silent");
+        await commitHidden(base, world, 0);
+        await currentBasis(base, world.database);
+        await waitForCheckpoint(base, world.database, "replication.silent");
+
+        const beats: number[] = [];
+        for (const beat of [1, 2]) {
+          const next = await withTimeout(
+            iterator.next(),
+            12_000,
+            `keep-alive ${beat} during the parked silent advance`,
+          );
+          if (next.done || next.value.frame.type !== "KeepAlive") {
+            throw new Error(
+              `the parked advance carried ${next.done ? "nothing" : next.value.frame.type}`,
+            );
+          }
+          expect(next.value.wire).toBe(opening.value!.wire);
+          beats.push(Date.now());
+        }
+        const spacing = beats[1]! - beats[0]!;
+        expect(spacing).toBeGreaterThan(REPLICATION_KEEPALIVE_INTERVAL_MS - 1_000);
+        expect(spacing).toBeLessThan(REPLICATION_KEEPALIVE_INTERVAL_MS + 3_000);
+
+        await releaseCheckpoint(base, world.database, "replication.silent");
+        const renamed = await rename(
+          base,
+          world.database,
+          world.member,
+          world.ids.parent,
+          "Visible after the parked silence",
+        );
+        expect(renamed.status).toBe(200);
+        const change = await observed(iterator, "the commit the parked silence preceded");
+        expect(change.frame.type).toBe("Change");
+        expect(change.wire).toMatch(/Visible after the parked silence/);
+        expect(change.wire).not.toMatch(/Parked hidden/);
+      } finally {
+        controller.abort();
+        await testAdmin(base, world.database, "/checkpoint", {
+          scope: "worker",
+          action: "release",
+          name: "replication.silent",
         });
         await closeIterator(iterator);
       }

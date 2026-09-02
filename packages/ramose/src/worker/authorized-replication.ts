@@ -326,24 +326,21 @@ const snapshotFrames = async function* (
   expectedIdentity: ReplicationIdentity,
   signal: AbortSignal,
 ): AsyncGenerator<ReplicationFrame, ServerReplicaState, undefined> {
+  const beat = <A>(work: Promise<A>) =>
+    keepAliveWhile(input, expectedIdentity, work, signal);
   for (;;) {
-    let version = await authorize();
+    let version = yield* beat(authorize());
     if (!sameVersion(expectedPath, expectedIdentity, version)) {
       throw new Error("replication authorization partition changed");
     }
     const logical = identityEncoder(input, version);
-    const candidate = yield* keepAliveWhile(
-      input,
-      expectedIdentity,
-      currentState(input, version, logical, signal),
-      signal,
-    );
+    const candidate = yield* beat(currentState(input, version, logical, signal));
     if (!leaseAlive(version)) continue;
-    const snapshot = await makeSnapshotIdentity(
+    const snapshot = yield* beat(makeSnapshotIdentity(
       input.sealing,
       version.identity,
       candidate.revision,
-    );
+    ));
     signal.throwIfAborted();
     yield frame({
       type: "SnapshotStart",
@@ -378,7 +375,7 @@ const snapshotFrames = async function* (
         }
       }
     };
-    for await (const entries of snapshotEntryChunks(
+    const chunks = snapshotEntryChunks(
       version.target.context.filteredDb,
       logical,
       (entries, chunkIndex) => replicationFrameFitsBound({
@@ -391,47 +388,56 @@ const snapshotFrames = async function* (
         handles: entryHandles(entries),
       }),
       signal,
-    )) {
-      if (!await authorizeChunk(entries)) {
-        restart = true;
-        break;
+    );
+    try {
+      for (;;) {
+        const chunk = yield* beat(chunks.next());
+        if (chunk.done === true) break;
+        const entries = chunk.value;
+        if (!(yield* beat(authorizeChunk(entries)))) {
+          restart = true;
+          break;
+        }
+        yield* beat(
+          atBoundary(input.boundaries, "replication.snapshot.chunk", signal),
+        );
+        if (!(yield* beat(authorizeChunk(entries)))) {
+          restart = true;
+          break;
+        }
+        signal.throwIfAborted();
+        yield frame({
+          type: "SnapshotChunk",
+          protocol: REPLICATION_PROTOCOL_VERSION,
+          identity: expectedIdentity,
+          snapshot,
+          index,
+          datoms: entries.map((entry) => entry.datom),
+          handles: entryHandles(entries),
+        });
+        index++;
       }
-      await atBoundary(input.boundaries, "replication.snapshot.chunk", signal);
-      if (!await authorizeChunk(entries)) {
-        restart = true;
-        break;
-      }
-      signal.throwIfAborted();
-      yield frame({
-        type: "SnapshotChunk",
-        protocol: REPLICATION_PROTOCOL_VERSION,
-        identity: expectedIdentity,
-        snapshot,
-        index,
-        datoms: entries.map((entry) => entry.datom),
-        handles: entryHandles(entries),
-      });
-      index++;
+    } finally {
+      await chunks.return(undefined);
     }
     if (restart) continue;
 
-    const finalVersion = await authorize();
+    const finalVersion = yield* beat(authorize());
     if (!sameVersion(expectedPath, expectedIdentity, finalVersion)) {
       throw new Error("replication authorization partition changed");
     }
-    const finalState = yield* keepAliveWhile(
-      input,
-      expectedIdentity,
+    const finalState = yield* beat(
       currentState(input, finalVersion, logical, signal),
-      signal,
     );
     if (!leaseAlive(finalVersion) || finalState.revision !== candidate.revision) {
       continue;
     }
-    const issued = await remember(input, finalState);
+    const issued = yield* beat(remember(input, finalState));
     if (issued.type !== "issued") continue;
     if (!leaseAlive(finalVersion)) continue;
-    await atBoundary(input.boundaries, "replication.snapshot.commit", signal);
+    yield* beat(
+      atBoundary(input.boundaries, "replication.snapshot.commit", signal),
+    );
     if (!leaseAlive(finalVersion)) continue;
     signal.throwIfAborted();
     yield frame({
@@ -454,7 +460,12 @@ const resetFrames = async function* (
   expectedIdentity: ReplicationIdentity,
   signal: AbortSignal,
 ): AsyncGenerator<ReplicationFrame, ServerReplicaState, undefined> {
-  const version = await authorize();
+  const version = yield* keepAliveWhile(
+    input,
+    expectedIdentity,
+    authorize(),
+    signal,
+  );
   if (!sameVersion(expectedPath, expectedIdentity, version)) {
     throw new Error("replication authorization partition changed");
   }
@@ -486,9 +497,11 @@ const advanceFrames = async function* (
     readonly acknowledgeUnchanged?: boolean;
   } = {},
 ): AsyncGenerator<ReplicationFrame, ServerReplicaState, undefined> {
+  const beat = <A>(work: Promise<A>) =>
+    keepAliveWhile(input, expectedIdentity, work, signal);
   let firstVersion = options.initialVersion;
   for (;;) {
-    const version = firstVersion ?? await authorize();
+    const version = firstVersion ?? (yield* beat(authorize()));
     firstVersion = undefined;
     if (!sameVersion(expectedPath, expectedIdentity, version)) {
       throw new Error("replication authorization partition changed");
@@ -513,9 +526,7 @@ const advanceFrames = async function* (
     };
     let before: Db;
     try {
-      before = yield* keepAliveWhile(
-        input,
-        expectedIdentity,
+      before = yield* beat(
         reconstruct(async () => {
           await atBoundary(
             input.boundaries,
@@ -524,7 +535,6 @@ const advanceFrames = async function* (
           );
           return authorizeAt(version, previous.basisT);
         }),
-        signal,
       );
     } catch (cause) {
       if (!(cause instanceof ResumeBasisUnavailable)) throw cause;
@@ -538,9 +548,7 @@ const advanceFrames = async function* (
     }
     let delta: Awaited<ReturnType<typeof diffLogicalDbs>>;
     try {
-      delta = yield* keepAliveWhile(
-        input,
-        expectedIdentity,
+      delta = yield* beat(
         reconstruct(async () => {
           await atBoundary(input.boundaries, "replication.advance.diff", signal);
           return diffLogicalDbs(
@@ -550,7 +558,6 @@ const advanceFrames = async function* (
             signal,
           );
         }),
-        signal,
       );
     } catch (cause) {
       if (!(cause instanceof ResumeBasisUnavailable)) throw cause;
@@ -562,11 +569,11 @@ const advanceFrames = async function* (
         signal,
       );
     }
-    const beforeRevision = await makeRevision(
+    const beforeRevision = yield* beat(makeRevision(
       input.sealing,
       expectedIdentity,
       delta.previousStateDigest,
-    );
+    ));
     if (beforeRevision !== previous.revision) {
       return yield* resetFrames(
         input,
@@ -576,11 +583,11 @@ const advanceFrames = async function* (
         signal,
       );
     }
-    const revision = await makeRevision(
+    const revision = yield* beat(makeRevision(
       input.sealing,
       expectedIdentity,
       delta.stateDigest,
-    );
+    ));
     if (delta.overflow) {
       return yield* resetFrames(
         input,
@@ -591,7 +598,7 @@ const advanceFrames = async function* (
       );
     }
 
-    const finalVersion = await authorize();
+    const finalVersion = yield* beat(authorize());
     if (!sameVersion(expectedPath, expectedIdentity, finalVersion)) {
       throw new Error("replication authorization partition changed");
     }
@@ -605,18 +612,18 @@ const advanceFrames = async function* (
       basisT: finalBasisT,
       revision,
     });
-    const issued = await remember(input, finalState);
+    const issued = yield* beat(remember(input, finalState));
     if (issued.type !== "issued") continue;
     if (revision === previous.revision) {
-      await atBoundary(
+      yield* beat(atBoundary(
         input.boundaries,
         options.acknowledgeUnchanged
           ? "replication.resume.ready"
           : "replication.silent",
         signal,
-      );
+      ));
       if (options.acknowledgeUnchanged) {
-        const readyVersion = await authorize();
+        const readyVersion = yield* beat(authorize());
         if (!sameVersion(expectedPath, expectedIdentity, readyVersion)) {
           throw new Error("replication authorization partition changed");
         }
@@ -643,7 +650,7 @@ const advanceFrames = async function* (
       signal.throwIfAborted();
       return finalState;
     }
-    await atBoundary(input.boundaries, "replication.change", signal);
+    yield* beat(atBoundary(input.boundaries, "replication.change", signal));
     if (!leaseAlive(finalVersion)) continue;
     signal.throwIfAborted();
     yield frame({
