@@ -26,6 +26,7 @@ export const Server = Ramose.Server("Bench", {
     ...tuning(
       "RAMOSE_MAX_BATCH",
       "RAMOSE_BATCH_BUDGET_MS",
+      "RAMOSE_OP_COALESCE_MS",
       "RAMOSE_INDEX_TX_THRESHOLD",
       "RAMOSE_INDEX_INTERVAL_MS",
       "RAMOSE_INDEX_MAX_TXS_PER_RUN",

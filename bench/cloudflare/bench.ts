@@ -216,6 +216,12 @@ const rows: Record<string, unknown>[] = [];
   console.log(`  transactor opts ${JSON.stringify(after.opts)} batches=${batches} maxBatch=${after.maxBatch}`);
 }
 
+if (process.env.BENCH_PING === "1") {
+  const db = `bench-tx-${run}`;
+  const r = await load("info", "info", db);
+  rows.push({ phase: "info", label, ...summary(r) });
+}
+
 {
   const db = BENCH_DATABASE;
   await settle("operation schema", () => admin(db, "/transact", { tx: schemaTx(BenchSchema) }));

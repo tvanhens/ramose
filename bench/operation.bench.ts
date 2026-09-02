@@ -39,7 +39,7 @@ const harness = (label: string) =>
   new BenchHarness({
     dbName: BENCH_DATABASE,
     file: join(dir, `${label}.sqlite`),
-    config: { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 },
+    config: process.env.BENCH_INDEX === "1" ? {} : { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 },
     operationRuntime: {
       catalogs: deployed,
       environment: {},

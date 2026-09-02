@@ -386,6 +386,7 @@ export const handle = (
         database: string,
         catalogKey: CatalogId,
         unitHash: CatalogUnitHash,
+        rootDatabase?: string,
       ) => Effect.tryPromise({
         try: () => invokeAuthoritativeOperation(
           env,
@@ -410,6 +411,7 @@ export const handle = (
             input: parsed.input,
           },
           caller,
+          rootDatabase === undefined ? {} : { rootDatabase },
         ),
         catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
           stacks: env.RAMOSE_STAGE !== "prod",
@@ -422,9 +424,7 @@ export const handle = (
           const root = yield* Effect.fromResult(
             databaseBindings.root(DatabaseId.make(db)),
           ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
-          yield* provisionResolvedDatabase(env, root, {
-            rootDatabase: root.database,
-          });
+          return yield* invoke(db, rootProof.catalogKey, rootProof.unitHash, root.database);
         }
         return yield* invoke(db, rootProof.catalogKey, rootProof.unitHash);
       });

@@ -123,8 +123,10 @@ Past a few hundred concurrent writers the platform sheds load with
 "Durable Object is overloaded" errors, which the bench reports as server
 events, so raise `lanes` until that appears to find the ceiling of a single
 transactor.
-Transactor tuning variables such as `RAMOSE_MAX_BATCH` and
-`RAMOSE_BATCH_BUDGET_MS` are forwarded to the stage, and `BENCH_LABEL` tags
+Transactor tuning variables such as `RAMOSE_MAX_BATCH`,
+`RAMOSE_BATCH_BUDGET_MS`, and `RAMOSE_OP_COALESCE_MS` (the window in which a
+Worker isolate groups concurrent operations into one transactor request,
+default 2, 0 to disable) are forwarded to the stage, and `BENCH_LABEL` tags
 the printed rows so runs can be compared. `KEEP_STAGE=1` retains the stage.
 `bun run bench:cf:compare` runs the same benchmark twice, first against the
 `master` package source and then against the current branch, so the two

@@ -173,6 +173,17 @@ const safeName = (host: TransactorHost): string | undefined => {
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...headers } });
 
+export const MAX_INVOKE_BATCH = 256;
+
+export type InvokeOutcome = {
+  readonly status: number;
+  readonly body: unknown;
+  readonly headers?: Record<string, string>;
+};
+
+const LOG_ROWS_PER_INSERT = 32;
+const logRowPlaceholders = (rows: number): string => Array.from({ length: rows }, () => "(?, ?, ?)").join(", ");
+
 export class Transactor {
   private ready: Promise<void> | undefined;
   private conn!: Connection;
@@ -246,7 +257,7 @@ export class Transactor {
       const fresh = rootsToRecord(roots, { log_watermark: 0, next_eid: FIRST_USER_EID, codec: gzipCodec.name });
       const boot = bootstrapDatoms();
       this.host.transactionSync(() => {
-        this.appendLogRow({ t: 1, txInstant: this.host.now(), datoms: boot });
+        this.appendLogRows([{ t: 1, txInstant: this.host.now(), datoms: boot }]);
         this.setMeta("root", fresh);
         this.setMeta("next_eid", FIRST_USER_EID);
       });
@@ -287,10 +298,23 @@ export class Transactor {
   private setMeta(k: string, v: unknown): void {
     this.host.sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)`, k, JSON.stringify(v));
   }
-  private appendLogRow(e: LogEntry): void {
-    const body = encodeLogChunk([e]);
-    const buf = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
-    this.host.sql.exec(`INSERT INTO log (t, tx_instant, datoms) VALUES (?, ?, ?)`, e.t, e.txInstant, buf);
+  private appendLogRows(entries: readonly LogEntry[]): void {
+    for (let from = 0; from < entries.length; from += LOG_ROWS_PER_INSERT) {
+      const slice = entries.slice(from, from + LOG_ROWS_PER_INSERT);
+      const bindings: unknown[] = [];
+      for (const e of slice) {
+        const body = encodeLogChunk([e]);
+        bindings.push(
+          e.t,
+          e.txInstant,
+          body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer,
+        );
+      }
+      this.host.sql.exec(
+        `INSERT INTO log (t, tx_instant, datoms) VALUES ${logRowPlaceholders(slice.length)}`,
+        ...bindings,
+      );
+    }
   }
 
   private readInvocationReceipt(
@@ -1094,7 +1118,7 @@ export class Transactor {
           for (const pending of acks) pending.assertFresh?.();
           this.host.transactionSync(() => {
             this.boundaries.checkpointSync("transactor.commit.write");
-            for (const e of entries) this.appendLogRow(e);
+            this.appendLogRows(entries);
             this.setMeta("next_eid", this.conn.nextEntityId);
             for (const pending of acks) {
               if (pending.receiptCompletion !== undefined) {
@@ -1272,6 +1296,60 @@ export class Transactor {
     return Number(row?.count ?? 0);
   }
 
+  private parseInvocation(raw: unknown): AuthoritativeOperationInvocation {
+    const invocation = typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? {
+        ...raw,
+        ...(Object.hasOwn(raw, "target")
+          ? { target: fromJson((raw as { readonly target?: unknown }).target) }
+          : {}),
+      } as AuthoritativeOperationInvocation
+      : undefined;
+    if (
+      invocation === undefined || invocation.database !== safeName(this.host)
+    ) {
+      throw new BadRequest({ message: "invalid deployed operation invocation" });
+    }
+    const entityIdScope = parseEntityIdScope(invocation.entityIdScope);
+    const allocations = parseInvocationAllocations(invocation.allocations);
+    if (
+      allocations === undefined ||
+      (invocation.sealedTarget !== undefined &&
+        (typeof invocation.sealedTarget !== "string" ||
+          entityIdScope === undefined)) ||
+      (allocations.length > 0 && entityIdScope === undefined)
+    ) {
+      throw new BadRequest({ message: "invalid deployed operation invocation" });
+    }
+    if (
+      entityIdScope !== undefined &&
+      (typeof invocation.entityIdKeyId !== "string" ||
+        invocation.entityIdKeyId.length === 0)
+    ) {
+      throw new BadRequest({ message: "invalid deployed operation invocation" });
+    }
+    return {
+      ...invocation,
+      ...(entityIdScope === undefined ? {} : { entityIdScope }),
+      ...(allocations.length === 0 ? {} : { allocations }),
+    };
+  }
+
+  private async invokeOutcome(raw: unknown): Promise<InvokeOutcome> {
+    try {
+      return { status: 200, body: await this.invoke(this.parseInvocation(raw)) };
+    } catch (cause) {
+      const error = toHttpError(cause);
+      const response = errorResponse(error);
+      const retryAfter = response.headers.get("retry-after");
+      return {
+        status: response.status,
+        body: await response.json(),
+        ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
+      };
+    }
+  }
+
   async handleRequest(request: Request): Promise<Response> {
     await this.init();
     this.metrics.observeColo((request as { cf?: { colo?: string } }).cf?.colo ?? request.headers.get("x-ramose-colo") ?? undefined);
@@ -1296,46 +1374,19 @@ export class Transactor {
     const path = url.pathname;
     if (path === "/invoke" && request.method === "POST") {
       const body = await request.json() as { invocation?: unknown };
-      const raw = body?.invocation;
-      const invocation = typeof raw === "object" && raw !== null && !Array.isArray(raw)
-        ? {
-          ...raw,
-          ...(Object.hasOwn(raw, "target")
-            ? { target: fromJson((raw as { readonly target?: unknown }).target) }
-            : {}),
-        } as AuthoritativeOperationInvocation
-        : undefined;
-      if (
-        invocation === undefined || invocation.database !== safeName(this.host)
-      ) {
-        throw new BadRequest({ message: "invalid deployed operation invocation" });
-      }
-      const entityIdScope = parseEntityIdScope(invocation.entityIdScope);
-      const allocations = parseInvocationAllocations(invocation.allocations);
-      if (
-        allocations === undefined ||
-        (invocation.sealedTarget !== undefined &&
-          (typeof invocation.sealedTarget !== "string" ||
-            entityIdScope === undefined)) ||
-        (allocations.length > 0 && entityIdScope === undefined)
-      ) {
-        throw new BadRequest({ message: "invalid deployed operation invocation" });
-      }
-      if (
-        entityIdScope !== undefined &&
-        (typeof invocation.entityIdKeyId !== "string" ||
-          invocation.entityIdKeyId.length === 0)
-      ) {
-        throw new BadRequest({ message: "invalid deployed operation invocation" });
-      }
-      const resolved: AuthoritativeOperationInvocation = {
-        ...invocation,
-        ...(entityIdScope === undefined ? {} : { entityIdScope }),
-        ...(allocations.length === 0 ? {} : { allocations }),
-      };
+      const resolved = this.parseInvocation(body?.invocation);
       return new Response(JSON.stringify(await this.invoke(resolved)), {
         headers: { "content-type": "application/json" },
       });
+    }
+    if (path === "/invoke-batch" && request.method === "POST") {
+      const body = await request.json() as { invocations?: unknown };
+      const raw = Array.isArray(body?.invocations) ? body.invocations : undefined;
+      if (raw === undefined || raw.length === 0 || raw.length > MAX_INVOKE_BATCH) {
+        throw new BadRequest({ message: "invalid deployed operation invocation batch" });
+      }
+      const results = await Promise.all(raw.map((entry) => this.invokeOutcome(entry)));
+      return json({ results });
     }
     if (path === "/transact" && request.method === "POST") {
       const body = fromJson(await request.json()) as {

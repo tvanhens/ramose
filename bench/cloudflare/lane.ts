@@ -1,4 +1,4 @@
-export type LaneTarget = "transact" | "operation";
+export type LaneTarget = "transact" | "operation" | "info";
 
 export const MAX_LANE_PARALLEL = 6;
 export const MAX_LANE_REQUESTS = 5_000;
@@ -43,6 +43,13 @@ const buildRequest = (
 ): Request => {
   const id = idOf(req.lane, slot, i);
   const key = `${req.run}-${req.lane}-${slot}-${i}`;
+  if (req.target === "info") {
+    return new Request(`${origin}/__test__/db/${encodeURIComponent(req.db)}/info`, {
+      method: "POST",
+      headers: { "content-type": "application/json", [CAPABILITY_HEADER]: capability },
+      body: "{}",
+    });
+  }
   if (req.target === "transact") {
     return new Request(`${origin}/__test__/db/${encodeURIComponent(req.db)}/transact`, {
       method: "POST",
