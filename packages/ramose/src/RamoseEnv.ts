@@ -26,6 +26,8 @@ export interface RamoseEnv {
   RAMOSE_GC_EVERY_N_INDEXES?: string;
   RAMOSE_RETAIN_ROOTS?: string;
   RAMOSE_MAX_BATCH?: string;
+  RAMOSE_BATCH_BUDGET_MS?: string;
+  RAMOSE_OP_COALESCE_MS?: string;
   RAMOSE_TIMING_YIELDS?: string;
   RAMOSE_QUERY_MAX_CELLS?: string;
   RAMOSE_LOG_LEVEL?: string;

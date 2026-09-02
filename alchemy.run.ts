@@ -29,6 +29,8 @@ export const Server = Ramose.Server("Ramose", {
     RAMOSE_STAGE: stage,
     ...tuning(
       "RAMOSE_MAX_BATCH",
+      "RAMOSE_BATCH_BUDGET_MS",
+      "RAMOSE_OP_COALESCE_MS",
       "RAMOSE_QUERY_MAX_CELLS",
       "RAMOSE_LOG_LEVEL",
       "RAMOSE_INDEX_TX_THRESHOLD",

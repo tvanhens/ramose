@@ -5,6 +5,7 @@ import {
   prefixedBucket,
 } from "../packages/ramose/src/internal/storage/index.ts";
 import { MemoryBucket } from "../packages/ramose/src/internal/storage/memory.ts";
+import type { OperationRuntime } from "../packages/ramose/src/internal/authorization/operations-runtime.ts";
 import {
   DEFAULT_CONFIG,
   type SocketLike,
@@ -48,6 +49,7 @@ export type BenchHarnessOptions = {
   readonly dbName?: string;
   readonly file?: string;
   readonly config?: Partial<TransactorConfig>;
+  readonly operationRuntime?: OperationRuntime;
 };
 
 export class BenchHarness implements TransactorHost {
@@ -74,7 +76,7 @@ export class BenchHarness implements TransactorHost {
     this.raw = bucket ?? new MemoryBucket();
     this.bucket = prefixedBucket(this.raw, dbPrefix(this.dbName));
     this.config = { ...DEFAULT_CONFIG, ...options.config };
-    this.transactor = new Transactor(this);
+    this.transactor = new Transactor(this, options.operationRuntime);
   }
 
   transactionSync<A>(run: () => A): A {

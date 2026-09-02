@@ -17,7 +17,9 @@ import { fromJson, toJson } from "../internal/core/json.ts";
 import type { EntityIdScope } from "../internal/replication/entity-id.ts";
 import type { ServerSealingKey } from "../internal/replication/server-identity.ts";
 import { makeEntityIdScope } from "../internal/replication/identity.ts";
-import { internalHeaders } from "../internal/transactor/index.ts";
+import { ROUTE_ROOT_HEADER, internalHeaders } from "../internal/transactor/index.ts";
+import { type InvokeOutcome } from "../internal/transactor/transactor.ts";
+import { DEFAULT_COALESCE_WINDOW_MS, coalesceInvocation } from "./operation-coalescer.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import { serverSealingKey } from "./server-identity.ts";
 import {
@@ -47,17 +49,18 @@ type RoutedOperationRequest = ParsedOperationRequest & {
   readonly unitHash: OperationInvocation["unitHash"];
 };
 
+const wireInvocation = (invocation: AuthoritativeOperationInvocation) => ({
+  ...invocation,
+  ...(invocation.target === undefined ? {} : { target: toJson(invocation.target) }),
+});
+
 export const serializeOperationInvocation = (
   invocation: AuthoritativeOperationInvocation,
-): string => {
-  const wireInvocation = {
-    ...invocation,
-    ...(invocation.target === undefined
-      ? {}
-      : { target: toJson(invocation.target) }),
-  };
-  return JSON.stringify({ invocation: wireInvocation });
-};
+): string => JSON.stringify({ invocation: wireInvocation(invocation) });
+
+export const serializeOperationInvocationBatch = (
+  invocations: readonly AuthoritativeOperationInvocation[],
+): string => JSON.stringify({ invocations: invocations.map(wireInvocation) });
 
 const bad = (message: string): BadRequest => new BadRequest({ message });
 const deny = (): Unauthorized => new Unauthorized({ status: 403 });
@@ -287,12 +290,116 @@ const sealPublicEntityRefs = async (
   }
 };
 
+export type InvokeRouting = {
+  readonly rootDatabase?: string;
+};
+
+const coalesceWindowMs = (env: RamoseEnv): number => {
+  const raw = env.RAMOSE_OP_COALESCE_MS;
+  if (raw === undefined || raw === "") return DEFAULT_COALESCE_WINDOW_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_COALESCE_WINDOW_MS;
+};
+
+const transactorHeaders = (
+  env: RamoseEnv,
+  routing: InvokeRouting,
+): Record<string, string> => ({
+  "content-type": "application/json",
+  ...internalHeaders(env),
+  ...(routing.rootDatabase === undefined ? {} : { [ROUTE_ROOT_HEADER]: routing.rootDatabase }),
+});
+
+const invokeSingle = async (
+  env: RamoseEnv,
+  database: string,
+  routing: InvokeRouting,
+  invocation: AuthoritativeOperationInvocation,
+): Promise<InvokeOutcome> => {
+  const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
+  const response = await stub.fetch(
+    `https://transactor/invoke?db=${encodeURIComponent(database)}`,
+    {
+      method: "POST",
+      headers: transactorHeaders(env, routing),
+      body: serializeOperationInvocation(invocation),
+    },
+  );
+  const text = await response.text();
+  const retryAfter = response.headers.get("retry-after");
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = undefined;
+  }
+  return {
+    status: response.status,
+    body,
+    ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
+  };
+};
+
+const invokeBatch = async (
+  env: RamoseEnv,
+  database: string,
+  routing: InvokeRouting,
+  invocations: readonly AuthoritativeOperationInvocation[],
+): Promise<readonly InvokeOutcome[]> => {
+  const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
+  const response = await stub.fetch(
+    `https://transactor/invoke-batch?db=${encodeURIComponent(database)}`,
+    {
+      method: "POST",
+      headers: transactorHeaders(env, routing),
+      body: serializeOperationInvocationBatch(invocations),
+    },
+  );
+  const text = await response.text();
+  if (!response.ok) {
+    const retryAfter = response.headers.get("retry-after");
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = undefined;
+    }
+    const shared: InvokeOutcome = {
+      status: response.status,
+      body,
+      ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
+    };
+    return invocations.map(() => shared);
+  }
+  const parsed = JSON.parse(text) as { readonly results?: unknown };
+  if (!Array.isArray(parsed?.results)) {
+    throw new Error("transactor returned an invalid invocation batch");
+  }
+  return parsed.results as readonly InvokeOutcome[];
+};
+
+const outcomeFailure = (outcome: InvokeOutcome): UpstreamError | OperationRejected => {
+  const text = JSON.stringify(outcome.body ?? null);
+  if (outcome.status === 409) {
+    return operationRejectedOf(text) ?? privateFailure(409);
+  }
+  if (outcome.status === 503) {
+    const retryAfter = outcome.headers?.["retry-after"];
+    return privateFailure(
+      503,
+      retryAfter === undefined ? undefined : { "retry-after": retryAfter },
+    );
+  }
+  return privateFailure(outcome.status >= 500 ? 500 : outcome.status);
+};
+
 export const invokeAuthoritativeOperation = async (
   env: RamoseEnv,
   database: string,
   origin: string,
   parsed: RoutedOperationRequest,
   caller: AuthenticatedCaller,
+  routing: InvokeRouting = {},
 ): Promise<AuthoritativeInvocationResult> => {
   const sealingScope = await invocationEntityIdScope(
     env,
@@ -310,32 +417,27 @@ export const invokeAuthoritativeOperation = async (
       entityIdKeyId: sealingScope.sealing.keyId,
     }),
   };
-  const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
-  let response: Response;
-  let text: string;
+  const windowMs = coalesceWindowMs(env);
+  let outcome: InvokeOutcome;
   try {
-    response = await stub.fetch(
-      `https://transactor/invoke?db=${encodeURIComponent(database)}`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...internalHeaders(env),
-        },
-        body: serializeOperationInvocation(invocation),
-      },
-    );
-    text = await response.text();
+    outcome = windowMs > 0
+      ? await coalesceInvocation(
+        `${database}\0${routing.rootDatabase ?? ""}`,
+        invocation,
+        (batch) => invokeBatch(env, database, routing, batch),
+        windowMs,
+      )
+      : await invokeSingle(env, database, routing, invocation);
   } catch {
     throw privateFailure();
   }
-  if (!response.ok) {
-    throw operationFailureFromResponse(response, text);
+  if (outcome.status !== 200) {
+    throw outcomeFailure(outcome);
   }
   let result: AuthoritativeInvocationResult;
   try {
     result = parseAuthoritativeInvocationResult(
-      JSON.parse(text),
+      outcome.body,
       invocation.invocationId,
     );
   } catch {

@@ -29,3 +29,5 @@ export function internalGate(env: SecretEnv, request: Request): Response | undef
     headers: { "content-type": "application/json" },
   });
 }
+
+export const ROUTE_ROOT_HEADER = "x-ramose-route-root";

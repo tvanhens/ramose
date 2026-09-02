@@ -32,6 +32,7 @@ export class Indexer {
   private runs = 0;
   private lastRun: IndexRunResult | undefined;
   private lastGc: unknown;
+  private armedAt: number | null | undefined;
   private readonly log = componentLogger("indexer");
 
   constructor(
@@ -53,18 +54,25 @@ export class Indexer {
 
   async maybeSchedule(): Promise<void> {
     if (this.t.txsSinceIndex >= this.opts.txThreshold) {
-      await this.t.host.setAlarm(this.t.host.now());
+      const now = this.t.host.now();
+      if (this.armedAt === undefined || this.armedAt === null || this.armedAt > now) await this.arm(now);
     } else await this.schedule();
   }
 
   async schedule(): Promise<void> {
-    const existing = await this.t.host.getAlarm();
-    if (existing === null) await this.t.host.setAlarm(this.t.host.now() + this.opts.intervalMs);
+    if (this.armedAt === undefined) this.armedAt = await this.t.host.getAlarm();
+    if (this.armedAt === null) await this.arm(this.t.host.now() + this.opts.intervalMs);
+  }
+
+  private async arm(time: number): Promise<void> {
+    await this.t.host.setAlarm(time);
+    this.armedAt = time;
   }
 
   async onAlarm(): Promise<void> {
+    this.armedAt = null;
     const res = await this.runOnce();
-    if (res.remainingTxs > 0) await this.t.host.setAlarm(this.t.host.now() + 50);
+    if (res.remainingTxs > 0) await this.arm(this.t.host.now() + 50);
   }
 
   async runNow(): Promise<IndexRunResult> {

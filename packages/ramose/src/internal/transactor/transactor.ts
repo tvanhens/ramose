@@ -34,6 +34,7 @@ import {
 } from "../../db/Errors.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { BadRequest, NotFound, TransactorDeadError, Unavailable, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
@@ -63,9 +64,10 @@ import {
   parseEntityIdScope,
   parseInvocationAllocations,
   parseStoredInvocationReceipt,
-  prepareInvocationReceipt,
+  prepareInvocationReceiptDirect,
   requireSuppliedOperationVersion,
-  resolveOperationCatalog,
+  resolveDeployedCatalogDefinition,
+  type ResolvedOperationCatalog,
   resolveSealedInputRefs,
   resolveSealedTarget,
   transitionInvocationReceipt,
@@ -171,6 +173,17 @@ const safeName = (host: TransactorHost): string | undefined => {
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...headers } });
 
+export const MAX_INVOKE_BATCH = 256;
+
+export type InvokeOutcome = {
+  readonly status: number;
+  readonly body: unknown;
+  readonly headers?: Record<string, string>;
+};
+
+const LOG_ROWS_PER_INSERT = 32;
+const logRowPlaceholders = (rows: number): string => Array.from({ length: rows }, () => "(?, ?, ?)").join(", ");
+
 export class Transactor {
   private ready: Promise<void> | undefined;
   private conn!: Connection;
@@ -244,7 +257,7 @@ export class Transactor {
       const fresh = rootsToRecord(roots, { log_watermark: 0, next_eid: FIRST_USER_EID, codec: gzipCodec.name });
       const boot = bootstrapDatoms();
       this.host.transactionSync(() => {
-        this.appendLogRow({ t: 1, txInstant: this.host.now(), datoms: boot });
+        this.appendLogRows([{ t: 1, txInstant: this.host.now(), datoms: boot }]);
         this.setMeta("root", fresh);
         this.setMeta("next_eid", FIRST_USER_EID);
       });
@@ -285,10 +298,23 @@ export class Transactor {
   private setMeta(k: string, v: unknown): void {
     this.host.sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)`, k, JSON.stringify(v));
   }
-  private appendLogRow(e: LogEntry): void {
-    const body = encodeLogChunk([e]);
-    const buf = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
-    this.host.sql.exec(`INSERT INTO log (t, tx_instant, datoms) VALUES (?, ?, ?)`, e.t, e.txInstant, buf);
+  private appendLogRows(entries: readonly LogEntry[]): void {
+    for (let from = 0; from < entries.length; from += LOG_ROWS_PER_INSERT) {
+      const slice = entries.slice(from, from + LOG_ROWS_PER_INSERT);
+      const bindings: unknown[] = [];
+      for (const e of slice) {
+        const body = encodeLogChunk([e]);
+        bindings.push(
+          e.t,
+          e.txInstant,
+          body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer,
+        );
+      }
+      this.host.sql.exec(
+        `INSERT INTO log (t, tx_instant, datoms) VALUES ${logRowPlaceholders(slice.length)}`,
+        ...bindings,
+      );
+    }
   }
 
   private readInvocationReceipt(
@@ -332,22 +358,40 @@ export class Transactor {
     );
   }
 
+  private completeClaimedReceipt(receipt: TerminalInvocationReceipt): void {
+    const updated = this.host.sql.exec(
+      `UPDATE operation_receipts SET status = ?, receipt = ?
+       WHERE principal_id = ? AND invocation_id = ? AND status = 'claimed'
+       RETURNING invocation_id`,
+      receipt.status,
+      JSON.stringify(receipt),
+      receipt.principalId,
+      receipt.invocationId,
+    ).toArray();
+    if (updated.length !== 1) {
+      throw new Error("durable invocation claim changed before completion");
+    }
+  }
+
   private claimInvocationReceipt(
     prepared: PreparedInvocationReceipt,
+    inspected?: ReturnType<typeof decideInvocationReceipt>,
   ) {
-    return this.host.transactionSync(() => {
-      const stored = this.readInvocationReceipt(
-        prepared.principalId,
-        prepared.invocationId,
-      );
-      const decision = decideInvocationReceipt(stored, prepared);
+    const apply = (decision: ReturnType<typeof decideInvocationReceipt>) => {
       if (decision._tag === "Claim") {
         this.insertInvocationReceipt(decision.receipt);
       } else if (decision._tag === "Recover") {
         this.replaceInvocationReceipt(decision.receipt);
       }
       return decision;
-    });
+    };
+    if (inspected !== undefined) return apply(inspected);
+    return this.host.transactionSync(() =>
+      apply(decideInvocationReceipt(
+        this.readInvocationReceipt(prepared.principalId, prepared.invocationId),
+        prepared,
+      ))
+    );
   }
 
   private inspectInvocationReceipt(
@@ -376,36 +420,14 @@ export class Transactor {
     });
   }
 
-  private assertClaimIdentity(
-    stored: StoredInvocationReceipt | LegacyInvocationReceiptRow | undefined,
-    claim: ClaimedInvocationReceipt,
-  ): asserts stored is ClaimedInvocationReceipt {
-    if (
-      stored === undefined || isLegacyInvocationReceiptRow(stored) ||
-      stored.status !== "claimed" || stored.version !== claim.version ||
-      stored.principalId !== claim.principalId ||
-      stored.invocationId !== claim.invocationId ||
-      stored.scopeDigest !== claim.scopeDigest ||
-      stored.operationVersion !== claim.operationVersion ||
-      stored.invocationDigest !== claim.invocationDigest
-    ) {
-      throw new Error("durable invocation claim changed before completion");
-    }
-  }
-
   private finishInvocationReceipt(
     claim: ClaimedInvocationReceipt,
     event: InvocationReceiptEvent,
     insideTransaction = false,
   ): TerminalInvocationReceipt {
     const finish = () => {
-      const stored = this.readInvocationReceipt(
-        claim.principalId,
-        claim.invocationId,
-      );
-      this.assertClaimIdentity(stored, claim);
-      const terminal = transitionInvocationReceipt(stored, event);
-      this.replaceInvocationReceipt(terminal);
+      const terminal = transitionInvocationReceipt(claim, event);
+      this.completeClaimedReceipt(terminal);
       return terminal;
     };
     return insideTransaction ? finish() : this.host.transactionSync(finish);
@@ -711,11 +733,19 @@ export class Transactor {
 
   private takeBatch(): Pending[] {
     const max = this.host.config.maxBatch;
-    if (this.queue[0]?.operation !== undefined) return this.queue.splice(0, 1);
-    const operationAt = this.queue.findIndex((pending) => pending.operation !== undefined);
-    const available = operationAt < 0 ? this.queue.length : operationAt;
-    const count = max > 0 ? Math.min(available, max) : available;
+    const count = max > 0 ? Math.min(this.queue.length, max) : this.queue.length;
     return this.queue.splice(0, count);
+  }
+
+  private deferOverBudget(batch: Pending[], position: number, startedAt: number): void {
+    const budget = this.host.config.batchBudgetMs;
+    if (budget <= 0 || position === 0 || position >= batch.length) return;
+    if (performance.now() - startedAt < budget) return;
+    this.deferFrom(batch, position);
+  }
+
+  private deferFrom(batch: Pending[], from: number): void {
+    this.queue.unshift(...batch.splice(from));
   }
 
   private async commitLoop(): Promise<void> {
@@ -748,8 +778,12 @@ export class Transactor {
           };
         }[] = [];
         const batchAcks = new Map<string, TxAck>();
+        const claimedInBatch = new Set<string>();
         const tResolve = performance.now();
-        for (const p of batch) {
+        for (let position = 0; position < batch.length; position++) {
+          this.deferOverBudget(batch, position, tResolve);
+          if (position >= batch.length) break;
+          const p = batch[position];
           if (p.operation !== undefined) {
             let claim: ClaimedInvocationReceipt | undefined;
             try {
@@ -759,9 +793,18 @@ export class Transactor {
               const supplied = requireSuppliedOperationVersion(
                 p.operation.operationVersion,
               );
-              const resolved = await Effect.runPromise(
-                resolveOperationCatalog(this.operationRuntime, p.operation),
+              const resolvedCatalog = resolveDeployedCatalogDefinition(
+                this.operationRuntime.catalogs,
+                {
+                  database: p.operation.database,
+                  catalogKey: p.operation.catalogKey,
+                  unitHash: p.operation.unitHash,
+                },
               );
+              if (Result.isFailure(resolvedCatalog)) throw opaqueOperationDenial();
+              const resolved: ResolvedOperationCatalog = Object.freeze({
+                deployed: resolvedCatalog.success,
+              });
               this.bindComposition(
                 resolved.deployed.definition.unitHash,
                 resolved.deployed.definition.composition,
@@ -844,9 +887,15 @@ export class Transactor {
                 await resolveCompatibility("UpdateRequired");
                 continue;
               }
-              const prepared = await Effect.runPromise(
-                prepareInvocationReceipt(operation, operationVersion),
+              const prepared = await prepareInvocationReceiptDirect(
+                operation,
+                operationVersion,
               );
+              const receiptKey = `${prepared.principalId}\0${prepared.invocationId}`;
+              if (claimedInBatch.has(receiptKey)) {
+                this.deferFrom(batch, position);
+                break;
+              }
               const inspected = this.inspectInvocationReceipt(prepared);
               if (
                 inspected._tag === "OperationChanged" ||
@@ -916,7 +965,7 @@ export class Transactor {
                   resolved,
                 );
 
-              const decision = this.claimInvocationReceipt(prepared);
+              const decision = this.claimInvocationReceipt(prepared, inspected);
               if (
                 decision._tag === "Conflict" ||
                 decision._tag === "OperationChanged" ||
@@ -944,6 +993,7 @@ export class Transactor {
                 continue;
               }
               claim = decision.receipt;
+              claimedInBatch.add(receiptKey);
               await this.boundaries.checkpoint("operation.claimed");
               const executed = await executeCatalogOperation(
                 this.conn,
@@ -1068,7 +1118,7 @@ export class Transactor {
           for (const pending of acks) pending.assertFresh?.();
           this.host.transactionSync(() => {
             this.boundaries.checkpointSync("transactor.commit.write");
-            for (const e of entries) this.appendLogRow(e);
+            this.appendLogRows(entries);
             this.setMeta("next_eid", this.conn.nextEntityId);
             for (const pending of acks) {
               if (pending.receiptCompletion !== undefined) {
@@ -1187,7 +1237,21 @@ export class Transactor {
       return;
     }
     if (msg?.kind === "resume" && typeof msg.from === "number") this.sendCatchUp(ws, msg.from);
-    else if (msg?.kind === "ping") ws.send(JSON.stringify({ v: 1, kind: "pong", t: this.conn.t }));
+    else if (msg?.kind === "ping") {
+      ws.send(JSON.stringify({ v: 1, kind: "pong", t: this.conn.t, ...(msg.id === undefined ? {} : { id: msg.id }) }));
+    } else if (msg?.kind === "write" && this.host.config.socketWrites && Array.isArray(msg.tx)) {
+      const id = msg.id;
+      const clientTxId = typeof msg.clientTxId === "string" && msg.clientTxId.length > 0 ? msg.clientTxId : undefined;
+      void this.transact(msg.tx, undefined, clientTxId).then(
+        (ack) => ws.send(JSON.stringify({ v: 1, kind: "ack", id, t: ack.t })),
+        (cause) => ws.send(JSON.stringify({
+          v: 1,
+          kind: "error",
+          id,
+          message: cause instanceof Error ? cause.message : String(cause),
+        })),
+      );
+    }
   }
 
   private sendCatchUp(ws: SocketLike, from: number): void {
@@ -1217,7 +1281,7 @@ export class Transactor {
       earliestLogT: this.earliestLogT(),
       nextEid: this.conn.nextEntityId,
       subscribers: this.host.sockets().length,
-      opts: { timingYields: this.host.config.timingYields, maxBatch: this.host.config.maxBatch },
+      opts: { timingYields: this.host.config.timingYields, maxBatch: this.host.config.maxBatch, batchBudgetMs: this.host.config.batchBudgetMs },
       stats: this.stats,
       metrics: {
         txPerSec: round(this.txRate.rate(this.host.now())),
@@ -1246,6 +1310,60 @@ export class Transactor {
     return Number(row?.count ?? 0);
   }
 
+  private parseInvocation(raw: unknown): AuthoritativeOperationInvocation {
+    const invocation = typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? {
+        ...raw,
+        ...(Object.hasOwn(raw, "target")
+          ? { target: fromJson((raw as { readonly target?: unknown }).target) }
+          : {}),
+      } as AuthoritativeOperationInvocation
+      : undefined;
+    if (
+      invocation === undefined || invocation.database !== safeName(this.host)
+    ) {
+      throw new BadRequest({ message: "invalid deployed operation invocation" });
+    }
+    const entityIdScope = parseEntityIdScope(invocation.entityIdScope);
+    const allocations = parseInvocationAllocations(invocation.allocations);
+    if (
+      allocations === undefined ||
+      (invocation.sealedTarget !== undefined &&
+        (typeof invocation.sealedTarget !== "string" ||
+          entityIdScope === undefined)) ||
+      (allocations.length > 0 && entityIdScope === undefined)
+    ) {
+      throw new BadRequest({ message: "invalid deployed operation invocation" });
+    }
+    if (
+      entityIdScope !== undefined &&
+      (typeof invocation.entityIdKeyId !== "string" ||
+        invocation.entityIdKeyId.length === 0)
+    ) {
+      throw new BadRequest({ message: "invalid deployed operation invocation" });
+    }
+    return {
+      ...invocation,
+      ...(entityIdScope === undefined ? {} : { entityIdScope }),
+      ...(allocations.length === 0 ? {} : { allocations }),
+    };
+  }
+
+  private async invokeOutcome(raw: unknown): Promise<InvokeOutcome> {
+    try {
+      return { status: 200, body: await this.invoke(this.parseInvocation(raw)) };
+    } catch (cause) {
+      const error = toHttpError(cause);
+      const response = errorResponse(error);
+      const retryAfter = response.headers.get("retry-after");
+      return {
+        status: response.status,
+        body: await response.json(),
+        ...(retryAfter === null ? {} : { headers: { "retry-after": retryAfter } }),
+      };
+    }
+  }
+
   async handleRequest(request: Request): Promise<Response> {
     await this.init();
     this.metrics.observeColo((request as { cf?: { colo?: string } }).cf?.colo ?? request.headers.get("x-ramose-colo") ?? undefined);
@@ -1270,46 +1388,19 @@ export class Transactor {
     const path = url.pathname;
     if (path === "/invoke" && request.method === "POST") {
       const body = await request.json() as { invocation?: unknown };
-      const raw = body?.invocation;
-      const invocation = typeof raw === "object" && raw !== null && !Array.isArray(raw)
-        ? {
-          ...raw,
-          ...(Object.hasOwn(raw, "target")
-            ? { target: fromJson((raw as { readonly target?: unknown }).target) }
-            : {}),
-        } as AuthoritativeOperationInvocation
-        : undefined;
-      if (
-        invocation === undefined || invocation.database !== safeName(this.host)
-      ) {
-        throw new BadRequest({ message: "invalid deployed operation invocation" });
-      }
-      const entityIdScope = parseEntityIdScope(invocation.entityIdScope);
-      const allocations = parseInvocationAllocations(invocation.allocations);
-      if (
-        allocations === undefined ||
-        (invocation.sealedTarget !== undefined &&
-          (typeof invocation.sealedTarget !== "string" ||
-            entityIdScope === undefined)) ||
-        (allocations.length > 0 && entityIdScope === undefined)
-      ) {
-        throw new BadRequest({ message: "invalid deployed operation invocation" });
-      }
-      if (
-        entityIdScope !== undefined &&
-        (typeof invocation.entityIdKeyId !== "string" ||
-          invocation.entityIdKeyId.length === 0)
-      ) {
-        throw new BadRequest({ message: "invalid deployed operation invocation" });
-      }
-      const resolved: AuthoritativeOperationInvocation = {
-        ...invocation,
-        ...(entityIdScope === undefined ? {} : { entityIdScope }),
-        ...(allocations.length === 0 ? {} : { allocations }),
-      };
+      const resolved = this.parseInvocation(body?.invocation);
       return new Response(JSON.stringify(await this.invoke(resolved)), {
         headers: { "content-type": "application/json" },
       });
+    }
+    if (path === "/invoke-batch" && request.method === "POST") {
+      const body = await request.json() as { invocations?: unknown };
+      const raw = Array.isArray(body?.invocations) ? body.invocations : undefined;
+      if (raw === undefined || raw.length === 0 || raw.length > MAX_INVOKE_BATCH) {
+        throw new BadRequest({ message: "invalid deployed operation invocation batch" });
+      }
+      const results = await Promise.all(raw.map((entry) => this.invokeOutcome(entry)));
+      return json({ results });
     }
     if (path === "/transact" && request.method === "POST") {
       const body = fromJson(await request.json()) as {

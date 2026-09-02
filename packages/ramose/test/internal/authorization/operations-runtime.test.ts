@@ -706,6 +706,28 @@ const ReplayTarget = Entity("replayTarget", {
         return { id: op.self };
       },
     }),
+    noteNoise: Operation({
+      input: EffectSchema.Struct({
+        noise: OperationEntityId,
+        note: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        (op as any).set(ReplayNoise, input.noise, ReplayNoise.note, input.note);
+        return { id: op.self };
+      },
+    }),
+    renameGate: Operation({
+      input: EffectSchema.Struct({
+        gate: OperationEntityId,
+        name: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        (op as any).set(ReplayGate, input.gate, ReplayGate.name, input.name);
+        return { id: op.self };
+      },
+    }),
   }),
 });
 const ReplayApp = Schema("replay-fence", {
@@ -727,6 +749,8 @@ ReplayApp.applyPolicy({ roles: ["member"] }, ({ policy, session, allOf }) => {
   policy.replayTarget.operations.deleteAndConsumeGate.where(session.hasRole("member"));
   policy.replayTarget.operations.archive.where(session.hasRole("member"));
   policy.replayTarget.operations.moveLookup.where(session.hasRole("member"));
+  policy.replayTarget.operations.noteNoise.where(session.hasRole("member"));
+  policy.replayTarget.operations.renameGate.where(session.hasRole("member"));
 });
 const replayDatabase = DatabaseId.make("operation-replay-fence");
 const replayArtifactHash = DigestHex.make("6".repeat(64));
@@ -810,7 +834,13 @@ const replayRuntime = (world: Awaited<ReturnType<typeof buildReplayFenceWorld>>)
 
 const replayInvocation = (
   world: Awaited<ReturnType<typeof buildReplayFenceWorld>>,
-  localName: "deleteAndEcho" | "deleteAndConsumeGate" | "archive" | "moveLookup",
+  localName:
+    | "deleteAndEcho"
+    | "deleteAndConsumeGate"
+    | "archive"
+    | "moveLookup"
+    | "noteNoise"
+    | "renameGate",
   input: unknown,
 ) => ({
   owner: { kind: "entity" as const, name: "replayTarget" },
@@ -1449,6 +1479,53 @@ describe("deployed operation runtime", () => {
       ":replayGate/name": "Revoked",
     }]);
     expect(await world.conn.db().entity(world.target)).toEqual(targetBeforeRevocation);
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).rejects.toBeInstanceOf(Unauthorized);
+  });
+
+  test("keeps a visible fence without rechecking when the write touches nothing the witness observed", async () => {
+    const world = await buildReplayFenceWorld();
+    const runtime = replayRuntime(world);
+    const invocation = replayInvocation(world, "noteNoise", {
+      noise: world.noise,
+      note: "touched",
+    });
+    const executed = await executeCatalogOperation(world.conn, runtime, invocation);
+    expect(executed.output).toEqual({ id: world.target });
+    expect(executed.replayFence.target?.postCommit).toEqual({ kind: "visible" });
+    expect((await world.conn.db().entity(world.noise))?.[":replayNoise/note"]).toBe("touched");
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).resolves.toBeUndefined();
+  });
+
+  test("recomputes the fence when the write changes a policy fact the witness observed", async () => {
+    const world = await buildReplayFenceWorld();
+    const runtime = replayRuntime(world);
+    const invocation = replayInvocation(world, "renameGate", {
+      gate: world.gate,
+      name: "Revoked",
+    });
+    const executed = await executeCatalogOperation(world.conn, runtime, invocation);
+    expect(executed.output).toEqual({ id: world.target });
+    const fenced = executed.replayFence.target;
+    expect(fenced?.postCommit.kind).toBe("hidden");
+    if (fenced?.postCommit.kind !== "hidden") throw new Error("expected hidden replay fence");
+    expect(/^[0-9a-f]{64}$/.test(fenced.postCommit.authorizationDigest)).toBe(true);
+    await expect(authorizeCatalogOperationReplay(
+      world.conn,
+      runtime,
+      invocation,
+      executed.replayFence,
+    )).resolves.toBeUndefined();
+    await world.conn.transact([{ ":db/id": world.gate, ":replayGate/name": "Good" }]);
     await expect(authorizeCatalogOperationReplay(
       world.conn,
       runtime,

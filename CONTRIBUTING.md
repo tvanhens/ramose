@@ -85,6 +85,57 @@ the stage. It requires:
 
 Set `KEEP_STAGE=1` to retain the temporary stage for investigation.
 
+## Operation benchmark
+
+```sh
+bun run bench:op [concurrency] [seconds] [transact|operation|both]
+```
+
+`bun run bench:op` drives the Cloudflare bench catalog through the
+in-process transactor over a local SQLite file, so the raw transaction path
+and the operation path can be compared and profiled without a deployment,
+for example with `bun --cpu-prof`. `BENCH_INDEX=1` keeps the production
+index thresholds instead of suppressing index runs.
+
+## Cloudflare benchmark
+
+```sh
+bun run bench:cf [lanes] [parallel] [seconds-per-phase]
+```
+
+`bun run bench:cf` deploys a throwaway benchmark stage with test hooks and a
+small operation catalog, drives the raw transaction path and the `/op` path,
+prints throughput and latency per phase with the transactor's batch
+statistics, and destroys the stage. It requires the same Cloudflare variables
+as the e2e suite.
+
+The load is generated inside Cloudflare so that the round trip from this
+machine does not bound the measurement. The stage exposes a lane route that
+calls the peer through a service binding to itself; `bench.ts` keeps `lanes`
+lane invocations running at once, each with `parallel` requests in flight
+(at most 6, the Workers simultaneous connection limit), so the transactor sees
+`lanes × parallel` concurrent writers. Each lane invocation returns after
+`BENCH_LANE_REQUESTS` requests (default 500) and is relaunched until the phase
+ends. `BENCH_PING=1` adds a phase that only reads transactor info, which
+measures the request ceiling of one Durable Object, and `BENCH_SOCKET=1`
+adds ping and write phases over a WebSocket into the same object. Each phase
+prints client-side throughput and latency, the peer's warn
+and error telemetry captured inside the stage, and the transactor's batch
+counters. Batch cadence is reported as wall-clock time per batch and per
+transaction because Workers do not advance timers during synchronous work.
+Past a few hundred concurrent writers the platform sheds load with
+"Durable Object is overloaded" errors, which the bench reports as server
+events, so raise `lanes` until that appears to find the ceiling of a single
+transactor.
+Transactor tuning variables such as `RAMOSE_MAX_BATCH`,
+`RAMOSE_BATCH_BUDGET_MS`, and `RAMOSE_OP_COALESCE_MS` (the window in which a
+Worker isolate groups concurrent operations into one transactor request,
+default 2, 0 to disable) are forwarded to the stage, and `BENCH_LABEL` tags
+the printed rows so runs can be compared. `KEEP_STAGE=1` retains the stage.
+`bun run bench:cf:compare` runs the same benchmark twice, first against the
+`master` package source and then against the current branch, so the two
+result tables can be compared directly.
+
 ## Documentation site
 
 ```sh

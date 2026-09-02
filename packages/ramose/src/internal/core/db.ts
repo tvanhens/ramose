@@ -9,7 +9,7 @@ import {
   inferTag,
   normalizeValue,
 } from "./datom.ts";
-import { Novelty, collapseCurrent, currentView, filterAsOf, mergeChunks, rawView } from "./novelty.ts";
+import { type NoveltyView, collapseCurrent, currentView, filterAsOf, mergeChunks, rawView } from "./novelty.ts";
 import { type Attribute, DB_IDENT, Schema, isTxEid } from "./schema.ts";
 import { type NodeRef, type NodeSource, estimateCount, scan, scanMany, sortedUnion } from "./tree.ts";
 import { COMPARATORS } from "./datom.ts";
@@ -46,7 +46,7 @@ export type DatomPredicate = (
 export interface DbOptions {
   store: NodeSource;
   roots: Roots;
-  novelty: Novelty;
+  novelty: NoveltyView;
   basisT: number;
   schema: Schema;
   nextEid: number;
@@ -59,7 +59,7 @@ export interface DbOptions {
 export class Db {
   readonly store: NodeSource;
   readonly roots: Roots;
-  readonly novelty: Novelty;
+  readonly novelty: NoveltyView;
   readonly basisT: number;
   readonly schema: Schema;
   readonly nextEid: number;

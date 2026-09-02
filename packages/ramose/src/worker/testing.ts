@@ -93,7 +93,20 @@ export const createServer = (options: ServerOptions = {}) => ({
         }
         return await handleTestAdmin(request, runtimeEnv, new URL(request.url));
       } catch (cause) {
-        return respond(asTestAdminError(cause), request, runtimeEnv);
+        const error = asTestAdminError(cause);
+        if (error._tag === "UpstreamError" && error.status >= 500) {
+          return new Response(
+            JSON.stringify({ error: "internal error", upstream: { status: error.status, body: error.body.slice(0, 400) } }),
+            { status: 500, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (error._tag === "Internal") {
+          return new Response(
+            JSON.stringify({ error: "internal error", message: error.message.slice(0, 400) }),
+            { status: 500, headers: { "content-type": "application/json" } },
+          );
+        }
+        return respond(error, request, runtimeEnv);
       }
     }
     return runFetch(

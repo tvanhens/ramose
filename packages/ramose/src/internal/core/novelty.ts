@@ -10,9 +10,45 @@ import {
 } from "./datom.ts";
 import { type Chunk, lowerBound, sortedUnion, upperBound } from "./tree.ts";
 
-export class SortedNovelty {
-  private base: Datom[] = [];
+export interface SortedNoveltyView {
+  readonly index: IndexId;
+  readonly cmp: DatomComparator;
+  readonly size: number;
+  all(): readonly Datom[];
+  range(prefix: Prefix): Chunk | undefined;
+}
+
+export interface NoveltyView {
+  readonly byIndex: Record<IndexId, SortedNoveltyView>;
+  readonly count: number;
+  readonly maxT: number;
+}
+
+function rangeOf(index: IndexId, ds: readonly Datom[], prefix: Prefix): Chunk | undefined {
+  if (ds.length === 0) return undefined;
+  const s = lowerBound(index, ds, prefix);
+  if (s >= ds.length) return undefined;
+  const e = upperBound(index, ds, prefix);
+  if (s >= e) return undefined;
+  return { datoms: ds, start: s, end: e };
+}
+
+function unionChunks(cmp: DatomComparator, chunks: readonly Chunk[]): Chunk | undefined {
+  if (chunks.length === 0) return undefined;
+  if (chunks.length === 1) return chunks[0];
+  let merged = sliceOf(chunks[0]);
+  for (let i = 1; i < chunks.length; i++) merged = sortedUnion(cmp, merged, sliceOf(chunks[i]));
+  return { datoms: merged, start: 0, end: merged.length };
+}
+
+function sliceOf(c: Chunk): readonly Datom[] {
+  return c.start === 0 && c.end === c.datoms.length ? c.datoms : c.datoms.slice(c.start, c.end);
+}
+
+export class SortedNovelty implements SortedNoveltyView {
+  private runs: Datom[][] = [];
   private pending: Datom[] = [];
+  private stored = 0;
   readonly cmp: DatomComparator;
 
   constructor(readonly index: IndexId) {
@@ -20,53 +56,102 @@ export class SortedNovelty {
   }
 
   get size(): number {
-    return this.base.length + this.pending.length;
+    return this.stored + this.pending.length;
   }
 
   add(datoms: readonly Datom[]): void {
     for (const d of datoms) this.pending.push(d);
   }
 
-  private flush(): Datom[] {
+  private flush(): readonly Datom[][] {
     if (this.pending.length > 0) {
       const p = this.pending;
       this.pending = [];
       p.sort(this.cmp);
-      const dp: Datom[] = [];
+      const run: Datom[] = [];
       for (let i = 0; i < p.length; i++) {
-        if (i === 0 || this.cmp(p[i - 1], p[i]) !== 0) dp.push(p[i]);
+        if (i === 0 || this.cmp(p[i - 1], p[i]) !== 0) run.push(p[i]);
       }
-      this.base = this.base.length === 0 ? dp : sortedUnion(this.cmp, this.base, dp);
+      this.runs.push(run);
+      this.stored += run.length;
+      while (this.runs.length >= 2 && this.runs[this.runs.length - 1].length >= this.runs[this.runs.length - 2].length) {
+        const top = this.runs.pop()!;
+        const below = this.runs.pop()!;
+        const merged = sortedUnion(this.cmp, below, top);
+        this.stored += merged.length - top.length - below.length;
+        this.runs.push(merged);
+      }
     }
-    return this.base;
+    return this.runs;
+  }
+
+  private compact(): Datom[] {
+    const runs = this.flush();
+    if (runs.length === 0) return [];
+    if (runs.length === 1) return runs[0];
+    let merged = runs[0];
+    for (let i = 1; i < runs.length; i++) merged = sortedUnion(this.cmp, merged, runs[i]);
+    this.runs = [merged];
+    this.stored = merged.length;
+    return merged;
   }
 
   all(): readonly Datom[] {
-    return this.flush();
+    return this.compact();
   }
 
   range(prefix: Prefix): Chunk | undefined {
-    const ds = this.flush();
-    if (ds.length === 0) return undefined;
-    const s = lowerBound(this.index, ds, prefix);
-    if (s >= ds.length) return undefined;
-    const e = upperBound(this.index, ds, prefix);
-    if (s >= e) return undefined;
-    return { datoms: ds, start: s, end: e };
+    const runs = this.flush();
+    if (runs.length === 1) return rangeOf(this.index, runs[0], prefix);
+    const hits: Chunk[] = [];
+    for (const run of runs) {
+      const c = rangeOf(this.index, run, prefix);
+      if (c !== undefined) hits.push(c);
+    }
+    return unionChunks(this.cmp, hits);
   }
 
   dropThrough(maxT: number): void {
-    const ds = this.flush();
-    this.base = ds.filter((d) => d.t > maxT);
+    const kept = this.compact().filter((d) => d.t > maxT);
+    this.runs = kept.length === 0 ? [] : [kept];
+    this.stored = kept.length;
   }
 
   clear(): void {
-    this.base = [];
+    this.runs = [];
     this.pending = [];
+    this.stored = 0;
   }
 }
 
-export class Novelty {
+export class LayeredSortedNovelty implements SortedNoveltyView {
+  readonly index: IndexId;
+  readonly cmp: DatomComparator;
+
+  constructor(private readonly base: SortedNoveltyView, private readonly top: SortedNoveltyView) {
+    this.index = base.index;
+    this.cmp = base.cmp;
+  }
+
+  get size(): number {
+    return this.base.size + this.top.size;
+  }
+
+  all(): readonly Datom[] {
+    return sortedUnion(this.cmp, this.base.all(), this.top.all());
+  }
+
+  range(prefix: Prefix): Chunk | undefined {
+    const hits: Chunk[] = [];
+    const b = this.base.range(prefix);
+    if (b !== undefined) hits.push(b);
+    const t = this.top.range(prefix);
+    if (t !== undefined) hits.push(t);
+    return unionChunks(this.cmp, hits);
+  }
+}
+
+export class Novelty implements NoveltyView {
   readonly byIndex: Record<IndexId, SortedNovelty> = {
     0: new SortedNovelty(0),
     1: new SortedNovelty(1),
@@ -75,6 +160,21 @@ export class Novelty {
   };
   private _count = 0;
   private _maxT = 0;
+
+  overlay(datoms: readonly Datom[], avet: (a: number) => boolean, vaet: (a: number) => boolean): NoveltyView {
+    const top = new Novelty();
+    top.add(datoms, avet, vaet);
+    return {
+      byIndex: {
+        0: new LayeredSortedNovelty(this.byIndex[0], top.byIndex[0]),
+        1: new LayeredSortedNovelty(this.byIndex[1], top.byIndex[1]),
+        2: new LayeredSortedNovelty(this.byIndex[2], top.byIndex[2]),
+        3: new LayeredSortedNovelty(this.byIndex[3], top.byIndex[3]),
+      },
+      count: this.count + top.count,
+      maxT: Math.max(this.maxT, top.maxT),
+    };
+  }
 
   add(datoms: readonly Datom[], avet: (a: number) => boolean, vaet: (a: number) => boolean): void {
     if (datoms.length === 0) return;

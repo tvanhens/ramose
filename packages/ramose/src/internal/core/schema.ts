@@ -13,6 +13,22 @@ export const DB_DOC = 62;
 
 export const RAMOSE_TYPE_IDENT = ":ramose/type";
 
+export function definesSchema(a: number): boolean {
+  switch (a) {
+    case DB_IDENT:
+    case DB_VALUE_TYPE:
+    case DB_CARDINALITY:
+    case DB_UNIQUE:
+    case DB_IS_COMPONENT:
+    case DB_INDEX:
+    case DB_OPTIONAL:
+    case DB_DOC:
+      return true;
+    default:
+      return false;
+  }
+}
+
 export const FIRST_USER_EID = 1000;
 export const TX_BASE = 2 ** 42;
 export function txEid(t: number): number {

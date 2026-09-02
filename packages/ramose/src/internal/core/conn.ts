@@ -1,7 +1,7 @@
 import { type Datom, ALL_INDEXES, COMPARATORS, type IndexId, Index } from "./datom.ts";
 import { Db, type Roots } from "./db.ts";
-import { Novelty } from "./novelty.ts";
-import { DB_IDENT, FIRST_USER_EID, Schema, bootstrapDatoms } from "./schema.ts";
+import { Novelty, type NoveltyView } from "./novelty.ts";
+import { DB_IDENT, FIRST_USER_EID, Schema, bootstrapDatoms, definesSchema } from "./schema.ts";
 import { MemStore } from "./store.ts";
 import { type BuildOptions, type NodeSource, type NodeStore, buildTree, mergeTree } from "./tree.ts";
 import type { CompositionIndex } from "./composition.ts";
@@ -78,10 +78,12 @@ export async function mergeRoots(
   build?: BuildOptions,
 ): Promise<Roots> {
   const pick = (i: IndexId) => novelty.byIndex[i].all().filter((d) => d.t <= maxT);
-  const eavt = await mergeTree(store, Index.EAVT, roots.eavt, pick(Index.EAVT), build);
-  const aevt = await mergeTree(store, Index.AEVT, roots.aevt, pick(Index.AEVT), build);
-  const avet = await mergeTree(store, Index.AVET, roots.avet, pick(Index.AVET), build);
-  const vaet = await mergeTree(store, Index.VAET, roots.vaet, pick(Index.VAET), build);
+  const [eavt, aevt, avet, vaet] = await Promise.all([
+    mergeTree(store, Index.EAVT, roots.eavt, pick(Index.EAVT), build),
+    mergeTree(store, Index.AEVT, roots.aevt, pick(Index.AEVT), build),
+    mergeTree(store, Index.AVET, roots.avet, pick(Index.AVET), build),
+    mergeTree(store, Index.VAET, roots.vaet, pick(Index.VAET), build),
+  ]);
   return { t: maxT, eavt, aevt, avet, vaet };
 }
 
@@ -214,17 +216,17 @@ export class Connection {
         this.composition === undefined ? undefined : { composition: this.composition },
       );
       const schemaAfter = this.schema.clone().apply(res.datoms);
-      const noveltyAfter = new Novelty();
-      noveltyAfter.add(
-        this.novelty.byIndex[Index.EAVT].all(),
-        (a) => schemaAfter.isAvet(a),
-        (a) => schemaAfter.isVaet(a),
-      );
-      noveltyAfter.add(
-        res.datoms,
-        (a) => schemaAfter.isAvet(a),
-        (a) => schemaAfter.isVaet(a),
-      );
+      const isAvet = (a: number) => schemaAfter.isAvet(a);
+      const isVaet = (a: number) => schemaAfter.isVaet(a);
+      let noveltyAfter: NoveltyView;
+      if (res.datoms.some((d) => definesSchema(d.a))) {
+        const copied = new Novelty();
+        copied.add(this.novelty.byIndex[Index.EAVT].all(), isAvet, isVaet);
+        copied.add(res.datoms, isAvet, isVaet);
+        noveltyAfter = copied;
+      } else {
+        noveltyAfter = this.novelty.overlay(res.datoms, isAvet, isVaet);
+      }
       const dbAfter = new Db({
         store: this.store,
         roots: this.roots,

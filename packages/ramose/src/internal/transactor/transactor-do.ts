@@ -14,11 +14,13 @@ import { serverSealingKey } from "../replication/identity-root.ts";
 import { dbPrefix, prefixedBucket } from "../storage/index.ts";
 import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
-import { internalGate } from "./internal.ts";
+import { ROUTE_ROOT_HEADER, internalGate } from "./internal.ts";
 import { Transactor, type TxAck } from "./transactor.ts";
 import type { RuntimeBoundaries } from "../runtime-boundaries.ts";
 
 export type { TxAck };
+
+const WRITER_SOCKET_TAG = "ramose-test-writer";
 
 export function configFromEnv(env: RamoseEnv): TransactorConfig {
   return {
@@ -30,7 +32,9 @@ export function configFromEnv(env: RamoseEnv): TransactorConfig {
     gcEveryNIndexes: envInt(env.RAMOSE_GC_EVERY_N_INDEXES, DEFAULT_CONFIG.gcEveryNIndexes),
     retainRoots: envInt(env.RAMOSE_RETAIN_ROOTS, DEFAULT_CONFIG.retainRoots),
     maxBatch: envInt(env.RAMOSE_MAX_BATCH, DEFAULT_CONFIG.maxBatch),
+    batchBudgetMs: envInt(env.RAMOSE_BATCH_BUDGET_MS, DEFAULT_CONFIG.batchBudgetMs),
     timingYields: env.RAMOSE_TIMING_YIELDS === "1",
+    socketWrites: false,
   };
 }
 
@@ -53,6 +57,8 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
   private readonly core: Transactor;
   private readonly databaseCatalogBindings: DatabaseCatalogBindings | undefined;
   private dbName: string | undefined;
+  private readonly provisionedRoots = new Set<string>();
+  private readonly provisioning = new Map<string, Promise<void>>();
 
   constructor(
     ctx: DurableObjectState,
@@ -62,7 +68,8 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
     private readonly testing?: TransactorTesting,
   ) {
     super(ctx, env);
-    if (testing?.enabled(env) === true) testing.reset();
+    const testingOn = testing?.enabled(env) === true;
+    if (testingOn) testing?.reset();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
     if (row) this.dbName = JSON.parse(row.v as string) as string;
@@ -78,12 +85,15 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       get bucket() {
         return prefixedBucket(env.STORE, dbPrefix(host.dbName));
       },
-      sockets: () => ctx.getWebSockets() as unknown as SocketLike[],
+      sockets: () =>
+        (testingOn
+          ? ctx.getWebSockets().filter((ws) => !ctx.getTags(ws).includes(WRITER_SOCKET_TAG))
+          : ctx.getWebSockets()) as unknown as SocketLike[],
       getAlarm: () => ctx.storage.getAlarm(),
       setAlarm: (time) => ctx.storage.setAlarm(time),
       abort: (reason) => ctx.abort(reason),
       now: () => Date.now(),
-      config: configFromEnv(env),
+      config: { ...configFromEnv(env), socketWrites: testingOn },
       ...(env.ANALYTICS !== undefined && { analytics: env.ANALYTICS }),
     };
     this.core = new Transactor(
@@ -98,6 +108,45 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
         },
       testing?.boundariesOf(() => host.dbName),
     );
+  }
+
+  private async provisionCatalog(rootDatabase: string): Promise<number> {
+    if (this.databaseCatalogBindings === undefined) {
+      throw new Error("catalog provisioning unavailable");
+    }
+    const derivation: DatabaseRouteDerivation = Object.freeze({
+      rootDatabase: DatabaseId.make(rootDatabase),
+    });
+    const route = await Effect.runPromise(deriveResolvedDatabaseRoute(
+      this.databaseCatalogBindings,
+      derivation,
+    ));
+    if (route.database !== DatabaseId.make(this.dbName!)) {
+      throw new Error("database route derivation does not match this transactor");
+    }
+    const deployed = Result.getOrThrow(resolveBoundCatalogDefinition(
+      this.databaseCatalogBindings,
+      route,
+    ));
+    const t = await this.core.provisionCatalog(deployed.definition);
+    this.provisionedRoots.add(rootDatabase);
+    return t;
+  }
+
+  private provisionCatalogOnce(rootDatabase: string): Promise<void> {
+    if (this.provisionedRoots.has(rootDatabase)) return Promise.resolve();
+    let pending = this.provisioning.get(rootDatabase);
+    if (pending === undefined) {
+      pending = this.provisionCatalog(rootDatabase).then(
+        () => undefined,
+        (cause) => {
+          this.provisioning.delete(rootDatabase);
+          throw cause;
+        },
+      );
+      this.provisioning.set(rootDatabase, pending);
+    }
+    return pending;
   }
 
   private assign(db: string): void {
@@ -143,6 +192,10 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       const from = Number(url.searchParams.get("from") ?? "0");
       const pair = new WebSocketPair();
       const [client, server] = [pair[0], pair[1]];
+      if (testingEnabled && url.searchParams.get("writer") === "1") {
+        this.ctx.acceptWebSocket(server, [WRITER_SOCKET_TAG]);
+        return new Response(null, { status: 101, webSocket: client });
+      }
       this.ctx.acceptWebSocket(server);
       this.core.onSubscribe(server, from);
       return new Response(null, { status: 101, webSocket: client });
@@ -172,26 +225,28 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
         ) {
           throw new Error("invalid database route derivation");
         }
-        const derivation: DatabaseRouteDerivation = Object.freeze({
-          rootDatabase: DatabaseId.make(
-            (raw as { readonly rootDatabase: string }).rootDatabase,
-          ),
-        });
-        const route = await Effect.runPromise(deriveResolvedDatabaseRoute(
-          this.databaseCatalogBindings,
-          derivation,
-        ));
-        if (route.database !== DatabaseId.make(this.dbName)) {
-          throw new Error("database route derivation does not match this transactor");
-        }
-        const deployed = Result.getOrThrow(resolveBoundCatalogDefinition(
-          this.databaseCatalogBindings,
-          route,
-        ));
-        const t = await this.core.provisionCatalog(deployed.definition);
+        const t = await this.provisionCatalog(
+          (raw as { readonly rootDatabase: string }).rootDatabase,
+        );
         return new Response(JSON.stringify({ t }), {
           headers: { "content-type": "application/json" },
         });
+      } catch (cause) {
+        return new Response(JSON.stringify({
+          error: cause instanceof Error ? cause.message : "catalog provisioning failed",
+        }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+    const routeRoot = request.headers.get(ROUTE_ROOT_HEADER);
+    if (
+      routeRoot !== null &&
+      (url.pathname === "/invoke" || url.pathname === "/invoke-batch")
+    ) {
+      try {
+        await this.provisionCatalogOnce(routeRoot);
       } catch (cause) {
         return new Response(JSON.stringify({
           error: cause instanceof Error ? cause.message : "catalog provisioning failed",
