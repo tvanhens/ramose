@@ -85,6 +85,17 @@ the stage. It requires:
 
 Set `KEEP_STAGE=1` to retain the temporary stage for investigation.
 
+## Operation benchmark
+
+```sh
+bun run bench:op [concurrency] [seconds] [transact|operation|both]
+```
+
+`bun run bench:op` drives the Cloudflare bench catalog through the
+in-process transactor over a local SQLite file, so the raw transaction path
+and the operation path can be compared and profiled without a deployment,
+for example with `bun --cpu-prof`.
+
 ## Cloudflare benchmark
 
 ```sh
