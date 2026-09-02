@@ -86,13 +86,24 @@ const transactorStats = async (db: string) => {
   const info = requireOk("transactor info", await admin(db, "/info", {}));
   const s = info.stats;
   return {
+    txs: s.txs as number,
     batches: s.batches as number,
     avgBatch: s.batches ? s.txs / s.batches : 0,
     maxBatch: s.maxBatch as number,
     rejected: s.rejected as number,
+    txPerSec: info.metrics.txPerSec as number,
+    novelty: info.novelty as number,
     opts: info.opts,
   };
 };
+
+type Stats = Awaited<ReturnType<typeof transactorStats>>;
+
+const serverSide = (before: Stats, after: Stats) => ({
+  "server txs": after.txs - before.txs,
+  "server tx/s": after.txPerSec,
+  novelty: after.novelty,
+});
 
 const attribute = (ident: string, type: string, extra: Record<string, unknown> = {}) => ({
   ":db/ident": ident,
@@ -118,7 +129,7 @@ const rows: Record<string, unknown>[] = [];
     }));
   const after = await transactorStats(db);
   const batches = after.batches - before.batches;
-  rows.push({ phase: "transact", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch });
+  rows.push({ phase: "transact", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch, ...serverSide(before, after) });
   console.log(`  transactor opts ${JSON.stringify(after.opts)} batches=${batches} maxBatch=${after.maxBatch}`);
 }
 
@@ -138,7 +149,7 @@ const rows: Record<string, unknown>[] = [];
     }, token));
   const after = await transactorStats(db);
   const batches = after.batches - before.batches;
-  rows.push({ phase: "operation", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch });
+  rows.push({ phase: "operation", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch, ...serverSide(before, after) });
   console.log(`  transactor opts ${JSON.stringify(after.opts)} batches=${batches} maxBatch=${after.maxBatch}`);
 }
 
