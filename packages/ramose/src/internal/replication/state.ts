@@ -143,9 +143,17 @@ const commitSnapshot = (
   state: ClientReplicationState,
   frame: Extract<ReplicationFrame, { readonly type: "SnapshotCommit" }>,
 ): Result.Result<ClientReplicationState, ReplicationTransitionError> => {
-  if (state.committed?.revision === frame.revision) {
+  const standing = state.committed;
+  if (standing?.revision === frame.revision) {
     const { staging: _, ...withoutStaging } = state;
-    return Result.succeed({ ...withoutStaging, closed: false });
+    const settled = Math.max(standing.settled, frame.settled);
+    return Result.succeed({
+      ...withoutStaging,
+      committed: settled === standing.settled
+        ? standing
+        : Object.freeze({ ...standing, settled }),
+      closed: false,
+    });
   }
   const staging = state.staging;
   if (
@@ -266,7 +274,14 @@ const applyChange = (
 ): Result.Result<ClientReplicationState, ReplicationTransitionError> => {
   const committed = state.committed;
   if (committed === undefined) return fail("change arrived before a committed value");
-  if (frame.revision === committed.revision) return Result.succeed(state);
+  if (frame.revision === committed.revision) {
+    const settled = Math.max(committed.settled, frame.settled);
+    return Result.succeed(
+      settled === committed.settled
+        ? state
+        : { ...state, committed: Object.freeze({ ...committed, settled }) },
+    );
+  }
   if (frame.from !== committed.revision) return Result.succeed(state);
   if (frame.ordinal < committed.ordinal) return Result.succeed(state);
 

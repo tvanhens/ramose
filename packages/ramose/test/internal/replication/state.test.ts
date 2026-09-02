@@ -463,6 +463,41 @@ describe("the committed settlement watermark", () => {
     expect(lagging.committed?.ordinal).toBe(9);
     expect(lagging.committed?.settled).toBe(6);
   });
+
+  test("a change re-delivering the committed revision still raises the watermark", () => {
+    const prior = committed();
+    expect(prior.committed?.settled).toBe(0);
+    const duplicate = changeFrame({
+      type: "Change",
+      protocol: 4,
+      identity: active,
+      from: opaque("J"),
+      revision: opaque("K"),
+      ordinal: 1,
+      settled: 4,
+      datoms: [second],
+    });
+    const advanced = apply(prior, duplicate);
+    expect(advanced.committed?.revision).toBe(opaque("K"));
+    expect(advanced.committed?.ordinal).toBe(1);
+    expect(advanced.committed?.settled).toBe(4);
+    expect(advanced.committed?.datoms).toEqual(prior.committed!.datoms);
+    expect(advanced.committed?.handles).toEqual(prior.committed!.handles);
+
+    expect(apply(advanced, { ...duplicate, settled: 2 })).toBe(advanced);
+  });
+
+  test("a snapshot re-committing the committed revision still raises the watermark", () => {
+    const prior = committed();
+    const advanced = apply(prior, commit(opaque("J"), opaque("K"), 1, 1, 7));
+    expect(advanced.committed?.revision).toBe(opaque("K"));
+    expect(advanced.committed?.settled).toBe(7);
+    expect(advanced.committed?.datoms).toEqual(prior.committed!.datoms);
+    expect(advanced.staging).toBeUndefined();
+
+    const lagging = apply(advanced, commit(opaque("J"), opaque("K"), 1, 1, 3));
+    expect(lagging.committed).toBe(advanced.committed);
+  });
 });
 
 describe("the committed sealed-handle binding", () => {

@@ -1242,6 +1242,40 @@ browserTest(
 );
 
 browserTest(
+  "a change the manifest already installed still merges the settlement it carries",
+  async ({ browser }) => {
+    const database = `ramose-layer-duplicate-settlement-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    try {
+      await installRecorded(storage, "optimistic-fence-change");
+      const change = await recordedChange();
+      dropped(await storage.applyChange(change));
+      expect(await storedSettlement(database)).toBe(change.settled);
+
+      const advanced = await storage.applyChange({
+        ...change,
+        settled: change.settled + 1,
+      });
+      expect(advanced?.revision).toBe(change.revision);
+      expect(advanced?.ordinal).toBe(change.ordinal);
+      expect(advanced?.settled).toBe(change.settled + 1);
+      advanced?.release();
+
+      expect(await storedSettlement(database)).toBe(change.settled + 1);
+      const restored = await storage.restore(identity(), ATTRIBUTES, READ_COMPATIBILITY);
+      expect(restored?.settled).toBe(change.settled + 1);
+      restored!.release();
+
+      dropped(await storage.applyChange(change));
+      expect(await storedSettlement(database)).toBe(change.settled + 1);
+    } finally {
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+browserTest(
   "a snapshot the identity has advanced past reconnects instead of being consumed",
   async ({ browser }) => {
     const database = `ramose-layer-snapshot-superseded-${browser.uniqueId}`;

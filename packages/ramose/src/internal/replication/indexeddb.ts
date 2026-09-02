@@ -2518,7 +2518,69 @@ export class IndexedDbReplicaStorage {
       await commitTransaction(write);
       this.meter.manifests++;
       this.meter.heads++;
+      if (settled > current.settled) {
+        this.announce(identityNotice("replica", acknowledgement.identity));
+      }
       return positionOf(acknowledged);
+    } catch (error) {
+      await abortTransaction(write);
+      throw error;
+    } finally {
+      removeAbort();
+    }
+  }
+
+  private async settleCommitted(
+    identity: ReplicationIdentity,
+    options: ReplicaInstallOptions,
+    partition: string,
+    fence: ReplicaFence | undefined,
+    settlement: {
+      readonly revision: string;
+      readonly stored: number;
+      readonly observed: number;
+    },
+  ): Promise<number> {
+    const sweep = await this.sweepGeneration(partition);
+    options.signal?.throwIfAborted();
+    await this.boundaries.checkpoint("replica.installing");
+    const write = this.database.transaction(
+      [COMMITTED, COMMITTED_HEADS, GENERATIONS],
+      "readwrite",
+    );
+    const removeAbort = abortWithSignal(write, options.signal);
+    try {
+      await enforceFence(write, fence);
+      await this.confirmNoSweep(write, partition, sweep);
+      const [current, head] = await Promise.all([
+        requestResult<CommittedRecord | undefined>(
+          write.objectStore(COMMITTED).get(partition),
+        ),
+        requestResult<CommittedHeadRecord | undefined>(
+          write.objectStore(COMMITTED_HEADS).get(partition),
+        ),
+      ]);
+      if (current === undefined || current.revision !== settlement.revision) {
+        await abortTransaction(write);
+        return settlement.stored;
+      }
+      const merged = mergedSettlement(
+        { ...current, settled: settlement.observed },
+        current,
+        head,
+      );
+      if (merged.settled === current.settled) {
+        await transactionDone(write);
+        return current.settled;
+      }
+      write.objectStore(COMMITTED).put(merged);
+      write.objectStore(COMMITTED_HEADS).put(committedHead(merged));
+      await this.boundaries.checkpoint("replica.install");
+      await commitTransaction(write);
+      this.meter.manifests++;
+      this.meter.heads++;
+      this.announce(identityNotice("replica", identity));
+      return merged.settled;
     } catch (error) {
       await abortTransaction(write);
       throw error;
@@ -2567,11 +2629,19 @@ export class IndexedDbReplicaStorage {
       closed: false,
     }, frame);
     if (state.committed === undefined || state.committed.revision === prior.revision) {
+      const settled = state.committed !== undefined &&
+          state.committed.settled > prior.settled
+        ? await this.settleCommitted(frame.identity, options, partition, fence, {
+          revision: prior.revision,
+          stored: prior.settled,
+          observed: state.committed.settled,
+        })
+        : prior.settled;
       return {
         db: dbFromRecord(this.database, prior, frame.identity.readCompatibilityHash),
         revision: prior.revision,
         ordinal: prior.ordinal,
-        settled: prior.settled,
+        settled,
         handles: recordHandles(prior),
         release: this.retainRoots(frame.identity, prior.roots),
       };

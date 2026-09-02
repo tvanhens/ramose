@@ -275,10 +275,12 @@ export class ReplicationSession {
     );
     if (restored === undefined) return false;
     const published = this.state.value;
+    const carries = published !== undefined &&
+      restored.revision === published.revision &&
+      restored.settled <= published.settled &&
+      sameReplicationIdentity(identity, published.identity);
     if (
-      !this.current(generation) ||
-      (restored.revision === published?.revision &&
-        sameReplicationIdentity(identity, published.identity)) ||
+      !this.current(generation) || carries ||
       !this.admits(identity, restored.ordinal)
     ) {
       restored.release();

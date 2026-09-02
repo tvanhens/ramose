@@ -1228,6 +1228,84 @@ browserTest(
 );
 
 browserTest(
+  "a settlement advance reaches a tab with no stream without waking it",
+  async ({ browser }) => {
+    const name = `ramose-propagation-settlement-notice-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    const tabs = [[writer, "the writer"], [reader, "the reader"]] as const;
+    const layerStates = async (): Promise<readonly unknown[]> =>
+      (await dumpStore(name, "mutation-layers-v1"))
+        .map((row) => (row as Record<string, unknown>).state);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of tabs) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+      expect(await layerStates()).toEqual(["retired"]);
+
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved")
+          ),
+        "the retired layer before its settlement is covered",
+        15,
+      );
+
+      expect(await leader.acknowledgeOrdinal({
+        identity,
+        revision: REVISION,
+        ordinal: 1,
+        settled: 1,
+      })).toEqual({ ordinal: 1, settled: 1 });
+
+      for (const [tab, label] of tabs) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => !rows.includes("moved"),
+            `${label} to adopt the announced settlement`,
+          ),
+        ).toEqual(["first", "second"]);
+      }
+      expect(await layerStates()).toEqual(["retired"]);
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
   "a layer acknowledged before settlements existed is covered by any v6 snapshot",
   async ({ browser }) => {
     const name = `ramose-propagation-legacy-layer-${browser.uniqueId}`;
