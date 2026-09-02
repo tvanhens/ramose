@@ -45,6 +45,14 @@ export interface TransactorTesting {
     abort: (reason: string) => void,
     inspect: {
       readonly operationReceiptCount: () => number;
+      readonly dropStoredSettlement: (
+        principalId: string,
+        invocationId: string,
+      ) => boolean;
+      readonly storedSettlements: (
+        principalId: string,
+      ) => readonly { settled: number; committedT: number; invocationId: string }[];
+      readonly settledThrough: (principalId: string, basisT: number) => number;
     },
   ) => Promise<Response | undefined>;
 }
@@ -156,6 +164,30 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       }
       return new Response(JSON.stringify(toJson({ ok: true, t: this.core.t })), { headers: { "content-type": "application/json" } });
     }
+    if (url.pathname === "/settled" && request.method === "POST") {
+      const body = await request.json() as {
+        readonly principalId?: unknown;
+        readonly basisT?: unknown;
+      };
+      if (
+        typeof body.principalId !== "string" || body.principalId.length === 0 ||
+        !Number.isSafeInteger(body.basisT) || (body.basisT as number) < 0
+      ) {
+        return new Response(
+          JSON.stringify({ error: "settled needs principalId and basisT" }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          settled: this.core.settledThrough(
+            body.principalId,
+            body.basisT as number,
+          ),
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
     if (url.pathname === "/provision-catalog" && request.method === "POST") {
       if (this.databaseCatalogBindings === undefined) {
         return new Response(JSON.stringify({ error: "catalog provisioning unavailable" }), {
@@ -209,6 +241,11 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
         (reason) => this.ctx.abort(reason),
         {
           operationReceiptCount: () => this.core.operationReceiptCount(),
+          dropStoredSettlement: (principalId, invocationId) =>
+            this.core.dropStoredSettlement(principalId, invocationId),
+          storedSettlements: (principalId) => this.core.storedSettlements(principalId),
+          settledThrough: (principalId, basisT) =>
+            this.core.settledThrough(principalId, basisT),
         },
       );
       if (testAdmin !== undefined) return testAdmin;

@@ -114,13 +114,13 @@ const install = async (
     op: "add",
   }];
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 3, identity, snapshot, revision,
+    type: "SnapshotStart", protocol: 4, identity, snapshot, revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
-    type: "SnapshotChunk", protocol: 3, identity, snapshot, index: 0, datoms,
+    type: "SnapshotChunk", protocol: 4, identity, snapshot, index: 0, datoms,
   }));
   expect(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 3, identity, snapshot, revision, ordinal: 1, chunks: 1,
+    type: "SnapshotCommit", protocol: 4, identity, snapshot, revision, ordinal: 1, settled: 0, chunks: 1,
   }, attributes)).toBeDefined();
 };
 
@@ -254,11 +254,12 @@ browserTest("a follower never re-renders a committed revision it has already lef
   ): Promise<void> => {
     (await storage.applyChange(changeFrame({
       type: "Change",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       from,
       revision,
       ordinal,
+      settled: 0,
       datoms: [fact(before, "retract"), fact(after, "add")],
     })))?.release();
   };
@@ -300,14 +301,14 @@ browserTest("a follower never re-renders a committed revision it has already lef
 
     await storage.startSnapshot({
       type: "SnapshotStart",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       snapshot: opaque("p"),
       revision: installed,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       snapshot: opaque("p"),
       index: 0,
@@ -315,11 +316,12 @@ browserTest("a follower never re-renders a committed revision it has already lef
     }));
     await expect(storage.commitSnapshot({
       type: "SnapshotCommit",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       snapshot: opaque("p"),
       revision: installed,
       ordinal: 1,
+      settled: 0,
       chunks: 1,
     }, attributes)).rejects.toMatchObject({ _tag: "ReplicaSupersededError" });
     const stored = await storage.restore(
@@ -383,6 +385,7 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
       identity: selected,
       revision,
       ordinal,
+      settled: 0,
     });
   try {
     await install(storage);
@@ -392,13 +395,13 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
     expect(await storedOrdinal()).toBe(1);
 
     storage.resetWriteCounts();
-    expect(await acknowledge(installed, 3)).toBe(3);
+    expect(await acknowledge(installed, 3)).toEqual({ ordinal: 3, settled: 0 });
     expect(await storedOrdinal()).toBe(3);
     expect(storage.writeCounts()).toMatchObject({ manifests: 1, heads: 1 });
 
     storage.resetWriteCounts();
     for (const ordinal of [1, 3]) {
-      expect(await acknowledge(installed, ordinal)).toBe(3);
+      expect(await acknowledge(installed, ordinal)).toEqual({ ordinal: 3, settled: 0 });
       expect(await storedOrdinal()).toBe(3);
     }
     expect(storage.writeCounts()).toMatchObject({ manifests: 0, heads: 0 });
@@ -413,25 +416,26 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
 
     (await storage.applyChange(changeFrame({
       type: "Change",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       from: installed,
       revision: delayed,
       ordinal: 2,
+      settled: 0,
       datoms: [fact("persisted", "retract"), fact("delayed", "add")],
     })))?.release();
     expect(await storedOrdinal()).toBe(3);
 
     await storage.startSnapshot({
       type: "SnapshotStart",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       snapshot: opaque("p"),
       revision: delayed,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       snapshot: opaque("p"),
       index: 0,
@@ -439,11 +443,12 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
     }));
     await expect(storage.commitSnapshot({
       type: "SnapshotCommit",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       snapshot: opaque("p"),
       revision: delayed,
       ordinal: 2,
+      settled: 0,
       chunks: 1,
     }, attributes)).rejects.toMatchObject({ _tag: "ReplicaSupersededError" });
     expect(await storedOrdinal()).toBe(3);
@@ -459,11 +464,12 @@ browserTest("an acknowledged resume durably advances the ordinal a delayed chang
 
     const current = await storage.applyChange(changeFrame({
       type: "Change",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       from: installed,
       revision: opaque("3"),
       ordinal: 4,
+      settled: 0,
       datoms: [fact("persisted", "retract"), fact("current", "add")],
     }));
     expect(current?.revision).toBe(opaque("3"));
@@ -509,14 +515,14 @@ browserTest("a stale writer's install is refused by the ordinal it was issued", 
   ): Promise<void> => {
     await storage.startSnapshot({
       type: "SnapshotStart",
-      protocol: 3,
+      protocol: 4,
       identity,
       snapshot,
       revision,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 3,
+      protocol: 4,
       identity,
       snapshot,
       index: 0,
@@ -536,11 +542,12 @@ browserTest("a stale writer's install is refused by the ordinal it was issued", 
   ) =>
     storage.commitSnapshot({
       type: "SnapshotCommit",
-      protocol: 3,
+      protocol: 4,
       identity,
       snapshot,
       revision,
       ordinal,
+      settled: 0,
       chunks: 1,
     }, attributes);
   try {
@@ -560,7 +567,8 @@ browserTest("a stale writer's install is refused by the ordinal it was issued", 
       identity: selected,
       revision: opaque("5"),
       ordinal: 1,
-    })).toBe(2);
+      settled: 0,
+    })).toEqual({ ordinal: 2, settled: 0 });
 
     const held = await storage.restore(
       rotated,
@@ -619,24 +627,25 @@ browserTest("a damaged head recovers its order from the manifest and is rebuilt"
   const commitAt = (revision: string, ordinal: number) =>
     storage.commitSnapshot({
       type: "SnapshotCommit",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       snapshot: opaque("Q"),
       revision,
       ordinal,
+      settled: 0,
       chunks: 1,
     }, attributes);
   const stage = async (revision: string): Promise<void> => {
     await storage.startSnapshot({
       type: "SnapshotStart",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       snapshot: opaque("Q"),
       revision,
     });
     await storage.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       snapshot: opaque("Q"),
       index: 0,
@@ -654,7 +663,8 @@ browserTest("a damaged head recovers its order from the manifest and is rebuilt"
       identity: selected,
       revision: opaque("r"),
       ordinal: 6,
-    })).toBe(6);
+      settled: 0,
+    })).toEqual({ ordinal: 6, settled: 0 });
 
     await damage();
     expect(await head()).toBeUndefined();
@@ -666,7 +676,8 @@ browserTest("a damaged head recovers its order from the manifest and is rebuilt"
       identity: selected,
       revision: opaque("r"),
       ordinal: 2,
-    })).toBe(6);
+      settled: 0,
+    })).toEqual({ ordinal: 6, settled: 0 });
     expect(await head()).toMatchObject({ revision: opaque("r"), ordinal: 6 });
 
     await damage(null);
@@ -732,11 +743,12 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds slot 
     inspectedHead.close();
     expect(head).toEqual({
       partition,
-      storageVersion: 5,
+      storageVersion: 6,
       identity: selected,
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
       ordinal: 1,
+      settled: 0,
     });
     expect(head?.revision).toBe(manifest?.revision);
     expect(head).not.toHaveProperty("datoms");
@@ -787,11 +799,12 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds slot 
 
     const correctHead = {
       partition,
-      storageVersion: 5,
+      storageVersion: 6,
       identity: selected,
       readCompatibilityHash: selected.readCompatibilityHash,
       revision: opaque("r"),
       ordinal: 1,
+      settled: 0,
     };
     const missing = await openNative(name);
     let corruptHead = missing.transaction("replica-committed-heads-v1", "readwrite");
@@ -818,10 +831,11 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds slot 
 
     const ready = {
       type: "ResumeReady" as const,
-      protocol: 3 as const,
+      protocol: 4 as const,
       identity: selected,
       revision: opaque("r"),
       ordinal: 1,
+      settled: 0,
     };
     expect(classifyReplicationCandidateFrame(candidate, ready)).toBe("resume");
     await storage.bindAuthenticated({
@@ -842,11 +856,12 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds slot 
     const changedRevision = opaque("3");
     expect((await storage.applyChange(changeFrame({
       type: "Change",
-      protocol: 3,
+      protocol: 4,
       identity: selected,
       from: opaque("r"),
       revision: changedRevision,
       ordinal: 2,
+      settled: 0,
       datoms: [],
     })))?.revision).toBe(changedRevision);
     expect((await storage.selectCacheCandidate(
@@ -868,7 +883,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds slot 
       oldKey,
       selected.readCompatibilityHash,
     );
-    const reset = { type: "Reset" as const, protocol: 3 as const, identity: other };
+    const reset = { type: "Reset" as const, protocol: 4 as const, identity: other };
     expect(classifyReplicationCandidateFrame(collision, reset)).toBe("reset");
     await storage.bindAuthenticated({
       fingerprint: await replicationCredentialFingerprint(
@@ -900,7 +915,7 @@ browserTest("keeps rotated-token candidates quarantined and safely rebinds slot 
     )).toBeUndefined();
     const start = {
       type: "SnapshotStart" as const,
-      protocol: 3 as const,
+      protocol: 4 as const,
       identity: selected,
       snapshot: opaque("n"),
       revision: opaque("3"),
@@ -1195,7 +1210,7 @@ browserTest("one atomic migration resets every documentation-bearing, path-keyed
       attributes,
       selected.readCompatibilityHash,
     ))?.revision).toBe(opaque("r"));
-    expect(replicaPartitionKey(selected).startsWith("ramose-replica-v5:")).toBe(true);
+    expect(replicaPartitionKey(selected).startsWith("ramose-replica-v6:")).toBe(true);
   } finally {
     upgraded?.close();
     await deleteDatabase(legacyName);
@@ -1220,7 +1235,7 @@ browserTest(
     expect(replicaScopeKey(scope)).toBe(scopeKey);
     const partition = mutationPartitionKey(receiver);
     const legacyPartition = replicaPartitionKey(selected).replace(
-      "ramose-replica-v5:",
+      "ramose-replica-v6:",
       "ramose-replica-v2:",
     );
 
@@ -1303,6 +1318,7 @@ browserTest(
         state: "queued",
         observation: null,
         activation: 0,
+        settled: 0,
         output: null,
         mappings: [],
         failure: null,
@@ -1342,6 +1358,7 @@ browserTest(
 
       await expect(upgraded.outbox().acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [],
       })).resolves.toMatchObject({ state: "committed" });

@@ -16,6 +16,7 @@ export const emptyEntityHandles: EntityHandles = new Map();
 export type CommittedReplica = {
   readonly revision: string;
   readonly ordinal: number;
+  readonly settled: number;
   readonly datoms: readonly LogicalDatom[];
   readonly handles: EntityHandles;
 };
@@ -142,9 +143,17 @@ const commitSnapshot = (
   state: ClientReplicationState,
   frame: Extract<ReplicationFrame, { readonly type: "SnapshotCommit" }>,
 ): Result.Result<ClientReplicationState, ReplicationTransitionError> => {
-  if (state.committed?.revision === frame.revision) {
+  const standing = state.committed;
+  if (standing?.revision === frame.revision) {
     const { staging: _, ...withoutStaging } = state;
-    return Result.succeed({ ...withoutStaging, closed: false });
+    const settled = Math.max(standing.settled, frame.settled);
+    return Result.succeed({
+      ...withoutStaging,
+      committed: settled === standing.settled
+        ? standing
+        : Object.freeze({ ...standing, settled }),
+      closed: false,
+    });
   }
   const staging = state.staging;
   if (
@@ -251,6 +260,7 @@ const commitSnapshot = (
     committed: Object.freeze({
       revision: frame.revision,
       ordinal: frame.ordinal,
+      settled: Math.max(state.committed?.settled ?? 0, frame.settled),
       datoms: Object.freeze(datoms),
       handles: retainHandles(staging.handles, datoms),
     }),
@@ -264,7 +274,14 @@ const applyChange = (
 ): Result.Result<ClientReplicationState, ReplicationTransitionError> => {
   const committed = state.committed;
   if (committed === undefined) return fail("change arrived before a committed value");
-  if (frame.revision === committed.revision) return Result.succeed(state);
+  if (frame.revision === committed.revision) {
+    const settled = Math.max(committed.settled, frame.settled);
+    return Result.succeed(
+      settled === committed.settled
+        ? state
+        : { ...state, committed: Object.freeze({ ...committed, settled }) },
+    );
+  }
   if (frame.from !== committed.revision) return Result.succeed(state);
   if (frame.ordinal < committed.ordinal) return Result.succeed(state);
 
@@ -304,6 +321,7 @@ const applyChange = (
     committed: Object.freeze({
       revision: frame.revision,
       ordinal: frame.ordinal,
+      settled: Math.max(committed.settled, frame.settled),
       datoms,
       handles: retainHandles(handles, datoms),
     }),
@@ -395,10 +413,17 @@ export const applyReplicationFrame = (
       if (committed?.revision !== frame.revision) {
         return fail("resume-ready revision does not match the committed value");
       }
-      if (frame.ordinal <= committed.ordinal) return Result.succeed(state);
+      const settled = Math.max(committed.settled, frame.settled);
+      if (frame.ordinal <= committed.ordinal && settled === committed.settled) {
+        return Result.succeed(state);
+      }
       return Result.succeed({
         ...state,
-        committed: Object.freeze({ ...committed, ordinal: frame.ordinal }),
+        committed: Object.freeze({
+          ...committed,
+          ordinal: Math.max(committed.ordinal, frame.ordinal),
+          settled,
+        }),
       });
     }
     case "KeepAlive": {

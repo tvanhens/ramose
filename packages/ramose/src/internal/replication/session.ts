@@ -3,6 +3,7 @@ import type { AttributeSpec } from "../core/schema.ts";
 import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import {
   IndexedDbReplicaStorage,
+  type AcknowledgedReplicaPosition,
   type BoundRestoredReplica,
   type ReplicaCacheCandidate,
   type ReplicaCacheCandidateKey,
@@ -48,6 +49,7 @@ export type ReplicationSessionValue = {
   readonly identity: ReplicationIdentity;
   readonly revision: string;
   readonly ordinal: number;
+  readonly settled: number;
   readonly handles: ReadonlyMap<string, number>;
   readonly stale: boolean;
 };
@@ -172,6 +174,7 @@ const valueFrom = (
   identity,
   revision: replica.revision,
   ordinal: replica.ordinal,
+  settled: replica.settled,
   handles: replica.handles,
   stale,
 });
@@ -258,7 +261,9 @@ export class ReplicationSession {
 
   private async readDurableHead(): Promise<boolean> {
     const status = this.state.status;
-    if (status !== "failed" && status !== "terminal") return false;
+    if (status !== "failed" && status !== "terminal") {
+      return status === "closed" ? false : await this.adoptDurableWatermark();
+    }
     const held = this.state.value?.identity ?? this.confirmedIdentity;
     if (held === undefined) return false;
     const generation = this.generation;
@@ -272,10 +277,12 @@ export class ReplicationSession {
     );
     if (restored === undefined) return false;
     const published = this.state.value;
+    const carries = published !== undefined &&
+      restored.revision === published.revision &&
+      restored.settled <= published.settled &&
+      sameReplicationIdentity(identity, published.identity);
     if (
-      !this.current(generation) ||
-      (restored.revision === published?.revision &&
-        sameReplicationIdentity(identity, published.identity)) ||
+      !this.current(generation) || carries ||
       !this.admits(identity, restored.ordinal)
     ) {
       restored.release();
@@ -286,6 +293,30 @@ export class ReplicationSession {
     this.publish(Object.freeze({
       ...this.state,
       value: valueFrom(identity, restored, published?.stale ?? true),
+    }));
+    return true;
+  }
+
+  private async adoptDurableWatermark(): Promise<boolean> {
+    const published = this.state.value;
+    if (published === undefined) return false;
+    const generation = this.generation;
+    const position = await this.storage.committedPosition(published.identity);
+    if (
+      position === undefined || !this.current(generation) ||
+      this.state.value !== published ||
+      position.revision !== published.revision ||
+      position.settled <= published.settled
+    ) {
+      return false;
+    }
+    this.publish(Object.freeze({
+      ...this.state,
+      value: Object.freeze({
+        ...published,
+        ordinal: Math.max(published.ordinal, position.ordinal),
+        settled: position.settled,
+      }),
     }));
     return true;
   }
@@ -561,7 +592,7 @@ export class ReplicationSession {
   private async acknowledge(
     acknowledgement: ReplicaOrdinalAcknowledgement,
     generation: number,
-  ): Promise<number | undefined> {
+  ): Promise<AcknowledgedReplicaPosition | undefined> {
     const acknowledged = await this.storage.acknowledgeOrdinal(acknowledgement, {
       signal: this.controller.signal,
       lease: this.lease,
@@ -838,7 +869,8 @@ export class ReplicationSession {
             status: "open",
             value: Object.freeze({
               ...prior,
-              ordinal: Math.max(prior.ordinal, acknowledged),
+              ordinal: Math.max(prior.ordinal, acknowledged.ordinal),
+              settled: Math.max(prior.settled, acknowledged.settled),
               stale: false,
             }),
           });
@@ -872,7 +904,8 @@ export class ReplicationSession {
           status: "open",
           value: Object.freeze({
             ...prior,
-            ordinal: Math.max(prior.ordinal, acknowledged),
+            ordinal: Math.max(prior.ordinal, acknowledged.ordinal),
+            settled: Math.max(prior.settled, acknowledged.settled),
             stale: false,
           }),
         });

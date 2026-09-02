@@ -231,6 +231,14 @@ export const handleIsolateTestAdmin = async (
   abort?: (reason: string) => void,
   inspect?: {
     readonly operationReceiptCount: () => number;
+    readonly dropStoredSettlement: (
+      principalId: string,
+      invocationId: string,
+    ) => boolean;
+    readonly storedSettlements: (
+      principalId: string,
+    ) => readonly { settled: number; committedT: number; invocationId: string }[];
+    readonly settledThrough: (principalId: string, basisT: number) => number;
   },
 ): Promise<Response | undefined> => {
   if (!path.startsWith("/admin/test/")) return undefined;
@@ -293,6 +301,34 @@ export const handleIsolateTestAdmin = async (
     path === "/admin/test/operation-receipts" &&
     request.method === "POST" && inspect !== undefined
   ) {
+    const body = (await request.json().catch(() => ({}))) as {
+      action?: unknown;
+      principalId?: unknown;
+      invocationId?: unknown;
+      basisT?: unknown;
+    };
+    const principalId = typeof body.principalId === "string" ? body.principalId : "";
+    if (body.action === "drop-settlement") {
+      const invocationId = typeof body.invocationId === "string" ? body.invocationId : "";
+      if (principalId === "" || invocationId === "") {
+        return json({ error: "drop-settlement needs principalId and invocationId" }, 400);
+      }
+      return json({ dropped: inspect.dropStoredSettlement(principalId, invocationId) });
+    }
+    if (body.action === "settlements") {
+      if (principalId === "") {
+        return json({ error: "settlements needs principalId" }, 400);
+      }
+      return json({ settlements: inspect.storedSettlements(principalId) });
+    }
+    if (body.action === "settled-through") {
+      if (principalId === "" || !Number.isSafeInteger(body.basisT)) {
+        return json({ error: "settled-through needs principalId and basisT" }, 400);
+      }
+      return json({
+        settled: inspect.settledThrough(principalId, body.basisT as number),
+      });
+    }
     return json({ count: inspect.operationReceiptCount() });
   }
   return json({ error: "unknown test admin path" }, 404);

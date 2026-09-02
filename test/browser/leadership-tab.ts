@@ -138,6 +138,7 @@ export const serve = (id: string): void =>
         if (head.type !== "ready") return { outcome: head.type };
         const receipt = await submitting.acknowledge(head.record, {
           _tag: "Committed",
+          settled: 1,
           output: {},
           mappings: [],
         }, 1_700_000_000_001);
@@ -178,6 +179,7 @@ export const serve = (id: string): void =>
       if (head.type !== "ready") throw new Error(`the queue head is ${head.type}`);
       await submitting.acknowledge(head.record, {
         _tag: "Committed",
+        settled: 1,
         output: {},
         mappings: [],
       }, 1_700_000_000_001);
@@ -199,6 +201,7 @@ export const serve = (id: string): void =>
       if (head.type !== "ready") throw new Error(`the queue head is ${head.type}`);
       await submitting.acknowledge(head.record, {
         _tag: "Committed",
+        settled: 1,
         output: {},
         mappings: [],
       }, 1_700_000_000_001);
@@ -224,6 +227,7 @@ export const serve = (id: string): void =>
       let failure: string | undefined;
       void submitting.acknowledge(head.record, {
         _tag: "Committed",
+        settled: 1,
         output: {},
         mappings: [],
       }, 1_700_000_000_001).catch((error: unknown) => {
@@ -238,16 +242,16 @@ export const serve = (id: string): void =>
     ): Promise<string> => {
       const opened = storage!;
       await opened.startSnapshot({
-        type: "SnapshotStart", protocol: 3, identity, snapshot, revision,
+        type: "SnapshotStart", protocol: 4, identity, snapshot, revision,
       });
       await opened.stageSnapshotChunk(snapshotChunk({
-        type: "SnapshotChunk", protocol: 3, identity, snapshot, index: 0,
+        type: "SnapshotChunk", protocol: 4, identity, snapshot, index: 0,
         datoms: datoms as never,
       }));
       armCheckpoint("replica.install", "wait");
       let failure: string | undefined;
       void opened.commitSnapshot({
-        type: "SnapshotCommit", protocol: 3, identity, snapshot, revision, ordinal: 1, chunks: 1,
+        type: "SnapshotCommit", protocol: 4, identity, snapshot, revision, ordinal: 1, settled: 0, chunks: 1,
       }, attributes).then(
         (installed) => installed?.release(),
         (error: unknown) => {

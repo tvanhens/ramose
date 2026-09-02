@@ -206,11 +206,11 @@ const install = async (
   const snapshot = `snapshot-${label}`.padEnd(43, "0");
   const revision = `revision-${label}`.padEnd(43, "0");
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 3, identity: selected, snapshot, revision,
+    type: "SnapshotStart", protocol: 4, identity: selected, snapshot, revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
-    protocol: 3,
+    protocol: 4,
     identity: selected,
     snapshot,
     index: 0,
@@ -222,7 +222,7 @@ const install = async (
     }],
   }));
   dropped(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 3, identity: selected, snapshot, revision, ordinal: 1, chunks: 1,
+    type: "SnapshotCommit", protocol: 4, identity: selected, snapshot, revision, ordinal: 1, settled: 0, chunks: 1,
   }, ATTRIBUTES));
 };
 
@@ -372,12 +372,14 @@ browserTest(
 
       await outbox.acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: { name: "server-decided" },
         mappings: [],
       });
       await reconciler.refresh();
       expect(await names(reconciler, storage, selected)).toEqual(["requested"]);
 
+      await storedSettlement(database, 1);
       const activation = await reconciler.restart();
       await reconciler.outcome(activation)();
       expect(await names(reconciler, storage, selected)).toEqual(["server-decided"]);
@@ -498,6 +500,7 @@ browserTest(
       const entityId = await handleFor(receiver, 41);
       await storage.outbox().acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [{ clientRef: allocation, entityId }],
       });
@@ -519,6 +522,7 @@ browserTest(
         { state: "committed-unobserved" },
       ]);
 
+      await storedSettlement(database, 1);
       const activation = await restarted.restart();
       expect(activation).toBe(1);
       await restarted.outcome(activation)();
@@ -552,6 +556,7 @@ browserTest(
         });
         await outbox.acknowledge(record, {
           _tag: "Committed",
+          settled: record.sequence,
           output: null,
           mappings: [{
             clientRef: record.allocations[0]!.clientRef,
@@ -568,6 +573,7 @@ browserTest(
       await reconciler.refresh();
       expect(reconciler.snapshot().layers).toHaveLength(2);
 
+      await storedSettlement(database, early.sequence);
       await reconciler.outcome(activation)();
       expect(reconciler.snapshot().layers.map((layer) => layer.invocation))
         .toEqual([late.invocation]);
@@ -602,6 +608,7 @@ browserTest(
       });
       await outbox.acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [{ clientRef: allocation, entityId: await handleFor(receiver, 7) }],
       });
@@ -621,6 +628,7 @@ browserTest(
         .toBe("unobserved");
       expect(await rawLayers(database)).toHaveLength(1);
 
+      await storedSettlement(database, 1);
       await reconciler.outcome(activation)();
       expect((await outbox.receipt(receiver, record.invocation))?.observation)
         .toBe("observed");
@@ -650,6 +658,7 @@ browserTest(
       });
       await outbox.acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [{ clientRef: allocation, entityId: await handleFor(receiver, 21) }],
       });
@@ -667,6 +676,7 @@ browserTest(
       expect(await rawLayers(database)).toHaveLength(1);
 
       await install(storage, selected, "left", "reinstalled");
+      await storedSettlement(database, 1);
       await reconciler.outcome(activation)();
       expect((await outbox.receipt(receiver, record.invocation))?.observation)
         .toBe("observed");
@@ -823,6 +833,7 @@ browserTest(
       });
       await outbox.acknowledge(record, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [{ clientRef: allocation, entityId: await handleFor(receiver, 12) }],
       });
@@ -848,7 +859,7 @@ browserTest(
 
       const fenced = new Promise<void>((resolve, reject) => {
         const stop = reconciler.observe((state) => {
-          if (state.layers.length === 0) {
+          if (state.layers.length === 0 || state.layers[0]?.state === "retired") {
             stop();
             resolve();
           }
@@ -864,6 +875,10 @@ browserTest(
 
       expect((await outbox.receipt(receiver, record.invocation))?.observation)
         .toBe("observed");
+      expect(reconciler.snapshot().layers).toMatchObject([{ state: "retired" }]);
+      await storedSettlement(database, 1);
+      const covered = await reconciler.restart();
+      await reconciler.outcome(covered)();
       expect(await rawLayers(database)).toEqual([]);
       expect(reconciler.snapshot().layers).toEqual([]);
 
@@ -904,6 +919,7 @@ const pendingFence = async (
   });
   await outbox.acknowledge(record, {
     _tag: "Committed",
+    settled: 1,
     output: null,
     mappings: [{ clientRef: allocation, entityId: await handleFor(receiver, 12) }],
   });
@@ -921,7 +937,7 @@ const fenced = (
 ): Promise<void> =>
   new Promise<void>((resolve, reject) => {
     const stop = reconciler.observe((state) => {
-      if (state.layers.length === 0) {
+      if (state.layers.length === 0 || state.layers[0]?.state === "retired") {
         stop();
         resolve();
       }
@@ -987,6 +1003,9 @@ browserTest(
       });
       expect((await storage.outbox().receipt(receiver, invocation))?.observation)
         .toBe("observed");
+      await storedSettlement(database, 1);
+      const covered = await reconciler.restart();
+      await reconciler.outcome(covered)();
       expect(await rawLayers(database)).toEqual([]);
     } finally {
       await refused?.close();
@@ -1105,6 +1124,232 @@ const storedOrdinal = async (
   return head?.ordinal as number | undefined;
 };
 
+const storedSettlement = async (
+  database: string,
+  settled?: number,
+): Promise<number | undefined> => {
+  const connection = await openNative(database);
+  const partition = replicaPartitionKey(identity());
+  const transaction = connection.transaction(
+    ["replica-committed-v1", "replica-committed-heads-v1"],
+    settled === undefined ? "readonly" : "readwrite",
+  );
+  const manifests = transaction.objectStore("replica-committed-v1");
+  const heads = transaction.objectStore("replica-committed-heads-v1");
+  const [manifest, head] = await Promise.all([
+    requestResult<Record<string, unknown> | undefined>(manifests.get(partition)),
+    requestResult<Record<string, unknown> | undefined>(heads.get(partition)),
+  ]);
+  if (settled !== undefined && manifest !== undefined && head !== undefined) {
+    manifests.put({ ...manifest, settled });
+    heads.put({ ...head, settled });
+  }
+  await transactionDone(transaction);
+  connection.close();
+  return head?.settled as number | undefined;
+};
+
+browserTest(
+  "a change re-reaching the published revision publishes its settlement, not only its ordinal",
+  async ({ browser }) => {
+    const database = `ramose-layer-change-settlement-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    let session: ReplicationSession | undefined;
+    try {
+      await installRecorded(storage, "optimistic-fence-change");
+      const acknowledging = await recordedChange();
+      expect(acknowledging.settled).toBeGreaterThan(0);
+      dropped(await storage.applyChange(acknowledging));
+      expect(await storedSettlement(database)).toBe(acknowledging.settled);
+
+      await storedOrdinal(database, acknowledging.ordinal - 1);
+      await storedSettlement(database, 0);
+      const behind = await storage.restore(identity(), ATTRIBUTES, READ_COMPATIBILITY);
+      expect(behind?.settled).toBe(0);
+      behind!.release();
+
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence-change",
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const observed = settledSnapshots(session);
+      await observed.failed;
+
+      expect(session.snapshot().value).toMatchObject({
+        revision: acknowledging.revision,
+        ordinal: acknowledging.ordinal,
+        settled: acknowledging.settled,
+        stale: false,
+      });
+      expect(await storedSettlement(database)).toBe(acknowledging.settled);
+    } finally {
+      await session?.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+const storedHeadSettlement = async (
+  database: string,
+  settled: number,
+): Promise<void> => {
+  const connection = await openNative(database);
+  const partition = replicaPartitionKey(identity());
+  const transaction = connection.transaction("replica-committed-heads-v1", "readwrite");
+  const heads = transaction.objectStore("replica-committed-heads-v1");
+  const head = await requestResult<Record<string, unknown> | undefined>(
+    heads.get(partition),
+  );
+  if (head !== undefined) heads.put({ ...head, settled });
+  await transactionDone(transaction);
+  connection.close();
+};
+
+browserTest(
+  "an install never regresses a watermark the durable head already carries",
+  async ({ browser }) => {
+    const database = `ramose-layer-watermark-merge-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    try {
+      await installRecorded(storage, "optimistic-fence-change");
+      const delayed = await recordedChange();
+      expect(delayed.settled).toBe(1);
+
+      await storedHeadSettlement(database, 5);
+      expect(await storedSettlement(database)).toBe(5);
+
+      const installed = await storage.applyChange(delayed);
+      expect(installed?.revision).toBe(delayed.revision);
+      expect(installed?.settled).toBe(5);
+      installed?.release();
+
+      expect(await storedSettlement(database)).toBe(5);
+      const restored = await storage.restore(identity(), ATTRIBUTES, READ_COMPATIBILITY);
+      expect(restored?.settled).toBe(5);
+      restored!.release();
+    } finally {
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+browserTest(
+  "a change the manifest already installed still merges the settlement it carries",
+  async ({ browser }) => {
+    const database = `ramose-layer-duplicate-settlement-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    try {
+      await installRecorded(storage, "optimistic-fence-change");
+      const change = await recordedChange();
+      dropped(await storage.applyChange(change));
+      expect(await storedSettlement(database)).toBe(change.settled);
+
+      const advanced = await storage.applyChange({
+        ...change,
+        settled: change.settled + 1,
+      });
+      expect(advanced?.revision).toBe(change.revision);
+      expect(advanced?.ordinal).toBe(change.ordinal);
+      expect(advanced?.settled).toBe(change.settled + 1);
+      advanced?.release();
+
+      expect(await storedSettlement(database)).toBe(change.settled + 1);
+      const restored = await storage.restore(identity(), ATTRIBUTES, READ_COMPATIBILITY);
+      expect(restored?.settled).toBe(change.settled + 1);
+      restored!.release();
+
+      dropped(await storage.applyChange(change));
+      expect(await storedSettlement(database)).toBe(change.settled + 1);
+    } finally {
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
+const published = async (
+  session: ReplicationSession,
+  ready: (snapshot: ReplicationSessionSnapshot) => boolean,
+  label: string,
+): Promise<ReplicationSessionSnapshot> => {
+  for (let attempt = 0; attempt < 400; attempt++) {
+    const snapshot = session.snapshot();
+    if (ready(snapshot)) return snapshot;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`the session never reached ${label}`);
+};
+
+browserTest(
+  "an open session adopts a settlement its own stream will never send",
+  async ({ browser }) => {
+    const database = `ramose-layer-open-watermark-${browser.uniqueId}`;
+    const storage = await IndexedDbReplicaStorage.open(database);
+    const writer = await IndexedDbReplicaStorage.open(database);
+    let session: ReplicationSession | undefined;
+    const refreshing: Promise<boolean>[] = [];
+    let release: (() => void) | undefined;
+    try {
+      session = await ReplicationSession.open({
+        activation: {
+          server: globalThis.location.origin,
+          root: "optimistic-fence-held",
+        },
+        credential: CREDENTIAL,
+        attributes: ATTRIBUTES,
+        readCompatibilityHash: READ_COMPATIBILITY,
+        storage,
+      });
+      const live = session;
+      release = storage.notices((notice) => {
+        if (notice.kind === "replica") refreshing.push(live.refreshFromDurable());
+      });
+
+      const opened = await published(
+        live,
+        (snapshot) => snapshot.status === "open" && snapshot.value !== undefined,
+        "an open replica over the held stream",
+      );
+      expect(opened.value?.revision).toBe(recorded.revision);
+      expect(opened.value?.settled).toBe(0);
+
+      const later = opened.value!.ordinal + 1;
+      expect(await writer.acknowledgeOrdinal({
+        identity: identity(),
+        revision: recorded.revision,
+        ordinal: later,
+        settled: 3,
+      })).toEqual({ ordinal: later, settled: 3 });
+
+      const advanced = await published(
+        live,
+        (snapshot) => snapshot.value?.settled === 3,
+        "the announced settlement",
+      );
+      expect(advanced.status).toBe("open");
+      expect(advanced.value?.revision).toBe(recorded.revision);
+      expect(advanced.value?.ordinal).toBe(later);
+      expect(advanced.value?.db).toBe(opened.value?.db);
+      expect(advanced.value?.handles).toBe(opened.value?.handles);
+      await Promise.all(refreshing);
+    } finally {
+      release?.();
+      await session?.close();
+      writer.close();
+      storage.close();
+      await deleteDatabase(database);
+    }
+  },
+);
+
 browserTest(
   "a snapshot the identity has advanced past reconnects instead of being consumed",
   async ({ browser }) => {
@@ -1117,7 +1362,8 @@ browserTest(
         identity: identity(),
         revision: recorded.revision,
         ordinal: 5,
-      })).toBe(5);
+        settled: 0,
+      })).toEqual({ ordinal: 5, settled: 0 });
       expect(await storedOrdinal(database)).toBe(5);
 
       session = await ReplicationSession.open({
@@ -1215,7 +1461,8 @@ browserTest(
         identity: identity(),
         revision: recorded.revision,
         ordinal: delayed.ordinal + 1,
-      })).toBe(delayed.ordinal + 1);
+        settled: 0,
+      })).toEqual({ ordinal: delayed.ordinal + 1, settled: 0 });
 
       const skipped = await storage.applyChange(delayed);
       expect(skipped?.revision).toBe(recorded.revision);
@@ -1289,6 +1536,8 @@ browserTest(
       expect(authoritative).not.toContain("committed-unobserved");
       expect((await storage.outbox().receipt(receiver, invocation))?.observation)
         .toBe("observed");
+      await storedSettlement(database, 1);
+      await reconciler.refresh();
       expect(await rawLayers(database)).toEqual([]);
       expect(await names(reconciler, storage, identity())).toEqual(authoritative);
     } finally {

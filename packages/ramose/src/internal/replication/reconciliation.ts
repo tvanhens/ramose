@@ -48,6 +48,7 @@ export const pendingLayerState = (layers: OverlayLayers): OptimisticPending => {
     created: boolean;
   }>();
   for (const layer of layers) {
+    if (layer.state === "retired") continue;
     for (const op of layer.changeset) {
       const refs: MutationRef[] = [op.entity];
       if ((op.op === "set" || op.op === "remove") && op.value?.type === "ref") {
@@ -84,6 +85,7 @@ export type OptimisticOverlayState = {
   readonly updateRequired: readonly LayerQuarantine[];
   readonly pending: OptimisticPending;
   readonly activation: number;
+  readonly settlements: ReadonlyMap<InvocationId, number>;
 };
 
 export type OptimisticOverlayObserver = (state: OptimisticOverlayState) => void;
@@ -153,6 +155,7 @@ export class OptimisticReconciler {
       updateRequired: Object.freeze([]),
       pending: new Map(),
       activation: 0,
+      settlements: new Map(),
     });
   }
 
@@ -237,8 +240,8 @@ export class OptimisticReconciler {
     });
   }
 
-  view(committed: Db): Promise<OverlayView> {
-    return projectOverlay(committed, this.state.layers, this.resolver());
+  view(committed: Db, layers: OverlayLayers = this.state.layers): Promise<OverlayView> {
+    return projectOverlay(committed, layers, this.resolver());
   }
 
   private async applyFence(outcome: ActivationFenceOutcome): Promise<void> {
@@ -264,6 +267,7 @@ export class OptimisticReconciler {
         : restoration.quarantined,
       pending: pendingLayerState(layers),
       activation: this.fence.snapshot().activation,
+      settlements: this.fence.snapshot().settlements,
     });
     for (const observer of this.observers) this.notify(observer);
     return this.state;

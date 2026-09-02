@@ -9,7 +9,10 @@ import {
 } from "../db/query/index.ts";
 import type { Db } from "../internal/core/db.ts";
 import { query as runQuery } from "../internal/core/query/engine.ts";
-import { emptyOverlayLayers } from "../internal/replication/overlay-layers.ts";
+import {
+  emptyOverlayLayers,
+  type OverlayLayers,
+} from "../internal/replication/overlay-layers.ts";
 import type { ReplicationIdentity } from "../internal/replication/protocol.ts";
 import {
   OptimisticReconciler,
@@ -126,6 +129,17 @@ export const readSessionSnapshot = (
 type RetiredObservation = {
   readonly snapshot: QuerySnapshot<unknown>;
   readonly plain: unknown;
+};
+
+const composedLayers = (
+  layers: OverlayLayers,
+  settled: number,
+): OverlayLayers => {
+  const composed = layers.filter((layer) =>
+    layer.state !== "retired" || layer.settled === undefined ||
+    layer.settled > settled
+  );
+  return composed.length === layers.length ? layers : Object.freeze(composed);
 };
 
 export type DatabaseContext = {
@@ -324,6 +338,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
   private releaseOverlay: (() => void) | undefined;
   private identity: ReplicationIdentity | undefined;
   private committed: Db | undefined;
+  private settled = 0;
   private account: string | undefined;
   private handles: ReadonlyMap<string, number> = new Map();
   private reverse: Map<number, string> | undefined;
@@ -683,6 +698,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
       this.committed = value.db.withComposition(catalog.composition);
       this.handles = value.handles;
       this.reverse = undefined;
+      this.settled = value.settled;
     }
     this.publishStatus(this.statusOf(snapshot));
     this.spawn(this.recompute());
@@ -694,6 +710,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
     this.generation++;
     this.committed = undefined;
     this.forgetHandles();
+    this.forgetLayers();
     this.withdrawEntities();
     this.forgetCredential();
     this.viewValue = undefined;
@@ -715,6 +732,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
     this.generation++;
     this.committed = undefined;
     this.forgetHandles();
+    this.forgetLayers();
     this.withdrawEntities();
     this.forgetCredential();
     this.viewValue = undefined;
@@ -789,12 +807,15 @@ export class ClientDatabaseHandle implements ClientDatabase {
     const generation = ++this.generation;
     const committed = this.committed;
     const reconciler = this.reconciler;
-    const layers = reconciler?.snapshot().layers ?? emptyOverlayLayers;
+    const state = reconciler?.snapshot();
+    const layers = state === undefined
+      ? emptyOverlayLayers
+      : composedLayers(state.layers, this.settled);
     let view = committed;
     let speculative = new Map<number, string>();
     if (committed !== undefined && reconciler !== undefined && layers.length > 0) {
       try {
-        const overlay = await reconciler.view(committed);
+        const overlay = await reconciler.view(committed, layers);
         view = overlay.db;
         for (const [handle, local] of overlay.speculative) {
           speculative.set(local, handle);
@@ -862,6 +883,11 @@ export class ClientDatabaseHandle implements ClientDatabase {
     this.reverse = undefined;
     this.speculative = new Map();
   }
+
+  private forgetLayers(): void {
+    this.settled = 0;
+  }
+
 
   private withdrawEntities(): void {
     this.registry?.clear();
@@ -949,6 +975,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
     this.reconcilerPending = undefined;
     this.committed = undefined;
     this.forgetHandles();
+    this.forgetLayers();
     this.withdrawEntities();
     this.forgetCredential();
     this.viewValue = undefined;

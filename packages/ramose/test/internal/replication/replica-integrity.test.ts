@@ -75,11 +75,12 @@ const datom = (e: number, a: number, v: string): Datom => ({
 
 const manifest = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   partition: replicaPartitionKey(identity()),
-  storageVersion: 5,
+  storageVersion: 6,
   identity: identity(),
   readCompatibilityHash: READ_COMPATIBILITY,
   revision: opaque("r"),
   ordinal: 1,
+  settled: 0,
   datoms: [
     { entity: opaque("e"), field: ":item/name", value: { type: "string", value: "x" }, op: "add" },
     { entity: opaque("e"), field: ":item/friend", value: { type: "ref", value: opaque("f") }, op: "add" },
@@ -214,13 +215,23 @@ describe("manifest validation", () => {
     if (Result.isSuccess(result)) {
       expect(result.success.revision).toBe(opaque("r"));
       expect(result.success.ordinal).toBe(1);
+      expect(result.success.settled).toBe(0);
     }
+  });
+
+  test("a manifest carries the settlement watermark it was stored with", () => {
+    const result = validated({ settled: 4 });
+    expect(Result.isSuccess(result)).toBe(true);
+    if (Result.isSuccess(result)) expect(result.success.settled).toBe(4);
   });
 
   test("a record that cannot state its shape is undecodable", () => {
     expect(reasonOf(validated({ identity: undefined }))).toBe("manifest-undecodable");
     for (const ordinal of [undefined, 0, -1, 1.5, "1"]) {
       expect(reasonOf(validated({ ordinal }))).toBe("manifest-undecodable");
+    }
+    for (const settled of [undefined, -1, 1.5, "1"]) {
+      expect(reasonOf(validated({ settled }))).toBe("manifest-undecodable");
     }
     expect(reasonOf(validated({ datoms: undefined }))).toBe("manifest-undecodable");
     expect(reasonOf(validated({ attributes: "not an array" }))).toBe("manifest-undecodable");
