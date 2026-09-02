@@ -192,6 +192,10 @@ const observeKeepAlives = async (
   }
 };
 
+const CHECKPOINT_POLL_MS = 25;
+const CHECKPOINT_STALL_MS = 8_000;
+const CHECKPOINT_ALIVE_CAP_MS = 120_000;
+
 const waitForCheckpoint = async (
   base: string,
   database: string,
@@ -205,7 +209,33 @@ const waitForCheckpoint = async (
       action: "status",
     });
     if (status.body.checkpoints?.[name]?.pending === true) return;
-    await Bun.sleep(25);
+    await Bun.sleep(CHECKPOINT_POLL_MS);
+  }
+  throw new Error(`replication did not reach ${name}`);
+};
+
+const waitForCheckpointWhileAlive = async (
+  base: string,
+  database: string,
+  name: string,
+  beats: () => number,
+): Promise<void> => {
+  const cap = Date.now() + CHECKPOINT_ALIVE_CAP_MS;
+  let seen = beats();
+  let advancedAt = Date.now();
+  while (Date.now() < cap) {
+    const status = await testAdmin(base, database, "/checkpoint", {
+      scope: "worker",
+      action: "status",
+    });
+    if (status.body.checkpoints?.[name]?.pending === true) return;
+    const carried = beats();
+    if (carried !== seen) {
+      seen = carried;
+      advancedAt = Date.now();
+    }
+    if (Date.now() - advancedAt >= CHECKPOINT_STALL_MS) break;
+    await Bun.sleep(CHECKPOINT_POLL_MS);
   }
   throw new Error(`replication did not reach ${name}`);
 };
@@ -502,7 +532,12 @@ const observeBackpressuredBurst = async (
       visibleFrame.then(() => "frame" as const),
       Bun.sleep(750).then(() => "pending" as const),
     ])).toBe("pending");
-    await waitForCheckpoint(base, world.database, "replication.cycle");
+    await waitForCheckpointWhileAlive(
+      base,
+      world.database,
+      "replication.cycle",
+      () => keepAlives.length,
+    );
     checkpoints.push("cycle");
 
     for (let index = 0; index < hiddenCount; index++) {
@@ -511,7 +546,12 @@ const observeBackpressuredBurst = async (
     if (hiddenCount > 0) await currentBasis(base, world.database);
     await armCheckpoint(base, world.database, "replication.silent");
     await releaseCheckpoint(base, world.database, "replication.cycle");
-    await waitForCheckpoint(base, world.database, "replication.silent");
+    await waitForCheckpointWhileAlive(
+      base,
+      world.database,
+      "replication.silent",
+      () => keepAlives.length,
+    );
     checkpoints.push("silent");
     await releaseCheckpoint(base, world.database, "replication.silent");
 
@@ -524,11 +564,21 @@ const observeBackpressuredBurst = async (
     );
     expect(renamed.status).toBe(200);
     await currentBasis(base, world.database);
-    await waitForCheckpoint(base, world.database, "replication.wake");
+    await waitForCheckpointWhileAlive(
+      base,
+      world.database,
+      "replication.wake",
+      () => keepAlives.length,
+    );
     checkpoints.push("wake");
     await armCheckpoint(base, world.database, "replication.change");
     await releaseCheckpoint(base, world.database, "replication.wake");
-    await waitForCheckpoint(base, world.database, "replication.change");
+    await waitForCheckpointWhileAlive(
+      base,
+      world.database,
+      "replication.change",
+      () => keepAlives.length,
+    );
     checkpoints.push("change");
     await releaseCheckpoint(base, world.database, "replication.change");
 
