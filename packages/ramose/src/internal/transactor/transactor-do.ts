@@ -20,6 +20,8 @@ import type { RuntimeBoundaries } from "../runtime-boundaries.ts";
 
 export type { TxAck };
 
+const WRITER_SOCKET_TAG = "ramose-test-writer";
+
 export function configFromEnv(env: RamoseEnv): TransactorConfig {
   return {
     ...DEFAULT_CONFIG,
@@ -32,6 +34,7 @@ export function configFromEnv(env: RamoseEnv): TransactorConfig {
     maxBatch: envInt(env.RAMOSE_MAX_BATCH, DEFAULT_CONFIG.maxBatch),
     batchBudgetMs: envInt(env.RAMOSE_BATCH_BUDGET_MS, DEFAULT_CONFIG.batchBudgetMs),
     timingYields: env.RAMOSE_TIMING_YIELDS === "1",
+    socketWrites: false,
   };
 }
 
@@ -65,7 +68,8 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
     private readonly testing?: TransactorTesting,
   ) {
     super(ctx, env);
-    if (testing?.enabled(env) === true) testing.reset();
+    const testingOn = testing?.enabled(env) === true;
+    if (testingOn) testing!.reset();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
     if (row) this.dbName = JSON.parse(row.v as string) as string;
@@ -81,12 +85,15 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       get bucket() {
         return prefixedBucket(env.STORE, dbPrefix(host.dbName));
       },
-      sockets: () => ctx.getWebSockets() as unknown as SocketLike[],
+      sockets: () =>
+        (testingOn
+          ? ctx.getWebSockets().filter((ws) => !ctx.getTags(ws).includes(WRITER_SOCKET_TAG))
+          : ctx.getWebSockets()) as unknown as SocketLike[],
       getAlarm: () => ctx.storage.getAlarm(),
       setAlarm: (time) => ctx.storage.setAlarm(time),
       abort: (reason) => ctx.abort(reason),
       now: () => Date.now(),
-      config: configFromEnv(env),
+      config: { ...configFromEnv(env), socketWrites: testingOn },
       ...(env.ANALYTICS !== undefined && { analytics: env.ANALYTICS }),
     };
     this.core = new Transactor(
@@ -185,6 +192,10 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
       const from = Number(url.searchParams.get("from") ?? "0");
       const pair = new WebSocketPair();
       const [client, server] = [pair[0], pair[1]];
+      if (testingEnabled && url.searchParams.get("writer") === "1") {
+        this.ctx.acceptWebSocket(server, [WRITER_SOCKET_TAG]);
+        return new Response(null, { status: 101, webSocket: client });
+      }
       this.ctx.acceptWebSocket(server);
       this.core.onSubscribe(server, from);
       return new Response(null, { status: 101, webSocket: client });

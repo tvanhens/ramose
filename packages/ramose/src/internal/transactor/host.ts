@@ -24,6 +24,7 @@ export interface TransactorConfig {
   maxBatch: number;
   batchBudgetMs: number;
   timingYields: boolean;
+  socketWrites: boolean;
 }
 
 export const DEFAULT_CONFIG: TransactorConfig = {
@@ -36,6 +37,7 @@ export const DEFAULT_CONFIG: TransactorConfig = {
   maxBatch: 0,
   batchBudgetMs: 20,
   timingYields: false,
+  socketWrites: false,
 };
 
 export interface TransactorHost {

@@ -1237,7 +1237,21 @@ export class Transactor {
       return;
     }
     if (msg?.kind === "resume" && typeof msg.from === "number") this.sendCatchUp(ws, msg.from);
-    else if (msg?.kind === "ping") ws.send(JSON.stringify({ v: 1, kind: "pong", t: this.conn.t }));
+    else if (msg?.kind === "ping") {
+      ws.send(JSON.stringify({ v: 1, kind: "pong", t: this.conn.t, ...(msg.id === undefined ? {} : { id: msg.id }) }));
+    } else if (msg?.kind === "write" && this.host.config.socketWrites && Array.isArray(msg.tx)) {
+      const id = msg.id;
+      const clientTxId = typeof msg.clientTxId === "string" && msg.clientTxId.length > 0 ? msg.clientTxId : undefined;
+      void this.transact(msg.tx, undefined, clientTxId).then(
+        (ack) => ws.send(JSON.stringify({ v: 1, kind: "ack", id, t: ack.t })),
+        (cause) => ws.send(JSON.stringify({
+          v: 1,
+          kind: "error",
+          id,
+          message: cause instanceof Error ? cause.message : String(cause),
+        })),
+      );
+    }
   }
 
   private sendCatchUp(ws: SocketLike, from: number): void {

@@ -8,9 +8,11 @@ import {
   createTransactorDO,
 } from "../../packages/ramose/src/worker/testing.ts";
 import { benchCatalogDeployment } from "./catalog.ts";
+import { internalHeaders } from "../../packages/ramose/src/internal/transactor/internal.ts";
 import {
   CAPABILITY_HEADER,
   LANE_PATH,
+  SOCKET_PATH,
   type LaneFetcher,
   type LaneRequest,
   runLane,
@@ -61,6 +63,15 @@ const grantedCapability = (request: Request, env: BenchEnv): string | undefined 
 export default {
   async fetch(request: Request, env: BenchEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === SOCKET_PATH) {
+      const capability = grantedCapability(request, env);
+      if (capability === undefined) return new Response("not found", { status: 404 });
+      const db = url.searchParams.get("db") ?? "";
+      const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
+      return stub.fetch(`https://transactor/subscribe?writer=1&db=${encodeURIComponent(db)}`, {
+        headers: { Upgrade: "websocket", ...internalHeaders(env) },
+      });
+    }
     if (url.pathname === LANE_PATH && request.method === "POST") {
       const capability = grantedCapability(request, env);
       if (capability === undefined) return new Response("not found", { status: 404 });

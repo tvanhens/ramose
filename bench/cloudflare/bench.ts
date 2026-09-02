@@ -222,6 +222,17 @@ if (process.env.BENCH_PING === "1") {
   rows.push({ phase: "info", label, ...summary(r) });
 }
 
+if (process.env.BENCH_SOCKET === "1") {
+  const db = `bench-tx-${run}`;
+  const ping = await load("socket-ping", "socket-ping", db);
+  rows.push({ phase: "socket-ping", label, ...summary(ping) });
+  const before = await transactorStats(db);
+  const r = await load("socket-write", "socket-write", db);
+  const after = await transactorStats(db);
+  const batches = Math.max(0, after.batches - before.batches);
+  rows.push({ phase: "socket-write", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch, ...serverSide(before, after, r.ms) });
+}
+
 {
   const db = BENCH_DATABASE;
   await settle("operation schema", () => admin(db, "/transact", { tx: schemaTx(BenchSchema) }));
