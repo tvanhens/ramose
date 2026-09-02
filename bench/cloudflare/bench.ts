@@ -2,6 +2,15 @@ import { schemaTx } from "../../packages/ramose/src/db/internal.ts";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
 import { fmt, percentile } from "../lib.ts";
 import { BENCH_DATABASE, BenchSchema } from "./catalog.ts";
+import {
+  CAPABILITY_HEADER,
+  LANE_PATH,
+  MAX_LANE_PARALLEL,
+  MAX_LANE_REQUESTS,
+  type LaneReport,
+  type LaneRequest,
+  type LaneTarget,
+} from "./lane.ts";
 
 const url = process.env.RAMOSE_URL;
 const capability = process.env.RAMOSE_BENCH_CAPABILITY;
@@ -10,16 +19,24 @@ if (!url || !capability) {
   process.exit(1);
 }
 const base = url.replace(/\/+$/, "");
-const conc = Number(process.argv[2] ?? 32);
-const seconds = Number(process.argv[3] ?? 10);
+const lanes = Math.max(1, Number(process.argv[2] ?? 32));
+const parallel = Math.max(1, Math.min(MAX_LANE_PARALLEL, Number(process.argv[3] ?? 4)));
+const seconds = Math.max(1, Number(process.argv[4] ?? 15));
+const laneRequests = Math.max(
+  parallel,
+  Math.min(MAX_LANE_REQUESTS, Number(process.env.BENCH_LANE_REQUESTS ?? 500)),
+);
 const label = process.env.BENCH_LABEL ?? "";
+const inFlight = lanes * parallel;
 
 type Exchange = { status: number; body: any; text: string };
 
 const call = async (path: string, init: RequestInit, token?: string): Promise<Exchange> => {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
-  if (path.startsWith("/__test__/")) headers.set("x-ramose-test-capability", capability);
+  if (path.startsWith("/__test__/") || path.startsWith("/__bench__/")) {
+    headers.set(CAPABILITY_HEADER, capability);
+  }
   if (token !== undefined) headers.set("authorization", `Bearer ${token}`);
   const res = await fetch(`${base}${path}`, { ...init, headers });
   const text = await res.text();
@@ -40,42 +57,73 @@ const requireOk = (what: string, r: Exchange): any => {
   return r.body;
 };
 
-type Sample = { ok: boolean; ms: number; error?: string };
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const load = async (name: string, request: (worker: number, i: number) => Promise<Exchange>) => {
+const run = Date.now().toString(36);
+let laneCounter = 0;
+
+const launchLane = async (
+  target: LaneTarget,
+  db: string,
+  durationMs: number,
+  requests: number,
+  token?: string,
+): Promise<LaneReport> => {
+  const lane: LaneRequest = {
+    target,
+    db,
+    run,
+    lane: laneCounter++,
+    parallel,
+    maxRequests: requests,
+    durationMs,
+    ...(token === undefined ? {} : { token }),
+  };
+  const r = await call(LANE_PATH, { method: "POST", body: JSON.stringify(lane) });
+  requireOk("bench lane", r);
+  return r.body as LaneReport;
+};
+
+const load = async (name: string, target: LaneTarget, db: string, token?: string) => {
+  const warm = await launchLane(target, db, 10_000, parallel, token);
+  if (warm.ok === 0) {
+    throw new Error(`${name} warm-up failed: ${JSON.stringify(warm.failures)}`);
+  }
   const lat: number[] = [];
   const failures = new Map<string, number>();
-  let done = 0, errors = 0;
-  const deadline = Date.now() + seconds * 1000;
-  const one = async (worker: number, i: number): Promise<Sample> => {
-    const t0 = performance.now();
-    try {
-      const r = await request(worker, i);
-      const ms = performance.now() - t0;
-      if (r.status === 200) return { ok: true, ms };
-      return { ok: false, ms, error: `${r.status} ${r.text.slice(0, 160)}` };
-    } catch (e) {
-      return { ok: false, ms: performance.now() - t0, error: e instanceof Error ? e.message : String(e) };
-    }
-  };
-  await one(0, -1);
+  const colos = new Map<string, number>();
+  let done = 0, errors = 0, invocations = 0, laneErrors = 0;
   const t0 = performance.now();
-  await Promise.all(Array.from({ length: conc }, async (_, worker) => {
-    let i = 0;
-    while (Date.now() < deadline) {
-      const s = await one(worker, i++);
-      lat.push(s.ms);
-      if (s.ok) done++;
-      else {
-        errors++;
-        failures.set(s.error!, (failures.get(s.error!) ?? 0) + 1);
+  const deadline = Date.now() + seconds * 1000;
+  await Promise.all(Array.from({ length: lanes }, async () => {
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining < 200) break;
+      try {
+        const report = await launchLane(target, db, remaining, laneRequests, token);
+        invocations++;
+        done += report.ok;
+        errors += report.errors;
+        for (const ms of report.latencies) lat.push(ms);
+        for (const [error, count] of Object.entries(report.failures)) {
+          failures.set(error, (failures.get(error) ?? 0) + count);
+        }
+        colos.set(report.colo, (colos.get(report.colo) ?? 0) + 1);
+      } catch (e) {
+        laneErrors++;
+        const message = e instanceof Error ? e.message : String(e);
+        failures.set(`lane: ${message}`, (failures.get(`lane: ${message}`) ?? 0) + 1);
+        await sleep(250);
       }
     }
   }));
   const ms = performance.now() - t0;
   lat.sort((a, b) => a - b);
-  console.log(`${name.padEnd(12)} concurrency=${conc}: ${done} ok in ${fmt(ms, 0)} ms → ${fmt((done / ms) * 1000, 0)}/s, errors=${errors}`);
+  console.log(
+    `${name.padEnd(12)} lanes=${lanes} parallel=${parallel} in-flight=${inFlight}: ${done} ok in ${fmt(ms, 0)} ms → ${fmt((done / ms) * 1000, 0)}/s, errors=${errors}, lane invocations=${invocations}, lane failures=${laneErrors}`,
+  );
   console.log(`  latency p50 ${fmt(percentile(lat, 50))} ms  p95 ${fmt(percentile(lat, 95))} ms  p99 ${fmt(percentile(lat, 99))} ms`);
+  console.log(`  driver colos ${[...colos.entries()].map(([colo, n]) => `${colo}×${n}`).join(" ")}`);
   for (const [error, count] of [...failures.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)) {
     console.log(`  error ×${count}: ${error}`);
   }
@@ -113,7 +161,6 @@ const attribute = (ident: string, type: string, extra: Record<string, unknown> =
   ...extra,
 });
 
-const run = Date.now().toString(36);
 const rows: Record<string, unknown>[] = [];
 
 {
@@ -122,11 +169,7 @@ const rows: Record<string, unknown>[] = [];
     tx: [attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" }), attribute(":k/v", "string")],
   }));
   const before = await transactorStats(db);
-  const r = await load("transact", (worker, i) =>
-    admin(db, "/transact", {
-      tx: [{ ":k/id": worker * 1_000_000 + i, ":k/v": "x" }],
-      clientTxId: `${run}-${worker}-${i}`,
-    }));
+  const r = await load("transact", "transact", db);
   const after = await transactorStats(db);
   const batches = after.batches - before.batches;
   rows.push({ phase: "transact", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch, ...serverSide(before, after) });
@@ -138,15 +181,7 @@ const rows: Record<string, unknown>[] = [];
   requireOk("operation schema", await admin(db, "/transact", { tx: schemaTx(BenchSchema) }));
   const token = await signToken(db, "writer", "bench-writer", undefined, { exp: `${seconds + 300}s` });
   const before = await transactorStats(db);
-  const r = await load("operation", (worker, i) =>
-    call(`/db/${encodeURIComponent(db)}/op`, {
-      method: "POST",
-      body: JSON.stringify({
-        invocationId: crypto.randomUUID(),
-        operation: { owner: { kind: "entity", name: "benchItem" }, localName: "create" },
-        input: { key: `${run}-${worker}-${i}`, value: "x" },
-      }),
-    }, token));
+  const r = await load("operation", "operation", db, token);
   const after = await transactorStats(db);
   const batches = after.batches - before.batches;
   rows.push({ phase: "operation", label, ...summary(r), batches, "avg batch": fmt(batches ? r.done / batches : 0, 1), "max batch": after.maxBatch, ...serverSide(before, after) });
@@ -157,5 +192,5 @@ function summary(r: Awaited<ReturnType<typeof load>>) {
   return { "per second": Math.round(r.rate), ok: r.done, errors: r.errors, "p50 ms": +fmt(r.p50), "p95 ms": +fmt(r.p95), "p99 ms": +fmt(r.p99) };
 }
 
-console.log(`\nCloudflare write throughput at concurrency ${conc} over ${seconds}s per phase:`);
+console.log(`\nCloudflare write throughput driven from Cloudflare with ${lanes} lanes × ${parallel} in flight (${inFlight} concurrent writers) over ${seconds}s per phase:`);
 console.table(rows);

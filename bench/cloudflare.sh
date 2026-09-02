@@ -10,8 +10,9 @@ fail() { echo "error: $*" >&2; exit 1; }
 [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || fail "CLOUDFLARE_ACCOUNT_ID is not set."
 command -v bun >/dev/null 2>&1 || fail "bun is not on PATH."
 
-CONCURRENCY="${1:-32}"
-SECONDS_PER_PHASE="${2:-10}"
+LANES="${1:-32}"
+PARALLEL="${2:-4}"
+SECONDS_PER_PHASE="${3:-15}"
 STACK="bench/cloudflare/alchemy.run.ts"
 
 echo ">> Building the package ..."
@@ -84,5 +85,5 @@ done
 [ -n "$ok" ] || fail "peer did not become healthy at $URL/health within ~60s."
 echo ">> Peer is healthy."
 
-echo ">> Running write benchmark against $URL ..."
-RAMOSE_URL="$URL" bun run bench/cloudflare/bench.ts "$CONCURRENCY" "$SECONDS_PER_PHASE"
+echo ">> Driving write benchmark from Cloudflare against $URL ..."
+RAMOSE_URL="$URL" bun run bench/cloudflare/bench.ts "$LANES" "$PARALLEL" "$SECONDS_PER_PHASE"

@@ -88,19 +88,28 @@ Set `KEEP_STAGE=1` to retain the temporary stage for investigation.
 ## Cloudflare benchmark
 
 ```sh
-bun run bench:cf [concurrency] [seconds-per-phase]
+bun run bench:cf [lanes] [parallel] [seconds-per-phase]
 ```
 
 `bun run bench:cf` deploys a throwaway benchmark stage with test hooks and a
-small operation catalog, drives the raw transaction path and the `/op` path
-from this machine, prints throughput and latency per phase with the
-transactor's batch statistics, and destroys the stage. It requires the same
-Cloudflare variables as the e2e suite. Transactor tuning variables such as
-`RAMOSE_MAX_BATCH` and `RAMOSE_BATCH_BUDGET_MS` are forwarded to the stage, and
-`BENCH_LABEL` tags the printed rows so runs can be compared. `KEEP_STAGE=1`
-retains the stage. `bun run bench:cf:compare` runs the same benchmark twice,
-first against the `master` package source and then against the current
-branch, so the two result tables can be compared directly.
+small operation catalog, drives the raw transaction path and the `/op` path,
+prints throughput and latency per phase with the transactor's batch
+statistics, and destroys the stage. It requires the same Cloudflare variables
+as the e2e suite.
+
+The load is generated inside Cloudflare so that the round trip from this
+machine does not bound the measurement. The stage exposes a lane route that
+calls the peer through a service binding to itself; `bench.ts` keeps `lanes`
+lane invocations running at once, each with `parallel` requests in flight
+(at most 6, the Workers simultaneous connection limit), so the transactor sees
+`lanes × parallel` concurrent writers. Each lane invocation returns after
+`BENCH_LANE_REQUESTS` requests (default 500) and is relaunched until the phase
+ends. Transactor tuning variables such as `RAMOSE_MAX_BATCH` and
+`RAMOSE_BATCH_BUDGET_MS` are forwarded to the stage, and `BENCH_LABEL` tags
+the printed rows so runs can be compared. `KEEP_STAGE=1` retains the stage.
+`bun run bench:cf:compare` runs the same benchmark twice, first against the
+`master` package source and then against the current branch, so the two
+result tables can be compared directly.
 
 ## Documentation site
 

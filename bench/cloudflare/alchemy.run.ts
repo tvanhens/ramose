@@ -19,6 +19,7 @@ export const Server = Ramose.Server("Bench", {
   main: import.meta.resolve("./worker.ts"),
   auth: { jwksJson: JWKS, issuers: ISS, aud: AUD },
   env: {
+    BENCH_SELF: Cloudflare.Workers.Self,
     RAMOSE_STAGE: stage,
     RAMOSE_TEST_HOOKS: "1",
     RAMOSE_TEST_CAPABILITY: capability,
