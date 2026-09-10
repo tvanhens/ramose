@@ -1,5 +1,5 @@
 const ENC = new TextEncoder();
-const DEC = new TextDecoder();
+const DEC = new TextDecoder("utf-8", { fatal: true });
 
 export class ByteWriter {
   private buf: Uint8Array;
@@ -7,13 +7,15 @@ export class ByteWriter {
   pos = 0;
 
   constructor(initial = 4096) {
+    if (!Number.isSafeInteger(initial) || initial < 0) throw new RangeError("ByteWriter: invalid capacity");
     this.buf = new Uint8Array(initial);
     this.view = new DataView(this.buf.buffer);
   }
 
   private ensure(n: number): void {
+    if (!Number.isSafeInteger(n) || n < 0) throw new RangeError("ByteWriter: invalid length");
     if (this.pos + n <= this.buf.length) return;
-    let cap = this.buf.length * 2;
+    let cap = Math.max(1, this.buf.length * 2);
     while (cap < this.pos + n) cap *= 2;
     const nb = new Uint8Array(cap);
     nb.set(this.buf.subarray(0, this.pos));
@@ -97,6 +99,7 @@ export class ByteReader {
   pos: number;
   private view: DataView;
   constructor(readonly buf: Uint8Array, pos = 0) {
+    if (!Number.isSafeInteger(pos) || pos < 0 || pos > buf.length) throw new RangeError("ByteReader: invalid position");
     this.pos = pos;
     this.view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   }
@@ -119,6 +122,7 @@ export class ByteReader {
       if (this.pos >= this.buf.length) throw new RangeError("ByteReader: EOF in varint");
       const b = this.buf[this.pos++];
       result += (b & 0x7f) * mult;
+      if (!Number.isSafeInteger(result)) throw new RangeError("varint exceeds safe integer range");
       if ((b & 0x80) === 0) return result;
       mult *= 0x80;
       if (mult > 2 ** 56) throw new RangeError("varint too long");
@@ -129,7 +133,9 @@ export class ByteReader {
     const neg = b & 1;
     let m = (b >> 1) & 0x3f;
     if (b & 0x80) m += this.uvar() * 64;
-    return neg ? -m - 1 : m;
+    const value = neg ? -m - 1 : m;
+    if (!Number.isSafeInteger(value)) throw new RangeError("varint exceeds safe integer range");
+    return value;
   }
   f64(): number {
     const x = this.view.getFloat64(this.pos, false);
@@ -137,6 +143,7 @@ export class ByteReader {
     return x;
   }
   bytes(n: number): Uint8Array {
+    if (!Number.isSafeInteger(n) || n < 0) throw new RangeError("ByteReader: invalid length");
     if (this.pos + n > this.buf.length) throw new RangeError("ByteReader: EOF in bytes");
     const b = this.buf.subarray(this.pos, this.pos + n);
     this.pos += n;
@@ -175,8 +182,9 @@ export function toHex(b: Uint8Array): string {
   return s;
 }
 export function fromHex(h: string): Uint8Array {
+  if (h.length % 2 !== 0 || /[^0-9a-f]/i.test(h)) throw new TypeError("invalid hexadecimal bytes");
   const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.substr(i * 2, 2), 16);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
 

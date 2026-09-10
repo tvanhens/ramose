@@ -3,7 +3,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { Api } from "./src/infra/api.ts";
+import { Web } from "./src/infra/web.ts";
 import { Server } from "./src/infra/resources.ts";
 
 export default Alchemy.Stack(
@@ -19,8 +19,8 @@ export default Alchemy.Stack(
         : Cloudflare.state(),
   },
   Effect.gen(function* () {
-    const api = yield* Api;
+    const web = yield* Web;
     const server = yield* Server;
-    return { apiUrl: api.url, peerUrl: server.url };
+    return { appUrl: web.url, peerUrl: server.url };
   }),
 );

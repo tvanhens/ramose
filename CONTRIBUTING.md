@@ -30,7 +30,11 @@ bun run test:browser
 bun run test:local
 bun run test
 bun run build
+bun run check
 ```
+
+`bun run test` runs unit, browser, and local integration tests. `bun run check`
+also checks types and documentation, builds the package, and validates its exports.
 
 Use the test lane that owns the behavior:
 
@@ -69,10 +73,12 @@ The peer listens on `http://localhost:1337`. Run e2e tests against it with:
 RAMOSE_URL=http://localhost:1337 bun run test:e2e
 ```
 
-`bun run dev:graph` runs the offline-first browser client's example instead: a
-peer on `http://localhost:1341` and the identity Worker that mints its bearers
-on `http://localhost:1342`. `bun run test:browser` starts and stops that same
-stack itself, so a browser test can drive the example against a real peer.
+`bun run dev:reef` starts the Reef issue tracker's database and identity Workers.
+Run `bun run dev:reef:ui` in a second terminal for its React app. See
+[the Reef README](examples/reef/README.md) for ports and deployment details.
+
+Browser tests serve recorded replication frames with Vitest and exercise real
+Chromium APIs. They do not need a separately running example.
 
 ## Cloudflare e2e
 

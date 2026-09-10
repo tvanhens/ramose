@@ -41,8 +41,8 @@ describe("the ramose/client surface", () => {
   test("constructing a client and a handle is inert", () => {
     const client = Client.createClient({
       url: "https://data.example.com",
-      root: "app",
-      catalog: AppSchema,
+      database: "app",
+      schema: AppSchema,
       auth: () => {
         throw new Error("auth must not be called before an observation");
       },
@@ -55,18 +55,18 @@ describe("the ramose/client surface", () => {
     expect(typeof db.mutate).toBe("object");
   });
 
-  test("refuses a configuration that cannot name exactly one root", () => {
+  test("refuses a configuration that cannot name exactly one database", () => {
     for (
       const options of [
-        { url: "", root: "app" },
-        { url: "https://data.example.com", root: "" },
-        { url: "not-a-url", root: "app" },
+        { url: "", database: "app" },
+        { url: "https://data.example.com", database: "" },
+        { url: "not-a-url", database: "app" },
       ]
     ) {
       expect(() =>
         Client.createClient({
           ...options,
-          catalog: AppSchema,
+          schema: AppSchema,
           auth: () => ({ token: "t", cacheKey: "c" }),
         })
       ).toThrow();

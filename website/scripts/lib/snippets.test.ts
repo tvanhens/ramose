@@ -85,8 +85,8 @@ describe("extractCitation", () => {
     const got = extractCitation({
       relPath: "examples/todos/schema.ts",
       marker: null,
-      start: 3,
-      end: 7,
+      start: 5,
+      end: 9,
     });
     expect(got.ok).toBe(true);
     expect(got.text).toContain('Ramose.Entity("todo"');

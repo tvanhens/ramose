@@ -1,12 +1,25 @@
-/**
- * `Ramose.Query` — the query language's named surface. `Query.from` is the
- * primary app spelling; `Query.q` is the generator/kernel constructor;
- * `Query.rule` names; the stdlib combinators stay one tier down. (`Ramose.Q`
- * is the kernel.)
- */
+import { Q, type QueryGen } from "./kernel.ts";
+import { q, rule as defineRule, type Pipeline, type RuleValue } from "./query.ts";
 
-export { decodeCursor, encodeCursor } from "./cursor.ts";
-export { enrich, isCursor, q, refine, rule } from "./query.ts";
+export type QueryBuilder = typeof Q;
+
+/** Build a portable query from typed relational clauses and a projection. */
+export const build = <B extends (query: QueryBuilder) => QueryGen<any> | Pipeline<any>>(
+  body: B,
+): ReturnType<typeof q<() => ReturnType<B>>> =>
+  q(() => body(Q)) as ReturnType<typeof q<() => ReturnType<B>>>;
+
+/** Declare a reusable relational rule using the same query builder. */
+export const rule = (
+  name: string,
+  body: (query: QueryBuilder, ...vars: never[]) => QueryGen<unknown>,
+): RuleValue => {
+  const apply = (...vars: never[]) => body(Q, ...vars);
+  Object.defineProperty(apply, "length", { value: Math.max(0, body.length - 1) });
+  return defineRule(name, apply);
+};
+
+export { isCursor } from "./query.ts";
 export type {
   AnyQueryObject,
   Cursor,

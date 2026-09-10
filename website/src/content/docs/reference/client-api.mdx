@@ -8,6 +8,18 @@ import Next from "../../../components/Next.astro";
 
 *New here? Start with [Build your first Ramose web app](/getting-started/quickstart/).*
 
+## Type component inputs
+
+Infer live entity fields, identity, and mutation methods directly from the schema:
+
+```ts
+import type { EntityHandleFor } from "ramose/client"
+
+type TaskHandle = EntityHandleFor<typeof Task>
+```
+
+Use this type for component props instead of maintaining a second handwritten model.
+
 ## createClient
 
 ```ts
@@ -15,25 +27,25 @@ import { createClient } from "ramose/client"
 
 const client = createClient({
   url: "https://data.example.com",
-  root: "app",
-  catalog: AppSchema,
+  database: "app",
+  schema: AppSchema,
   auth: () => ({ token: session.accessToken, cacheKey: session.user.id }),
 })
 ```
 
-`root` is the configured public route `/db/:root/*` uses — immutable configuration, not a database identity, and never a mutation receiver.
+`database` names the public route `/db/:database/*` — immutable configuration, not a database identity, and never a mutation receiver.
 
-`auth` returns `{ token, cacheKey }` atomically and may refresh. `cacheKey` selects an account across token renewal; it is hashed with the origin and root, never sent or stored raw, and grants no authority. Only a prior bearer binding or the current authenticated response makes stored data observable.
+`auth` returns `{ token, cacheKey }` atomically and may refresh. `cacheKey` selects an account across token renewal; it is hashed with the origin and database route, never sent or stored raw, and grants no authority. Only a prior bearer binding or the current authenticated response makes stored data observable.
 
 Construction is inert: nothing opens until the first query is observed. `client.close()` releases network scopes without discarding queued work. `clearLocalData()` is the separate destructive operation, after which that client is terminal.
 
-## Open the authorized root
+## Open the authorized database
 
 ```ts
 const rootDb = client.open()
 ```
 
-`open()` takes no arguments and returns one interned root handle. Callers cannot choose an internal database or catalog id.
+`open()` takes no arguments and returns one interned database handle. Callers cannot choose an internal database or catalog id.
 
 ## Observe a query
 

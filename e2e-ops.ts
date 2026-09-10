@@ -1,3 +1,4 @@
+import * as InternalOperations from "./packages/ramose/src/db/Operation.ts";
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 
@@ -13,10 +14,10 @@ const ReefIssue = Ramose.Entity("issue", {
   title: Ramose.string(),
   status: Ramose.string(),
   rank: Ramose.float(),
-  creator: Ramose.Ref(ReefUser),
+  creator: Ramose.ref(ReefUser),
 });
 
-export const addSession = Ramose.Operation(
+export const addSession = InternalOperations.Operation(
   "e2e/add-session",
   {
     input: Schema.Struct({ name: Schema.String, n: Schema.Finite }),
@@ -30,7 +31,7 @@ export const addSession = Ramose.Operation(
   },
 );
 
-export const addReefUser = Ramose.Operation(
+export const addReefUser = InternalOperations.Operation(
   "e2e/add-reef-user",
   {
     input: Schema.Struct({ name: Schema.String }),
@@ -42,7 +43,7 @@ export const addReefUser = Ramose.Operation(
   },
 );
 
-export const addReefIssue = Ramose.Operation(
+export const addReefIssue = InternalOperations.Operation(
   "e2e/add-reef-issue",
   {
     input: Schema.Struct({
@@ -64,13 +65,13 @@ export const addReefIssue = Ramose.Operation(
   },
 );
 
-export const moveReefIssue = Ramose.Operation.patch(
+export const moveReefIssue = InternalOperations.Operation.patch(
   "e2e/move-reef-issue",
   ReefIssue,
   ["status", "rank"],
 );
 
-export const operations = Ramose.Operations({
+export const operations = InternalOperations.Operations({
   addSession,
   addReefUser,
   addReefIssue,

@@ -1,5 +1,8 @@
+import { useMutationFeedback } from "../MutationFeedback.tsx";
+import type { EntityHandleFor } from "ramose/client";
+import { Workspace } from "../../domain/schema.ts";
+import { personLabel, type IssueRow, type PersonRow, type Member } from "../entities.ts";
 import { useMemo, useState } from "react";
-import type { ClientDatabase } from "ramose/client";
 import { useDb, useQuery, useSuspenseQuery } from "ramose/react";
 import {
   boardIssues,
@@ -15,41 +18,6 @@ import { rankBetween } from "../../domain/rank.ts";
 import type { ReefMutations } from "../ramose.ts";
 import { IssueDetail } from "../components/IssueDetail.tsx";
 import { MembersPanel } from "../components/MembersPanel.tsx";
-
-type ReefDb = ClientDatabase<ReefMutations>;
-
-export type IssueRow = {
-  readonly id: unknown;
-  readonly data: {
-    readonly title: string;
-    readonly status: Status;
-    readonly priority: string;
-    readonly rank: number;
-    readonly assignee?: { readonly id: string } | undefined;
-    readonly creator?: { readonly id: string } | undefined;
-  };
-  readonly local: { readonly pending: boolean };
-  readonly mutate: {
-    readonly moveIssue: (input: { status: Status; rank: number }) => unknown;
-  };
-};
-
-export type PersonRow = {
-  readonly id: unknown;
-  readonly data: {
-    readonly sub: string;
-    readonly name?: string | undefined;
-    readonly email?: string | undefined;
-  };
-};
-
-export type Member = {
-  readonly sub: string;
-  readonly label: string;
-};
-
-export const personLabel = (person: PersonRow | undefined): string =>
-  person?.data.name ?? person?.data.email ?? "Someone";
 
 const Column = (props: {
   readonly status: Status;
@@ -144,20 +112,31 @@ const Column = (props: {
 };
 
 export const BoardScreen = (props: { readonly slug: string }) => {
-  const root = useDb<ReefMutations>();
-  const board = root as ReefDb;
+  const db = useDb<ReefMutations>();
+  const result = useSuspenseQuery(workspaces(db), db);
+  if (result.status === "error") return <div role="alert" className="error">{result.error.message}</div>;
+  if (result.status !== "ready" && result.status !== "stale") return null;
+  const workspace = result.data.find((row) => row.data.slug === props.slug);
+  return workspace === undefined
+    ? <p>This workspace is unavailable. <a href="#/">Back to workspaces</a></p>
+    : <WorkspaceBoard key={workspace.id} workspace={workspace} />;
+};
 
-  const rows = useSuspenseQuery(boardIssues(board, props.slug), board);
+const WorkspaceBoard = (props: { readonly workspace: EntityHandleFor<typeof Workspace> }) => {
+  const root = useDb<ReefMutations>();
+  const board = root;
+  const workspace = props.workspace;
+  const track = useMutationFeedback();
+  const rows = useSuspenseQuery(boardIssues(board, workspace.id), board);
   const folk = useQuery(people(board), board);
-  const rootWorkspaces = useQuery(workspaces(root), root);
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [membersOpen, setMembersOpen] = useState(false);
 
   const issues = rows.status === "ready" || rows.status === "stale"
-    ? (rows.data as unknown as readonly IssueRow[])
+    ? rows.data
     : [];
   const persons = folk.status === "ready" || folk.status === "stale"
-    ? (folk.data as unknown as readonly PersonRow[])
+    ? folk.data
     : [];
   const peopleById = useMemo(
     () => new Map(persons.map((person) => [String(person.id), person])),
@@ -172,21 +151,11 @@ export const BoardScreen = (props: { readonly slug: string }) => {
     return grouped;
   }, [issues]);
 
-  const workspace = (rootWorkspaces.status === "ready" ||
-      rootWorkspaces.status === "stale")
-    ? rootWorkspaces.data.find((row) => row.data.slug === props.slug)
-    : undefined;
-
-  const directory = useQuery(people(root), root);
-  const rootPersons = directory.status === "ready" || directory.status === "stale"
-    ? (directory.data as unknown as readonly PersonRow[])
-    : [];
   const memberIds = new Set(
-    ((workspace?.data as { members?: readonly { id: string }[] } | undefined)
-      ?.members ?? []).map((member) => member.id),
+    (workspace?.data.members ?? []).map((member) => member.id),
   );
-  const members: readonly Member[] = rootPersons
-    .filter((person) => memberIds.has(String(person.id)))
+  const members: readonly Member[] = persons
+    .filter((person) => memberIds.has(person.id))
     .map((person) => ({ sub: person.data.sub, label: personLabel(person) }));
 
   const dropIssue = (issueId: string, status: Status, beforeIndex: number) => {
@@ -198,20 +167,19 @@ export const BoardScreen = (props: { readonly slug: string }) => {
     const at = Math.min(beforeIndex, column.length);
     const before = column[at - 1]?.data.rank;
     const after = column[at]?.data.rank;
-    issue.mutate.moveIssue({ status, rank: rankBetween(before, after) });
+    track(issue.mutate.moveIssue({ status, rank: rankBetween(before, after) }), "Move issue");
   };
 
   const createIssue = (status: Status, title: string) => {
     if (workspace === undefined) return;
     const column = byStatus.get(status) ?? [];
     const last = column[column.length - 1]?.data.rank;
-    board.mutate.createIssue({
+    track(board.mutate.createIssue({
       workspace: workspace.id,
-      workspaceSlug: props.slug,
       title,
       status,
       rank: rankBetween(last, undefined),
-    });
+    }), "Create issue");
   };
 
   const selectedIssue = selected === undefined
@@ -221,13 +189,7 @@ export const BoardScreen = (props: { readonly slug: string }) => {
   return (
     <main className="board">
       <header className="board-head">
-        <h2>
-          {workspace
-            ? String(
-              (workspace.data as { label?: string }).label ?? props.slug,
-            )
-            : props.slug}
-        </h2>
+        <h2>{workspace.data.label ?? workspace.data.slug}</h2>
         {rows.status === "stale" && <span className="stale-tag">offline copy</span>}
         <button className="ghost" onClick={() => setMembersOpen(true)}>
           Members
@@ -253,7 +215,6 @@ export const BoardScreen = (props: { readonly slug: string }) => {
           board={board}
           issue={selectedIssue}
           workspaceId={workspace.id}
-          workspaceSlug={props.slug}
           peopleById={peopleById}
           members={members}
           onClose={() => setSelected(undefined)}

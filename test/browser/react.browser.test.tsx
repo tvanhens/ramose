@@ -150,8 +150,8 @@ const seed = async (
 const offlineClient = (name: string): Client =>
   createClient({
     url: OFFLINE,
-    root: ROOT,
-    catalog: Notes,
+    database: ROOT,
+    schema: Notes,
     auth: () => ({ token: TOKEN, cacheKey: CACHE_KEY }),
     storageName: name,
   });
@@ -442,8 +442,8 @@ const recordedClient = (name: string): Client =>
   createClient({
     url: globalThis.location.origin,
 
-    root: "optimistic-fence",
-    catalog: ConformanceSchema,
+    database: "optimistic-fence",
+    schema: ConformanceSchema,
     auth: () => ({ token: "session-credential", cacheKey: "recorded" }),
     storageName: name,
   });
@@ -711,8 +711,8 @@ browserTest(
     const name = `ramose-react-failed-${browser.uniqueId}`;
     const client = createClient({
       url: OFFLINE,
-      root: ROOT,
-      catalog: Notes,
+      database: ROOT,
+      schema: Notes,
       auth: () => {
         throw new Error("refresh token expired");
       },

@@ -1,5 +1,3 @@
-export * from "./db/index.ts";
-
 export {
   type AuthConfig,
   type Claims,
@@ -14,6 +12,7 @@ export {
   type AuthEnvValue,
   type ServerAuth,
   Server,
+  serverBinding,
 } from "./Server.ts";
 
 export { PEER_COMPAT } from "./peer.ts";

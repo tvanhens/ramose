@@ -1,15 +1,24 @@
 #!/usr/bin/env bun
 
 import { readFileSync } from "node:fs";
+import { parseArgs } from "node:util";
 import { $ } from "bun";
 
 const PACKAGE_DIR = "packages/ramose";
 
-const argv = process.argv.slice(2);
-const dryRun = argv.includes("--dry-run");
-const provenance = argv.includes("--provenance");
-const tag = argv.includes("--tag") ? argv[argv.indexOf("--tag") + 1] : "latest";
-const otp = argv.includes("--otp") ? argv[argv.indexOf("--otp") + 1] : process.env.NPM_OTP;
+const { values } = parseArgs({
+  args: process.argv.slice(2),
+  options: {
+    "dry-run": { type: "boolean" },
+    provenance: { type: "boolean" },
+    tag: { type: "string", default: "latest" },
+    otp: { type: "string" },
+  },
+});
+const dryRun = values["dry-run"] === true;
+const provenance = values.provenance === true;
+const tag = values.tag;
+const otp = values.otp ?? process.env.NPM_OTP;
 
 const manifest = JSON.parse(readFileSync(`${PACKAGE_DIR}/package.json`, "utf8")) as {
   name: string;
@@ -17,7 +26,7 @@ const manifest = JSON.parse(readFileSync(`${PACKAGE_DIR}/package.json`, "utf8"))
 };
 const spec = `${manifest.name}@${manifest.version}`;
 
-if (await alreadyPublished(manifest.name, manifest.version)) {
+if (!dryRun && await alreadyPublished(manifest.name, manifest.version)) {
   console.log(`skip    ${spec} (already on the registry)`);
   process.exit(0);
 }

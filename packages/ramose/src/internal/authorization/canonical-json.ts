@@ -5,8 +5,6 @@ export const AUTHORIZATION_CANONICAL_JSON_VERSION = "rfc8785-jcs/1" as const;
 export const compareCanonicalKeys = (left: string, right: string): number =>
   left < right ? -1 : left > right ? 1 : 0;
 
-const hex4 = (code: number): string => code.toString(16).padStart(4, "0");
-
 export const hasLoneSurrogate = (value: string): boolean => {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
@@ -25,40 +23,7 @@ const escapeRfc8785String = (value: string): string => {
   if (hasLoneSurrogate(value)) {
     throw new TypeError("ramose/authorization: canonicalizeJson rejects lone surrogates");
   }
-  let out = '"';
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    switch (code) {
-      case 0x08:
-        out += "\\b";
-        break;
-      case 0x09:
-        out += "\\t";
-        break;
-      case 0x0a:
-        out += "\\n";
-        break;
-      case 0x0c:
-        out += "\\f";
-        break;
-      case 0x0d:
-        out += "\\r";
-        break;
-      case 0x22:
-        out += '\\"';
-        break;
-      case 0x5c:
-        out += "\\\\";
-        break;
-      default:
-        if (code <= 0x1f) {
-          out += `\\u${hex4(code)}`;
-        } else {
-          out += value[i]!;
-        }
-    }
-  }
-  return `${out}"`;
+  return JSON.stringify(value);
 };
 
 const serializeRfc8785Number = (value: number): string => {

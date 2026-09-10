@@ -1,58 +1,46 @@
 ---
 title: Use Ramose from a Worker
-description: Run authorized queries and operations from a Cloudflare Worker through a typed service binding and explicit principal context.
+description: Use the server protocol from Cloudflare Workers with explicit principal context.
 ---
 import Learn from "../../../components/Learn.astro";
 import Next from "../../../components/Next.astro";
 
-Application Workers can call Ramose through a Cloudflare service binding. The same catalogs, query language, operations, and policy apply; the binding removes public network hops, not authorization.
+Application Workers can call Ramose through its authenticated server protocol. The same schemas, operations, and policy apply.
 
-<Learn learn={["How to bind the Ramose service", "How server queries and operations differ from browser replicas", "How to preserve principal context and database boundaries"]} before={[{ href: "/guides/deploy/", label: "Deploy Ramose" }]} minutes={8} />
+<Learn learn={["How to call the Ramose service", "How server queries and operations differ from browser replicas", "How to preserve principal context and database boundaries"]} before={[{ href: "/guides/deploy/", label: "Deploy Ramose" }]} minutes={8} />
 
-## Bind the service
+## Use the supported server protocol
 
-Declare the application Worker and Ramose Server in one Alchemy stack, then provide the generated service binding through the Ramose server layer. Resolve the application catalog at module scope so query and operation types remain stable.
+Ramose exposes server queries and operation invocation through its [MCP endpoint](/reference/mcp/). Authenticate requests with a principal whose policy grants match the caller’s work. A Worker can make these requests using its ordinary HTTP facilities.
+
+There is currently no public request-scoped TypeScript database client, `ramose.open` method, or generated entity handle for Workers. The `ramose/client` entry is a browser replica client and requires browser storage.
+
+## Deploy the runtime
+
+Use `Server` and `Database` from `ramose` to declare deployment resources. Use `createServer` and the Durable Object exports from `ramose/worker` in the runtime entrypoint. Follow the [deployment guide](/guides/deploy/) for schema installation and authentication.
+
+## Bind a server to an application Worker
+
+`serverBinding` returns the native Worker resource behind a deployed Server:
 
 ```ts
-const app = yield* Cloudflare.Worker("Web", {
-  entrypoint: import.meta.resolve("./src/worker.ts"),
-  bindings: { DATA: server.binding },
+import { serverBinding } from "ramose"
+
+const deployedServer = yield* server
+const web = yield* Cloudflare.Worker("Web", {
+  main: import.meta.resolve("./web.ts"),
+  env: { DATA: serverBinding(deployedServer) },
 })
 ```
 
-Use the exact binding shape exported by your `Ramose.Server` version. Avoid rebuilding a public URL and bearer-token client inside the same Cloudflare account.
-
-## Open a request-scoped principal
-
-Authenticate the incoming request, derive the principal, and open its authorized root through the binding:
-
-```ts
-const rootDb = await ramose.open({ principal })
-```
-
-Do not accept an internal database id from the request. Resolve the authorized database from verified identity.
-
-## Query on the server
-
-Server reads are request/response operations, not browser observations:
-
-```ts
-const rows = await projectDb.query(
-  projectDb.query.from(Task).where(Task.done.eq(false)).page({ first: 50 }),
-)
-```
-
-They execute against the server's filtered database capability and return plain data. There is no IndexedDB replica, optimistic layer, or multi-tab leader in a Worker request.
+In the native Worker entry, forward database requests with `env.DATA.fetch(request)`.
+Keep authentication and origin checks at the appropriate service boundary.
 
 ## Invoke product operations
 
-Use the same operation definitions as the web app:
+Discover an operation’s catalog identity, supply its validated input and target when required, and retain its invocation id across retries. The server applies the same owned operation and policy definitions used by browser applications.
 
-```ts
-const receipt = await task.mutate.setDone({ done: true })
-```
-
-Background jobs need an explicit service principal whose grants match the job—not a universal bypass token. Record the product operation and resulting receipt so retries preserve the original invocation identity.
+Background jobs need an explicit service principal whose grants match the job. Record the operation and resulting receipt so retries preserve the original invocation identity.
 
 ## Long-running workflows
 

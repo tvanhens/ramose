@@ -17,18 +17,9 @@ Do not create a browser `Db` handle in a Server Component. It depends on browser
 
 ## Query with the request principal
 
-Authenticate the request and query the same database the page will use:
+Ramose does not currently export a server database client or a `ramose.open` function. Use the [MCP protocol](/reference/mcp/) for supported server queries, with the request’s verified authorization. Render the resulting plain data through your application framework.
 
-```tsx
-export default async function ProjectPage({ params }) {
-  const rootDb = await ramose.open({ principal: await principal() })
-  const initial = await rootDb.query(openTasks(params.project).page({ first: 50 }))
-
-  return <ProjectClient project={params.project} initial={initial} />
-}
-```
-
-The server result is scoped to that principal and request. Never place it in a shared framework cache unless the cache key includes the complete safe authorization context—and prefer not caching personalized database results at all.
+Keep personalized results scoped to the principal and request. Do not put them in a shared framework cache without authorization-aware keys.
 
 ## Hydrate presentation, not storage
 

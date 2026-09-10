@@ -12,18 +12,20 @@ Operations are the only public mutation surface. They are owned by an entity or 
 
 ```ts
 const Task = Ramose.Entity("task", {
-  fields: { title: Ramose.string(), done: Ramose.boolean() },
+  title: Ramose.string(),
+  done: Ramose.boolean(),
+}, {
   operations: (Operation) => ({
     setDone: Operation({
-      description: "Set whether this task is complete",
+      doc: "Set whether this task is complete",
       input: S.Struct({ done: S.Boolean }),
       output: S.Struct({}),
       run(op, { done }) {
         op.self.set(Task.done, done)
         return {}
       },
-      optimistic(tx, self, { done }) {
-        tx.set(self, Task.done, done)
+      optimistic({ tx, self, input }) {
+        tx.set(self, Task.done, input.done)
       },
     }),
   }),
@@ -34,13 +36,15 @@ Targeted operations default to `self: true`. The authoritative writer exposes th
 
 ## Targetless operation
 
+Declare creation inside the same owner’s `operations` callback, using its `Operation` factory:
+
 ```ts
 const createTask = Operation({
   self: false,
   input: S.Struct({ title: S.String }),
-  output: S.Struct({ task: Ramose.entityRef(Task) }),
+  output: S.Struct({ task: Ramose.EntityId }),
   run(op, { title }) {
-    const task = op.create(Task, { title, done: false })
+    const task = op.create({ title, done: false })
     return { task }
   },
 })
@@ -57,6 +61,20 @@ Targetless operations are invoked from `db.mutate`. Use them for creation and da
 The writer can create compatible entities, set or retract allowed fields, and delete according to declared ownership and cascade rules. The commit applies required fields, defaults, fixed trait bindings, protected types, reference checks, uniqueness, and policy constraints atomically.
 
 Operation-thrown domain rejections become `operation_rejected`. Unexpected faults remain internal errors and do not expose implementation details.
+
+## Typed reads
+
+Use `op.query` with the same portable `Query` builder used elsewhere. The
+operation’s existing target has a resolved `op.self.eid`:
+
+```ts
+const task = await op.query(Query.from(Task)
+  .where(Query.byId(op.self.eid))
+  .select({ title: Task.title })
+  .oneOrFail())
+```
+
+Selected fields and result cardinality determine the return type.
 
 ## Optimistic projection
 

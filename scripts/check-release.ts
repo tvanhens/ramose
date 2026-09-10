@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
 import { existsSync, readFileSync } from "node:fs";
+import { parseArgs } from "node:util";
+import { isReleaseVersion } from "./lib/version.ts";
 
 const PACKAGE_DIR = "packages/ramose";
 
@@ -15,10 +17,12 @@ type Manifest = Record<string, unknown> & {
   peerDependencies?: Record<string, string>;
 };
 
-const argv = process.argv.slice(2);
-const checkBuilt = argv.includes("--built");
-const tagIndex = argv.indexOf("--tag");
-const tag = tagIndex >= 0 ? argv[tagIndex + 1] : process.env.RELEASE_TAG;
+const { values } = parseArgs({
+  args: process.argv.slice(2),
+  options: { built: { type: "boolean" }, tag: { type: "string" } },
+});
+const checkBuilt = values.built === true;
+const tag = values.tag ?? process.env.RELEASE_TAG;
 
 const errors: string[] = [];
 
@@ -27,8 +31,17 @@ const root = JSON.parse(readFileSync("package.json", "utf8")) as Manifest;
 const label = manifest.name;
 const version = manifest.version;
 
+if (!isReleaseVersion(version)) errors.push(`${label} has an invalid version: ${version}`);
+
 if (root.version !== version) {
   errors.push(`the workspace root is at ${root.version} but ${label} is at ${version}`);
+}
+
+const lock = Bun.JSONC.parse(readFileSync("bun.lock", "utf8")) as {
+  workspaces: Record<string, { version?: string }>;
+};
+if (lock.workspaces[PACKAGE_DIR]?.version !== version) {
+  errors.push(`bun.lock does not match ${label} at ${version}; run bun run release:version ${version} --no-commit`);
 }
 
 const packageAlchemy = manifest.dependencies?.alchemy;

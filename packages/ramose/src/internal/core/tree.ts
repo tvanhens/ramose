@@ -70,16 +70,20 @@ export function decodeNode(buf: Uint8Array): { index: IndexId; node: TreeNode } 
   const magic = r.u32();
   if (magic === DIR_MAGIC) {
     const index = r.u8() as IndexId;
+    if (index > 3) throw new RangeError("invalid directory index");
     const n = r.u32();
+    if (n * 40 > r.remaining) throw new RangeError("truncated directory");
     const keys = new Array<Datom>(n);
     const refs = new Array<NodeRef>(n);
     for (let i = 0; i < n; i++) {
       const kind = r.u8() as NodeKind;
+      if (kind !== NodeKind.Leaf && kind !== NodeKind.Dir) throw new RangeError("invalid node kind");
       const hash = toHex(r.bytes(32));
       const count = r.uvar();
       keys[i] = readDatom(r);
       refs[i] = { hash, kind, count };
     }
+    if (r.remaining !== 0) throw new RangeError("trailing directory bytes");
     return { index, node: { kind: NodeKind.Dir, keys, refs } };
   }
   const seg = decodeSegment(buf);

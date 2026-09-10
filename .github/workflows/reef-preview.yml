@@ -1,28 +1,3 @@
-# Per-PR preview of the Reef demo (examples/reef/): deploy an isolated Alchemy
-# stage `pr-<number>` on PRs that change what Reef is, post/update a PR
-# comment with the SPA URL, and destroy the stage when the PR closes.
-#
-# Isolation from production is the whole point. `REEF_DOMAIN` is production
-# (see reef-publish.yml + examples/reef/src/infra/domain.ts): set, it pins
-# D1 / R2 / Worker names to `ramose-reef-*` and attaches reef.ramose.ai.
-# This workflow never sets it. Preview gets Alchemy-generated names that
-# embed the `pr-<n>` stage, and teardown destroys that stage only.
-#
-# URL shape: without a pinned hostname the peer URL exists only *after* a
-# deploy, so previews are two passes — deploy once, bake the peer origin
-# into the SPA (`--define REEF_PEER_ORIGIN=...`), deploy again so the built
-# assets ship on the auth Worker. The human-facing URL is that auth Worker
-# (workers.dev). The peer's CORS allowlist already carries the auth Worker's
-# origin (examples/reef/src/infra/resources.ts).
-#
-# State: Alchemy's Cloudflare state store, per `pr-<n>` stage (see
-# reef-publish.yml) — durable and account private, so teardown reads real
-# state instead of a possibly-evicted cache, and there is no `.alchemy/` to
-# carry between runs.
-#
-# Credentials: GitHub Environment "Development". The token needs Account /
-# D1 / Edit (Better Auth's database) plus the state-store scopes named in
-# reef-publish.yml.
 name: Reef preview
 
 on:
@@ -79,29 +54,21 @@ jobs:
 
           bun run scripts/build-packages.ts
 
-          # Pass 1: mint (or update) the isolated Workers + D1 + R2. The peer
-          # URL is only knowable after this.
+          bun build examples/reef/index.html --outdir examples/reef/dist --minify
           bun alchemy deploy examples/reef/alchemy.run.ts \
             --stage "$STAGE" --yes --adopt | tee deploy.log
 
           PEER_URL="$(extract_url peerUrl)"
-          API_URL="$(extract_url apiUrl)"
-          if [ -z "$PEER_URL" ] || [ -z "$API_URL" ]; then
-            echo "::error::Deploy finished without peerUrl/apiUrl in the output."
+          APP_URL="$(extract_url appUrl)"
+          if [ -z "$PEER_URL" ] || [ -z "$APP_URL" ]; then
+            echo "::error::Deploy finished without appUrl/peerUrl in the output."
             exit 1
           fi
 
-          # Pass 2: bake the peer origin into the SPA and ship it as the
-          # auth Worker's assets.
-          bun build examples/reef/index.html --outdir examples/reef/dist \
-            --minify --define "REEF_PEER_ORIGIN=\"$PEER_URL\""
-          bun alchemy deploy examples/reef/alchemy.run.ts \
-            --stage "$STAGE" --yes --adopt | tee deploy.log
-
-          echo "url=$API_URL" >> "$GITHUB_OUTPUT"
+          echo "url=$APP_URL" >> "$GITHUB_OUTPUT"
           echo "peer_url=$PEER_URL" >> "$GITHUB_OUTPUT"
           echo "### Reef preview" >> "$GITHUB_STEP_SUMMARY"
-          echo "$API_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "$APP_URL" >> "$GITHUB_STEP_SUMMARY"
       - name: Smoke-test the preview
         env:
           PREVIEW_URL: ${{ steps.deploy.outputs.url }}

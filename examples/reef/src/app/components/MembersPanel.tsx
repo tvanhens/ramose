@@ -1,41 +1,30 @@
-import type { ClientDatabase } from "ramose/client";
+import { useMutationFeedback } from "../MutationFeedback.tsx";
+import { Workspace } from "../../domain/schema.ts";
+import type { ClientDatabase, EntityHandleFor } from "ramose/client";
 import { useQuery } from "ramose/react";
 import { people } from "../../domain/queries.ts";
 import type { ReefMutations } from "../ramose.ts";
-import { personLabel, type PersonRow } from "../screens/BoardScreen.tsx";
+import { personLabel } from "../entities.ts";
 
 type ReefDb = ClientDatabase<ReefMutations>;
 
-type WorkspaceRow = {
-  readonly id: unknown;
-  readonly data: {
-    readonly slug: string;
-    readonly label?: string | undefined;
-    readonly members?: readonly { readonly id: string }[] | undefined;
-  };
-  readonly mutate: {
-    readonly addMember: (input: { person: string }) => unknown;
-    readonly removeMember: (input: { person: string }) => unknown;
-    readonly renameWorkspace: (input: { name: string }) => unknown;
-  };
-};
-
 export const MembersPanel = (props: {
   readonly root: ReefDb;
-  readonly workspace: unknown;
+  readonly workspace: EntityHandleFor<typeof Workspace>;
   readonly onClose: () => void;
 }) => {
-  const workspace = props.workspace as WorkspaceRow;
+  const track = useMutationFeedback();
+  const workspace = props.workspace;
   const directory = useQuery(people(props.root), props.root);
   const everyone = directory.status === "ready" || directory.status === "stale"
-    ? (directory.data as unknown as readonly PersonRow[])
+    ? directory.data
     : [];
   const memberIds = new Set(
     (workspace.data.members ?? []).map((member) => member.id),
   );
-  const members = everyone.filter((person) => memberIds.has(String(person.id)));
+  const members = everyone.filter((person) => memberIds.has(person.id));
   const invitable = everyone.filter(
-    (person) => !memberIds.has(String(person.id)),
+    (person) => !memberIds.has(person.id),
   );
 
   return (
@@ -58,7 +47,7 @@ export const MembersPanel = (props: {
                 className="ghost"
                 disabled={members.length <= 1}
                 onClick={() =>
-                  workspace.mutate.removeMember({ person: String(person.id) })}
+                  track(workspace.mutate.removeMember({ person: person.id }), "Remove member")}
               >
                 Remove
               </button>
@@ -81,7 +70,7 @@ export const MembersPanel = (props: {
               <span>{personLabel(person)}</span>
               <button
                 onClick={() =>
-                  workspace.mutate.addMember({ person: String(person.id) })}
+                  track(workspace.mutate.addMember({ person: person.id }), "Add member")}
               >
                 Add
               </button>

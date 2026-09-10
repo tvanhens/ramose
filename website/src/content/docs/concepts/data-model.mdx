@@ -17,8 +17,8 @@ An entity definition is a durable record kind:
 const Task = Ramose.Entity("task", {
   title: Ramose.string(),
   done: Ramose.boolean(),
-  assignee: Ramose.Ref(User, { optional: true }),
-  labels: Ramose.Field.many(Ramose.Ref(Label)),
+  assignee: Ramose.ref(User, { optional: true }),
+  labels: Ramose.Field.many(Ramose.ref(Label)),
 })
 ```
 
@@ -38,7 +38,7 @@ A trait is a reusable group of fields and operations:
 
 ```ts
 const Commentable = Ramose.Trait("commentable", {
-  comments: Ramose.Field.many(Ramose.Ref(Comment)),
+  comments: Ramose.Field.many(Ramose.ref(Comment)),
 })
 
 const Task = Ramose.Entity(

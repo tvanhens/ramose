@@ -566,7 +566,7 @@ type EnumFieldOpts<
 > & { readonly members: L };
 
 /**
- * Closed string set. Stored as `:db.type/string`. `Enum(["low", "med"])`
+ * Closed string set. Stored as `:db.type/string`. `enumeration(["low", "med"])`
  * types the field as `"low" | "med"` and carries the members on the
  * field (`Issue.status.members`) so the UI does not restate the list.
  */
@@ -624,9 +624,9 @@ type RefShorthand = {
 } & typeof untargetedRef;
 
 /**
- * Targeted reference. Prefer `Ref(User)`; use `Ref(() => Other)` only
- * when the target is declared later. `Ref.self` is a self-ref.
- * The bare `Ref` (passed to {@link Field}) is an untargeted ref.
+ * Targeted reference. Prefer `ref(User)`; use `ref(() => Other)` only
+ * when the target is declared later. `ref.self` is a self-ref.
+ * The bare `ref` (passed to {@link Field}) is an untargeted ref.
  */
 export const Ref: RefShorthand = Object.assign(
   ((

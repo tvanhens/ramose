@@ -24,9 +24,9 @@ credentials the local emulator wants (see `.cursor/CLOUD.md`).
 
 | file | what it is |
 |---|---|
-| `schema.ts` | the catalog, on `ramose/db` — shared by the stack and the Worker |
-| `resources.ts` / `alchemy.run.ts` | `Ramose.Server({ databases: { todos: Todos } })`: the owned peer and the catalog seeder |
-| `src/todos.ts` | `Ramose.Query.from` + writes used by the peer and local-stack fixtures |
+| `schema.ts` | the schema and owned operations, authored with `ramose/db` |
+| `resources.ts` / `alchemy.run.ts` | the local peer deployment |
+| `src/todos.ts` | a reusable `Ramose.Query.from` projection |
 | `peer.ts` | the Worker entry |
 
 `src/todos.ts` hoists the query once at module scope:

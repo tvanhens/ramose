@@ -44,6 +44,9 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Install Chromium and system dependencies
+        run: bunx playwright install --with-deps chromium
+
       - name: Test
         run: bun run test
 
@@ -53,9 +56,9 @@ jobs:
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" != "false" ]; then
-            bun run scripts/release.ts --skip-tests --dry-run
+            bun run scripts/release.ts --skip-tests --dry-run --no-tag --no-push
           else
-            bun run scripts/release.ts --skip-tests
+            bun run scripts/release.ts --skip-tests --no-tag --no-push
           fi
 
       - name: Create GitHub Release

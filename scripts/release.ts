@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { parseArgs } from "node:util";
 import { $ } from "bun";
+import { isReleaseVersion, VERSION_FILES } from "./lib/version.ts";
 
 async function run(cmd: string[]): Promise<void> {
   const proc = Bun.spawn({ cmd, stdio: ["inherit", "inherit", "inherit"] });
@@ -15,35 +17,33 @@ class ExitError extends Error {
   override name = "ExitError";
 }
 
-const VALUE_FLAGS = new Set(["--tag", "--otp"]);
+const { values, positionals } = parseArgs({
+  args: process.argv.slice(2),
+  allowPositionals: true,
+  options: {
+    "dry-run": { type: "boolean" },
+    "skip-tests": { type: "boolean" },
+    "allow-dirty": { type: "boolean" },
+    "no-provenance": { type: "boolean" },
+    "no-tag": { type: "boolean" },
+    "no-push": { type: "boolean" },
+    tag: { type: "string" },
+    otp: { type: "string" },
+  },
+});
+if (positionals.length > 1) throw new Error("expected at most one release version");
 
-const argv = process.argv.slice(2);
-const has = (flag: string) => argv.includes(flag);
-const valueOf = (flag: string) => (has(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
-
-function positional(): string | undefined {
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg.startsWith("--")) {
-      if (VALUE_FLAGS.has(arg)) i++;
-      continue;
-    }
-    return arg;
-  }
-  return undefined;
-}
-
-const dryRun = has("--dry-run");
-const skipTests = has("--skip-tests");
-const allowDirty = has("--allow-dirty");
-const provenance = !has("--no-provenance");
-const shouldTag = !has("--no-tag");
-const shouldPush = !has("--no-push");
-const otp = valueOf("--otp");
-const requestedVersion = positional();
+const dryRun = values["dry-run"] === true;
+const skipTests = values["skip-tests"] === true;
+const allowDirty = values["allow-dirty"] === true;
+const provenance = !values["no-provenance"];
+const shouldTag = !values["no-tag"];
+const shouldPush = !values["no-push"];
+const otp = values.otp;
+const requestedVersion = positionals[0];
 const releaseTag = process.env.RELEASE_TAG;
 
-if (requestedVersion && !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(requestedVersion)) {
+if (requestedVersion && !isReleaseVersion(requestedVersion)) {
   console.error(
     `invalid version: ${requestedVersion} (expected e.g. 0.2.0 or 0.2.0-alpha.1, with no leading "v")`,
   );
@@ -55,9 +55,12 @@ const manifestVersion = () =>
 
 const versionBefore = manifestVersion();
 const version = requestedVersion ?? versionBefore;
+const originals = dryRun
+  ? VERSION_FILES.map((path) => ({ path, contents: readFileSync(path) }))
+  : [];
 
-const isPrerelease = version.includes("-");
-const distTag = valueOf("--tag") ?? (isPrerelease ? "next" : "latest");
+const isPrerelease = version.split("+", 1)[0]!.includes("-");
+const distTag = values.tag ?? (isPrerelease ? "next" : "latest");
 const gitTag = `v${version}`;
 
 type Step = { name: string; run: () => Promise<unknown> };
@@ -78,6 +81,19 @@ if (!allowDirty) {
     },
   });
 }
+
+steps.push({
+  name: "check release tag",
+  run: async () => {
+    if (!shouldTag || dryRun) return;
+    const tagged = await $`git rev-list -n 1 ${`refs/tags/${gitTag}`}`.quiet().nothrow();
+    if (tagged.exitCode !== 0) return;
+    const head = (await $`git rev-parse HEAD`.quiet()).stdout.toString().trim();
+    if (tagged.stdout.toString().trim() !== head || versionBefore !== version) {
+      throw new Error(`tag ${gitTag} already exists on a different release; choose a new version`);
+    }
+  },
+});
 
 steps.push({
   name: "check npm version",
@@ -123,6 +139,8 @@ if (!skipTests) {
   steps.push({ name: "test", run: () => run(["bun", "run", "test"]) });
 }
 
+steps.push({ name: "check documentation", run: () => run(["bun", "run", "check:docs"]) });
+
 steps.push({
   name: "build the package",
   run: () => run(["bun", "run", "scripts/build-packages.ts", "--clean"]),
@@ -152,7 +170,7 @@ try {
 
   announce("publish");
   console.log(
-    `${version} → dist-tag "${distTag}"${isPrerelease && !valueOf("--tag") ? " (prerelease, kept off latest)" : ""}`,
+    `${version} → dist-tag "${distTag}"${isPrerelease && !values.tag ? " (prerelease, kept off latest)" : ""}`,
   );
   const flags = ["--tag", distTag];
   if (dryRun) flags.push("--dry-run");
@@ -172,7 +190,7 @@ try {
     error instanceof Error && (error.name === "ShellError" || error.name === "ExitError");
   const message = error instanceof Error ? error.message : String(error);
   console.error(`\n\x1b[31m✗ release failed: ${childFailure ? message.split("\n")[0] : message}\x1b[0m`);
-  console.error("\x1b[2mevery step is idempotent — fix the cause and run the same command again\x1b[0m");
+  console.error("\x1b[2minspect the completed steps before retrying a failed release\x1b[0m");
   await restoreManifestsIfDryRun();
   process.exit(1);
 }
@@ -194,10 +212,7 @@ async function tagAndPush(): Promise<void> {
     if (tagged === head) {
       console.log(`tag ${gitTag} already exists on this commit`);
     } else {
-      console.log(
-        `tag ${gitTag} already exists on ${tagged.slice(0, 8)} (HEAD is ${head.slice(0, 8)})\n` +
-          "leaving it where it is — it marks the commit that was released",
-      );
+      throw new Error(`tag ${gitTag} already exists on ${tagged.slice(0, 8)} (HEAD is ${head.slice(0, 8)})`);
     }
   } else {
     await run(["git", "tag", gitTag]);
@@ -215,7 +230,7 @@ async function tagAndPush(): Promise<void> {
 }
 
 async function restoreManifestsIfDryRun(): Promise<void> {
-  if (!dryRun || !requestedVersion || versionBefore === version) return;
-  await $`bun run scripts/set-version.ts ${versionBefore} --no-commit`.quiet().nothrow();
-  console.log(`\x1b[2mrestored manifests to ${versionBefore}\x1b[0m`);
+  if (!dryRun) return;
+  for (const { path, contents } of originals) writeFileSync(path, contents);
+  console.log("\x1b[2mrestored manifests and lockfile\x1b[0m");
 }
