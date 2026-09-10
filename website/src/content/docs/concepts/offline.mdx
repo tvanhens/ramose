@@ -36,7 +36,7 @@ Commit installs the server result and removes the corresponding layer. Rejection
 
 ## The outbox survives failure
 
-Invocations, client-created references, queue order, and receipts are persisted separately from the replica. Restart restores both the committed value and the exact speculative view. Reconnect resumes synchronization, submits in order, and uses durable server receipts to recover lost acknowledgements safely. A connection that dies leaves the queue retrying on its own timer and the reads `offline` until the tab's next activation, which is when they activate again.
+Invocations, client-created references, queue order, and receipts are persisted separately from the replica. Restart restores both the committed value and the exact speculative view. Reconnect resumes synchronization, submits in order, and uses durable server receipts to recover lost acknowledgements safely. A connection that dies leaves the queue retrying on its own timer and the reads re-establishing the stream on their own: a stream the server ended reads `stale` while the client reconnects, a stream that stops sending for longer than its keep-alive deadline is torn down and reconnected, and an unreachable server reads `offline` while the client retries with a bounded backoff.
 
 ## One browser, one replica
 

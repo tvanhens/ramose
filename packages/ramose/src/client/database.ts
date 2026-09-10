@@ -140,6 +140,7 @@ export type DatabaseContext = {
   readonly assertLive: (operation: string) => void;
   readonly live: () => boolean;
   readonly onSyncChange: () => void;
+  readonly reconnecting: () => boolean;
   readonly onConfirmed: (identity: ReplicationIdentity) => void;
   readonly onFenced: () => void;
   readonly mutations: MutationContext;
@@ -671,6 +672,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
       this.context.mutations.submit(replicaDatabaseScopeOf(identity));
       this.spawn(this.bindReconciler(identity));
     }
+    const transitioned = this.lastSession?.status !== snapshot.status;
     this.lastSession = snapshot;
     const disposition = readSessionSnapshot(snapshot);
     if (disposition.status === "authentication-required") this.refused = true;
@@ -684,7 +686,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
       this.handles = value.handles;
       this.reverse = undefined;
     }
-    this.publishStatus(this.statusOf(snapshot));
+    this.publishStatus(this.statusOf(snapshot), transitioned);
     this.spawn(this.recompute());
     this.answerWake();
   }
@@ -753,14 +755,26 @@ export class ClientDatabaseHandle implements ClientDatabase {
   private statusOf(snapshot: ReplicationSessionSnapshot): SyncStatus {
     const status = readSessionSnapshot(snapshot).status;
     if (status === "authentication-required" || status === "closed") return status;
-    return this.updateRequired || this.queueUpdateRequired
-      ? "update-required"
-      : status;
+    if (this.updateRequired || this.queueUpdateRequired) return "update-required";
+    if (
+      status !== "offline" || snapshot.status !== "terminal" ||
+      !this.context.reconnecting()
+    ) return status;
+    return this.committed === undefined ? "connecting" : "stale";
   }
 
-  private publishStatus(status: SyncStatus): void {
+  reconnects(): boolean {
+    if (!this.live() || this.refused) return false;
+    const snapshot = this.session?.snapshot();
+    return snapshot === undefined
+      ? this.syncStatus() === "offline"
+      : readSessionSnapshot(snapshot).status === "offline";
+  }
+
+  private publishStatus(status: SyncStatus, transitioned = false): void {
     if (this.closed && status !== "closed") return;
-    if (this.syncStore.publish(syncState(status))) this.context.onSyncChange();
+    const published = this.syncStore.publish(syncState(status));
+    if (published || transitioned) this.context.onSyncChange();
   }
 
   syncStatus(): SyncStatus {

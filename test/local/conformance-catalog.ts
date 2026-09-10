@@ -46,6 +46,10 @@ export const CONFORMANCE_DATABASES = Object.freeze([
   "conformance-replication-wake-burst",
   "conformance-replication-scope-armed",
   "conformance-replication-scope-bystander",
+  "conformance-replication-keepalive",
+  "conformance-replication-keepalive-advance",
+  "conformance-replication-keepalive-wake",
+  "conformance-replication-keepalive-silent",
 ]);
 
 export const ConformanceUser = Entity("conformanceUser", {

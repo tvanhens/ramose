@@ -161,18 +161,43 @@ const decodeLine = (bytes: Uint8Array): ReplicationFrame => {
   return decoded.success;
 };
 
+const SILENT = Symbol("ramose/replication/silent");
+
+const withinDeadline = async <A>(
+  work: Promise<A>,
+  deadline: number | undefined,
+): Promise<A> => {
+  if (deadline === undefined) return work;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const settled = await Promise.race([
+      work,
+      new Promise<typeof SILENT>((resolve) => {
+        timer = setTimeout(() => resolve(SILENT), deadline);
+      }),
+    ]);
+    return settled === SILENT
+      ? fail("replication stream sent nothing within its keep-alive deadline")
+      : settled;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
 export async function* readReplicationFrames(
   response: Response,
   signal?: AbortSignal,
+  silenceDeadlineMs?: number,
 ): AsyncGenerator<ReplicationFrame, void, undefined> {
   validateResponse(response);
   const body = response.body;
   if (body === null) return fail("replication response has no body");
   const reader = body.getReader();
+  let enforced: number | undefined;
   const chunks = (async function* (): AsyncGenerator<Uint8Array, void, undefined> {
     for (;;) {
       signal?.throwIfAborted();
-      const next = await reader.read();
+      const next = await withinDeadline(reader.read(), enforced);
       if (next.done) return;
       yield next.value;
     }
@@ -200,7 +225,10 @@ export async function* readReplicationFrames(
       yield terminal as ReplicationFrame;
       return;
     }
-    yield* decoded;
+    for await (const frame of decoded) {
+      if (frame.type === "KeepAlive") enforced = silenceDeadlineMs;
+      yield frame;
+    }
   } finally {
     try {
       await reader.cancel();
