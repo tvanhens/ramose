@@ -514,13 +514,14 @@ export const handleTestAdmin = async (
     });
   }
   if (rest === "/operation-receipts") {
+    const raw = await request.text();
     return forward(
       request,
       env,
       db,
       "transactor",
       "/admin/test/operation-receipts",
-      "{}",
+      raw.length === 0 ? "{}" : raw,
       { passThrough: true },
     );
   }

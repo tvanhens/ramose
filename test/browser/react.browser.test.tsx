@@ -117,12 +117,12 @@ const seed = async (
   try {
     const snapshot = opaque("q");
     const revision = opaque("r");
-    await storage.startSnapshot({ type: "SnapshotStart", protocol: 3, identity, snapshot, revision });
+    await storage.startSnapshot({ type: "SnapshotStart", protocol: 4, identity, snapshot, revision });
     await storage.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk", protocol: 3, identity, snapshot, index: 0, datoms,
+      type: "SnapshotChunk", protocol: 4, identity, snapshot, index: 0, datoms,
     }));
     const committed = await storage.commitSnapshot({
-      type: "SnapshotCommit", protocol: 3, identity, snapshot, revision, ordinal: 1, chunks: 1,
+      type: "SnapshotCommit", protocol: 4, identity, snapshot, revision, ordinal: 1, settled: 0, chunks: 1,
     }, installed.attributes);
     expect(committed).toBeDefined();
     committed!.release();
@@ -491,16 +491,16 @@ browserTest("a stale→ready confirmation does not re-render a child memoized on
     const snapshot = opaque("q");
     const revision = opaque("r");
     const entity = opaque("z");
-    await storage.startSnapshot({ type: "SnapshotStart", protocol: 3, identity, snapshot, revision });
+    await storage.startSnapshot({ type: "SnapshotStart", protocol: 4, identity, snapshot, revision });
     await storage.stageSnapshotChunk(snapshotChunk({
-      type: "SnapshotChunk", protocol: 3, identity, snapshot, index: 0,
+      type: "SnapshotChunk", protocol: 4, identity, snapshot, index: 0,
       datoms: [
         { entity, field: ":ramose/type", value: { type: "string", value: ":conformanceIssue" }, op: "add" },
         { entity, field: ":conformanceIssue/title", value: { type: "string", value: "restored" }, op: "add" },
       ],
     }));
     (await storage.commitSnapshot({
-      type: "SnapshotCommit", protocol: 3, identity, snapshot, revision, ordinal: 1, chunks: 1,
+      type: "SnapshotCommit", protocol: 4, identity, snapshot, revision, ordinal: 1, settled: 0, chunks: 1,
     }, installed.attributes))!.release();
     await storage.bindAuthenticated({
       fingerprint: await replicationCredentialFingerprint(

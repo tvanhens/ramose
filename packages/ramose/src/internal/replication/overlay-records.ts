@@ -34,6 +34,9 @@ import type { ReplicaDatabaseScope } from "./replica-lifecycle.ts";
 
 export const MUTATION_LAYERS = "mutation-layers-v1";
 
+const isSettlement = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
 export type OptimisticLayerRecord = {
   readonly partition: string;
   readonly sequence: number;
@@ -49,6 +52,7 @@ export type OptimisticLayerRecord = {
   readonly refs: readonly MutationRef[];
   readonly sealing: SealingEpoch | null;
   readonly state: OverlayLayerState;
+  readonly settled: number | undefined;
   readonly activation: number;
   readonly createdAt: number;
 };
@@ -135,6 +139,7 @@ export const buildOptimisticLayer = (
     refs,
     sealing: record.sealing,
     state: "queued",
+    settled: 0,
     activation: 0,
     createdAt: draft.createdAt,
   });
@@ -145,8 +150,9 @@ export const withLayerState = (
   record: OptimisticLayerRecord,
   state: OverlayLayerState,
   activation: number,
+  settled = record.settled,
 ): OptimisticLayerRecord =>
-  durable(Object.freeze({ ...record, state, activation }));
+  durable(Object.freeze({ ...record, state, settled, activation }));
 
 const durable = (record: OptimisticLayerRecord): OptimisticLayerRecord => {
   let stored: unknown;
@@ -229,7 +235,10 @@ export const decodeOptimisticLayer = (
     supplied.add(ref);
     refs.push(ref as MutationRef);
   }
-  if (value.state !== "queued" && value.state !== "committed-unobserved") return undefined;
+  if (
+    value.state !== "queued" && value.state !== "committed-unobserved" &&
+    value.state !== "retired"
+  ) return undefined;
   if (
     typeof value.activation !== "number" || !Number.isSafeInteger(value.activation) ||
     value.activation < 0
@@ -274,6 +283,7 @@ export const decodeOptimisticLayer = (
     refs: Object.freeze(refs),
     sealing: embedded,
     state: value.state,
+    settled: isSettlement(value.settled) ? value.settled : undefined,
     activation: value.activation,
     createdAt: value.createdAt,
   });
@@ -422,6 +432,7 @@ export const layerOf = (
     invocation: record.invocation,
     sequence: record.sequence,
     state: record.state,
+    settled: record.settled,
     activation: record.state === "queued" ? null : record.activation,
     declared: declaredRefs(record),
     changeset,

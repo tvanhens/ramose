@@ -33,6 +33,7 @@ const receipt = (overrides: Partial<ReceiptRecord> = {}): ReceiptRecord =>
     state: "committed",
     observation: "unobserved",
     activation: 3,
+    settled: 1,
     output: null,
     mappings: [],
     failure: null,

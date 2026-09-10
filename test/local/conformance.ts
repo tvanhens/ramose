@@ -637,6 +637,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
           title: "Original invocation",
         },
         receipt: { version: 2, invocationId, status: "completed" },
+        settled: 1,
       });
 
       const transferred = await invoke(base, database, admin, {
@@ -721,6 +722,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(completed.body).toEqual({
         result: { title: "Original visible result" },
         receipt: { version: 2, invocationId, status: "completed" },
+        settled: 1,
       });
       const absentReplay = await invoke(
         base,
@@ -844,6 +846,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(completed.body).toEqual({
         result: { id: await entityHandle(base, database, member, issue) },
         receipt: { version: 2, invocationId, status: "completed" },
+        settled: 1,
       });
 
       const exactRetry = await invoke(
@@ -994,6 +997,7 @@ export const registerConformance = (ctx: { urls: () => LocalUrls }) => {
       expect(completed.body).toEqual({
         result: { id: await entityHandle(base, database, member, original) },
         receipt: { version: 2, invocationId, status: "completed" },
+        settled: 1,
       });
       expect((await entity(
         base,

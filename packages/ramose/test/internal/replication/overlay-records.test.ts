@@ -175,6 +175,7 @@ describe("the durable layer record", () => {
       "scope",
       "sealing",
       "sequence",
+      "settled",
       "state",
       "target",
     ]);

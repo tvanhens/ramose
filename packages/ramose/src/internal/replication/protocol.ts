@@ -3,9 +3,9 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { ReadCompatibilityHash } from "../authorization/identities.ts";
 
-export const REPLICATION_PROTOCOL_VERSION = 3 as const;
+export const REPLICATION_PROTOCOL_VERSION = 4 as const;
 
-export const REPLICA_STORAGE_VERSION = 5 as const;
+export const REPLICA_STORAGE_VERSION = 6 as const;
 export const INITIAL_REPLICA_BUILD_ID = "ramose-client-v1" as const;
 
 export const MAX_REPLICATION_REQUEST_BYTES = 65_536;
@@ -128,6 +128,12 @@ export type ReplicationOrdinal = typeof ReplicationOrdinal.Type;
 export const isReplicationOrdinal = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
+export const ReplicationSettlement = Schema.Natural;
+export type ReplicationSettlement = typeof ReplicationSettlement.Type;
+
+export const isReplicationSettlement = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
 export const SEALED_ENTITY_HANDLE_PATTERN = /^[A-Za-z0-9_-]{54}[AEIMQUYcgkosw048]$/;
 
 export const SealedEntityHandle = Schema.String.check(
@@ -230,6 +236,7 @@ export const SnapshotCommit = Schema.Struct({
   snapshot: OpaqueReplicationId,
   revision: OpaqueReplicationId,
   ordinal: ReplicationOrdinal,
+  settled: ReplicationSettlement,
   chunks: Schema.Natural,
 });
 export type SnapshotCommit = typeof SnapshotCommit.Type;
@@ -241,6 +248,7 @@ export const Change = Schema.Struct({
   from: OpaqueReplicationId,
   revision: OpaqueReplicationId,
   ordinal: ReplicationOrdinal,
+  settled: ReplicationSettlement,
   datoms: Schema.Array(LogicalDatom).check(
     Schema.isMaxLength(MAX_REPLICATION_DATOMS_PER_CHANGE),
   ),
@@ -254,6 +262,7 @@ export const ResumeReady = Schema.Struct({
   identity: ReplicationIdentity,
   revision: OpaqueReplicationId,
   ordinal: ReplicationOrdinal,
+  settled: ReplicationSettlement,
 });
 export type ResumeReady = typeof ResumeReady.Type;
 

@@ -26,6 +26,7 @@ const layer = (
   invocation: invocationId(),
   sequence: ++sequence,
   state: "queued",
+  settled: 0,
   activation: null,
   declared: [alpha, beta],
   changeset,

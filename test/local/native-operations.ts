@@ -423,6 +423,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(completed.body).toEqual({
         result: { title: "ERASE ME" },
         receipt: { version: 2, invocationId, status: "completed" },
+        settled: 2,
       });
 
       const unrelated = await invoke(base, database, token, {

@@ -1,0 +1,1736 @@
+import { expect } from "vitest";
+import { IndexedDbReplicaStorage } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
+import {
+  replicaDatabaseScopeOf,
+  replicaScopeOf,
+} from "../../packages/ramose/src/internal/replication/replica-lifecycle.ts";
+import { changeFrame } from "../../packages/ramose/test/replication-fixtures.ts";
+import { browserTest } from "./fixtures.ts";
+import { openTab, type TabHandle } from "./tab-harness.ts";
+import {
+  identityFor,
+  noteDatoms,
+  OFFLINE_ORIGIN,
+  opaque,
+  REVISION,
+  seed,
+  type ReplicaOrigin,
+} from "./propagation-tab.ts";
+
+const tabModule = new URL("./propagation-tab.ts", import.meta.url).href;
+
+type QueryReport = {
+  readonly status: string;
+  readonly titles: readonly string[];
+  readonly pending: readonly boolean[];
+};
+
+type LoopReport = {
+  readonly leadership: string;
+  readonly passes: number;
+  readonly planned: readonly string[];
+  readonly overlapped: boolean;
+};
+
+const dumpStore = async (
+  name: string,
+  store: string,
+): Promise<readonly unknown[]> => {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  const transaction = database.transaction(store, "readonly");
+  const records = await new Promise<unknown[]>((resolve, reject) => {
+    const request = transaction.objectStore(store).getAll();
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  await new Promise<void>((resolve) => {
+    transaction.addEventListener("complete", () => resolve(), { once: true });
+    transaction.addEventListener("abort", () => resolve(), { once: true });
+  });
+  database.close();
+  return records;
+};
+
+const stripSettlements = async (name: string): Promise<number> => {
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  const stores = ["mutation-layers-v1", "mutation-receipts-v1"];
+  const transaction = database.transaction(stores, "readwrite");
+  let stripped = 0;
+  for (const store of stores) {
+    const target = transaction.objectStore(store);
+    const records = await new Promise<unknown[]>((resolve, reject) => {
+      const request = target.getAll();
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    for (const record of records) {
+      const value = record as Record<string, unknown>;
+      if (value.settled === undefined) continue;
+      delete value.settled;
+      target.put(value);
+      stripped++;
+    }
+  }
+  await new Promise<void>((resolve) => {
+    transaction.addEventListener("complete", () => resolve(), { once: true });
+    transaction.addEventListener("abort", () => resolve(), { once: true });
+  });
+  database.close();
+  return stripped;
+};
+
+const NOTES = [
+  { entity: opaque("e"), title: "first", rank: "a" },
+  { entity: opaque("f"), title: "second", rank: "b" },
+] as const;
+
+const NEXT_REVISION = "revision-two".padEnd(43, "0");
+const THIRD_REVISION = "revision-three".padEnd(43, "0");
+
+const deleteDatabase = (name: string): Promise<void> =>
+  new Promise((resolve) => {
+    const request = indexedDB.deleteDatabase(name);
+    request.addEventListener("success", () => resolve(), { once: true });
+    request.addEventListener("error", () => resolve(), { once: true });
+    request.addEventListener("blocked", () => resolve(), { once: true });
+  });
+
+const databaseOf = (uniqueId: string): string =>
+  uniqueId.replaceAll("-", "").padEnd(43, "z").slice(0, 43);
+
+const until = async <A>(
+  probe: () => Promise<A>,
+  ready: (value: A) => boolean,
+  label: string,
+  budget = 4_000,
+): Promise<A> => {
+  const deadline = performance.now() + budget;
+  for (;;) {
+    const value = await probe();
+    if (ready(value)) return value;
+    if (performance.now() > deadline) {
+      throw new Error(`timed out waiting for ${label}: ${JSON.stringify(value)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
+
+const steady = async <A>(
+  probe: () => Promise<A>,
+  holds: (value: A) => boolean,
+  label: string,
+  attempts = 12,
+): Promise<void> => {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const value = await probe();
+    if (!holds(value)) {
+      throw new Error(`${label} changed to ${JSON.stringify(value)}`);
+    }
+  }
+};
+
+const rendering = (tab: TabHandle): Promise<QueryReport> =>
+  until(
+    () => tab.call<QueryReport>("report"),
+    (report) => report.status === "ready",
+    "the first rendered value",
+  );
+
+const started = async (
+  tab: TabHandle,
+  storageName: string,
+  database: string,
+): Promise<QueryReport> => {
+  await tab.call("start", { storageName, database });
+  const rendered = await rendering(tab);
+  await until(
+    () => tab.call<string>("sync"),
+    (status) => status === "offline",
+    "the tab's own stream to end",
+  );
+  return rendered;
+};
+
+const LIVE = ["live", "stale"] as const;
+
+const heldOrigin = (uniqueId: string): ReplicaOrigin => ({
+  server: globalThis.location.origin,
+  root: `quiet${uniqueId.replaceAll("-", "")}-held`,
+});
+
+const startedLive = async (
+  tab: TabHandle,
+  storageName: string,
+  database: string,
+  origin: ReplicaOrigin,
+): Promise<QueryReport> => {
+  await tab.call("start", { storageName, database, origin });
+  const rendered = await rendering(tab);
+  await until(
+    () => tab.call<string>("sync"),
+    (status) => (LIVE as readonly string[]).includes(status),
+    "the tab's stream to hold open",
+  );
+  return rendered;
+};
+
+const titles = (tab: TabHandle): Promise<readonly string[]> =>
+  tab.call<QueryReport>("report").then((report) => report.titles);
+
+browserTest(
+  "a committed change in one tab re-renders another tab's query",
+  async ({ browser }) => {
+    const name = `ramose-propagation-commit-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    await seed(name, await identityFor(database), NOTES);
+    const leader = await openTab(tabModule);
+    const follower = await openTab(tabModule);
+    try {
+      const rendered = await started(follower, name, database);
+      expect(rendered.titles).toEqual(["first", "second"]);
+
+      const started_at = performance.now();
+      expect(
+        await leader.call<string>("commit", {
+          storageName: name,
+          database,
+          note: { entity: opaque("g"), title: "third", rank: "c" },
+          from: REVISION,
+          revision: NEXT_REVISION,
+        }),
+      ).toBe(NEXT_REVISION);
+
+      const converged = await until(
+        () => titles(follower),
+        (rows) => rows.includes("third"),
+        "the follower to render the committed change",
+      );
+      expect(converged).toEqual(["first", "second", "third"]);
+      expect(performance.now() - started_at).toBeLessThan(2_000);
+    } finally {
+      await follower.close();
+      await leader.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "consecutive committed changes never leave a tab on the earlier one",
+  async ({ browser }) => {
+    const name = `ramose-propagation-consecutive-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    await seed(name, await identityFor(database), NOTES);
+    const leader = await openTab(tabModule);
+    const follower = await openTab(tabModule);
+    try {
+      expect((await started(follower, name, database)).titles).toEqual([
+        "first",
+        "second",
+      ]);
+
+      expect(
+        await leader.call<string>("commit", {
+          storageName: name,
+          database,
+          note: { entity: opaque("g"), title: "third", rank: "c" },
+          from: REVISION,
+          revision: NEXT_REVISION,
+          then: {
+            note: { entity: opaque("i"), title: "fourth", rank: "d" },
+            revision: THIRD_REVISION,
+          },
+        }),
+      ).toBe(THIRD_REVISION);
+
+      const converged = await until(
+        () => titles(follower),
+        (rows) => rows.includes("fourth"),
+        "the follower to render the later change",
+      );
+      expect(converged).toEqual(["first", "second", "third", "fourth"]);
+
+      await steady(
+        () => titles(follower),
+        (rows) => rows.includes("fourth"),
+        "the follower's converged value",
+      );
+    } finally {
+      await follower.close();
+      await leader.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a committed change reaches a tab with no channel on its next activation",
+  async ({ browser }) => {
+    const name = `ramose-propagation-suppressed-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    await seed(name, await identityFor(database), NOTES);
+    const leader = await openTab(tabModule);
+    const follower = await openTab(tabModule);
+    try {
+      expect(await follower.call<boolean>("withoutBroadcasts")).toBe(true);
+      expect((await started(follower, name, database)).titles).toEqual([
+        "first",
+        "second",
+      ]);
+
+      await leader.call<string>("commit", {
+        storageName: name,
+        database,
+        note: { entity: opaque("g"), title: "third", rank: "c" },
+        from: REVISION,
+        revision: NEXT_REVISION,
+      });
+
+      await steady(
+        () => titles(follower),
+        (rows) => !rows.includes("third"),
+        "the unnotified tab's value",
+      );
+
+      follower.wake();
+
+      const converged = await until(
+        () => titles(follower),
+        (rows) => rows.includes("third"),
+        "the reactivated tab to read the durable head",
+      );
+      expect(converged).toEqual(["first", "second", "third"]);
+    } finally {
+      await follower.close();
+      await leader.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "one tab's optimistic layer becomes visible in the other tab",
+  async ({ browser }) => {
+    const name = `ramose-propagation-layer-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    await seed(name, await identityFor(database), NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      expect(await writer.call<string>("rename", { from: "first", to: "renamed" }))
+        .toMatch(/./);
+
+      const moved = await until(
+        () => reader.call<QueryReport>("report"),
+        (report) => report.titles.includes("renamed"),
+        "the other tab to render the optimistic layer",
+      );
+      expect(moved.titles).toEqual(["renamed", "second"]);
+      expect(moved.pending[0]).toBe(true);
+      expect(await writer.call<string>("receipt")).toBe("queued");
+    } finally {
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "an optimistic layer reaches an unnotified tab on its next activation",
+  async ({ browser }) => {
+    const name = `ramose-propagation-layer-suppressed-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    await seed(name, await identityFor(database), NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    try {
+      expect(await reader.call<boolean>("withoutBroadcasts")).toBe(true);
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "renamed" });
+      await steady(
+        () => titles(reader),
+        (rows) => !rows.includes("renamed"),
+        "the unnotified tab's value",
+      );
+
+      reader.wake();
+      expect(
+        await until(
+          () => titles(reader),
+          (rows) => rows.includes("renamed"),
+          "the reactivated tab to read the durable layers",
+        ),
+      ).toEqual(["renamed", "second"]);
+    } finally {
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+const renamed = (
+  entity: string,
+  from: string,
+  to: string,
+): readonly {
+  readonly entity: string;
+  readonly field: string;
+  readonly value: { readonly type: "string"; readonly value: string };
+  readonly op: "add" | "retract";
+}[] => [
+  { entity, field: ":note/title", value: { type: "string", value: from }, op: "retract" },
+  { entity, field: ":note/title", value: { type: "string", value: to }, op: "add" },
+];
+
+const regressions = (
+  history: readonly QueryReport[],
+  left: readonly string[],
+  reached: string,
+): readonly (readonly string[])[] => {
+  const moved = history.findIndex((report) => report.titles.includes(reached));
+  if (moved < 0) return [];
+  return history.slice(moved + 1)
+    .filter((report) => left.some((title) => report.titles.includes(title)))
+    .map((report) => report.titles);
+};
+
+const monotone = async (
+  tab: TabHandle,
+  label: string,
+  left: readonly string[],
+  reached: string,
+): Promise<void> => {
+  expect(
+    regressions(await tab.call<readonly QueryReport[]>("published"), left, reached),
+    `${label} rendered a position the card had already left`,
+  ).toEqual([]);
+};
+
+browserTest(
+  "a fenced layer never returns a tab to the position the card left",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-snapback-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("moved"),
+            `${label} to render the optimistic layer`,
+          ),
+        ).toEqual(["moved", "second"]);
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      expect(queued.records).toHaveLength(1);
+      expect(
+        (await leader.outbox().acknowledge(queued.records[0]!, {
+          _tag: "Committed",
+          settled: 1,
+          output: {},
+          mappings: [],
+        })).state,
+      ).toBe("committed");
+      expect(
+        await until(
+          () => writer.call<string>("receipt"),
+          (status) => status === "committed",
+          "the writer's receipt to settle",
+        ),
+      ).toBe("committed");
+
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+      expect(
+        (await leader.outbox().receipt(receiver, queued.records[0]!.invocation))
+          ?.observation,
+      ).toBe("observed");
+
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved")
+          ),
+        "the rendered position after the fence",
+        25,
+      );
+      await monotone(reader, "the reader", ["first"], "moved");
+      await monotone(writer, "the writer", ["first"], "moved");
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: renamed(NOTES[0]!.entity, "first", "moved"),
+      }));
+      installed?.release();
+
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => tab.call<QueryReport>("report"),
+            (rendered) =>
+              rendered.titles.includes("moved") && rendered.pending[0] === false,
+            `${label} to converge on the committed position`,
+          ),
+        ).toMatchObject({ titles: ["moved", "second"], pending: [false, false] });
+      }
+      await monotone(reader, "the reader", ["first"], "moved");
+      await monotone(writer, "the writer", ["first"], "moved");
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a fence over the earlier layer keeps the later one the tabs already render",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-partial-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the first layer",
+      );
+      await writer.call<string>("rename", { from: "moved", to: "moved-again" });
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("moved-again"),
+            `${label} to render the later layer`,
+          ),
+        ).toEqual(["moved-again", "second"]);
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      expect(queued.records).toHaveLength(2);
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      const fenced = await leader.outbox().fenceActivation(receiver, activation);
+      expect(fenced.fenced).toEqual([queued.records[0]!.invocation]);
+      expect(fenced.layers.map((layer) => [layer.invocation, layer.state]))
+        .toEqual([
+          [queued.records[0]!.invocation, "retired"],
+          [queued.records[1]!.invocation, "queued"],
+        ]);
+
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved-again")
+          ),
+        "the rendered position after the partial fence",
+        25,
+      );
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: renamed(NOTES[0]!.entity, "first", "moved"),
+      }));
+      installed?.release();
+
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => tab.call<QueryReport>("report"),
+            (rendered) => rendered.pending[0] === true,
+            `${label} to render the later layer over the committed position`,
+          ),
+        ).toMatchObject({ titles: ["moved-again", "second"] });
+        await monotone(tab, label, ["first", "moved"], "moved-again");
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a fence after the committed outcome arrived retires the layer at once",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-outcome-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("third"),
+            `${label} to adopt the committed change`,
+          ),
+        ).toEqual(["moved", "second", "third"]);
+      }
+
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("server-decided"),
+            `${label} to render the authoritative outcome`,
+          ),
+        ).toEqual(["server-decided", "second", "third"]);
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a fence after the committed basis moved past a queued layer retires it at once",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-advanced-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("third"),
+            `${label} to adopt the committed change`,
+          ),
+        ).toEqual(["moved", "second", "third"]);
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("server-decided"),
+            `${label} to render the authoritative outcome`,
+          ),
+        ).toEqual(["server-decided", "second", "third"]);
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a tab that never saw the layer queued renders the committed outcome at the fence",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-unseen-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    let reader: TabHandle | undefined;
+    try {
+      await started(writer, name, database);
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the optimistic layer",
+      );
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+
+      reader = await openTab(tabModule);
+      expect(await started(reader, name, database)).toBeDefined();
+      expect(
+        await until(
+          () => titles(reader!),
+          (rows) => rows.includes("third"),
+          "the fresh tab to compose the retained layer",
+        ),
+      ).toEqual(["moved", "second", "third"]);
+
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      expect(
+        await until(
+          () => titles(reader!),
+          (rows) => rows.includes("server-decided"),
+          "the fresh tab to render the authoritative outcome",
+        ),
+      ).toEqual(["server-decided", "second", "third"]);
+    } finally {
+      leader.close();
+      await reader?.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a layer seen queued and then absent is carried until its settlement is covered",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-coalesced-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      expect(await reader.call<boolean>("withoutBroadcasts")).toBe(true);
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      reader.wake();
+      expect(
+        await until(
+          () => titles(reader),
+          (rows) => rows.includes("moved"),
+          "the unnotified reader to observe the layer queued",
+        ),
+      ).toEqual(["moved", "second"]);
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      reader.wake();
+      await steady(
+        () => titles(reader),
+        (rows) => rows.length === 0 || rows.includes("moved"),
+        "the reader's position across a coalesced acknowledgement and fence",
+        25,
+      );
+      await monotone(reader, "the reader", ["first"], "moved");
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+      reader.wake();
+
+      expect(
+        await until(
+          () => titles(reader),
+          (rows) => rows.includes("server-decided"),
+          "the reader to retire the carried layer once its settlement is covered",
+        ),
+      ).toEqual(["server-decided", "second", "third"]);
+      await monotone(reader, "the reader", ["first"], "moved");
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "an unrelated committed change between the queue and the fence keeps the layer",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-unrelated-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    const tabs = [[writer, "the writer"], [reader, "the reader"]] as const;
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of tabs) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const unrelated = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 0,
+        datoms: noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+      }));
+      unrelated?.release();
+      for (const [tab, label] of tabs) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("third"),
+            `${label} to adopt the unrelated committed change`,
+          ),
+        ).toEqual(["moved", "second", "third"]);
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved")
+          ),
+        "the rendered position after an unrelated change moved the basis",
+        25,
+      );
+      for (const [tab, label] of tabs) await monotone(tab, label, ["first"], "moved");
+
+      const covering = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: NEXT_REVISION,
+        revision: THIRD_REVISION,
+        ordinal: 3,
+        settled: 1,
+        datoms: renamed(NOTES[0]!.entity, "first", "server-decided"),
+      }));
+      covering?.release();
+
+      for (const [tab, label] of tabs) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("server-decided"),
+            `${label} to retire the layer its settlement now covers`,
+          ),
+        ).toEqual(["server-decided", "second", "third"]);
+        await monotone(tab, label, ["first"], "moved");
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a tab that never saw the layer queued carries it until its settlement is covered",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-carried-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    let reader: TabHandle | undefined;
+    try {
+      await started(writer, name, database);
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the optimistic layer",
+      );
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+
+      reader = await openTab(tabModule);
+      expect((await started(reader, name, database)).titles)
+        .toEqual(["moved", "second"]);
+
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      await steady(
+        () => titles(reader!),
+        (rows) => rows.length === 0 || rows.includes("moved"),
+        "the fresh tab's position after the fence",
+        25,
+      );
+      await monotone(reader, "the fresh tab", ["first"], "moved");
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+
+      expect(
+        await until(
+          () => titles(reader!),
+          (rows) => rows.includes("server-decided"),
+          "the fresh tab to retire the carried layer once its settlement is covered",
+        ),
+      ).toEqual(["server-decided", "second", "third"]);
+      await monotone(reader, "the fresh tab", ["first"], "moved");
+    } finally {
+      leader.close();
+      await reader?.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "later activations over a carried layer never return a tab to the position it left",
+  async ({ browser }) => {
+    const name = `ramose-propagation-fence-repeated-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    const tabs = [[writer, "the writer"], [reader, "the reader"]] as const;
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of tabs) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+
+      for (let pass = 0; pass < 3; pass++) {
+        const activation = await leader.outbox().beginActivation(receiver);
+        await leader.outbox().fenceActivation(receiver, activation);
+        await steady(
+          async () => ({
+            writer: await titles(writer),
+            reader: await titles(reader),
+          }),
+          (rendered) =>
+            [rendered.writer, rendered.reader].every((rows) =>
+              rows.length === 0 || rows.includes("moved")
+            ),
+          `the rendered position after activation ${pass}`,
+          10,
+        );
+      }
+      for (const [tab, label] of tabs) await monotone(tab, label, ["first"], "moved");
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+
+      for (const [tab, label] of tabs) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("server-decided"),
+            `${label} to render the authoritative outcome`,
+          ),
+        ).toEqual(["server-decided", "second", "third"]);
+        await monotone(tab, label, ["first"], "moved");
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a settlement that changes nothing visible still retires the carried layer",
+  async ({ browser }) => {
+    const name = `ramose-propagation-settlement-only-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    const tabs = [[writer, "the writer"], [reader, "the reader"]] as const;
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of tabs) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+
+      for (const [tab] of tabs) tab.wake();
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved")
+          ),
+        "the carried layer before its settlement is covered",
+        15,
+      );
+
+      expect(await leader.acknowledgeOrdinal({
+        identity,
+        revision: REVISION,
+        ordinal: 1,
+        settled: 1,
+      })).toEqual({ ordinal: 1, settled: 1 });
+
+      for (const [tab, label] of tabs) {
+        tab.wake();
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => !rows.includes("moved"),
+            `${label} to retire the layer the settlement now covers`,
+          ),
+        ).toEqual(["first", "second"]);
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a settlement advance reaches a tab with no stream without waking it",
+  async ({ browser }) => {
+    const name = `ramose-propagation-settlement-notice-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    const tabs = [[writer, "the writer"], [reader, "the reader"]] as const;
+    const layerStates = async (): Promise<readonly unknown[]> =>
+      (await dumpStore(name, "mutation-layers-v1"))
+        .map((row) => (row as Record<string, unknown>).state);
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      for (const [tab, label] of tabs) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the optimistic layer`,
+        );
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+      expect(await layerStates()).toEqual(["retired"]);
+
+      await steady(
+        async () => ({
+          writer: await titles(writer),
+          reader: await titles(reader),
+        }),
+        (rendered) =>
+          [rendered.writer, rendered.reader].every((rows) =>
+            rows.length === 0 || rows.includes("moved")
+          ),
+        "the retired layer before its settlement is covered",
+        15,
+      );
+
+      expect(await leader.acknowledgeOrdinal({
+        identity,
+        revision: REVISION,
+        ordinal: 1,
+        settled: 1,
+      })).toEqual({ ordinal: 1, settled: 1 });
+
+      for (const [tab, label] of tabs) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => !rows.includes("moved"),
+            `${label} to adopt the announced settlement`,
+          ),
+        ).toEqual(["first", "second"]);
+      }
+      expect(await layerStates()).toEqual(["retired"]);
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a settlement advance reaches a tab whose stream stays open and sends nothing",
+  async ({ browser }) => {
+    const name = `ramose-propagation-live-notice-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    const origin = heldOrigin(browser.uniqueId);
+    await seed(name, identity, NOTES, [OFFLINE_ORIGIN, origin]);
+    const writer = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    let reader: TabHandle | undefined;
+    const layerStates = async (): Promise<readonly unknown[]> =>
+      (await dumpStore(name, "mutation-layers-v1"))
+        .map((row) => (row as Record<string, unknown>).state);
+    try {
+      await started(writer, name, database);
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the optimistic layer",
+      );
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+      expect(await layerStates()).toEqual(["retired"]);
+
+      reader = await openTab(tabModule);
+      expect((await startedLive(reader, name, database, origin)).titles)
+        .toEqual(["moved", "second"]);
+      await steady(
+        async () => ({
+          rendered: await titles(reader!),
+          sync: await reader!.call<string>("sync"),
+        }),
+        (observed) =>
+          observed.rendered.includes("moved") &&
+          (LIVE as readonly string[]).includes(observed.sync),
+        "the live follower before its settlement is covered",
+        15,
+      );
+
+      expect(await leader.acknowledgeOrdinal({
+        identity,
+        revision: REVISION,
+        ordinal: 1,
+        settled: 1,
+      })).toEqual({ ordinal: 1, settled: 1 });
+
+      expect(
+        await until(
+          () => titles(reader!),
+          (rows) => !rows.includes("moved"),
+          "the live follower to adopt the announced settlement",
+        ),
+      ).toEqual(["first", "second"]);
+      expect((LIVE as readonly string[]))
+        .toContain(await reader.call<string>("sync"));
+      expect(await layerStates()).toEqual(["retired"]);
+    } finally {
+      leader.close();
+      await reader?.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a layer acknowledged before settlements existed is covered by any v6 snapshot",
+  async ({ browser }) => {
+    const name = `ramose-propagation-legacy-layer-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, [
+      { entity: NOTES[0]!.entity, title: "server-decided", rank: "a" },
+      NOTES[1]!,
+    ]);
+    const writer = await openTab(tabModule);
+    const reader = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    const tabs = [[writer, "the writer"], [reader, "the reader"]] as const;
+    try {
+      await started(writer, name, database);
+      await started(reader, name, database);
+
+      await writer.call<string>("rename", { from: "server-decided", to: "moved" });
+      for (const [tab, label] of tabs) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("moved"),
+            `${label} to render the optimistic layer`,
+          ),
+        ).toEqual(["moved", "second"]);
+      }
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+
+      expect(await stripSettlements(name)).toBeGreaterThan(0);
+      for (const [tab] of tabs) tab.wake();
+      for (const [tab, label] of tabs) {
+        await until(
+          () => titles(tab),
+          (rows) => rows.includes("moved"),
+          `${label} to render the settlement-pending layer`,
+        );
+      }
+
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+      expect(await dumpStore(name, "mutation-layers-v1")).toEqual([]);
+
+      for (const [tab] of tabs) tab.wake();
+      for (const [tab, label] of tabs) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => !rows.includes("moved"),
+            `${label} to reveal the snapshot that already carries the legacy commit`,
+          ),
+        ).toEqual(["server-decided", "second"]);
+        await steady(
+          () => titles(tab),
+          (rows) => rows.length === 0 || !rows.includes("moved"),
+          `${label} keeping the authoritative value`,
+          15,
+        );
+      }
+    } finally {
+      leader.close();
+      await reader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a tab opened after the fence renders the retired layer until coverage",
+  async ({ browser }) => {
+    const name = `ramose-propagation-post-fence-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    let reader: TabHandle | undefined;
+    try {
+      await started(writer, name, database);
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the optimistic layer",
+      );
+
+      const receiver = replicaDatabaseScopeOf(identity);
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Committed",
+        settled: 1,
+        output: {},
+        mappings: [],
+      });
+      const activation = await leader.outbox().beginActivation(receiver);
+      await leader.outbox().fenceActivation(receiver, activation);
+      expect((await dumpStore(name, "mutation-layers-v1")).map((row) =>
+        (row as Record<string, unknown>).state
+      )).toEqual(["retired"]);
+
+      reader = await openTab(tabModule);
+      expect((await started(reader, name, database)).titles)
+        .toEqual(["moved", "second"]);
+      await steady(
+        () => titles(reader!),
+        (rows) => rows.length === 0 || rows.includes("moved"),
+        "the post-fence tab's first render",
+        15,
+      );
+
+      const installed = await leader.applyChange(changeFrame({
+        type: "Change",
+        protocol: 4,
+        identity,
+        from: REVISION,
+        revision: NEXT_REVISION,
+        ordinal: 2,
+        settled: 1,
+        datoms: [
+          ...renamed(NOTES[0]!.entity, "first", "server-decided"),
+          ...noteDatoms([{ entity: opaque("g"), title: "third", rank: "c" }]),
+        ],
+      }));
+      installed?.release();
+
+      for (const [tab, label] of [[writer, "the writer"], [reader, "the reader"]] as const) {
+        expect(
+          await until(
+            () => titles(tab),
+            (rows) => rows.includes("server-decided"),
+            `${label} to retire the layer on coverage`,
+          ),
+        ).toEqual(["server-decided", "second", "third"]);
+        await monotone(tab, label, ["first"], "moved");
+      }
+    } finally {
+      leader.close();
+      await reader?.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a rejected legacy queued layer drops its optimistic value at once",
+  async ({ browser }) => {
+    const name = `ramose-propagation-legacy-rejected-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const writer = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(writer, name, database);
+      await writer.call<string>("rename", { from: "first", to: "moved" });
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the optimistic layer",
+      );
+
+      expect(await stripSettlements(name)).toBeGreaterThan(0);
+      writer.wake();
+      await until(
+        () => titles(writer),
+        (rows) => rows.includes("moved"),
+        "the writer to render the settlement-pending queued layer",
+      );
+
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      await leader.outbox().acknowledge(queued.records[0]!, {
+        _tag: "Rejected",
+        code: "invocation_conflict",
+      });
+      expect(await dumpStore(name, "mutation-layers-v1")).toEqual([]);
+
+      writer.wake();
+      expect(
+        await until(
+          () => titles(writer),
+          (rows) => !rows.includes("moved"),
+          "the writer to drop the rejected optimistic value",
+        ),
+      ).toEqual(["first", "second"]);
+      await steady(
+        () => titles(writer),
+        (rows) => rows.length === 0 || !rows.includes("moved"),
+        "the rejected layer staying gone",
+        15,
+      );
+    } finally {
+      leader.close();
+      await writer.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a follower's enqueue wakes the leader's submission loop",
+  async ({ browser }) => {
+    const name = `ramose-propagation-wakeup-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    await seed(name, await identityFor(database), NOTES);
+    const leader = await openTab(tabModule);
+    const follower = await openTab(tabModule);
+    try {
+      await leader.call<LoopReport>("lead", { storageName: name, database });
+      await until(
+        () => leader.call<LoopReport>("loop"),
+        (loop) => loop.leadership === "leading",
+        "leadership",
+      );
+      const before = await leader.call<LoopReport>("settle");
+
+      const at = performance.now();
+      await follower.call("enqueue", { storageName: name, database, title: "queued" });
+
+      const woken = await until(
+        () => leader.call<LoopReport>("loop"),
+        (loop) => loop.planned.length > before.planned.length,
+        "the leader to plan the follower's queued work",
+      );
+      expect(performance.now() - at).toBeLessThan(1_000);
+      expect(woken.planned).toContain(database);
+    } finally {
+      await follower.close();
+      await leader.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a follower's receipt settles from the leader's durable acknowledgement",
+  async ({ browser }) => {
+    const name = `ramose-propagation-receipt-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const follower = await openTab(tabModule);
+    const leader = await IndexedDbReplicaStorage.open(name);
+    try {
+      await started(follower, name, database);
+      await follower.call<string>("rename", { from: "first", to: "renamed" });
+      expect(await follower.call<string>("receipt")).toBe("queued");
+
+      const queued = await leader.outbox().restore(replicaScopeOf(identity));
+      expect(queued.records).toHaveLength(1);
+      const receipt = await leader.outbox().acknowledge(
+        queued.records[0]!,
+        { _tag: "Committed", settled: 1, output: {}, mappings: [] },
+        Date.now(),
+      );
+      expect(receipt.state).toBe("committed");
+
+      expect(
+        await until(
+          () => follower.call<string>("receipt"),
+          (status) => status === "committed",
+          "the follower's receipt to settle",
+        ),
+      ).toBe("committed");
+    } finally {
+      leader.close();
+      await follower.close();
+      await deleteDatabase(name);
+    }
+  },
+);
+
+browserTest(
+  "a storm of enqueue notices runs coalesced passes that never overlap",
+  async ({ browser }) => {
+    const name = `ramose-propagation-storm-${browser.uniqueId}`;
+    const database = databaseOf(browser.uniqueId);
+    const identity = await identityFor(database);
+    await seed(name, identity, NOTES);
+    const leader = await openTab(tabModule);
+    const follower = await openTab(tabModule);
+    const observer = await IndexedDbReplicaStorage.open(name);
+    try {
+      await leader.call<LoopReport>("lead", { storageName: name, database });
+      await until(
+        () => leader.call<LoopReport>("loop"),
+        (loop) => loop.leadership === "leading",
+        "leadership",
+      );
+
+      expect(
+        await follower.call<number>("enqueue", {
+          storageName: name,
+          database,
+          title: "queued",
+          count: 30,
+        }),
+      ).toBe(30);
+
+      await until(
+        () => leader.call<LoopReport>("loop"),
+        (loop) => loop.passes > 0,
+        "the leader to run a pass",
+      );
+      const settled = await leader.call<LoopReport>("settle");
+      const restored = await observer.outbox().restore(replicaScopeOf(identity));
+      expect(restored.records).toHaveLength(30);
+      expect(settled.overlapped).toBe(false);
+      expect(settled.passes).toBeLessThan(30);
+      expect(settled.passes).toBeGreaterThan(0);
+    } finally {
+      observer.close();
+      await follower.close();
+      await leader.close();
+      await deleteDatabase(name);
+    }
+  },
+);

@@ -129,10 +129,16 @@ export const allocationMappingsResolvable = (
 export type CompletedInvocationReceipt = InvocationReceiptIdentity & {
   readonly status: "completed";
   readonly committedT: number;
+  readonly settled: number;
   readonly output: unknown;
   readonly replayFence: InvocationReplayFenceV1;
   readonly allocations?: InvocationAllocationMappingsV1;
 };
+
+export type UnsettledInvocationReceipt = Omit<
+  CompletedInvocationReceipt,
+  "settled"
+>;
 
 export type RejectedInvocationReceipt = InvocationReceiptIdentity & {
   readonly status: "rejected";
@@ -184,6 +190,7 @@ export type InvocationReceiptEvent =
   | {
     readonly _tag: "Complete";
     readonly committedT: number;
+    readonly settled: number;
     readonly output: unknown;
     readonly replayFence: InvocationReplayFenceV1;
     readonly allocations?: InvocationAllocationMappingsV1;
@@ -195,11 +202,21 @@ export type InvocationReceiptEvent =
   | { readonly _tag: "Fail" }
   | { readonly _tag: "Recover" };
 
+export type InvocationReceiptCompletion = Omit<
+  Extract<InvocationReceiptEvent, { readonly _tag: "Complete" }>,
+  "settled"
+>;
+
+export type PendingInvocationReceiptEvent =
+  | InvocationReceiptCompletion
+  | Exclude<InvocationReceiptEvent, { readonly _tag: "Complete" }>;
+
 export type InvocationReceiptOutcome =
   | {
     readonly _tag: "Completed";
     readonly receipt: PublicInvocationReceipt & { readonly status: "completed" };
     readonly committedT: number;
+    readonly settled: number;
     readonly output: unknown;
     readonly mappings?: readonly {
       readonly clientRef: string;
@@ -615,10 +632,14 @@ export const transitionInvocationReceipt = (
       if (!Number.isSafeInteger(event.committedT) || event.committedT < 0) {
         throw new TypeError("completed invocation receipt needs a valid writer position");
       }
+      if (!Number.isSafeInteger(event.settled) || event.settled <= 0) {
+        throw new TypeError("completed invocation receipt needs a settlement sequence");
+      }
       return Object.freeze({
         ...receipt,
         status: "completed",
         committedT: event.committedT,
+        settled: event.settled,
         output: event.output,
         replayFence: snapshotInvocationReplayFence(event.replayFence),
         ...(event.allocations === undefined ? {} : {
@@ -658,6 +679,7 @@ export const invocationReceiptOutcome = (
           readonly status: "completed";
         },
         committedT: receipt.committedT,
+        settled: receipt.settled,
         output: receipt.output,
         ...(receipt.allocations === undefined ? {} : {
           mappings: Object.freeze(receipt.allocations.entries.map((entry) =>
@@ -742,7 +764,7 @@ export type LegacyInvocationReceiptRow = {
 };
 
 export const isLegacyInvocationReceiptRow = (
-  value: StoredInvocationReceipt | LegacyInvocationReceiptRow,
+  value: StoredInvocationReceipt | LegacyInvocationReceiptRow | UnsettledInvocationReceipt,
 ): value is LegacyInvocationReceiptRow =>
   (value as Partial<LegacyInvocationReceiptRow>)._tag === "LegacyInvocationReceipt";
 
@@ -755,9 +777,25 @@ const isLegacyInvocationReceipt = (
   typeof record.invocationId === "string" && record.invocationId.length > 0 &&
   typeof record.status === "string";
 
+export const isUnsettledInvocationReceipt = (
+  value: StoredInvocationReceipt | LegacyInvocationReceiptRow | UnsettledInvocationReceipt,
+): value is UnsettledInvocationReceipt =>
+  (value as Partial<CompletedInvocationReceipt>).status === "completed" &&
+  (value as Partial<CompletedInvocationReceipt>).settled === undefined;
+
+export const settleInvocationReceipt = (
+  receipt: UnsettledInvocationReceipt,
+  settled: number,
+): CompletedInvocationReceipt => {
+  if (!Number.isSafeInteger(settled) || settled <= 0) {
+    throw new TypeError("a backfilled invocation receipt needs a settlement sequence");
+  }
+  return Object.freeze({ ...receipt, settled });
+};
+
 export const parseStoredInvocationReceipt = (
   value: unknown,
-): StoredInvocationReceipt | LegacyInvocationReceiptRow => {
+): StoredInvocationReceipt | LegacyInvocationReceiptRow | UnsettledInvocationReceipt => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("invalid durable invocation receipt");
   }
@@ -779,17 +817,22 @@ export const parseStoredInvocationReceipt = (
   if (
     record.status === "completed" &&
     Number.isSafeInteger(record.committedT) && (record.committedT as number) >= 0 &&
+    (record.settled === undefined ||
+      (Number.isSafeInteger(record.settled) && (record.settled as number) > 0)) &&
     Object.hasOwn(record, "output") &&
     isInvocationReplayFence(record.replayFence) &&
     (record.allocations === undefined || isAllocationMappings(record.allocations)) &&
     hasExactKeys(record, [
       ...IDENTITY_KEYS,
       "committedT",
+      ...(record.settled === undefined ? [] : ["settled"]),
       "output",
       "replayFence",
       ...(record.allocations === undefined ? [] : ["allocations"]),
     ])
-  ) return record as StoredInvocationReceipt;
+  ) {
+    return record as StoredInvocationReceipt | UnsettledInvocationReceipt;
+  }
   if (
     record.status === "rejected" && isRejection(record.rejection) &&
     hasExactKeys(record, [...IDENTITY_KEYS, "rejection"])
@@ -861,6 +904,7 @@ export const parseAuthoritativeInvocationResult = (
     result._tag === "Completed" &&
     hasPublicReceipt(result.receipt, invocationId, "completed") &&
     Number.isSafeInteger(result.committedT) && (result.committedT as number) >= 0 &&
+    Number.isSafeInteger(result.settled) && (result.settled as number) > 0 &&
     Object.hasOwn(result, "output") &&
     (result.mappings === undefined || isPublicMappings(result.mappings)) &&
     (result.outputRefPaths === undefined ||
@@ -869,6 +913,7 @@ export const parseAuthoritativeInvocationResult = (
       "_tag",
       "receipt",
       "committedT",
+      "settled",
       "output",
       ...(result.mappings === undefined ? [] : ["mappings"]),
       ...(result.outputRefPaths === undefined ? [] : ["outputRefPaths"]),

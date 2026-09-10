@@ -21,6 +21,7 @@ import { closeObservedStream, type CancellableStream } from "../support/stream.t
 import {
   CONFORMANCE_DATABASES,
   ConformanceIssue,
+  ConformanceUser,
   conformanceInertReadCompatibilityHash,
   conformanceReadCompatibilityHash,
   conformanceRotatedReadCompatibilityHash,
@@ -31,6 +32,7 @@ import {
 import {
   create,
   currentBasis,
+  install,
   invoke,
   originHeaders,
   seedWorld,
@@ -57,6 +59,10 @@ const HIDDEN_WAKE_DATABASE = CONFORMANCE_DATABASES[26]!;
 const WAKE_BURST_DATABASE = CONFORMANCE_DATABASES[27]!;
 const SCOPE_ARMED_DATABASE = CONFORMANCE_DATABASES[28]!;
 const SCOPE_BYSTANDER_DATABASE = CONFORMANCE_DATABASES[29]!;
+const SETTLEMENT_SEQUENCE_DATABASE = CONFORMANCE_DATABASES[30]!;
+const SETTLEMENT_RACE_DATABASE = CONFORMANCE_DATABASES[31]!;
+const SETTLEMENT_BASIS_DATABASE = CONFORMANCE_DATABASES[32]!;
+const SETTLEMENT_BACKFILL_DATABASE = CONFORMANCE_DATABASES[33]!;
 
 const HIDDEN_SCALE_COMMITS = 1_000;
 
@@ -84,7 +90,7 @@ export const openReplication = (
   database: string,
   token: string,
   resumeRevision?: string,
-  protocol = 3,
+  protocol = 4,
   signal?: AbortSignal,
   readCompatibilityHash = conformanceReadCompatibilityHash,
 ): Promise<Response> => fetchPastProxyBlip(
@@ -218,16 +224,28 @@ type BurstObservation = {
   readonly visible: string;
   readonly committedOrdinal: number;
   readonly visibleOrdinal: number;
+  readonly committedSettled: number;
+  readonly visibleSettled: number;
+  readonly acknowledgedSettled: number;
 };
 
-const withoutOrdinal = (wire: string): string =>
-  wire.replace(/"ordinal":\d+/, '"ordinal":0');
+const withoutCounters = (wire: string): string =>
+  wire
+    .replace(/"ordinal":\d+/, '"ordinal":0')
+    .replace(/"settled":\d+/, '"settled":0');
 
 const ordinalOf = (frame: ReplicationFrame): number => {
   if (frame.type !== "SnapshotCommit" && frame.type !== "Change") {
     throw new Error(`${frame.type} carries no visible-change ordinal`);
   }
   return frame.ordinal;
+};
+
+const settledOf = (frame: ReplicationFrame): number => {
+  if (frame.type !== "SnapshotCommit" && frame.type !== "Change") {
+    throw new Error(`${frame.type} carries no settlement`);
+  }
+  return frame.settled;
 };
 
 type RetentionObservation = {
@@ -282,7 +300,7 @@ const observeFirstSeenRetention = async (
     world.database,
     world.member,
     revision,
-    3,
+    4,
     controller.signal,
   );
   const resumed = readReplicationNdjson(resumedResponse)[Symbol.asyncIterator]();
@@ -319,6 +337,7 @@ const observeFirstSeenRetention = async (
 type ResumeObservation = {
   readonly checkpoints: readonly string[];
   readonly frames: readonly string[];
+  readonly settled: number;
 };
 
 const observeUnchangedResume = async (
@@ -336,7 +355,7 @@ const observeUnchangedResume = async (
     world.database,
     world.member,
     revision,
-    3,
+    4,
     controller.signal,
   );
   const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
@@ -382,6 +401,7 @@ const observeUnchangedResume = async (
     return {
       checkpoints: Object.freeze(checkpoints),
       frames: Object.freeze([ready.value.wire]),
+      settled: ready.value.frame.settled,
     };
   } finally {
     controller.abort();
@@ -474,11 +494,14 @@ const observeBackpressuredBurst = async (
     return {
       checkpoints: Object.freeze(checkpoints),
       snapshot: Object.freeze(
-        snapshot.frames.map((item) => withoutOrdinal(item.wire)),
+        snapshot.frames.map((item) => withoutCounters(item.wire)),
       ),
-      visible: withoutOrdinal(next.value.wire),
+      visible: withoutCounters(next.value.wire),
       committedOrdinal: ordinalOf(commit.frame),
       visibleOrdinal: ordinalOf(next.value.frame),
+      committedSettled: settledOf(commit.frame),
+      visibleSettled: settledOf(next.value.frame),
+      acknowledgedSettled: renamed.body.settled as number,
     };
   } finally {
     for (
@@ -511,13 +534,13 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         undefined,
-        3,
+        4,
         undefined,
         ReadCompatibilityHash.make("z".repeat(43)),
       );
       expect(mismatched.status).toBe(409);
       expect(await mismatched.text()).toBe(
-        `${JSON.stringify({ type: "TerminalError", protocol: 3, code: "update-required" })}\n`,
+        `${JSON.stringify({ type: "TerminalError", protocol: 4, code: "update-required" })}\n`,
       );
 
       const unauthenticated = await openReplication(
@@ -525,12 +548,11 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         "not-a-token",
         undefined,
-        3,
+        4,
         undefined,
         ReadCompatibilityHash.make("z".repeat(43)),
       );
       expect(unauthenticated.status).toBe(401);
-
     });
 
     test("snapshot bytes are complete, logical, and identical after a hidden-only commit", async () => {
@@ -597,7 +619,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       if (Result.isSuccess(terminal)) {
         expect(terminal.success).toEqual({
           type: "TerminalError",
-          protocol: 3,
+          protocol: 4,
           code: "incompatible-version",
         });
       }
@@ -733,6 +755,19 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
     test("unchanged resume is one-shot and zero/hidden physical worlds are byte/checkpoint-identical", async () => {
       const base = ctx.urls().conformanceUrl;
       const world = await seedWorld(base, RESUME_READY_DATABASE, false);
+      const owned: number[] = [];
+      for (const title of ["Resume ready owned", "Beta"]) {
+        const renamed = await rename(
+          base,
+          world.database,
+          world.member,
+          world.ids.parent,
+          title,
+        );
+        expect(renamed.status).toBe(200);
+        owned.push(renamed.body.settled as number);
+      }
+      expect(owned).toEqual([1, 2]);
       const initialResponse = await openReplication(
         base,
         world.database,
@@ -763,6 +798,8 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(hidden.checkpoints).toEqual(zero.checkpoints);
       expect(hidden.frames).toEqual(zero.frames);
       expect(zero.frames).toHaveLength(1);
+      expect(zero.settled).toBe(2);
+      expect(hidden.settled).toBe(zero.settled);
       expect(zero.frames[0]).not.toMatch(
         /basisT|txEid|attributeEid|hidden|count|timing|queue/,
       );
@@ -773,7 +810,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        3,
+        4,
         controller.signal,
       );
       const production = readReplicationFrames(
@@ -831,7 +868,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         const reset = await observed(recovery, "unreconstructable resume reset");
         expect(reset.frame).toEqual({
           type: "Reset",
-          protocol: 3,
+          protocol: 4,
           identity: initialIdentity,
         });
         state = applyObservedFrame(state, reset);
@@ -1008,7 +1045,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(terminal.done).toBe(false);
         expect(terminal.value?.frame).toEqual({
           type: "TerminalError",
-          protocol: 3,
+          protocol: 4,
           code: "closed",
           identity: baseline.state.identity,
         });
@@ -1147,7 +1184,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         baseline.state.committed!.revision,
-        3,
+        4,
         cancelled.signal,
       );
       const cancelledIterator = readReplicationNdjson(
@@ -1250,6 +1287,10 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(hidden.visible).not.toMatch(/Parked hidden/);
       expect(zero.visibleOrdinal).toBe(zero.committedOrdinal + 1);
       expect(hidden.visibleOrdinal).toBe(hidden.committedOrdinal + 1);
+      expect([zero.committedSettled, zero.visibleSettled]).toEqual([0, 1]);
+      expect([hidden.committedSettled, hidden.visibleSettled]).toEqual([2, 3]);
+      expect(zero.visibleSettled).toBe(zero.acknowledgedSettled);
+      expect(hidden.visibleSettled).toBe(hidden.acknowledgedSettled);
     });
 
     test("a documentation-only client build resumes without a reset or snapshot", async () => {
@@ -1275,7 +1316,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        3,
+        4,
         controller.signal,
         conformanceInertReadCompatibilityHash,
       );
@@ -1287,10 +1328,11 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(ready.done).toBe(false);
         expect(ready.value?.frame).toEqual({
           type: "ResumeReady",
-          protocol: 3,
+          protocol: 4,
           identity,
           revision,
           ordinal: resumeOrdinal,
+          settled: 0,
         });
         const following = resumed.next();
         const quiet = await Promise.race([
@@ -1310,7 +1352,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        3,
+        4,
         undefined,
         conformanceRotatedReadCompatibilityHash,
       );
@@ -1318,7 +1360,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
       expect(await rotated.text()).toBe(
         `${JSON.stringify({
           type: "TerminalError",
-          protocol: 3,
+          protocol: 4,
           code: "update-required",
         })}\n`,
       );
@@ -1406,7 +1448,7 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         world.database,
         world.member,
         revision,
-        3,
+        4,
         controller.signal,
       );
       expect(resumedResponse.status).toBe(200);
@@ -1417,10 +1459,11 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         expect(ready.done).toBe(false);
         expect(ready.value?.frame).toEqual({
           type: "ResumeReady",
-          protocol: 3,
+          protocol: 4,
           identity,
           revision,
           ordinal: resumeOrdinal,
+          settled: 0,
         });
       } finally {
         controller.abort();
@@ -1635,6 +1678,315 @@ export const registerReplication = (ctx: { urls: () => LocalUrls }) => {
         for (const name of armedNames) {
           await releaseCheckpoint(base, SCOPE_ARMED_DATABASE, name);
         }
+      }
+    });
+
+    test("settlement runs dense per principal and never crosses principals", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = SETTLEMENT_SEQUENCE_DATABASE;
+      await install(base, database);
+      const custodian = await signToken(database, "admin", "settlement-custodian", {
+        org: "acme",
+      });
+      const author = await signToken(database, "admin", "settlement-author", {
+        org: "acme",
+      });
+      const alternate = await signToken(database, "admin", "settlement-alternate", {
+        org: "acme",
+      });
+      const owner = await create(base, database, custodian, ConformanceUser.ns, {
+        sub: "settlement-owner",
+      });
+      const settle = async (
+        token: string,
+        key: string,
+        invocation: string = crypto.randomUUID(),
+      ): Promise<number> => {
+        const response = await invoke(base, database, token, {
+          owner: { kind: "entity", name: ConformanceIssue.ns },
+          localName: "create",
+        }, { key, title: key, owner, org: "acme" }, undefined, invocation);
+        expect(response.status).toBe(200);
+        return response.body.settled as number;
+      };
+
+      const authored: number[] = [];
+      const alternated: number[] = [];
+      for (let index = 0; index < 3; index++) {
+        authored.push(await settle(author, `settlement-author-${index}`));
+        if (index < 2) {
+          alternated.push(await settle(alternate, `settlement-alternate-${index}`));
+        }
+      }
+      expect(authored).toEqual([1, 2, 3]);
+      expect(alternated).toEqual([1, 2]);
+
+      const replay = crypto.randomUUID();
+      expect(await settle(author, "settlement-author-replay", replay)).toBe(4);
+      expect(await settle(author, "settlement-author-replay", replay)).toBe(4);
+      expect(await settle(author, "settlement-author-last")).toBe(5);
+      expect(await settle(alternate, "settlement-alternate-last")).toBe(3);
+    });
+
+    test("a completed receipt from the parent revision backfills its settlement on replay", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = SETTLEMENT_BACKFILL_DATABASE;
+      await install(base, database);
+      const custodian = await signToken(database, "admin", "settlement-backfill-custodian", {
+        org: "acme",
+      });
+      const author = await signToken(database, "admin", "settlement-backfill-author", {
+        org: "acme",
+      });
+      const owner = await create(base, database, custodian, ConformanceUser.ns, {
+        sub: "settlement-backfill-owner",
+      });
+      const settlements = async (): Promise<
+        readonly { settled: number; committedT: number; invocationId: string }[]
+      > => {
+        const response = await testAdmin(base, database, "/operation-receipts", {
+          action: "settlements",
+          principalId: "settlement-backfill-author",
+        });
+        expect(response.status).toBe(200);
+        return response.body.settlements;
+      };
+
+      const invocation = crypto.randomUUID();
+      const first = await invoke(base, database, author, {
+        owner: { kind: "entity", name: ConformanceIssue.ns },
+        localName: "create",
+      }, {
+        key: "settlement-backfill",
+        title: "Settlement backfill",
+        owner,
+        org: "acme",
+      }, undefined, invocation);
+      expect(first.status).toBe(200);
+      expect(first.body.settled).toBe(1);
+      const recorded = await settlements();
+      expect(recorded).toHaveLength(1);
+      const committedT = recorded[0]!.committedT;
+
+      const dropped = await testAdmin(base, database, "/operation-receipts", {
+        action: "drop-settlement",
+        principalId: "settlement-backfill-author",
+        invocationId: invocation,
+      });
+      expect(dropped.status).toBe(200);
+      expect(dropped.body.dropped).toBe(true);
+      expect(await settlements()).toEqual([]);
+
+      const replayed = await invoke(base, database, author, {
+        owner: { kind: "entity", name: ConformanceIssue.ns },
+        localName: "create",
+      }, {
+        key: "settlement-backfill",
+        title: "Settlement backfill",
+        owner,
+        org: "acme",
+      }, undefined, invocation);
+      expect(replayed.status).toBe(200);
+      expect(replayed.body.result).toEqual(first.body.result);
+      expect(replayed.body.settled).toBeGreaterThan(0);
+      const backfilled = replayed.body.settled as number;
+      expect(await settlements()).toEqual([
+        { settled: backfilled, committedT, invocationId: invocation },
+      ]);
+
+      const again = await invoke(base, database, author, {
+        owner: { kind: "entity", name: ConformanceIssue.ns },
+        localName: "create",
+      }, {
+        key: "settlement-backfill",
+        title: "Settlement backfill",
+        owner,
+        org: "acme",
+      }, undefined, invocation);
+      expect(again.status).toBe(200);
+      expect(again.body.settled).toBe(backfilled);
+      expect(await settlements()).toEqual([
+        { settled: backfilled, committedT, invocationId: invocation },
+      ]);
+    });
+
+    test("coverage stays prefix-closed when a backfill lands out of commit order", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = SETTLEMENT_BACKFILL_DATABASE;
+      await install(base, database);
+      const principalId = "settlement-order-author";
+      const custodian = await signToken(database, "admin", "settlement-order-custodian", {
+        org: "acme",
+      });
+      const author = await signToken(database, "admin", principalId, { org: "acme" });
+      const owner = await create(base, database, custodian, ConformanceUser.ns, {
+        sub: "settlement-order-owner",
+      });
+      const settlements = async (): Promise<
+        readonly { settled: number; committedT: number; invocationId: string }[]
+      > => {
+        const response = await testAdmin(base, database, "/operation-receipts", {
+          action: "settlements",
+          principalId,
+        });
+        expect(response.status).toBe(200);
+        return response.body.settlements;
+      };
+      const settledThrough = async (basisT: number): Promise<number> => {
+        const response = await testAdmin(base, database, "/operation-receipts", {
+          action: "settled-through",
+          principalId,
+          basisT,
+        });
+        expect(response.status).toBe(200);
+        return response.body.settled as number;
+      };
+      const issue = async (key: string, invocation: string) => {
+        const response = await invoke(base, database, author, {
+          owner: { kind: "entity", name: ConformanceIssue.ns },
+          localName: "create",
+        }, { key, title: key, owner, org: "acme" }, undefined, invocation);
+        expect(response.status).toBe(200);
+        return response;
+      };
+
+      const earlier = crypto.randomUUID();
+      expect((await issue("settlement-order-a", earlier)).body.settled).toBe(1);
+      const first = await settlements();
+      expect(first).toHaveLength(1);
+      const t1 = first[0]!.committedT;
+
+      expect((await testAdmin(base, database, "/operation-receipts", {
+        action: "drop-settlement",
+        principalId,
+        invocationId: earlier,
+      })).body.dropped).toBe(true);
+
+      expect((await issue("settlement-order-b", crypto.randomUUID())).body.settled).toBe(1);
+      const second = await settlements();
+      expect(second).toHaveLength(1);
+      const t2 = second[0]!.committedT;
+      expect(t2).toBeGreaterThan(t1);
+
+      expect((await issue("settlement-order-a", earlier)).body.settled).toBe(2);
+      expect(await settlements()).toEqual([
+        { settled: 1, committedT: t2, invocationId: second[0]!.invocationId },
+        { settled: 2, committedT: t1, invocationId: earlier },
+      ]);
+
+      expect(await settledThrough(t1)).toBe(0);
+      expect(await settledThrough(t2)).toBe(2);
+      expect(await settledThrough(t1 - 1)).toBe(0);
+    });
+
+    test("racing invocations from one principal settle distinctly and consecutively", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const database = SETTLEMENT_RACE_DATABASE;
+      await install(base, database);
+      const custodian = await signToken(database, "admin", "settlement-race-custodian", {
+        org: "acme",
+      });
+      const racer = await signToken(database, "admin", "settlement-racer", {
+        org: "acme",
+      });
+      const owner = await create(base, database, custodian, ConformanceUser.ns, {
+        sub: "settlement-race-owner",
+      });
+      const racing = await Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          invoke(base, database, racer, {
+            owner: { kind: "entity", name: ConformanceIssue.ns },
+            localName: "create",
+          }, {
+            key: `settlement-race-${index}`,
+            title: `Settlement race ${index}`,
+            owner,
+            org: "acme",
+          })),
+      );
+      expect(racing.map((response) => response.status)).toEqual(
+        Array.from({ length: racing.length }, () => 200),
+      );
+      expect(
+        racing
+          .map((response) => response.body.settled as number)
+          .sort((left, right) => left - right),
+      ).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      await currentBasis(base, database);
+
+      const response = await openReplication(base, database, racer);
+      expect(response.status).toBe(200);
+      const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+      try {
+        const snapshot = await collectCommittedSnapshot(iterator);
+        expect(settledOf(snapshot.frames.at(-1)!.frame)).toBe(8);
+      } finally {
+        await closeIterator(iterator);
+      }
+    });
+
+    test("a frame settles only the principal's own commits its basis covers", async () => {
+      const base = ctx.urls().conformanceUrl;
+      const world = await seedWorld(base, SETTLEMENT_BASIS_DATABASE, false);
+      const acknowledged: number[] = [];
+      for (const title of ["Basis one", "Basis two", "Basis three"]) {
+        const renamed = await rename(
+          base,
+          world.database,
+          world.member,
+          world.ids.parent,
+          title,
+        );
+        expect(renamed.status).toBe(200);
+        acknowledged.push(renamed.body.settled as number);
+      }
+      expect(acknowledged).toEqual([1, 2, 3]);
+      await currentBasis(base, world.database);
+
+      const response = await openReplication(base, world.database, world.member);
+      expect(response.status).toBe(200);
+      const iterator = readReplicationNdjson(response)[Symbol.asyncIterator]();
+      try {
+        const covered = await collectCommittedSnapshot(iterator);
+        expect(settledOf(covered.frames.at(-1)!.frame)).toBe(3);
+
+        for (let index = 0; index < 2; index++) {
+          await create(base, world.database, world.admin, ConformanceIssue.ns, {
+            key: `settlement-basis-hidden-${index}`,
+            title: `Settlement basis hidden ${index}`,
+            owner: world.ids.bob,
+            org: "other",
+          });
+        }
+        await currentBasis(base, world.database);
+
+        const changing = iterator.next();
+        const renamed = await rename(
+          base,
+          world.database,
+          world.member,
+          world.ids.parent,
+          "Basis four",
+        );
+        expect(renamed.status).toBe(200);
+        expect(renamed.body.settled).toBe(4);
+        const change = await withTimeout(changing, 7_000, "settled change");
+        expect(change.done).toBe(false);
+        expect(change.value?.frame.type).toBe("Change");
+        expect(settledOf(change.value!.frame)).toBe(4);
+        expect(change.value!.wire).not.toMatch(/Settlement basis hidden/);
+      } finally {
+        await closeIterator(iterator);
+      }
+
+      const later = await openReplication(base, world.database, world.member);
+      expect(later.status).toBe(200);
+      const laterIterator = readReplicationNdjson(later)[Symbol.asyncIterator]();
+      try {
+        const settled = await collectCommittedSnapshot(laterIterator);
+        expect(settledOf(settled.frames.at(-1)!.frame)).toBe(4);
+      } finally {
+        await closeIterator(laterIterator);
       }
     });
   });

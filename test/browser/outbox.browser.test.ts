@@ -26,6 +26,7 @@ import {
 } from "../../packages/ramose/src/internal/replication/outbox.ts";
 import {
   replicaDatabaseScopeOf,
+  replicaPartitionKey,
   replicaScopeOf,
   type ReplicaDatabaseScope,
   type ReplicaScope,
@@ -190,11 +191,11 @@ const confirm = async (
   const snapshot = `snapshot-${label}`.padEnd(43, "0");
   const revision = `revision-${label}`.padEnd(43, "0");
   await storage.startSnapshot({
-    type: "SnapshotStart", protocol: 3, identity: selected, snapshot, revision,
+    type: "SnapshotStart", protocol: 4, identity: selected, snapshot, revision,
   });
   await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk",
-    protocol: 3,
+    protocol: 4,
     identity: selected,
     snapshot,
     index: 0,
@@ -206,7 +207,7 @@ const confirm = async (
     }],
   }));
   dropped(await storage.commitSnapshot({
-    type: "SnapshotCommit", protocol: 3, identity: selected, snapshot, revision, ordinal: 1, chunks: 1,
+    type: "SnapshotCommit", protocol: 4, identity: selected, snapshot, revision, ordinal: 1, settled: 0, chunks: 1,
   }, REPLICA_ATTRIBUTES));
 };
 
@@ -262,6 +263,7 @@ browserTest("one enqueue is all-or-nothing across a crash cut", async ({ browser
       state: "queued",
       observation: null,
       activation: 0,
+      settled: 0,
       output: null,
       mappings: [],
       failure: null,
@@ -712,6 +714,7 @@ browserTest(
       dependent = queued.invocation;
       await outbox.acknowledge(create, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [{ clientRef: allocation, entityId: mapped }],
       });
@@ -1282,6 +1285,7 @@ browserTest(
       ) as EntityId;
       const committed = {
         _tag: "Committed",
+        settled: 1,
         output: { id: "opaque" },
         mappings: [{ clientRef: allocation, entityId: mapped }],
       } as const;
@@ -1310,6 +1314,7 @@ browserTest(
 
         observation: "unobserved",
         activation: 0,
+        settled: 1,
         output: { id: "opaque" },
         mappings: [{ clientRef: allocation, entityId: mapped }],
         failure: null,
@@ -1357,6 +1362,7 @@ browserTest(
       ) as EntityId;
       const committed = {
         _tag: "Committed",
+        settled: 1,
         output: { id: "opaque" },
         mappings: [{ clientRef: allocation, entityId: mapped }],
       } as const;
@@ -1371,6 +1377,7 @@ browserTest(
       expect(
         await rejectedTag(outbox.acknowledge(record, {
           _tag: "Committed",
+          settled: 1,
           output: { id: "opaque" },
           mappings: [{
             clientRef: allocation,
@@ -1415,6 +1422,7 @@ browserTest(
       expect(
         await rejectedTag(outbox.acknowledge(record, {
           _tag: "Committed",
+          settled: 1,
           output: null,
           mappings: [],
         })),
@@ -1445,7 +1453,7 @@ browserTest(
       const output = { "\ud800": `lone \udfff surrogate` };
       const receipt = await outbox.acknowledge(
         record,
-        { _tag: "Committed", output, mappings: [] },
+        { _tag: "Committed", settled: 1, output, mappings: [] },
         1_700_000_000_004,
       );
       expect(receipt.state).toBe("committed");
@@ -1489,6 +1497,7 @@ browserTest(
 
         observation: null,
         activation: 0,
+        settled: 0,
         output: null,
         mappings: [],
         failure: { code: "invocation_conflict" },
@@ -1523,7 +1532,7 @@ browserTest(
       const record = await outbox.enqueue(draft(receiver), { scope });
       await outbox.acknowledge(
         record,
-        { _tag: "Committed", output: null, mappings: [] },
+        { _tag: "Committed", settled: 1, output: null, mappings: [] },
         1_700_000_000_007,
       );
 
@@ -1559,6 +1568,7 @@ browserTest(
         record,
         {
           _tag: "Committed",
+          settled: 1,
           output: JSON.parse('{"id":"first","tags":["a","b"]}'),
           mappings: [],
         },
@@ -1574,6 +1584,7 @@ browserTest(
         expect(
           await rejectedTag(outbox.acknowledge(record, {
             _tag: "Committed",
+            settled: 1,
             output,
             mappings: [],
           })),
@@ -1585,6 +1596,7 @@ browserTest(
         record,
         {
           _tag: "Committed",
+          settled: 1,
           output: JSON.parse('{"tags":["a","b"],"id":"first"}'),
           mappings: [],
         },
@@ -1717,6 +1729,7 @@ browserTest(
           record,
           {
             _tag: "Committed",
+            settled: 1,
             output: null,
             mappings: [{ clientRef: allocation, entityId: mapped }],
           },
@@ -1777,6 +1790,7 @@ browserTest(
       ) as EntityId;
       await storage.outbox().acknowledge(create, {
         _tag: "Committed",
+        settled: 1,
         output: null,
         mappings: [{ clientRef: allocation, entityId: mapped }],
       });
@@ -1939,6 +1953,7 @@ browserTest("every interleaving of accept and refuse drains the queues", async (
           );
           await outbox.acknowledge(record, {
             _tag: "Committed",
+            settled: record.sequence,
             output: null,
             mappings,
           });
@@ -1979,10 +1994,72 @@ const commitOne = async (
   const record = await outbox.enqueue(draft(receiver, { enqueuedAt: at }), { scope });
   return outbox.acknowledge(
     record,
-    { _tag: "Committed", output: { id: record.invocation }, mappings: [] },
+    { _tag: "Committed", settled: record.sequence, output: { id: record.invocation }, mappings: [] },
     at,
   );
 };
+
+const setHeadSettlement = async (
+  name: string,
+  of: ReplicationIdentity,
+  settled: number,
+): Promise<void> => {
+  const database = await openNative(name);
+  const transaction = database.transaction("replica-committed-heads-v1", "readwrite");
+  const heads = transaction.objectStore("replica-committed-heads-v1");
+  const partition = replicaPartitionKey(of);
+  const head = await requestResult<Record<string, unknown> | undefined>(
+    heads.get(partition),
+  );
+  if (head !== undefined) heads.put({ ...head, settled });
+  await transactionDone(transaction);
+  database.close();
+};
+
+browserTest(
+  "the fence covers a receiver only as far as its laggard partition head",
+  async ({ browser }) => {
+    const name = `ramose-outbox-head-minimum-${browser.uniqueId}`;
+    const left = identity();
+    const drifted = identity({
+      readView: opaque("w"),
+      readCompatibilityHash: ReadCompatibilityHash.make(opaque("m")),
+    });
+    const receiver = replicaDatabaseScopeOf(left);
+    const scope = replicaScopeOf(left);
+    const storage = await IndexedDbReplicaStorage.open(name);
+    try {
+      await confirm(storage, left, "left");
+      await confirm(storage, drifted, "drifted");
+      const outbox = storage.outbox();
+      const enqueued = await outbox.enqueue(
+        draft(receiver, { enqueuedAt: 1_700_000_000_001 }),
+        { scope, projection: { revision: 3, build: "build-a" } },
+      );
+      await outbox.acknowledge(enqueued, {
+        _tag: "Committed",
+        settled: 3,
+        output: null,
+        mappings: [],
+      }, 1_700_000_000_001);
+
+      await setHeadSettlement(name, left, 5);
+      await setHeadSettlement(name, drifted, 1);
+      const first = await outbox.beginActivation(receiver);
+      await outbox.fenceActivation(receiver, first);
+      expect((await outbox.optimisticLayers(receiver)).layers)
+        .toMatchObject([{ state: "retired", settled: 3 }]);
+
+      await setHeadSettlement(name, drifted, 3);
+      const second = await outbox.beginActivation(receiver);
+      await outbox.fenceActivation(receiver, second);
+      expect((await outbox.optimisticLayers(receiver)).layers).toEqual([]);
+    } finally {
+      storage.close();
+      await deleteDatabase(name);
+    }
+  },
+);
 
 browserTest(
   "one fresh activation fences exactly the markers durable before it began",
@@ -2006,6 +2083,10 @@ browserTest(
           { invocation: first.invocation, activation: 0, committedAt: 1_700_000_000_001 },
           { invocation: second.invocation, activation: 0, committedAt: 1_700_000_000_002 },
         ].sort((left, right) => (left.invocation < right.invocation ? -1 : 1)),
+        settlements: new Map([
+          [first.invocation, first.settled],
+          [second.invocation, second.settled],
+        ]),
       });
 
       expect(await outbox.beginActivation(receiver)).toBe(1);
@@ -2033,6 +2114,11 @@ browserTest(
         receiver,
         activation: 2,
         unobserved: [],
+        settlements: new Map([
+          [first.invocation, first.settled],
+          [second.invocation, second.settled],
+          [late.invocation, late.settled],
+        ]),
       });
       expect(await outbox.receipt(receiver, first.invocation)).toMatchObject({
         state: "committed",

@@ -191,6 +191,7 @@ export type ActivationObservationState = {
   readonly receiver: ReplicaDatabaseScope;
   readonly activation: number;
   readonly unobserved: readonly UnobservedReceipt[];
+  readonly settlements: ReadonlyMap<InvocationId, number>;
 };
 
 export type ActivationFenceOutcome = {
@@ -205,15 +206,29 @@ export type ActivationFenceOutcome = {
 const confirmCommittedHead = async (
   transaction: IDBTransaction,
   receiver: ReplicaDatabaseScope,
-): Promise<string> => {
+): Promise<{ readonly revision: string; readonly settled: number }> => {
   const heads = await requestResult<unknown[]>(
     transaction.objectStore(REPLICA_COMMITTED_HEADS_STORE).getAll(
       prefixRange(replicaDatabasePartitionPrefix(receiver)),
     ),
   );
+  let revision: string | undefined;
+  let settled: number | undefined;
   for (const head of heads) {
-    const revision = (head as { readonly revision?: unknown } | null)?.revision;
-    if (typeof revision === "string" && revision.length > 0) return revision;
+    const stored = head as {
+      readonly revision?: unknown;
+      readonly settled?: unknown;
+    } | null;
+    const confirmed = stored?.revision;
+    if (typeof confirmed !== "string" || confirmed.length === 0) continue;
+    revision ??= confirmed;
+    const covered = typeof stored?.settled === "number" && stored.settled >= 0
+      ? stored.settled
+      : 0;
+    settled = settled === undefined ? covered : Math.min(settled, covered);
+  }
+  if (revision !== undefined) {
+    return { revision, settled: settled ?? 0 };
   }
   throw new OutboxRecordInvalid({
     reason: "no committed replica of this receiver database confirms the fenced outcome",
@@ -460,6 +475,7 @@ export class IndexedDbOutbox {
       state: "queued",
       observation: null,
       activation: 0,
+      settled: 0,
       output: null,
       mappings: [],
       failure: null,
@@ -790,6 +806,7 @@ export class IndexedDbOutbox {
         state: "committed",
         observation: "unobserved",
         activation,
+        settled: acknowledgement.settled,
         output: acknowledgement.output,
         mappings: acknowledgement.mappings,
         failure: null,
@@ -802,6 +819,7 @@ export class IndexedDbOutbox {
         state: "rejected",
         observation: null,
         activation: 0,
+        settled: 0,
         output: null,
         mappings: [],
         failure: { code: acknowledgement.code },
@@ -822,8 +840,18 @@ export class IndexedDbOutbox {
         record.partition,
         record.sequence,
       ]);
-      await this.stageLayerOutcome(transaction, record, current.state, current.activation);
-      return current;
+      const recovered = current.settled === 0 && next.settled > 0
+        ? buildReceipt({ ...current, settled: next.settled })
+        : current;
+      if (recovered !== current) receipts.put(recovered);
+      await this.stageLayerOutcome(
+        transaction,
+        record,
+        recovered.state,
+        recovered.activation,
+        recovered.settled,
+      );
+      return recovered;
     }
     if (acknowledgement._tag === "Committed") {
       const mapped = new Set(
@@ -851,7 +879,13 @@ export class IndexedDbOutbox {
       record.partition,
       record.sequence,
     ]);
-    await this.stageLayerOutcome(transaction, record, next.state, next.activation);
+    await this.stageLayerOutcome(
+      transaction,
+      record,
+      next.state,
+      next.activation,
+      acknowledgement._tag === "Committed" ? acknowledgement.settled : 0,
+    );
     if (acknowledgement._tag === "Rejected") {
       await this.cascadeRejection(transaction, record, acknowledgedAt);
     }
@@ -863,6 +897,7 @@ export class IndexedDbOutbox {
     record: OutboxRecord,
     state: ReceiptState,
     activation: number,
+    settled = 0,
   ): Promise<void> {
     const layers = transaction.objectStore(MUTATION_LAYERS);
     const key = [record.partition, record.sequence];
@@ -870,12 +905,24 @@ export class IndexedDbOutbox {
       layers.delete(key);
       return;
     }
-    const stored = await requestResult<unknown>(layers.get(key));
+    const stored = await requestResult<unknown>(layers.get(key)) ??
+      await requestResult<unknown>(
+        layers.index(BY_INVOCATION).get(record.invocation),
+      );
     if (stored === undefined) return;
     const layer = decodeOptimisticLayer(stored);
     if (layer === undefined) return;
-    if (layer.state === "committed-unobserved" && layer.activation === activation) return;
-    layers.put(withLayerState(layer, "committed-unobserved", activation));
+    const outcome = layer.state === "retired" ? "retired" : "committed-unobserved";
+    if (
+      layer.state === outcome && layer.activation === activation &&
+      layer.settled !== undefined && layer.settled >= settled
+    ) return;
+    layers.put(withLayerState(
+      layer,
+      outcome,
+      layer.state === "retired" ? layer.activation : activation,
+      layer.settled === undefined ? settled : Math.max(layer.settled, settled),
+    ));
   }
 
   private async cascadeRejection(
@@ -913,6 +960,7 @@ export class IndexedDbOutbox {
         state: "rejected",
         observation: null,
         activation: 0,
+        settled: 0,
         output: null,
         mappings: [],
         failure: { code: "dependency_rejected" },
@@ -942,9 +990,11 @@ export class IndexedDbOutbox {
     ]);
     await transactionDone(transaction);
     const unobserved: UnobservedReceipt[] = [];
+    const settlements = new Map<InvocationId, number>();
     for (const value of stored) {
       const receipt = decodeReceipt(value);
       if (receipt === undefined) continue;
+      if (receipt.settled > 0) settlements.set(receipt.invocation, receipt.settled);
       const pending = unobservedReceiptOf(receipt);
       if (pending !== undefined) unobserved.push(pending);
     }
@@ -963,6 +1013,7 @@ export class IndexedDbOutbox {
       receiver,
       activation: decoded?.activation ?? 0,
       unobserved: Object.freeze(unobserved),
+      settlements,
     });
   }
 
@@ -1058,6 +1109,22 @@ export class IndexedDbOutbox {
           continue;
         }
         if (fenced.has(layer.invocation)) {
+          if (
+            layer.state === "committed-unobserved" && layer.settled !== undefined &&
+            layer.settled > confirmed.settled
+          ) {
+            const held = withLayerState(layer, "retired", layer.activation);
+            layerStore.put(held);
+            remaining.push(held);
+          } else {
+            layerStore.delete([layer.partition, layer.sequence]);
+          }
+          continue;
+        }
+        if (
+          layer.state === "retired" &&
+          (layer.settled === undefined || layer.settled <= confirmed.settled)
+        ) {
           layerStore.delete([layer.partition, layer.sequence]);
           continue;
         }
@@ -1073,7 +1140,7 @@ export class IndexedDbOutbox {
         receiver,
         activation,
         fenced: Object.freeze([...fenced]),
-        confirmed,
+        confirmed: confirmed.revision,
         layers: Object.freeze(remaining),
         unreadable,
       });

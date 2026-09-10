@@ -77,7 +77,7 @@ describe("replication activation codec", () => {
       resumeRevision: undefined,
     })))).toEqual({
       type: "Activate",
-      protocol: 3,
+      protocol: 4,
       scope: { type: "database" },
       readCompatibilityHash: compatible,
     });
@@ -108,10 +108,10 @@ describe("replication frame codec", () => {
   const revision = opaque("K");
   const nextRevision = opaque("L");
   const frames: readonly ReplicationFrame[] = [
-    { type: "SnapshotStart", protocol: 3, identity, snapshot, revision },
+    { type: "SnapshotStart", protocol: 4, identity, snapshot, revision },
     snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 3,
+      protocol: 4,
       identity,
       snapshot,
       index: 0,
@@ -119,7 +119,7 @@ describe("replication frame codec", () => {
     }),
     snapshotChunk({
       type: "SnapshotChunk",
-      protocol: 3,
+      protocol: 4,
       identity,
       snapshot,
       index: 1,
@@ -136,22 +136,32 @@ describe("replication frame codec", () => {
         op: "add",
       }],
     }),
-    { type: "SnapshotCommit", protocol: 3, identity, snapshot, revision, ordinal: 1, chunks: 1 },
+    {
+      type: "SnapshotCommit",
+      protocol: 4,
+      identity,
+      snapshot,
+      revision,
+      ordinal: 1,
+      settled: 1,
+      chunks: 1,
+    },
     changeFrame({
       type: "Change",
-      protocol: 3,
+      protocol: 4,
       identity,
       from: revision,
       revision: nextRevision,
       ordinal: 2,
+      settled: 2,
       datoms: [{ ...values[0]!, op: "retract" }],
     }),
-    { type: "ResumeReady", protocol: 3, identity, revision, ordinal: 3 },
-    { type: "Reset", protocol: 3, identity },
-    { type: "KeepAlive", protocol: 3, identity },
-    { type: "TerminalError", protocol: 3, code: "closed", identity },
-    { type: "TerminalError", protocol: 3, code: "incompatible-version" },
-    { type: "TerminalError", protocol: 3, code: "update-required" },
+    { type: "ResumeReady", protocol: 4, identity, revision, ordinal: 3, settled: 2 },
+    { type: "Reset", protocol: 4, identity },
+    { type: "KeepAlive", protocol: 4, identity },
+    { type: "TerminalError", protocol: 4, code: "closed", identity },
+    { type: "TerminalError", protocol: 4, code: "incompatible-version" },
+    { type: "TerminalError", protocol: 4, code: "update-required" },
   ];
 
   test("round-trips every exact envelope and canonical logical value", () => {
@@ -176,7 +186,7 @@ describe("replication frame codec", () => {
     ]) {
       const maximum: ReplicationFrame = snapshotChunk({
         type: "SnapshotChunk",
-        protocol: 3,
+        protocol: 4,
         identity,
         snapshot,
         index: Number.MAX_SAFE_INTEGER,
@@ -236,11 +246,12 @@ describe("replication frame codec", () => {
       },
       {
         type: "Change",
-        protocol: 3,
+        protocol: 4,
         identity,
         from: opaque("K"),
         revision: opaque("L"),
         ordinal: 2,
+        settled: 2,
         datoms: [{
           entity: opaque("H"),
           field: ":issue/body",
@@ -264,9 +275,9 @@ describe("replication frame codec", () => {
         }],
       },
       { ...base, identity: { ...identity, principal: "not-opaque" } },
-      { type: "ResumeReady", protocol: 3, identity },
-      { type: "ResumeReady", protocol: 3, identity, revision: "raw-t:42" },
-      { type: "ResumeReady", protocol: 3, identity, revision, basisT: 42 },
+      { type: "ResumeReady", protocol: 4, identity },
+      { type: "ResumeReady", protocol: 4, identity, revision: "raw-t:42" },
+      { type: "ResumeReady", protocol: 4, identity, revision, basisT: 42 },
       oversizedChunk,
       tooManyUtf8Bytes,
     ]) {
@@ -309,6 +320,7 @@ describe("replication frame codec", () => {
   test("the encoded vocabulary has no raw transaction or storage position", () => {
     const wire = frames.map(encodeReplicationFrame).join("\n");
     expect(wire).not.toContain("basisT");
+    expect(wire).not.toContain("committedT");
     expect(wire).not.toContain("txEid");
     expect(wire).not.toContain("attributeEid");
     expect(wire).not.toContain("storage");

@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig, type Plugin } from "vitest/config";
 
+const HELD_SUFFIX = "-held";
+
 const replicationFrameFixtures = (root: string): Plugin => ({
   name: "ramose-replication-frame-fixtures",
   configureServer(server) {
@@ -16,12 +18,22 @@ const replicationFrameFixtures = (root: string): Plugin => ({
         response.end();
         return;
       }
-      const file = join(root, "test/browser/frames", `${match[1]!}.ndjson`);
-      if (!existsSync(file)) return next();
+      const held = match[1]!.endsWith(HELD_SUFFIX);
+      const recording = held
+        ? match[1]!.slice(0, -HELD_SUFFIX.length)
+        : match[1]!;
+      const file = join(root, "test/browser/frames", `${recording}.ndjson`);
+      const replays = existsSync(file);
+      if (!replays && !held) return next();
       response.statusCode = 200;
       response.setHeader("content-type", "application/x-ndjson");
       response.setHeader("cache-control", "no-store");
-      createReadStream(file).pipe(response);
+      if (!held) {
+        createReadStream(file).pipe(response);
+        return;
+      }
+      request.on("close", () => response.destroy());
+      if (replays) createReadStream(file).pipe(response, { end: false });
     });
   },
 });

@@ -22,11 +22,12 @@ const identity: ReplicationIdentity = {
 };
 const change = (from: string, revision: string, ordinal = 2) => (changeFrame({
   type: "Change" as const,
-  protocol: 3 as const,
+  protocol: 4 as const,
   identity,
   from,
   revision,
   ordinal,
+  settled: 0,
   datoms: [],
 }));
 
@@ -79,13 +80,13 @@ describe("committed publication monotonicity", () => {
 
 test("protocol terminal reasons remain observable to later reconnect policy", () => {
   expect(replicationTerminalSnapshot({
-    type: "TerminalError", protocol: 3, identity, code: "closed",
+    type: "TerminalError", protocol: 4, identity, code: "closed",
   })).toEqual({ status: "terminal", terminalCode: "closed" });
   expect(replicationTerminalSnapshot({
-    type: "TerminalError", protocol: 3, code: "incompatible-version",
+    type: "TerminalError", protocol: 4, code: "incompatible-version",
   })).toEqual({ status: "terminal", terminalCode: "incompatible-version" });
   expect(replicationTerminalSnapshot({
-    type: "TerminalError", protocol: 3, code: "update-required",
+    type: "TerminalError", protocol: 4, code: "update-required",
   })).toEqual({ status: "terminal", terminalCode: "update-required" });
 });
 
@@ -95,7 +96,7 @@ describe("metadata-only cache candidate confirmation", () => {
 
   test("accepts only frames that establish a valid initial transition", () => {
     expect(classifyReplicationCandidateFrame(candidate, {
-      type: "ResumeReady", protocol: 3, identity, revision, ordinal: 1,
+      type: "ResumeReady", protocol: 4, identity, revision, ordinal: 1, settled: 0,
     })).toBe("resume");
     expect(classifyReplicationCandidateFrame(candidate, change(revision, opaque("2"))))
       .toBe("change");
@@ -106,10 +107,10 @@ describe("metadata-only cache candidate confirmation", () => {
     expect(classifyReplicationCandidateFrame(candidate, change(opaque("0"), opaque("2"))))
       .toBe("invalid");
     expect(classifyReplicationCandidateFrame(undefined, {
-      type: "Reset", protocol: 3, identity,
+      type: "Reset", protocol: 4, identity,
     })).toBe("reset");
     expect(classifyReplicationCandidateFrame(undefined, {
-      type: "SnapshotStart", protocol: 3, identity,
+      type: "SnapshotStart", protocol: 4, identity,
       snapshot: opaque("s"), revision,
     })).toBe("snapshot");
   });
@@ -117,21 +118,21 @@ describe("metadata-only cache candidate confirmation", () => {
   test("snapshot fragments, mismatched resumes, and unseeded liveness fail closed", () => {
     const other = { ...identity, principal: opaque("o") };
     expect(classifyReplicationCandidateFrame(candidate, snapshotChunk({
-      type: "SnapshotChunk", protocol: 3, identity,
+      type: "SnapshotChunk", protocol: 4, identity,
       snapshot: opaque("s"), index: 0, datoms: [],
     }))).toBe("invalid");
     expect(classifyReplicationCandidateFrame(candidate, {
-      type: "SnapshotCommit", protocol: 3, identity,
-      snapshot: opaque("s"), revision, ordinal: 1, chunks: 0,
+      type: "SnapshotCommit", protocol: 4, identity,
+      snapshot: opaque("s"), revision, ordinal: 1, settled: 0, chunks: 0,
     })).toBe("invalid");
     expect(classifyReplicationCandidateFrame(candidate, {
-      type: "ResumeReady", protocol: 3, identity: other, revision, ordinal: 1,
+      type: "ResumeReady", protocol: 4, identity: other, revision, ordinal: 1, settled: 0,
     })).toBe("invalid");
     expect(classifyReplicationCandidateFrame(undefined, {
-      type: "KeepAlive", protocol: 3, identity,
+      type: "KeepAlive", protocol: 4, identity,
     })).toBe("invalid");
     expect(classifyReplicationCandidateFrame(candidate, {
-      type: "TerminalError", protocol: 3, code: "closed",
+      type: "TerminalError", protocol: 4, code: "closed",
     })).toBe("invalid");
   });
 });
