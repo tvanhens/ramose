@@ -3,10 +3,11 @@ import * as EffectSchema from "effect/Schema";
 import {
   Entity,
   EntityId,
-  Enum,
+  enumeration,
   Field,
   OperationRejected,
-  Ref,
+  Query,
+  ref,
   Schema,
   float,
   string,
@@ -44,7 +45,7 @@ export const callerAttrs = (principal: {
 export const Workspace = Entity("workspace", {
   slug: Field.unique(string(), "strict"),
   label: string({ optional: true }),
-  members: Field.many(Ref(Person)),
+  members: Field.many(ref(Person)),
 }, {
   operations: (Operation) => ({
     ensureMe: Operation({
@@ -101,10 +102,11 @@ export const Workspace = Entity("workspace", {
       input: EffectSchema.Struct({ person: EntityId }),
       output: EffectSchema.Struct({ id: EntityId }),
       async run(op, input) {
-        const row = await op.pull(op.self.eid, [
-          { ":workspace/members": [":person/sub"] },
-        ]) as { readonly ":workspace/members"?: readonly unknown[] };
-        if ((row[":workspace/members"] ?? []).length <= 1) {
+        const row = await op.query(Query.from(Workspace)
+          .where(Query.byId(op.self.eid))
+          .select({ members: Workspace.members.select({ id: Person.id }) })
+          .oneOrFail());
+        if (row.members.length <= 1) {
           throw new OperationRejected({
             message: "a workspace keeps its last member",
             operation: "removeMember",
@@ -119,8 +121,7 @@ export const Workspace = Entity("workspace", {
 // enddocs:workspace-entity
 
 export const Label = Entity("label", {
-  workspace: Ref(Workspace),
-  workspaceSlug: string({ index: true }),
+  workspace: ref(Workspace),
   name: string(),
   color: string(),
 }, {
@@ -129,7 +130,6 @@ export const Label = Entity("label", {
       self: false,
       input: EffectSchema.Struct({
         workspace: EntityId,
-        workspaceSlug: EffectSchema.String,
         name: EffectSchema.String,
         color: EffectSchema.String,
       }),
@@ -138,24 +138,13 @@ export const Label = Entity("label", {
       optimistic: ({ input, tx }) => {
         const label = tx.create("label", Label);
         tx.set(label, Label.workspace, input.workspace);
-        tx.set(label, Label.workspaceSlug, input.workspaceSlug);
         tx.set(label, Label.name, input.name);
         tx.set(label, Label.color, input.color);
       },
-      async run(op, input) {
-        const workspace = await op.pull(input.workspace, [Workspace.slug.ident]) as {
-          readonly ":workspace/slug"?: unknown;
-        };
-        if (workspace[":workspace/slug"] !== input.workspaceSlug) {
-          throw new OperationRejected({
-            message: "the label workspace does not match its slug",
-            operation: "createLabel",
-          });
-        }
+      run(op, input) {
         return {
           id: op.create({
             workspace: input.workspace,
-            workspaceSlug: input.workspaceSlug,
             name: input.name,
             color: input.color,
           }),
@@ -170,17 +159,16 @@ export const PRIORITIES = ["none", "low", "medium", "high", "urgent"] as const;
 
 // docs:issue-entity
 export const Issue = Entity("issue", {
-  workspace: Ref(Workspace),
-  workspaceSlug: string({ index: true }),
+  workspace: ref(Workspace),
   title: string(),
   description: string({ optional: true }),
-  status: Enum(STATUSES),
-  priority: Enum(PRIORITIES),
+  status: enumeration(STATUSES),
+  priority: enumeration(PRIORITIES),
   rank: float(),
   createdAt: timestamp(),
-  creator: Ref(Person, { optional: true }),
-  assignee: Ref(Person, { optional: true }),
-  labels: Field.many(Ref(Label)),
+  creator: ref(Person, { optional: true }),
+  assignee: ref(Person, { optional: true }),
+  labels: Field.many(ref(Label)),
   privateNote: string({ optional: true }),
 }, {
   operations: (Operation) => ({
@@ -189,7 +177,6 @@ export const Issue = Entity("issue", {
       writes: [Person],
       input: EffectSchema.Struct({
         workspace: EntityId,
-        workspaceSlug: EffectSchema.String,
         title: EffectSchema.String,
         status: EffectSchema.Literals(STATUSES),
         rank: EffectSchema.Finite,
@@ -199,27 +186,16 @@ export const Issue = Entity("issue", {
       optimistic: ({ input, tx }) => {
         const issue = tx.create("issue", Issue);
         tx.set(issue, Issue.workspace, input.workspace);
-        tx.set(issue, Issue.workspaceSlug, input.workspaceSlug);
         tx.set(issue, Issue.title, input.title);
         tx.set(issue, Issue.status, input.status);
         tx.set(issue, Issue.priority, "none");
         tx.set(issue, Issue.rank, input.rank);
         tx.set(issue, Issue.createdAt, new Date());
       },
-      async run(op, input) {
-        const workspace = await op.pull(input.workspace, [Workspace.slug.ident]) as {
-          readonly ":workspace/slug"?: unknown;
-        };
-        if (workspace[":workspace/slug"] !== input.workspaceSlug) {
-          throw new OperationRejected({
-            message: "the issue workspace does not match its slug",
-            operation: "createIssue",
-          });
-        }
+      run(op, input) {
         const creator = op.put(Person, callerAttrs(op.principal));
         const issue = op.create({
           workspace: input.workspace,
-          workspaceSlug: input.workspaceSlug,
           title: input.title,
           status: input.status,
           priority: "none",
@@ -319,12 +295,11 @@ export const Issue = Entity("issue", {
       input: EffectSchema.Struct({ note: EffectSchema.String }),
       output: EffectSchema.Struct({ id: EntityId }),
       async run(op, input) {
-        const row = await op.pull(op.self.eid, [
-          { ":issue/creator": [":person/sub"] },
-        ]) as {
-          readonly ":issue/creator"?: { readonly ":person/sub"?: unknown };
-        };
-        if (row[":issue/creator"]?.[":person/sub"] !== op.principal.sub) {
+        const row = await op.query(Query.from(Issue)
+          .where(Query.byId(op.self.eid))
+          .select({ creator: Issue.creator.select({ sub: Person.sub }).optional })
+          .oneOrFail());
+        if (row.creator?.sub !== op.principal.sub) {
           throw new OperationRejected({
             message: "only the issue creator writes its private note",
             operation: "setPrivateNote",
@@ -350,8 +325,8 @@ export const Issue = Entity("issue", {
 export const Comment = Entity("comment", {
   body: string(),
   at: timestamp(),
-  author: Ref(Person, { optional: true }),
-  issue: Ref(Issue),
+  author: ref(Person, { optional: true }),
+  issue: ref(Issue),
 }, {
   operations: (Operation) => ({
     createComment: Operation({

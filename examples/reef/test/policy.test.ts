@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { OwnedOperations } from "ramose/db";
+import { OwnedOperations } from "../../../packages/ramose/src/db/Operation.ts";
 import {
   Comment,
   Issue,

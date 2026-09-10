@@ -30,6 +30,28 @@ describe("bytes", () => {
 });
 
 describe("segment codec", () => {
+  test("rejects malformed storage headers and trailing data", () => {
+    const leaf = encodeSegment(Index.EAVT, []);
+    const directory = encodeNode(Index.EAVT, { kind: NodeKind.Dir, keys: [], refs: [] });
+    for (const encoded of [leaf, directory]) {
+      const invalidIndex = encoded.slice();
+      invalidIndex[4] = 4;
+      expect(() => decodeNode(invalidIndex)).toThrow(/index/);
+      const invalidCount = encoded.slice();
+      new DataView(invalidCount.buffer).setUint32(5, 0xffffffff);
+      expect(() => decodeNode(invalidCount)).toThrow(/truncated/);
+      expect(() => decodeNode(Uint8Array.from([...encoded, 0]))).toThrow(/trailing/);
+    }
+  });
+
+  test("rejects unsafe delta sums", () => {
+    const encoded = encodeSegment(Index.EAVT, [
+      { e: Number.MAX_SAFE_INTEGER, a: 1, vt: 1, v: 0, t: 1, op: true },
+      { e: Number.MAX_SAFE_INTEGER + 1, a: 1, vt: 1, v: 0, t: 1, op: true },
+    ]);
+    expect(() => decodeSegment(encoded)).toThrow(/entity/);
+  });
+
   test("round trips random sorted datoms in every index order", () => {
     const r = rng(3);
     for (const idx of [Index.EAVT, Index.AEVT, Index.AVET, Index.VAET] as const) {

@@ -37,6 +37,9 @@ export type EntityResult<N extends AnyComposer, Row, Out> = EntityResultOf<
   Out
 >;
 
+/** The live handle, fields, and owned mutations inferred from a schema definition. */
+export type EntityHandleFor<N extends AnyComposer> = EntityResult<N, EntityRow<N>, EntityRow<N>>;
+
 type EntityResultOf<Handle, Out> = [Out] extends [readonly unknown[]]
   ? readonly Handle[]
   : [Out] extends [{ readonly rows: readonly unknown[] }]

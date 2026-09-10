@@ -17,10 +17,7 @@ The normal database is the latest committed value plus any client-local optimist
 
 An as-of query asks what the database looked like at or before an earlier version. The schema and policy come from the current deployment; the application facts come from the selected immutable value.
 
-```ts
-const yesterday = projectDb.asOf(version)
-const tasks = yesterday.query.from(Task).where({ done: false })
-```
+Temporal selection is an engine capability; the browser client currently exposes only the current local view.
 
 As-of views are read-only. They are not branches and do not rewind the current database. Recovery is an explicit current operation that reads the desired past state, validates it, and writes a new present.
 

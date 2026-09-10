@@ -5,7 +5,7 @@ import {
   Entity,
   EntityId,
   Field,
-  Ref,
+  ref,
   Schema,
   string,
 } from "ramose/db";
@@ -75,9 +75,9 @@ export const ConformanceUser = Entity("conformanceUser", {
 export const ConformanceIssue = Entity("conformanceIssue", {
   key: Field.unique(string(), "strict"),
   title: string(),
-  owner: Ref(ConformanceUser),
+  owner: ref(ConformanceUser),
   org: string(),
-  parent: Field(Ref.self, { optional: true }),
+  parent: Field(ref.self, { optional: true }),
   audit: string({ optional: true }),
 }, {
   operations: (Operation) => ({

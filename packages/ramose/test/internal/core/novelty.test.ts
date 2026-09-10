@@ -23,6 +23,16 @@ function refCurrent(index: 0 | 1 | 2 | 3, ds: readonly Datom[], asOf?: number): 
 }
 
 describe("SortedNovelty", () => {
+  test("clearing novelty resets its transaction watermark and every index", () => {
+    const novelty = new Novelty();
+    novelty.add(randDatoms(rng(1), 20, { maxT: 100 }), () => true, () => true);
+    expect(novelty.maxT).toBeGreaterThan(0);
+    novelty.clear();
+    expect(novelty.maxT).toBe(0);
+    expect(novelty.count).toBe(0);
+    for (const index of Object.values(novelty.byIndex)) expect(index.all()).toEqual([]);
+  });
+
   test("keeps datoms sorted and deduped across adds", () => {
     const r = rng(1);
     const n = new SortedNovelty(Index.EAVT);

@@ -50,7 +50,7 @@ export {
   pullDefault,
   reshapePullResult,
 } from "./Pull.ts";
-export * as Query from "./query/surface.ts";
+export * as Query from "./query/index.ts";
 export {
   Q,
   isPipeline,

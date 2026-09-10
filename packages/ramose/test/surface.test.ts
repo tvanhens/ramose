@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 const ADDS = [
   "Server",
+  "serverBinding",
   "Database",
 
   "PEER_COMPAT",
@@ -112,14 +113,15 @@ const KILLED = [
 ];
 
 describe("the `ramose` barrel", () => {
-  test("is `/db` plus exactly the deploy-time half", async () => {
+  test("exports only deployment APIs", async () => {
     const [alchemy, db] = await Promise.all([
       import("../src/index.ts"),
       import("../src/db/index.ts"),
     ]);
     expect(Object.keys(alchemy).sort()).toEqual(
-      [...Object.keys(db), ...ADDS].sort(),
+      ADDS.sort(),
     );
+    expect(Object.keys(db).filter((name) => name in alchemy)).toEqual([]);
   });
 
   test("the kill-list is gone", async () => {
@@ -128,7 +130,7 @@ describe("the `ramose` barrel", () => {
   });
 
   test("authors policy through a named schema", async () => {
-    const Ramose = await import("../src/index.ts");
+    const Ramose = await import("../src/db/index.ts");
     const Task = Ramose.Entity("surfaceTask", { title: Ramose.string() });
     const App = Ramose.Schema("surface-app", { surfaceTask: Task });
 

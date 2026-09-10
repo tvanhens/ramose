@@ -31,6 +31,7 @@ export type {
   ClientQuery,
   ClientValue,
   EntityFocused,
+  EntityHandleFor,
   EntityResult,
 } from "./query.ts";
 export type { Subscription } from "./subscription.ts";

@@ -70,6 +70,7 @@
       },
       "devDependencies": {
         "@webgpu/types": "^0.1.72",
+        "pagefind": "1.5.2",
       },
     },
   },

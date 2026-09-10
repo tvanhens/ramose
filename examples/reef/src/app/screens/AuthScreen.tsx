@@ -27,8 +27,7 @@ export const AuthScreen = () => {
       <form className="auth-card" onSubmit={submit}>
         <h1 className="brand">Reef</h1>
         <p className="auth-sub">
-          A Linear-style tracker where every workspace is its own Ramose
-          database — offline-first, multiplayer, and policy-filtered.
+          An offline-first issue tracker with private workspaces and live collaboration.
         </p>
         {mode === "sign-up" && (
           <input

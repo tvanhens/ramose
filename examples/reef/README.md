@@ -1,9 +1,8 @@
 # Reef
 
-The flagship Ramose demo: a Linear-style, multi-tenant issue tracker where
-**every workspace is its own Ramose database**, reached by walking a deployed
-graph from one configured root. Better Auth is the identity plane; membership
-data in the root database is the tenancy boundary; the offline-first
+The flagship Ramose demo: a Linear-style, multi-tenant issue tracker in one
+Ramose database. Better Auth supplies identity; workspace membership and
+reference-based read policy isolate each tenant's data. The offline-first
 `ramose/client` and `ramose/react` render the board.
 
 ## Run it
@@ -22,7 +21,7 @@ CORS or baked URLs are involved.
 ## The architecture
 
 ```
-auth Worker (:1338)   Better Auth on D1: sign-in, JWKS,
+public Web Worker → auth Worker (:1338): Better Auth on D1, sign-in, JWKS,
                       POST /api/auth/ramose/token → 15-minute JWT
         │                  (class "user", attrs { name, email })
         └── JWKS ──► Ramose peer (:1337)
@@ -30,9 +29,11 @@ auth Worker (:1338)   Better Auth on D1: sign-in, JWKS,
                      Transactor/QueryReplica DOs, R2
 ```
 
-The auth Worker never talks to the peer, so the resource graph is a DAG: the
-peer's env needs the auth Worker's JWKS (a service binding deployed, a URL in
-dev), and the auth Worker needs nothing back.
+The public Web Worker routes `/api/*` to the private auth Worker and `/db/*`
+to the peer through service bindings. Its own URL is a runtime binding, so
+preview bundles need no generated URLs. The
+peer needs the auth Worker's JWKS through a service binding, and the auth
+Worker needs nothing back.
 
 Identity is deployment-global: every signed-in account mints the same class
 (`user`), and the JWT carries no database or role. What a principal can reach
@@ -57,8 +58,9 @@ is data:
 | `src/domain/queries.ts` | the queries the app and tests share |
 | `src/domain/rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |
 | `src/domain/shared.ts` | auth config, ports, and the workspace slug rules |
-| `src/infra/api.ts` | the auth Worker: Better Auth (jwt + `ramose/better-auth` mint plugins) on D1, serving the built SPA as assets |
+| `src/infra/api.ts` | the auth Worker: Better Auth (jwt + `ramose/better-auth` mint plugins) on D1, reachable through service bindings |
 | `src/infra/resources.ts` / `peer.ts` | the Ramose peer with the catalog deployed onto it |
+| `src/infra/web.ts` / `web-worker.ts` | the public SPA and same-origin gateway |
 | `src/infra/domain.ts` | `REEF_DOMAIN` — production naming and routing |
 | `src/app/` | the React SPA on `ramose/react` |
 | `dev.ts` | the SPA dev server: Bun serve + `/api` and `/db` proxies |
@@ -66,36 +68,27 @@ is data:
 
 ## Deploying to real Cloudflare
 
-The live demo is **https://reef.ramose.ai**, published by
-`.github/workflows/reef-publish.yml` on every merge to master. One hostname
-serves both Workers:
-
-| path | Worker | how |
-|---|---|---|
-| `/db/*` | the Ramose peer | a zone route (`src/infra/resources.ts`) |
-| everything else | the auth Worker | a custom domain (`src/infra/api.ts`), assets-first |
-
-`REEF_DOMAIN` is what turns all of that on (see `src/infra/domain.ts`). Set,
-it attaches the domain and the route and pins the physical names of the
-Workers, the D1 database and the R2 bucket; unset, a deploy is an ordinary
-personal stage with generated names.
+The public Web Worker serves the SPA and routes authentication and database
+requests through native service bindings. The auth Worker has no public
+`workers.dev` endpoint. Set `REEF_DOMAIN` to attach the public custom domain
+and pin resource names; leave it unset for an isolated preview stage.
 
 ```sh
 bun run build:reef
-REEF_DOMAIN=reef.ramose.ai bun alchemy deploy examples/reef/alchemy.run.ts --stage prod --adopt
+bun alchemy deploy examples/reef/alchemy.run.ts --stage preview
 ```
 
-Without `REEF_DOMAIN` the SPA needs the peer's origin baked in, because the
-auth Worker and the peer sit on different `workers.dev` hosts: deploy once,
-then rebuild with `--define 'REEF_PEER_ORIGIN="<peerUrl>"'` and deploy again —
-`.github/workflows/reef-preview.yml` does exactly this for every PR.
+One build and one deployment work for both previews and production. The stack
+returns `appUrl` for the browser and `peerUrl` for direct peer diagnostics.
+
+Run `bun run test:reef` to exercise the production bundle in Chromium against
+local Workers and D1, including credentials, workspace writes, and rejection
+feedback.
 
 The API token needs the `todos` e2e permissions (Workers Scripts, R2 — see
 CONTRIBUTING.md) **plus `Account / D1 / Edit`** for the Better Auth database,
 plus zone access for the hostname.
 
-One thing the local run cannot show you, handled in `src/infra/resources.ts`:
-deployed, the peer reaches the auth Worker's JWKS through the `AUTH`
-**service binding** (`jwksService`), not its public URL — Cloudflare answers
-a Worker→Worker subrequest on `workers.dev` with error 1042 instead of the
-key set, and every token would 401.
+The peer obtains JWKS through the private `AUTH` service binding. The public
+Worker supplies its runtime URL to the auth Worker so origin validation and
+cookies use the browser’s address even behind local forwarding.

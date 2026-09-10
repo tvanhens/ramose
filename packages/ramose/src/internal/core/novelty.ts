@@ -73,7 +73,6 @@ export class Novelty {
     2: new SortedNovelty(2),
     3: new SortedNovelty(3),
   };
-  private _count = 0;
   private _maxT = 0;
 
   add(datoms: readonly Datom[], avet: (a: number) => boolean, vaet: (a: number) => boolean): void {
@@ -89,7 +88,6 @@ export class Novelty {
     }
     if (av.length) this.byIndex[2].add(av);
     if (va.length) this.byIndex[3].add(va);
-    this._count += datoms.length;
   }
 
   get count(): number {
@@ -101,12 +99,11 @@ export class Novelty {
 
   dropThrough(maxT: number): void {
     for (const i of ALL_INDEXES) this.byIndex[i].dropThrough(maxT);
-    this._count = this.byIndex[0].size;
   }
 
   clear(): void {
     for (const i of ALL_INDEXES) this.byIndex[i].clear();
-    this._count = 0;
+    this._maxT = 0;
   }
 }
 

@@ -150,8 +150,8 @@ const waitFor = <A>(
 const client = (name: string): Client =>
   createClient({
     url: OFFLINE,
-    root: ROOT,
-    catalog: AppSchema,
+    database: ROOT,
+    schema: AppSchema,
     auth: () => ({ token: TOKEN, cacheKey: CACHE_KEY }),
     storageName: name,
   });
@@ -221,8 +221,8 @@ browserTest(
     const name = `ramose-mutate-fresh-refused-${browser.uniqueId}`;
     const app = createClient({
       url: OFFLINE,
-      root: ROOT,
-      catalog: AppSchema,
+      database: ROOT,
+      schema: AppSchema,
       auth: () => {
         throw new Error("refresh token expired");
       },
@@ -303,8 +303,8 @@ browserTest(
     let token = TOKEN;
     const app = createClient({
       url: OFFLINE,
-      root: ROOT,
-      catalog: AppSchema,
+      database: ROOT,
+      schema: AppSchema,
       auth: () => ({ token, cacheKey: CACHE_KEY }),
       storageName: name,
     });

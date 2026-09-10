@@ -1,4 +1,4 @@
-import type { Worker } from "alchemy/Cloudflare/Workers";
+import { isWorker, type Worker } from "alchemy/Cloudflare/Workers";
 import type { InputProps } from "alchemy/Input";
 import * as ProviderLayer from "alchemy/Local/ProviderLayer";
 import * as Provider from "alchemy/Provider";
@@ -263,6 +263,15 @@ export const Server = Object.assign(
   },
   ServerResource,
 ) as typeof ServerResource;
+
+/** The native Worker resource to bind from another Cloudflare Worker. */
+export const serverBinding = (server: Server): Worker => {
+  const worker = server.Props.worker;
+  if (!isWorker(worker)) {
+    throw new Error("ramose: a service binding requires a Server backed by a Cloudflare Worker");
+  }
+  return worker;
+};
 
 export const resolveWorker = (
   worker: ServerWorker,

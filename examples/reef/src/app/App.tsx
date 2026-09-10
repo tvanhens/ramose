@@ -1,9 +1,9 @@
+import { useMutationFeedback, MutationFeedbackProvider } from "./MutationFeedback.tsx";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { RamoseProvider, useSyncState } from "ramose/react";
 import {
   authClient,
   clearCachedUser,
-  dropToken,
   readCachedUser,
   writeCachedUser,
   type CachedUser,
@@ -59,10 +59,11 @@ const Shell = (props: {
   readonly userName: string;
   readonly onSignOut: () => void;
 }) => {
+  const track = useMutationFeedback();
   const route = useRoute();
   useEffect(() => {
-    props.client.open().mutate.ensureMe({}).queued.catch(() => undefined);
-  }, [props.client]);
+    track(props.client.open().mutate.ensureMe({}), "Initialize account").queued.catch(() => undefined);
+  }, [props.client, track]);
   return (
     <RamoseProvider client={props.client}>
       <div className="shell">
@@ -111,10 +112,11 @@ export const App = () => {
     }
   }, [session.data?.user, settledOut]);
 
-  const client = useMemo(
+  const connection = useMemo(
     () => (userId === undefined ? undefined : openReef(userId)),
     [userId],
   );
+  const client = connection?.client;
   useEffect(() => {
     if (client === undefined) return;
     return () => {
@@ -128,17 +130,17 @@ export const App = () => {
       : <AuthScreen />;
   }
   return (
-    <Shell
+    <MutationFeedbackProvider key={userId}><Shell
       client={client}
       userName={user?.name || user?.email || "Signed in"}
       onSignOut={() => {
-        dropToken(userId);
+        connection?.credentials.clear();
         clearCachedUser();
         void authClient.signOut().finally(() => {
           location.hash = "";
           location.reload();
         });
       }}
-    />
+    /></MutationFeedbackProvider>
   );
 };

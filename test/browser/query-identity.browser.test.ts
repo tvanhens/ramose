@@ -176,8 +176,8 @@ const seed = async (name: string): Promise<ReplicationIdentity> => {
 const offlineClient = (name: string): Client =>
   createClient({
     url: OFFLINE,
-    root: ROOT,
-    catalog: AppSchema,
+    database: ROOT,
+    schema: AppSchema,
     auth: () => ({ token: TOKEN, cacheKey: CACHE_KEY }),
     storageName: name,
   });

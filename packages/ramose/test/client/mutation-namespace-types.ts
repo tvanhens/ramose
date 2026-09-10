@@ -123,8 +123,8 @@ AppSchema.applyPolicy(() => {});
 
 const client = createClient({
   url: "https://data.example.com",
-  root: "app",
-  catalog: AppSchema,
+  database: "app",
+  schema: AppSchema,
   auth: () => ({ token: "bearer", cacheKey: "account" }),
 });
 

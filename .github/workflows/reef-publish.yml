@@ -75,7 +75,7 @@ jobs:
           REEF_DOMAIN: ${{ vars.REEF_DOMAIN || 'reef.ramose.ai' }}
         run: |
           fail=0
-          # The SPA, from the auth Worker's assets.
+          # The SPA, from the public Worker’s assets.
           code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "https://$REEF_DOMAIN/")
           [ "$code" = "200" ] || { echo "::error::SPA returned $code"; fail=1; }
           # Better Auth's key set — what the peer verifies tokens against.

@@ -23,9 +23,9 @@ export const User = Ramose.Entity("user", {
 
 export const Task = Ramose.Entity("task", {
   title: Ramose.string({ doc: "Short description" }),
-  status: Ramose.Enum(["todo", "doing", "done"]),
+  status: Ramose.enumeration(["todo", "doing", "done"]),
   createdAt: Ramose.timestamp(),
-  assignee: Ramose.Ref(User, { optional: true }),
+  assignee: Ramose.ref(User, { optional: true }),
 })
 
 export const ProjectSchema = Ramose.Schema("project-v1", {
@@ -62,7 +62,7 @@ The first argument is the permanent schema key. Each object key matches the enti
 const Document = Ramose.Entity("document", {
   slug: Ramose.Field.unique(Ramose.string(), "strict"),
   tags: Ramose.Field.many(Ramose.string()),
-  blocks: Ramose.Field.many(Ramose.Field.owned(Ramose.Ref(Block))),
+  blocks: Ramose.Field.many(Ramose.Field.owned(Ramose.ref(Block))),
 })
 ```
 
@@ -88,7 +88,7 @@ export const Timestamped = Ramose.Trait("timestamped", {
 })
 
 export const Assignable = Ramose.Trait("assignable", {
-  assignee: Ramose.Ref(User, { optional: true }),
+  assignee: Ramose.ref(User, { optional: true }),
 })
 
 export const Task = Ramose.Entity(

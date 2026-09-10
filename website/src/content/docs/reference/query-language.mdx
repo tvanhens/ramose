@@ -21,12 +21,12 @@ An entity source returns that exact type. A trait source returns every visible e
 
 ```ts
 query
-  .where(Task.done.eq(false))
-  .where(Task.priority.in(["high", "urgent"]))
-  .where(Task.createdAt.gte(since))
+  .where({ done: false })
+  .where(Query.gte(Task.priority, 3))
+  .where(Query.gte(Task.createdAt, since))
 ```
 
-Typed field expressions expose compatible equality, comparison, membership, text, presence, and reference operators. Combine predicates with `and`, `or`, and `not`. Literal input is validated before execution.
+Import `Query` from `ramose/db`. The object form expresses equality; query stages such as `Query.gte`, `Query.startsWith`, and `Query.not` express other filters. Multiple stages passed to `.where` must all match.
 
 ### Filtering by an entity
 
@@ -49,11 +49,11 @@ Traverse declared references and relationships from a bound source. Relationship
 ```ts
 db.query
   .from(Task)
-  .where(Task.assignee.email.eq(viewer.email))
+  .where({ assignee: viewer.id })
   .select({
     id: Task.id,
     title: Task.title,
-    assignee: { name: Task.assignee.name },
+    assignee: Task.assignee.select({ name: User.name }).optional,
   })
 ```
 
@@ -61,7 +61,7 @@ Traversal never bypasses policy. Hidden facts are absent from the database capab
 
 ## Projection
 
-Without an explicit projection, entity queries return entity handles. `.select({...})` returns the declared plain-data shape. Select only fields needed by the caller, especially for MCP and nested results.
+Without an explicit projection, `db.query.from` returns entity handles and portable `Query.from` returns plain rows. `.select({...})` returns the declared plain-data shape. Select only fields needed by the caller, especially for MCP and nested results.
 
 ## Ordering and pages
 
@@ -69,7 +69,7 @@ Without an explicit projection, entity queries return entity handles. `.select({
 query
   .orderBy(Task.updatedAt, "desc")
   .orderBy(Task.id, "asc")
-  .page({ first: 50, after: cursor })
+  .limit(50).after(cursor)
 ```
 
 Use a stable tie-breaker for deterministic pages. Cursors are opaque and scoped to the query, database, authorization view, and basis that produced them.
@@ -77,16 +77,40 @@ Use a stable tie-breaker for deterministic pages. Cursors are opaque and scoped 
 ## Cardinality
 
 ```ts
-query.all()       // zero or more
-query.first()     // zero or one
-query.one()       // exactly one
+query             // zero or more
+query.one()       // zero or one
+query.oneOrFail() // exactly one
 ```
 
-`.one()` fails when the authorized query does not produce exactly one result. Do not use the distinction between zero and hidden as an authorization signal.
+`.oneOrFail()` fails when the authorized query does not produce exactly one result. Do not use the distinction between zero and hidden as an authorization signal.
 
 ## Rules and recursion
 
-Named rules package reusable relational logic. Recursive rules require an explicit depth or result bound. Keep rule inputs and outputs typed, and compose rules from the same query clauses as ordinary reads.
+Use `Query.build` when a read needs relational clauses or aggregates. Its callback supplies the clause builder:
+
+```ts
+const taskCount = Query.build(function* (q) {
+  const task = yield* Query.entities(Task)
+  return q.value(q.count(task))
+})
+```
+
+`Query.rule` uses the same builder as its first callback argument. Remaining arguments are the rule’s bound variables; return a variable for its result:
+
+```ts
+const taskTitle = Query.rule("taskTitle", function* (q, task: Query.Var) {
+  const title = yield* q.fact(task, Task.title)
+  return title.v
+})
+
+const titles = Query.build(function* (q) {
+  const task = yield* Query.entities(Task)
+  const title = yield* taskTitle(task)
+  return q.rows({ title })
+})
+```
+
+Keep recursive rules bounded. Rules and fluent queries use the same engine.
 
 ## Lowering and portability
 
