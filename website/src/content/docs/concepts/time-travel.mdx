@@ -22,7 +22,7 @@ const yesterday = projectDb.asOf(version)
 const tasks = yesterday.query.from(Task).where({ done: false })
 ```
 
-As-of views are read-only. They are not branches and do not rewind the current database. Recovery is an explicit current operation that reads the desired past state, validates it, and writes a new present.
+As-of views are read-only. They do not rewind the current database. Use [changesets](/guides/changesets/) to prepare an isolated, writable proposal based on current state. Recovery is an explicit current operation that reads the desired past state, validates it, and writes a new present.
 
 ## History
 

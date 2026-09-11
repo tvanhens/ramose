@@ -123,6 +123,7 @@ export default defineConfig({
             { label: "Permissions", slug: "guides/permissions" },
             { label: "Authentication", slug: "guides/sign-in" },
             { label: "Add MCP", slug: "guides/mcp" },
+            { label: "Review agent changes", slug: "guides/changesets" },
           ],
         },
         {

@@ -13,6 +13,7 @@ describe("the ramose/react surface", () => {
     expect(Object.keys(ReactAdapter).sort()).toEqual([
       "RamoseProvider",
       "toQueryState",
+      "useChangesets",
       "useDb",
       "useQuery",
       "useReceipt",

@@ -479,3 +479,10 @@ button:disabled {
 .member-list li span:nth-child(2) {
   flex: 1;
 }
+
+.proposal-panel { margin: 0 0 1rem; padding: 1rem; border: 1px solid #6366f1; border-radius: 10px; background: #6366f10d; }
+.proposal-panel p { margin: .75rem 0; }
+.proposal-actions, .proposal-actions form { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; }
+.proposal-actions strong { margin-right: auto; }
+.proposal-panel details { margin: .75rem 0; max-height: 15rem; overflow: auto; }
+.proposal-id { font-size: .75rem; overflow-wrap: anywhere; opacity: .7; }

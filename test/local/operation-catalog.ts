@@ -17,6 +17,11 @@ import {
 
 export const OPERATION_DATABASES = Object.freeze([
   "operations-static",
+  "operations-changesets",
+  "operations-changesets-retention",
+  "operations-changesets-concurrency",
+  "operations-changesets-stale",
+  "operations-changesets-failure",
   "operations-idempotent-concurrent",
   "operations-idempotent-disconnect",
   "operations-idempotent-authorization",

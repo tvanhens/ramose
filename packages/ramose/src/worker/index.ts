@@ -48,6 +48,7 @@ export {
 
 /** Opaque runtime assembly accepted by the supported Worker entry. */
 export interface ServerOptions {
+  readonly changesets?: import("./changesets.ts").ChangesetOptions;
   readonly operationCatalogs?: OperationCatalogs;
 }
 

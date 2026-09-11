@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
-import type { ClientDatabase } from "ramose/client";
-import { useDb, useQuery, useSuspenseQuery } from "ramose/react";
+import { ChangesetPanel } from "../components/ChangesetPanel.tsx";
+import { useEffect, useMemo, useState } from "react";
+import type { Changeset, ClientDatabase, DatabaseView } from "ramose/client";
+import { useChangesets, useDb, useQuery, useSuspenseQuery } from "ramose/react";
 import {
   boardIssues,
   people,
@@ -53,12 +54,13 @@ export const personLabel = (person: PersonRow | undefined): string =>
 
 const Column = (props: {
   readonly status: Status;
-  readonly issues: readonly IssueRow[];
+  readonly readOnly?: boolean;
+  readonly issues: readonly (Pick<IssueRow, "id" | "data"> & { readonly local?: IssueRow["local"] })[];
   readonly selected: string | undefined;
   readonly peopleById: ReadonlyMap<string, PersonRow>;
-  readonly onSelect: (id: string) => void;
-  readonly onDropIssue: (issueId: string, status: Status, beforeIndex: number) => void;
-  readonly onCreate: (status: Status, title: string) => void;
+  readonly onSelect?: (id: string) => void;
+  readonly onDropIssue?: (issueId: string, status: Status, beforeIndex: number) => void;
+  readonly onCreate?: (status: Status, title: string) => void;
 }) => {
   const [title, setTitle] = useState("");
   const [over, setOver] = useState(false);
@@ -75,7 +77,7 @@ const Column = (props: {
         e.preventDefault();
         setOver(false);
         const id = e.dataTransfer.getData("text/reef-issue");
-        if (id) props.onDropIssue(id, props.status, props.issues.length);
+        if (id) props.onDropIssue?.(id, props.status, props.issues.length);
       }}
     >
       <header className="column-head">
@@ -91,11 +93,11 @@ const Column = (props: {
           return (
             <article
               key={id}
-              draggable
+              draggable={!props.readOnly}
               className={[
                 "card",
                 props.selected === id ? "card-selected" : "",
-                issue.local.pending ? "card-pending" : "",
+                issue.local?.pending ? "card-pending" : "",
               ].join(" ").trim()}
               onDragStart={(e) => {
                 e.dataTransfer.setData("text/reef-issue", id);
@@ -108,10 +110,10 @@ const Column = (props: {
                 setOver(false);
                 const dragged = e.dataTransfer.getData("text/reef-issue");
                 if (dragged && dragged !== id) {
-                  props.onDropIssue(dragged, props.status, index);
+                  props.onDropIssue?.(dragged, props.status, index);
                 }
               }}
-              onClick={() => props.onSelect(id)}
+              onClick={() => props.onSelect?.(id)}
             >
               <span className={`priority priority-${issue.data.priority}`} />
               <span className="card-title">{issue.data.title}</span>
@@ -129,11 +131,12 @@ const Column = (props: {
         onSubmit={(e) => {
           e.preventDefault();
           if (title.trim() === "") return;
-          props.onCreate(props.status, title.trim());
+          props.onCreate?.(props.status, title.trim());
           setTitle("");
         }}
       >
         <input
+          disabled={props.readOnly}
           placeholder="Add an issue…"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
@@ -143,7 +146,19 @@ const Column = (props: {
   );
 };
 
+const ProposedBoard = (props: { readonly view: DatabaseView; readonly slug: string; readonly onReady: (ready: boolean) => void }) => {
+  const issues = useQuery(boardIssues(props.view, props.slug), props.view);
+  const persons = useQuery(people(props.view), props.view);
+  useEffect(() => props.onReady(issues.status === "ready" && persons.status === "ready"), [issues.status, persons.status, props.onReady]);
+  if (issues.status === "error" || persons.status === "error") return <p role="alert">This proposal is no longer available at its reviewed revision. Reopen it or prepare a new proposal.</p>;
+  if (issues.status !== "ready" || persons.status !== "ready") return <p role="status">Loading proposed board…</p>;
+  const peopleById = new Map(persons.data.map((person) => [person.id, person]));
+  return <div className="columns">{STATUSES.map((status) => <Column key={status} status={status}
+    readOnly issues={issues.data.filter((issue) => issue.data.status === status)} selected={undefined} peopleById={peopleById} />)}</div>;
+};
+
 export const BoardScreen = (props: { readonly slug: string }) => {
+  const changesets = useChangesets();
   const root = useDb<ReefMutations>();
   const board = root as ReefDb;
 
@@ -152,10 +167,14 @@ export const BoardScreen = (props: { readonly slug: string }) => {
   const rootWorkspaces = useQuery(workspaces(root), root);
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [previewReady, setPreviewReady] = useState(false);
+  const [proposal, setProposal] = useState<Changeset | undefined>();
 
-  const issues = rows.status === "ready" || rows.status === "stale"
+  const liveIssues = rows.status === "ready" || rows.status === "stale"
     ? (rows.data as unknown as readonly IssueRow[])
     : [];
+  const previewing = proposal?.status === "draft";
+  const issues = liveIssues;
   const persons = folk.status === "ready" || folk.status === "stale"
     ? (folk.data as unknown as readonly PersonRow[])
     : [];
@@ -190,6 +209,7 @@ export const BoardScreen = (props: { readonly slug: string }) => {
     .map((person) => ({ sub: person.data.sub, label: personLabel(person) }));
 
   const dropIssue = (issueId: string, status: Status, beforeIndex: number) => {
+    if (previewing) return;
     const issue = issues.find((row) => String(row.id) === issueId);
     if (issue === undefined) return;
     const column = (byStatus.get(status) ?? []).filter(
@@ -202,7 +222,7 @@ export const BoardScreen = (props: { readonly slug: string }) => {
   };
 
   const createIssue = (status: Status, title: string) => {
-    if (workspace === undefined) return;
+    if (previewing || workspace === undefined) return;
     const column = byStatus.get(status) ?? [];
     const last = column[column.length - 1]?.data.rank;
     board.mutate.createIssue({
@@ -229,25 +249,29 @@ export const BoardScreen = (props: { readonly slug: string }) => {
             : props.slug}
         </h2>
         {rows.status === "stale" && <span className="stale-tag">offline copy</span>}
-        <button className="ghost" onClick={() => setMembersOpen(true)}>
+        <button className="ghost" disabled={previewing} onClick={() => setMembersOpen(true)}>
           Members
         </button>
       </header>
       {rows.status === "error" && <div className="error">{String(rows.error)}</div>}
+      <ChangesetPanel previewReady={previewReady} issues={liveIssues} proposal={proposal} onPreview={(value) => { setSelected(undefined); setPreviewReady(false); setProposal(value); }} />
+      {previewing ? <ProposedBoard onReady={setPreviewReady} view={changesets.open(proposal.id, proposal.revision)} slug={props.slug} /> : (
       <div className="columns">
         {STATUSES.map((status) => (
           <Column
             key={status}
             status={status}
+            readOnly={previewing || workspace === undefined}
             issues={byStatus.get(status) ?? []}
             selected={selected}
             peopleById={peopleById}
-            onSelect={setSelected}
+            onSelect={(id) => { if (!previewing) setSelected(id); }}
             onDropIssue={dropIssue}
             onCreate={createIssue}
           />
         ))}
       </div>
+      )}
       {selectedIssue !== undefined && workspace !== undefined && (
         <IssueDetail
           board={board}

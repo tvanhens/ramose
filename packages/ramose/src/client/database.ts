@@ -296,6 +296,8 @@ const activationStep = async <A>(
 };
 
 export class ClientDatabaseHandle implements ClientDatabase {
+  private readonly revisionStore = new Store<string | undefined>(undefined);
+  readonly viewChanges = this.revisionStore.subscription;
   readonly query = { from: clientQueryFrom };
   private mutations: MutationNamespace | undefined;
 
@@ -684,6 +686,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
       this.handles = value.handles;
       this.reverse = undefined;
     }
+    this.revisionStore.publish(this.committed === undefined ? undefined : value?.revision);
     this.publishStatus(this.statusOf(snapshot));
     this.spawn(this.recompute());
     this.answerWake();
@@ -708,6 +711,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
     }
     this.observers.clear();
     this.retired.clear();
+    this.revisionStore.publish(undefined);
     this.syncStore.publish(syncState("closed"));
   }
 
@@ -957,6 +961,7 @@ export class ClientDatabaseHandle implements ClientDatabase {
     }
     this.observers.clear();
     this.retired.clear();
+    this.revisionStore.publish(undefined);
     this.syncStore.publish(syncState("closed"));
     const session = this.session;
     this.session = undefined;

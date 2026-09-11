@@ -6,7 +6,7 @@ import Learn from "../../../components/Learn.astro";
 import SurfaceMap from "../../../components/SurfaceMap.astro";
 import Next from "../../../components/Next.astro";
 
-Every Ramose deployment exposes one MCP endpoint at `POST /mcp`. It lists exactly three tools—`describe`, `query`, and `mutate`—regardless of how many entities or operations your application contains.
+Every Ramose deployment exposes an MCP endpoint at `POST /db/<root>/mcp`. It lists `describe`, `query`, `mutate`, and `changeset`. Restricted agent credentials omit `mutate`; [changesets](/guides/changesets/) let them prepare work for human approval.
 
 This guide connects to the task app from [Build your first Ramose web app](/getting-started/quickstart/).
 
@@ -19,7 +19,7 @@ This guide connects to the task app from [Build your first Ramose web app](/gett
 In your MCP client, add a Streamable HTTP server with the starter's URL:
 
 ```text
-https://your-ramose-origin.example/mcp
+https://your-ramose-origin.example/db/tasks/mcp
 ```
 
 Ramose publishes OAuth protected-resource metadata, so clients that support remote MCP authentication can discover the authorization server and start sign-in. The resulting bearer token represents one principal and one authorized root; the client never chooses an internal database or catalog.
@@ -30,7 +30,7 @@ For a client that accepts static configuration, the shape is typically:
 {
   "name": "tasks",
   "transport": "streamable-http",
-  "url": "https://your-ramose-origin.example/mcp",
+  "url": "https://your-ramose-origin.example/db/tasks/mcp",
   "headers": {
     "Authorization": "Bearer ${RAMOSE_ACCESS_TOKEN}"
   }
@@ -41,7 +41,7 @@ Use a short-lived token from the same identity provider as the web app. Client-s
 
 ## 2. Start with no schema prompt
 
-After initialization, `tools/list` returns only:
+The direct-operation tools are:
 
 ```text
 describe   Browse or search the visible application model
@@ -123,6 +123,6 @@ The React task list updates from its normal synchronization stream. There is no 
 
 <Next links={[
   { href: "/guides/mcp/", label: "MCP guide", why: "paging, safety, and production setup" },
-  { href: "/reference/mcp/", label: "MCP reference", why: "the exact three-tool contracts and errors" },
+  { href: "/reference/mcp/", label: "MCP reference", why: "tool contracts and errors" },
   { href: "/reference/query-document/", label: "QueryDocument v1", why: "the portable query grammar used by agents" },
 ]} />

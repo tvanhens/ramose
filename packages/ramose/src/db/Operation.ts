@@ -137,18 +137,6 @@ export interface OpPrincipal {
   readonly claims: Readonly<Record<string, unknown>>;
 }
 
-/**
- * What an `op.effect` thunk receives during authoritative execution.
- */
-export interface OperationEffectContext {
-  readonly env: unknown;
-  readonly principal: OpPrincipal;
-}
-
-export type EffectThunk<A = unknown> = (
-  ctx: OperationEffectContext,
-) => Promise<A> | A;
-
 export type OpHandleId<C extends AnySchema = AnySchema> =
   | UnbrandedId
   | Tempid
@@ -556,7 +544,6 @@ export interface Op<
 
   pull(subject: unknown, pattern: unknown): Promise<unknown>;
 
-  effect<A>(name: string, run: EffectThunk<A>): Promise<A>;
 }
 
 export interface Operation<

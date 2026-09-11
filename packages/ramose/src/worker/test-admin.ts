@@ -503,6 +503,8 @@ export const handleTestAdmin = async (
       passThrough: true,
     });
   }
+  if (rest === "/revisions") return forward(request, env, db, "transactor", "/admin/test/revisions", await request.text(), { passThrough: true });
+  if (rest === "/gc") return forward(request, env, db, "transactor", "/admin/gc", "{}", { passThrough: true });
   if (rest === "/index") {
     return forward(request, env, db, "transactor", "/admin/index", "{}", {
       passThrough: true,

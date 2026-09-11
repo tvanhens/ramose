@@ -1,12 +1,12 @@
 ---
 title: Build for MCP clients
-description: Expose the same queries, operations, and authorization to agents through Ramose's fixed three-tool MCP surface.
+description: Expose the same queries, operations, and authorization to agents through Ramose's MCP surface.
 ---
 import Learn from "../../../components/Learn.astro";
 import SurfaceMap from "../../../components/SurfaceMap.astro";
 import Next from "../../../components/Next.astro";
 
-Ramose's MCP server is a projection of your application model, not a second API to maintain. Every deployment exposes three tools at `POST /mcp`: `describe`, `query`, and `mutate`.
+Ramose's MCP server is a projection of your application model, not a second API to maintain. Deployments expose `describe`, `query`, `mutate`, and `changeset` at `POST /db/<root>/mcp`. Restricted agent credentials omit `mutate`; use [changesets](/guides/changesets/) to prepare work for human review.
 
 <Learn learn={["How discovery stays useful as a catalog grows", "How the database stays authorized", "How to bound queries and make mutations safe to retry"]} before={[{ href: "/getting-started/connect-an-agent/", label: "Connect an agent" }]} minutes={14} />
 

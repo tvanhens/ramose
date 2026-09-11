@@ -1,10 +1,10 @@
 ---
 title: MCP server
-description: Reference for Ramose's Streamable HTTP endpoint, OAuth discovery, three fixed tools, paging, and errors.
+description: Reference for Ramose's Streamable HTTP endpoint, OAuth discovery, authorized tools, paging, and errors.
 ---
 import Next from "../../../components/Next.astro";
 
-Ramose serves a remote Model Context Protocol endpoint at `POST /mcp`. It uses Streamable HTTP, OAuth protected-resource discovery, and exactly three tools.
+Ramose serves a remote Model Context Protocol endpoint at `POST /db/<root>/mcp`. It uses Streamable HTTP, OAuth protected-resource discovery, and the `describe`, `query`, `mutate`, and `changeset` tools. Restricted agent credentials omit `mutate`. See [changesets](/guides/changesets/) for proposal discovery, draft queries, revision handling, and approval.
 
 *New here? Start with [Connect an agent](/getting-started/connect-an-agent/).*
 

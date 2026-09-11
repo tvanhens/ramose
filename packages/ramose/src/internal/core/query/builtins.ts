@@ -1,3 +1,4 @@
+import { scalarValue } from "./value.ts";
 import { compareStrings } from "../datom.ts";
 
 export type QueryFn = (...args: any[]) => unknown;
@@ -33,6 +34,7 @@ export function vkey(v: unknown): string {
 }
 
 export function compareJs(a: unknown, b: unknown): number {
+  a = scalarValue(a); b = scalarValue(b);
   if (a === b) return 0;
   const ta = rank(a), tb = rank(b);
   if (ta !== tb) return ta < tb ? -1 : 1;
@@ -103,6 +105,7 @@ export function sortRows(rows: unknown[][], keys: readonly SortKey[]): void {
 }
 
 function num(x: unknown): number {
+  x = scalarValue(x);
   if (typeof x === "number") return x;
   if (typeof x === "bigint") return Number(x);
   if (x instanceof Date) return x.getTime();

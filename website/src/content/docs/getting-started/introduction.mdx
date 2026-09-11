@@ -13,7 +13,7 @@ You define three things in code:
 - a **policy** deciding which facts and operations each principal may use;
 - **operations** containing every authoritative change the product can make.
 
-From that model, your web app gets typed local queries, durable offline mutations, and synchronization. Your deployment also gets one MCP endpoint with three stable tools: `describe`, `query`, and `mutate`.
+From that model, your web app gets typed local queries, durable offline mutations, and synchronization. Your deployment also gets one MCP endpoint with `describe`, `query`, `mutate`, and `changeset`. Restricted agent credentials omit `mutate` and prepare work for human approval. See [Review agent changes](/guides/changesets/).
 
 <SurfaceMap />
 

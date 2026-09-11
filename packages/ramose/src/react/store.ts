@@ -1,5 +1,5 @@
 import type { QuerySnapshot } from "../client/database.ts";
-import type { ClientDatabase, QuerySubscription } from "../client/index.ts";
+import type { QuerySubscription } from "../client/index.ts";
 import { PENDING, toQueryState, type QueryState } from "./query-state.ts";
 
 export const UNCLAIMED_LIMIT = 32;
@@ -15,7 +15,7 @@ type DatabaseStores = {
   readonly unclaimed: Set<string>;
 };
 
-const STORES = new WeakMap<ClientDatabase, DatabaseStores>();
+const STORES = new WeakMap<object, DatabaseStores>();
 
 class QueryStore<A> {
   private lastSnapshot: QuerySnapshot<A> | undefined;
@@ -24,7 +24,7 @@ class QueryStore<A> {
   private hold: StoreHold | undefined;
 
   constructor(
-    private readonly database: ClientDatabase,
+    private readonly database: object,
     private readonly key: string,
     private readonly source: QuerySubscription<A>,
   ) {
@@ -88,7 +88,7 @@ class QueryStore<A> {
 }
 
 const adopt = (
-  database: ClientDatabase,
+  database: object,
   key: string,
   store: QueryStore<unknown>,
 ): void => {
@@ -119,13 +119,13 @@ const evictUnclaimed = (stores: DatabaseStores, room: number): void => {
   }
 };
 
-export const reviewUnclaimed = (database: ClientDatabase): void => {
+export const reviewUnclaimed = (database: object): void => {
   const stores = STORES.get(database);
   if (stores !== undefined) evictUnclaimed(stores, UNCLAIMED_LIMIT);
 };
 
 const release = (
-  database: ClientDatabase,
+  database: object,
   key: string,
   store: QueryStore<unknown>,
 ): void => {
@@ -136,7 +136,7 @@ const release = (
 };
 
 export const queryStore = <A>(
-  database: ClientDatabase,
+  database: object,
   key: string,
   observe: () => QuerySubscription<A>,
 ): QueryStore<A> => {
@@ -145,7 +145,7 @@ export const queryStore = <A>(
   return new QueryStore(database, key, observe());
 };
 
-export const heldStoreCount = (database: ClientDatabase): number =>
+export const heldStoreCount = (database: object): number =>
   STORES.get(database)?.stores.size ?? 0;
 
 export type { QueryStore };

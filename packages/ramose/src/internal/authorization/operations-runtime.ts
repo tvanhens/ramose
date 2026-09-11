@@ -11,7 +11,6 @@ import type {
 } from "./authoring/operations.ts";
 import type {
   OpPrincipal,
-  OperationEffectContext,
 } from "../../db/Operation.ts";
 import { cloneBindingValue } from "../../db/Binding.ts";
 import { sha256Hex } from "../core/bytes.ts";
@@ -115,7 +114,6 @@ export type OperationExecution = {
 
 export type OperationRuntime = {
   readonly catalogs: DeployedCatalogDefinitions;
-  readonly environment: unknown;
   readonly now: () => number;
   readonly sealing?: () => Promise<ServerSealingKey>;
 };
@@ -512,7 +510,6 @@ const createCollector = (args: {
   readonly context: AuthorizedRequestContext;
   readonly caller: AuthenticatedCaller;
   readonly database: DatabaseId;
-  readonly environment: unknown;
   readonly authoritativeNow: Date;
   readonly binding: DeployedOperationBinding;
   readonly target?: { readonly eid: number; readonly type: string };
@@ -766,10 +763,6 @@ const createCollector = (args: {
       : {}),
     claims: args.caller.claims,
   });
-  const effectContext: OperationEffectContext = Object.freeze({
-    env: args.environment,
-    principal,
-  });
   const op = {
     principal,
     db: args.database,
@@ -830,20 +823,7 @@ const createCollector = (args: {
         ? null
         : pull(args.context.currentDb, eid, pattern as never);
     },
-    effect: async (name: string, run: (context: OperationEffectContext) => unknown) => {
-      if (typeof name !== "string" || name.length === 0 || typeof run !== "function") {
-        throw rejected(descriptor, "operation effect needs a name and native callback");
-      }
-      try {
-        return await run(effectContext);
-      } catch (cause) {
-        if (
-          cause instanceof Unauthorized || cause instanceof InvalidRequest ||
-          cause instanceof OperationRejected || cause instanceof OperationRuntimeFault
-        ) throw cause;
-        throw new OperationRuntimeFault(`effect:${name}`, cause);
-      }
-    },
+
   };
   return { op, tx, refs, deferredFields, subjectChecks };
 };
@@ -1743,7 +1723,6 @@ export const executeCatalogOperation = async (
     context,
     caller: authorizationCaller,
     database: invocation.database,
-    environment: runtime.environment,
     authoritativeNow: new Date(authoritativeNowMs),
     binding,
     ...(target === undefined ? {} : { target }),

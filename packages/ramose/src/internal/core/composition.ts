@@ -5,7 +5,15 @@ export type CompositionTables = {
   readonly traitTraits?: Iterable<readonly [string, Iterable<string>]>;
 };
 
+export type CompositionSnapshot = {
+  readonly entities: readonly string[];
+  readonly traits: readonly string[];
+  readonly entityTraits: readonly (readonly [string, readonly string[]])[];
+  readonly traitTraits: readonly (readonly [string, readonly string[]])[];
+};
+
 export type CompositionIndex = {
+  readonly snapshot: CompositionSnapshot;
   readonly isEntityIdent: (ident: string) => boolean;
   readonly isTraitIdent: (ident: string) => boolean;
   readonly transitiveTraits: (ident: string) => readonly string[];
@@ -55,7 +63,13 @@ export const makeCompositionIndex = (tables: CompositionTables): CompositionInde
     return entityTraits.get(key) ?? traitTraits.get(key) ?? [];
   };
 
+  const snapshot: CompositionSnapshot = Object.freeze({
+    entities: Object.freeze([...entities].sort()), traits: Object.freeze([...traits].sort()),
+    entityTraits: Object.freeze([...entityTraits].sort(([a], [b]) => a.localeCompare(b)).map(([key, values]) => Object.freeze([key, values] as const))),
+    traitTraits: Object.freeze([...traitTraits].sort(([a], [b]) => a.localeCompare(b)).map(([key, values]) => Object.freeze([key, values] as const))),
+  });
   return Object.freeze({
+    snapshot,
     isEntityIdent: (ident: string): boolean => entities.has(asIdent(ident)),
     isTraitIdent: (ident: string): boolean => traits.has(asIdent(ident)),
     transitiveTraits,

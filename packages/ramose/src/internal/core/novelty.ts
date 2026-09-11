@@ -11,6 +11,7 @@ import {
 import { type Chunk, lowerBound, sortedUnion, upperBound } from "./tree.ts";
 
 export class SortedNovelty {
+  private readOnly = false;
   private base: Datom[] = [];
   private pending: Datom[] = [];
   readonly cmp: DatomComparator;
@@ -19,11 +20,25 @@ export class SortedNovelty {
     this.cmp = COMPARATORS[index];
   }
 
+  fork(): SortedNovelty {
+    const copy = new SortedNovelty(this.index);
+    copy.base = this.flush();
+    return copy;
+  }
+
+  snapshot(): SortedNovelty {
+    if (this.readOnly) return this;
+    const value = this.fork();
+    value.readOnly = true;
+    return value;
+  }
+
   get size(): number {
     return this.base.length + this.pending.length;
   }
 
   add(datoms: readonly Datom[]): void {
+    if (this.readOnly) throw new Error("cannot mutate a database snapshot");
     for (const d of datoms) this.pending.push(d);
   }
 
@@ -56,17 +71,20 @@ export class SortedNovelty {
   }
 
   dropThrough(maxT: number): void {
+    if (this.readOnly) throw new Error("cannot mutate a database snapshot");
     const ds = this.flush();
     this.base = ds.filter((d) => d.t > maxT);
   }
 
   clear(): void {
+    if (this.readOnly) throw new Error("cannot mutate a database snapshot");
     this.base = [];
     this.pending = [];
   }
 }
 
 export class Novelty {
+  private readOnly = false;
   readonly byIndex: Record<IndexId, SortedNovelty> = {
     0: new SortedNovelty(0),
     1: new SortedNovelty(1),
@@ -76,7 +94,26 @@ export class Novelty {
   private _count = 0;
   private _maxT = 0;
 
+  fork(): Novelty {
+    const copy = new Novelty();
+    for (const index of ALL_INDEXES) copy.byIndex[index] = this.byIndex[index].fork();
+    copy._count = this._count;
+    copy._maxT = this._maxT;
+    return copy;
+  }
+
+  snapshot(): Novelty {
+    if (this.readOnly) return this;
+    const value = new Novelty();
+    for (const index of ALL_INDEXES) value.byIndex[index] = this.byIndex[index].snapshot();
+    value._count = this._count;
+    value._maxT = this._maxT;
+    value.readOnly = true;
+    return value;
+  }
+
   add(datoms: readonly Datom[], avet: (a: number) => boolean, vaet: (a: number) => boolean): void {
+    if (this.readOnly) throw new Error("cannot mutate a database snapshot");
     if (datoms.length === 0) return;
     this.byIndex[0].add(datoms);
     this.byIndex[1].add(datoms);
@@ -100,11 +137,13 @@ export class Novelty {
   }
 
   dropThrough(maxT: number): void {
+    if (this.readOnly) throw new Error("cannot mutate a database snapshot");
     for (const i of ALL_INDEXES) this.byIndex[i].dropThrough(maxT);
     this._count = this.byIndex[0].size;
   }
 
   clear(): void {
+    if (this.readOnly) throw new Error("cannot mutate a database snapshot");
     for (const i of ALL_INDEXES) this.byIndex[i].clear();
     this._count = 0;
   }

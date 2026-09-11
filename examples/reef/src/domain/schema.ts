@@ -399,7 +399,7 @@ export type Reef = typeof Reef;
 Reef.applyPolicy(
   {
     principal: Person.sub,
-    roles: ["user"],
+    roles: ["user", "agent"],
     claims: [
       {
         key: "name",
@@ -413,8 +413,8 @@ Reef.applyPolicy(
       },
     ],
   },
-  ({ policy, actor, session }) => {
-    const signedIn = session.hasRole("user");
+  ({ policy, actor, session, anyOf }) => {
+    const signedIn = anyOf(session.hasRole("user"), session.hasRole("agent"));
 
     policy.person.read.where(signedIn);
     policy.person.fields.email.read.where((person) => person.eq(actor));

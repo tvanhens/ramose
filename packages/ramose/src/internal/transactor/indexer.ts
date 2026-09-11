@@ -29,6 +29,13 @@ export interface IndexRunResult {
 
 export class Indexer {
   private running = false;
+  private storageQueue: Promise<unknown> = Promise.resolve();
+
+  private storageTask<A>(run: () => Promise<A>): Promise<A> {
+    const next = this.storageQueue.then(run, run);
+    this.storageQueue = next.catch(() => {});
+    return next;
+  }
   private runs = 0;
   private lastRun: IndexRunResult | undefined;
   private lastGc: unknown;
@@ -53,25 +60,26 @@ export class Indexer {
 
   async maybeSchedule(): Promise<void> {
     if (this.t.txsSinceIndex >= this.opts.txThreshold) {
-      await this.t.host.setAlarm(this.t.host.now());
+      await this.t.scheduleAlarm(this.t.host.now());
     } else await this.schedule();
   }
 
   async schedule(): Promise<void> {
-    const existing = await this.t.host.getAlarm();
-    if (existing === null) await this.t.host.setAlarm(this.t.host.now() + this.opts.intervalMs);
+    await this.t.scheduleAlarm(this.t.host.now() + this.opts.intervalMs);
   }
 
   async onAlarm(): Promise<void> {
     const res = await this.runOnce();
-    if (res.remainingTxs > 0) await this.t.host.setAlarm(this.t.host.now() + 50);
+    if (res.remainingTxs > 0) await this.t.scheduleAlarm(this.t.host.now() + 50);
   }
 
   async runNow(): Promise<IndexRunResult> {
     return this.runOnce();
   }
 
-  private async runOnce(): Promise<IndexRunResult> {
+  private runOnce(): Promise<IndexRunResult> { return this.storageTask(() => this.index()); }
+
+  private async index(): Promise<IndexRunResult> {
     const conn = this.t.connection;
     const fromT = conn.currentRoots.t;
     if (this.running) return { ran: false, fromT, toT: fromT, txs: 0, datoms: 0, ms: 0, r2Puts: 0, remainingTxs: conn.t - fromT };
@@ -118,7 +126,7 @@ export class Indexer {
 
       if (this.opts.gcEveryN > 0 && this.runs % this.opts.gcEveryN === 0) {
         try {
-          this.lastGc = await this.gcNow();
+          this.lastGc = await this.sweep();
         } catch (err) {
           this.lastGc = { error: String(err) };
           this.log.error("index.gc.error", { db: this.db, error: String(err) });
@@ -133,9 +141,11 @@ export class Indexer {
     }
   }
 
-  async gcNow() {
+  gcNow() { return this.storageTask(() => this.sweep()); }
+
+  private async sweep() {
     const t0 = this.t.host.now();
-    const res = await gcSweep(this.t.bucket, this.t.nodeStore, this.t.currentRootRecord.t, retainNewest(this.opts.retainRoots), { deleteRoots: true });
+    const res = await gcSweep(this.t.bucket, this.t.nodeStore, this.t.currentRootRecord.t, retainNewest(this.opts.retainRoots), { deleteRoots: true, pinnedRoots: this.t.retainedRevisionRoots() });
     this.lastGc = res;
     this.log.info("index.gc", { db: this.db, ...res, ms: this.t.host.now() - t0 });
     return res;

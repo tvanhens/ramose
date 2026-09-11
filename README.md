@@ -31,6 +31,7 @@ authoritative Worker and storage topology into your account.
   on the server, deny by default — not middleware you remember to add.
 - **Offline-first clients.** Persistent browser replicas answer local queries,
   queue operations, and converge across reconnects and tabs.
+- **Review agent work before it lands.** Prepare durable changesets, inspect the proposed data, and apply an approved revision atomically. Restricted agent credentials cannot bypass review.
 - **Nothing overwritten.** Every version is kept; read the database as it was
   at any earlier point in time.
 - **Your Cloudflare account.** One Worker, Durable Objects, and R2, deployed
@@ -46,6 +47,8 @@ Effect Schemas. `alchemy` comes with Ramose for deploys. Apps using
 `ramose/better-auth` also need `better-auth` and `zod`.
 
 ## Learn more
+
+- [Review agent changes](https://ramose.ai/guides/changesets/) — prepare, preview, and approve durable proposals
 
 - [What is Ramose?](https://ramose.ai/getting-started/introduction/) — the one-minute version
 - [Mental model](https://ramose.ai/concepts/mental-model/) — databases, catalogs, queries, operations, and replicas

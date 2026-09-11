@@ -1,3 +1,5 @@
+import { RevisionStore } from "./storage/revisions.ts";
+import type { Transactor } from "./transactor/transactor.ts";
 import type { RuntimeBoundaries } from "./runtime-boundaries.ts";
 
 export const TEST_HOOKS_ENV_KEY = "RAMOSE_TEST_HOOKS" as const;
@@ -231,6 +233,7 @@ export const handleIsolateTestAdmin = async (
   abort?: (reason: string) => void,
   inspect?: {
     readonly operationReceiptCount: () => number;
+    readonly transactor?: Transactor;
   },
 ): Promise<Response | undefined> => {
   if (!path.startsWith("/admin/test/")) return undefined;
@@ -288,6 +291,57 @@ export const handleIsolateTestAdmin = async (
       return json({ ok: true, name, action: "release" });
     }
     return json({ error: "checkpoint action must be arm-wait|arm-throw|release|status" }, 400);
+  }
+  if (path === "/admin/test/revisions" && request.method === "POST" && inspect?.transactor !== undefined) {
+    const core = inspect.transactor;
+    await core.init();
+    const { sql } = core.host;
+    const store = new RevisionStore(sql);
+    store.initialize();
+    const body = await request.json() as { action: string; namespace: string; name: string; revision?: string; id?: string; delayMs?: number };
+    const owner = { namespace: body.namespace, name: body.name };
+    if (body.action === "save") {
+      const revision = core.host.transactionSync(() => {
+        const id = store.save(core.connection);
+        store.reference(owner, id);
+        return id;
+      });
+      return json({ revision });
+    }
+    if (body.action === "reference") { store.reference(owner, body.revision!); return json({ ok: true }); }
+    if (body.action === "release") { store.release(owner); return json({ removed: store.collect() }); }
+    if (body.action === "open") {
+      const revision = store.resolve(owner);
+      if (revision === undefined) return json({ revision: null });
+      const connection = await store.open(revision, core.nodeStore);
+      return json({ revision, basis: connection.t, composition: connection.db().composition?.snapshot });
+    }
+    if (body.action === "lease") {
+      const revision = store.resolve(owner)!;
+      const release = store.retain(revision);
+      store.release(owner);
+      const during = store.collect();
+      const restored = await store.open(revision, core.nodeStore);
+      release();
+      const remaining = sql.exec("SELECT COUNT(*) AS n FROM database_revisions WHERE id = ?", revision).toArray()[0]!.n;
+      return json({ during, basis: restored.t, remaining });
+    }
+    if (body.action === "deadline") {
+      const expiresAt = Date.now() + (body.delayMs ?? 1000);
+      core.host.transactionSync(() => {
+        sql.exec("UPDATE changesets SET body = json_set(body, '$.expiresAt', ?) WHERE id = ?", expiresAt, body.id);
+        sql.exec("UPDATE changeset_headers SET expires_at = ? WHERE id = ?", expiresAt, body.id);
+      });
+      await core.scheduleAlarm(expiresAt);
+      return json({ expiresAt });
+    }
+    return json({
+      payloads: sql.exec("SELECT COUNT(*) AS n FROM changesets").toArray()[0]!.n,
+      revisions: sql.exec("SELECT COUNT(*) AS n FROM database_revisions").toArray()[0]!.n,
+      owners: sql.exec("SELECT namespace, name, revision FROM revision_references ORDER BY namespace, name").toArray(),
+      expired: sql.exec("SELECT id FROM changeset_headers WHERE status = 'expired' ORDER BY id").toArray(),
+      plan: sql.exec("EXPLAIN QUERY PLAN SELECT h.id, h.revision, h.title FROM changeset_recipients r JOIN changeset_headers h ON h.id = r.id WHERE r.subject = ? AND r.id > ? ORDER BY r.id LIMIT ?", "user_ada", "", 51).toArray(),
+    });
   }
   if (
     path === "/admin/test/operation-receipts" &&

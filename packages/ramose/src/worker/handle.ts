@@ -1,3 +1,4 @@
+import { requestChangeset, type ChangesetOptions } from "./changesets.ts";
 import { isDatabaseName } from "../db/DatabaseName.ts";
 import {
   callerFromVerified,
@@ -53,6 +54,7 @@ import {
 } from "./analytics.ts";
 import {
   BadRequest,
+  ChangesetRejected,
   type Internal,
   NotFound,
   OperationRejected,
@@ -86,6 +88,7 @@ import {
 } from "./public-observation.ts";
 
 export interface ServerOptions {
+  readonly changesets?: ChangesetOptions;
   readonly operationCatalogs?: OperationCatalogs;
 }
 
@@ -145,6 +148,7 @@ const recover = (
   request: Request,
   env: RamoseEnv,
 ) => ({
+  ChangesetRejected: (e: ChangesetRejected) => Effect.sync(() => respond(e, request, env)),
   NotFound: (e: NotFound) => Effect.sync(() => respond(e, request, env)),
   BadRequest: (e: BadRequest) => Effect.sync(() => respond(e, request, env)),
   Unauthorized: (e: Unauthorized) => Effect.sync(() => respond(e, request, env)),
@@ -367,6 +371,7 @@ export const handle = (
         databaseBindings.root(DatabaseId.make(db)),
       ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
       return yield* mcpResponse({
+        requiresApproval: peer.changesets?.requiresApproval?.(callerFromVerified(verified)) === true,
         env,
         request,
         bindings: databaseBindings,
@@ -376,7 +381,32 @@ export const handle = (
         ...(boundaries === undefined ? {} : { boundaries }),
       });
     }
+    if (rest === "/changesets" && request.method === "POST") {
+      if (peer.operationCatalogs === undefined || databaseBindings === undefined) return yield* new Unauthorized({ status: 403 });
+      const proof = deployedCatalogProof(peer.operationCatalogs, db);
+      if (proof === undefined) return yield* new Unauthorized({ status: 403 });
+      const raw = yield* Effect.tryPromise({
+        try: async () => {
+          const text = await readReplicationActivation(request);
+          if (text.length > 1_000_000) throw new Error("oversized");
+          return JSON.parse(text) as unknown;
+        }, catch: () => new BadRequest({ message: "invalid changeset request" }),
+      });
+      const root = yield* Effect.fromResult(databaseBindings.root(DatabaseId.make(db)))
+        .pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
+      yield* provisionResolvedDatabase(env, root, { rootDatabase: root.database });
+      const result = yield* Effect.tryPromise({
+        try: () => requestChangeset(env, url.origin, db, proof.catalogKey, proof.unitHash,
+          callerFromVerified(verified), raw, (caller) =>
+            peer.changesets?.requiresApproval?.(caller) !== true && peer.changesets?.canApprove(caller) === true),
+        catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause),
+      });
+      return json(result, 200, request, env);
+    }
     if (rest === "/op" && request.method === "POST") {
+      if (peer.changesets?.requiresApproval?.(callerFromVerified(verified)) === true) {
+        return yield* new Unauthorized({ status: 403 });
+      }
       if (peer.operationCatalogs === undefined) {
         return yield* new Unauthorized({ status: 403 });
       }

@@ -141,7 +141,6 @@ export {
   type Op,
   type OpPrincipal,
   type OperationCard,
-  type OperationEffectContext,
 } from "./Operation.ts";
 
 export {

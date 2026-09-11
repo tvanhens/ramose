@@ -74,6 +74,9 @@ peer on `http://localhost:1341` and the identity Worker that mints its bearers
 on `http://localhost:1342`. `bun run test:browser` starts and stops that same
 stack itself, so a browser test can drive the example against a real peer.
 
+Run `bun run dev:reef` and `bun run dev:reef:ui`, then `bun run test:reef` to
+exercise the proposal review flow in Chromium against the real local Workers.
+
 ## Cloudflare e2e
 
 `bun run test:e2e:cf` deploys a temporary stage, runs the e2e suite, and removes

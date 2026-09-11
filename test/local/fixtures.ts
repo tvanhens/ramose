@@ -289,6 +289,8 @@ export const testAdmin = async (
     | "/transact"
     | "/query"
     | "/sessions"
+    | "/revisions"
+    | "/gc"
     | "/index"
     | "/info"
     | "/operation-receipts"

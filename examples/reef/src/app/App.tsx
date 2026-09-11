@@ -1,5 +1,6 @@
+import { Person } from "../domain/schema.ts";
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { RamoseProvider, useSyncState } from "ramose/react";
+import { RamoseProvider, useQuery, useSyncState } from "ramose/react";
 import {
   authClient,
   clearCachedUser,
@@ -57,12 +58,16 @@ const SyncBadge = () => {
 const Shell = (props: {
   readonly client: ReefClient;
   readonly userName: string;
+  readonly userId: string;
   readonly onSignOut: () => void;
 }) => {
   const route = useRoute();
+  const db = props.client.open();
+  const person = useQuery(db.query.from(Person).where({ sub: props.userId }).one(), db);
+  const missingPerson = person.status === "ready" && person.data === null;
   useEffect(() => {
-    props.client.open().mutate.ensureMe({}).queued.catch(() => undefined);
-  }, [props.client]);
+    if (missingPerson) db.mutate.ensureMe({});
+  }, [db, missingPerson]);
   return (
     <RamoseProvider client={props.client}>
       <div className="shell">
@@ -130,6 +135,7 @@ export const App = () => {
   return (
     <Shell
       client={client}
+      userId={userId}
       userName={user?.name || user?.email || "Signed in"}
       onSignOut={() => {
         dropToken(userId);

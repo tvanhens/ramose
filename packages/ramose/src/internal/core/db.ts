@@ -71,7 +71,7 @@ export class Db {
   constructor(o: DbOptions) {
     this.store = o.store;
     this.roots = o.roots;
-    this.novelty = o.novelty;
+    this.novelty = o.novelty.snapshot();
     this.basisT = o.basisT;
     this.schema = o.schema;
     this.nextEid = o.nextEid;

@@ -45,6 +45,7 @@ export interface TransactorTesting {
     abort: (reason: string) => void,
     inspect: {
       readonly operationReceiptCount: () => number;
+      readonly transactor?: Transactor;
     },
   ) => Promise<Response | undefined>;
 }
@@ -92,7 +93,6 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
         ? undefined
         : {
           catalogs: operationCatalogs,
-          environment: env,
           now: () => host.now(),
           sealing: () => serverSealingKey(env),
         },
@@ -209,6 +209,7 @@ class TransactorDOBase extends DurableObject<RamoseEnv> {
         (reason) => this.ctx.abort(reason),
         {
           operationReceiptCount: () => this.core.operationReceiptCount(),
+          transactor: this.core,
         },
       );
       if (testAdmin !== undefined) return testAdmin;

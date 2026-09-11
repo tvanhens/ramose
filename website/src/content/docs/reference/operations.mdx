@@ -8,6 +8,10 @@ Operations are the only public mutation surface. They are owned by an entity or 
 
 *New here? Start with [Mutate data](/guides/transactions/).*
 
+## Reviewable operations
+
+Every operation is a database transaction and supports [changesets](/guides/changesets/). Bodies have no environment or effect capability. Keep external work outside transactions; application callbacks and codecs remain trusted JavaScript.
+
 ## Targeted operation
 
 ```ts

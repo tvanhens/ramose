@@ -256,12 +256,12 @@ const Item = Entity("item", {
         return {};
       },
     }),
-    renameAfterEffect: Operation({
+    renameAfterRead: Operation({
       input: EffectSchema.Struct({ title: EffectSchema.String }),
       output: EffectSchema.Struct({}),
       async run(op, input) {
         Reflect.set(op.principal.claims, "bodyRan", true);
-        await op.effect("before-write", async () => undefined);
+        await op.pull(op.self.eid, [":item/title"]);
         op.self.set(Item.title, input.title);
         return {};
       },
@@ -433,7 +433,7 @@ App.applyPolicy(
     policy.item.operations.deleteAndEchoTitle.where(session.hasRole("member"));
     policy.item.operations.deleteHiddenInput.where(session.hasRole("member"));
     policy.item.operations.deleteOnly.where(session.hasRole("member"));
-    policy.item.operations.renameAfterEffect.where(session.hasRole("member"));
+    policy.item.operations.renameAfterRead.where(session.hasRole("member"));
     policy.item.operations.crash.where(session.hasRole("member"));
     policy.item.operations.inputCrash.where(session.hasRole("member"));
     policy.item.operations.fieldCodec.where(session.hasRole("member"));
@@ -804,7 +804,6 @@ const buildReplayFenceWorld = async () => {
 
 const replayRuntime = (world: Awaited<ReturnType<typeof buildReplayFenceWorld>>) => ({
   catalogs: world.deployed,
-  environment: { trusted: true },
   now: () => 1_700_000_000_000,
 });
 
@@ -889,7 +888,6 @@ const invokeOperation = (
   input: Omit<OperationInvocation, "database" | "catalogKey" | "unitHash">,
 ) => executeCatalogOperation(world.conn, {
   catalogs: world.deployed,
-  environment: { trusted: true },
   now: () => 1_700_000_000_000,
 }, {
   ...input,
@@ -903,7 +901,6 @@ const invokeSemanticsOperation = (
   input: Omit<OperationInvocation, "database" | "catalogKey" | "unitHash">,
 ) => executeCatalogOperation(world.conn, {
   catalogs: world.deployed,
-  environment: { trusted: true },
   now: () => 1_700_000_000_000,
 }, {
   ...input,
@@ -1274,7 +1271,6 @@ describe("deployed operation runtime", () => {
     const world = await buildWorld();
     const runtime = {
       catalogs: world.deployed,
-      environment: { trusted: true },
       now: () => 1_700_000_000_000,
     };
     const invocation = {
@@ -1652,7 +1648,6 @@ describe("deployed operation runtime", () => {
     }));
     const mismatched = await captureDenial(executeCatalogOperation(world.conn, {
       catalogs: world.deployed,
-      environment: { trusted: true },
       now: () => 1_700_000_000_000,
     }, {
       database,
@@ -1720,14 +1715,13 @@ describe("deployed operation runtime", () => {
     } satisfies AuthenticatedCaller;
     await expect(executeCatalogOperation(world.conn, {
       catalogs: world.deployed,
-      environment: { trusted: true },
       now: () => clockReads++ === 0 ? exp * 1_000 - 1 : exp * 1_000,
     }, {
       database,
       catalogKey: world.installed.catalogKey,
       unitHash: world.installed.unitHash,
       owner: { kind: "entity", name: "item" },
-      localName: "renameAfterEffect",
+      localName: "renameAfterRead",
       target: world.item,
       input: { title: "Expired" },
       caller: authenticated,
