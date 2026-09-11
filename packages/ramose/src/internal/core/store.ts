@@ -1,6 +1,6 @@
 import { gunzip, gzip, sha256Hex } from "./bytes.ts";
 import type { IndexId } from "./datom.ts";
-import { type NodeKind, type NodeRef, type NodeSource, type NodeStore, type TreeNode, decodeNode, encodeNode } from "./tree.ts";
+import { type NodeKind, type NodeRef, type NodeStore, type TreeNode, decodeNode, encodeNode } from "./tree.ts";
 
 export interface Codec {
   readonly name: string;
@@ -103,53 +103,5 @@ export class MemStore implements NodeStore {
     }
     this.stats.objects = this.bodies.size;
     return n;
-  }
-}
-
-export class CachingSource implements NodeStore {
-  private readonly cache = new Map<string, TreeNode>();
-  hits = 0;
-  misses = 0;
-
-  constructor(
-    private readonly backing: NodeSource | NodeStore,
-    private readonly maxNodes = 4096,
-  ) {}
-
-  peek(hash: string): TreeNode | undefined {
-    const n = this.cache.get(hash);
-    if (n !== undefined) {
-      this.hits++;
-      this.cache.delete(hash);
-      this.cache.set(hash, n);
-      return n;
-    }
-    const b = this.backing.peek(hash);
-    if (b !== undefined) this.remember(hash, b);
-    return b;
-  }
-
-  async load(ref: NodeRef): Promise<TreeNode> {
-    const c = this.peek(ref.hash);
-    if (c !== undefined) return c;
-    this.misses++;
-    const n = await this.backing.load(ref);
-    this.remember(ref.hash, n);
-    return n;
-  }
-
-  async put(index: IndexId, node: TreeNode): Promise<NodeRef> {
-    if (!("put" in this.backing)) throw new Error("CachingSource: backing source is read-only");
-    const ref = await (this.backing as NodeStore).put(index, node);
-    this.remember(ref.hash, node);
-    return ref;
-  }
-
-  private remember(hash: string, node: TreeNode): void {
-    this.cache.set(hash, node);
-    if (this.cache.size > this.maxNodes) {
-      const oldest = this.cache.keys().next().value as string;
-      this.cache.delete(oldest);
-    }
   }
 }

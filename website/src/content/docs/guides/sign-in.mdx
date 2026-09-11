@@ -9,6 +9,26 @@ Ramose verifies identities; it does not manage passwords or issue user sessions.
 
 <Learn learn={["Which JWT fields Ramose verifies", "How web and MCP clients obtain the same principal identity", "How token changes interact with offline caches and database access"]} before={[{ href: "/guides/permissions/", label: "Permissions" }]} minutes={10} />
 
+## Browser credential provider
+
+Use the browser entry with your authenticated Better Auth user ID:
+
+```ts
+import { createAuthProvider } from "ramose/better-auth/client"
+
+const credentials = createAuthProvider({ userId: session.user.id })
+const client = createClient({
+  url: location.origin,
+  database: "app",
+  schema: AppSchema,
+  auth: credentials,
+})
+```
+
+The provider renews expiring tokens, shares concurrent renewals, and can reuse
+its saved bearer during a network failure. HTTP denials never trigger that
+fallback. Call `credentials.clear()` and close the client on sign-out.
+
 ## Configure the server
 
 ```ts
@@ -55,8 +75,8 @@ Use `jwksJson` for a pinned local or isolated environment. Use `jwksService` whe
 ```ts
 const client = createClient({
   url: "https://api.example.com",
-  root: ROOT_DATABASE,
-  catalog: AppSchema,
+  database: ROOT_DATABASE,
+  schema: AppSchema,
   auth: async () => {
     const session = await auth.getSession()
     return {

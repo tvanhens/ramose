@@ -20,13 +20,15 @@ Ramose is pre-release: expect the API to change between minor versions.
 
 | Import | What it is |
 | --- | --- |
-| `ramose/db` | Portable schema, query, pull, operation, transaction-authoring primitives, and tagged errors. |
-| `ramose/client` | The offline-first browser client: `createClient`, one interned root handle, local query execution over a durable authorized replica, and framework-neutral subscriptions. |
-| `ramose` | Deploy barrel: everything on `ramose/db` plus `Server`, `Database`, JWT claims, providers, and HTTP error mapping. |
+| `ramose/db` | Portable schemas, fields, queries, owned operation types, and tagged errors. |
+| `ramose/client` | The offline-first browser client: `createClient`, interned database handles, local query execution over a durable authorized replica, and framework-neutral subscriptions. |
+| `ramose/react` | React hooks for queries, operation receipts, synchronization state, and Suspense. |
+| `ramose` | Deployment resources: `Server`, `Database`, JWT claims, providers, and HTTP error mapping. |
 | `ramose/worker` | The peer Worker itself. Hand it to Alchemy as `main: import.meta.resolve("ramose/worker")` — `main` is a path, so a bare specifier there silently resolves to nothing. |
-| `ramose/better-auth` | The Better Auth plugin that mints the workspace-scoped JWT a peer verifies. Needs optional peers `better-auth` and `zod`. |
+| `ramose/better-auth/client` | Browser credential provider with bearer caching, renewal, offline fallback, and sign-out cleanup. |
+| `ramose/better-auth` | The Better Auth plugin that mints the identity JWT a peer verifies. Needs optional peers `better-auth` and `zod`. |
 
-App schemas use `Ramose.string()` / `boolean()` / `Enum([...])`. Operation
+App schemas use `Ramose.string()` / `boolean()` / `enumeration([...])`. Declare operations inside an entity or trait’s `operations` callback. Operation
 codecs import `effect/Schema` from the application's declared Effect peer.
 
 ## A first look

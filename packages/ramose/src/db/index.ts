@@ -1,7 +1,7 @@
 export {
-  Enum,
+  Enum as enumeration,
   Field,
-  Ref,
+  Ref as ref,
   boolean,
   bytes,
   float,
@@ -28,16 +28,11 @@ export {
   type TraitBindingSpec,
 } from "./Binding.ts";
 export {
-  assertNoFixedValues,
-  compositionValueMetadata,
-  resolveCreationValues,
   BindingConflictError,
   CreationValueError,
 } from "./creation.ts";
 export {
-  collectCodeReachability,
   ReachabilityConflictError,
-  type CodeReachability,
 } from "./reachability.ts";
 export {
   Schema,
@@ -47,10 +42,6 @@ export { Entity, type AnyEntity } from "./Entity.ts";
 export { Trait, type AnyTrait } from "./Trait.ts";
 export type { AnyComposer } from "./Composer.ts";
 export {
-  Bytes,
-  Instant,
-  Long,
-  Uuid,
   stored,
   type DbValueType,
 } from "./valueTypes.ts";
@@ -58,7 +49,6 @@ export { all } from "./Pull.ts";
 export { again } from "./Pull.ts";
 export { pick } from "./Pull.ts";
 export { values, type NestedOpts, type ValuesField } from "./shapes.ts";
-export { Q } from "./query/index.ts";
 export * as Query from "./query/surface.ts";
 export type {
   AnyQueryObject,
@@ -76,10 +66,8 @@ export type {
 } from "./query/index.ts";
 export type { EidLike, Shape } from "./shapes.ts";
 
-export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";
+export { isDatabaseName } from "./DatabaseName.ts";
 export {
-  IDENT_NAME_RE,
-  RESERVED_FIELD_KEYS,
   isIdentName,
   isReservedFieldKey,
 } from "./IdentName.ts";
@@ -99,14 +87,12 @@ export {
   type MutationRef,
 } from "./refs.ts";
 export {
-  allocationSlots,
   type AllocationDeclaration,
   type AllocationPathSegment,
   type AllocationSlot,
   type AllocationSlots,
   type EntityRefPath,
 } from "./allocations.ts";
-export { tempid, type Tempid } from "./entityArg.ts";
 export type {
   AnyOptimisticProjection,
   OptimisticProjection,
@@ -128,19 +114,10 @@ export type {
 
 export {
   EntityId,
-  Operation,
-  Operations,
-  OwnedOperations,
-  checkOperationsCoverage,
-  defineOperations,
-  operationCards,
-  operationNames,
-  type AnyOperation,
-  type AnyOperations,
-  type DefinedOperations,
-  type Op,
-  type OpPrincipal,
-  type OperationCard,
+  type OwnedOperation as Operation,
+  type AnyOwnedOperation as AnyOperation,
+  type OwnedOp as OperationContext,
+  type OpPrincipal as OperationPrincipal,
 } from "./Operation.ts";
 
 export {

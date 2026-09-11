@@ -91,13 +91,11 @@ export class Novelty {
     2: new SortedNovelty(2),
     3: new SortedNovelty(3),
   };
-  private _count = 0;
   private _maxT = 0;
 
   fork(): Novelty {
     const copy = new Novelty();
     for (const index of ALL_INDEXES) copy.byIndex[index] = this.byIndex[index].fork();
-    copy._count = this._count;
     copy._maxT = this._maxT;
     return copy;
   }
@@ -106,7 +104,6 @@ export class Novelty {
     if (this.readOnly) return this;
     const value = new Novelty();
     for (const index of ALL_INDEXES) value.byIndex[index] = this.byIndex[index].snapshot();
-    value._count = this._count;
     value._maxT = this._maxT;
     value.readOnly = true;
     return value;
@@ -126,7 +123,6 @@ export class Novelty {
     }
     if (av.length) this.byIndex[2].add(av);
     if (va.length) this.byIndex[3].add(va);
-    this._count += datoms.length;
   }
 
   get count(): number {
@@ -139,13 +135,12 @@ export class Novelty {
   dropThrough(maxT: number): void {
     if (this.readOnly) throw new Error("cannot mutate a database snapshot");
     for (const i of ALL_INDEXES) this.byIndex[i].dropThrough(maxT);
-    this._count = this.byIndex[0].size;
   }
 
   clear(): void {
     if (this.readOnly) throw new Error("cannot mutate a database snapshot");
     for (const i of ALL_INDEXES) this.byIndex[i].clear();
-    this._count = 0;
+    this._maxT = 0;
   }
 }
 

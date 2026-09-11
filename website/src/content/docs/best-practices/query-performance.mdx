@@ -16,11 +16,11 @@ Choose the most selective entity or trait as the query root. Apply equality and 
 ```ts
 projectDb.query
   .from(Task)
-  .where(Task.status.eq("open"))
-  .where(Task.assignee.eq(viewer.id))
+  .where({ status: "open" })
+  .where({ assignee: viewer.id })
   .orderBy(Task.updatedAt, "desc")
   .select({ id: Task.id, title: Task.title, updatedAt: Task.updatedAt })
-  .page({ first: 50 })
+  .limit(50).after(null)
 ```
 
 Avoid fetching full entities “just in case.” A narrow projection reduces server work, transfer size, local indexes, React updates, and agent context.

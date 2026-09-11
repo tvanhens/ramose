@@ -2,7 +2,7 @@
   "name": "ramose",
   "version": "0.3.0",
   "type": "module",
-  "description": "Ramose — an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: portable authoring (`ramose/db`), Alchemy resources (`ramose`), the offline-first browser client (`ramose/client`), its React adapter (`ramose/react`), the peer Worker (`ramose/worker`) and the Better Auth plugin (`ramose/better-auth`).",
+  "description": "Ramose \u2014 an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: portable authoring (`ramose/db`), Alchemy resources (`ramose`), the offline-first browser client (`ramose/client`), its React adapter (`ramose/react`), the peer Worker (`ramose/worker`) and the Better Auth plugin (`ramose/better-auth`).",
   "license": "Apache-2.0",
   "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
   "homepage": "https://ramose.ai",
@@ -27,14 +27,6 @@
     "effect",
     "alchemy",
     "realtime"
-  ],
-  "sideEffects": [
-    "./src/worker/**",
-    "./src/internal/transactor/**",
-    "./src/internal/replica/**",
-    "./dist/worker/**",
-    "./dist/internal/transactor/**",
-    "./dist/internal/replica/**"
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -62,6 +54,10 @@
     "./better-auth": {
       "types": "./dist/better-auth/index.d.ts",
       "default": "./dist/better-auth/index.js"
+    },
+    "./better-auth/client": {
+      "types": "./dist/better-auth/client.d.ts",
+      "default": "./dist/better-auth/client.js"
     },
     "./package.json": "./package.json"
   },

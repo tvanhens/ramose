@@ -3,6 +3,7 @@ import starlight from "@astrojs/starlight";
 import { wgslVitePlugin } from "vgpu/client";
 import { defineConfig } from "astro/config";
 import remarkExtractSnippets from "./scripts/remark-extract-snippets.mjs";
+import { localSearch } from "./scripts/local-search.ts";
 
 const site = "https://ramose.ai";
 
@@ -15,21 +16,8 @@ export default defineConfig({
     remarkPlugins: [remarkExtractSnippets],
   },
 
-  redirects: {
-    "/guides/auth/": "/reference/policy/",
-    "/concepts/databases-are-names/": "/guides/workspaces/",
-    "/concepts/for-datomic-users/":
-      "/concepts/data-model/#where-the-ideas-come-from",
-    "/reference/alchemy-resources/":
-      "/guides/deploy/#reference-the-ramose-resources",
-    "/reference/http-api/": "/reference/server/#http-api",
-    "/reference/configuration/": "/reference/server/#configuration",
-    "/reference/runbook/": "/reference/server/#operations",
-    "/getting-started/first-app/": "/getting-started/quickstart/",
-    "/guides/live-queries/": "/guides/react/",
-  },
   integrations: [
-    starlight({
+    localSearch(starlight({
       title: "Ramose",
 
       description:
@@ -176,6 +164,6 @@ export default defineConfig({
           ],
         },
       ],
-    }),
+    })),
   ],
 });

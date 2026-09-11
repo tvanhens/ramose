@@ -2,7 +2,7 @@ import type { Eid, Equal, Expect } from "../../src/db/internal.ts";
 import { Entity, Field, Query, Ref, string } from "../../src/db/internal.ts";
 import type { AllRow } from "../../src/db/Pull.ts";
 import type { ClientRef, EntityId, MutationRef } from "../../src/db/refs.ts";
-import type { ClientValue, EntityHandle } from "../../src/client/index.ts";
+import type { ClientValue, EntityHandle, EntityHandleFor } from "../../src/client/index.ts";
 import type { EntityResult } from "../../src/client/query.ts";
 
 const Issue = Entity("issue", { title: Field(string()) });
@@ -81,3 +81,13 @@ Query.from(Note).where({ author: author.id });
 declare const stranger: EntityHandle<unknown, unknown, IssueEntity>;
 // @ts-expect-error
 Query.from(Note).where({ author: stranger.id });
+
+export type _definitionHandleId = Expect<
+  Equal<EntityHandleFor<typeof Note>["id"], MutationRef<typeof Note>>
+>;
+export type _definitionHandleField = Expect<
+  Equal<EntityHandleFor<typeof Note>["data"]["body"], string>
+>;
+export type _definitionHandleReference = Expect<
+  Equal<EntityHandleFor<typeof Note>["data"]["author"]["id"], MutationRef<typeof Person>>
+>;

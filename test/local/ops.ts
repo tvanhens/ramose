@@ -1,3 +1,4 @@
+import * as InternalOperations from "../../packages/ramose/src/db/Operation.ts";
 import * as Schema from "effect/Schema";
 import * as Ramose from "ramose/db";
 import {
@@ -10,12 +11,12 @@ import {
   addTodoOp,
   deleteTodoOp,
   setDoneOp,
-} from "../../examples/todos/src/todos.ts";
+} from "./todo-operations.ts";
 
 export const User = Ramose.Entity("user", {
   name: Ramose.Field.unique(Ramose.string(), "upsert"),
   age: Ramose.int({ optional: true }),
-  bestFriend: Ramose.Field(Ramose.Ref.self, { optional: true }),
+  bestFriend: Ramose.Field(Ramose.ref.self, { optional: true }),
 });
 
 export const Movie = Ramose.Entity("movie", {
@@ -24,7 +25,7 @@ export const Movie = Ramose.Entity("movie", {
 
 export const Movies = Ramose.Schema("local-movies", { user: User, movie: Movie });
 
-export const setTitle = Ramose.Operation(
+export const setTitle = InternalOperations.Operation(
   "movie/set-title",
   {
     on: Movie,
@@ -37,7 +38,7 @@ export const setTitle = Ramose.Operation(
   },
 );
 
-export const ping = Ramose.Operation(
+export const ping = InternalOperations.Operation(
   "ping",
   {
     input: Schema.Struct({}),
@@ -46,7 +47,7 @@ export const ping = Ramose.Operation(
   () => ({ n: 1 }),
 );
 
-export const createNamed = Ramose.Operation(
+export const createNamed = InternalOperations.Operation(
   "user/create",
   {
     input: Schema.Struct({ name: Schema.String }),
@@ -59,7 +60,7 @@ export const createNamed = Ramose.Operation(
   },
 );
 
-export const setName = Ramose.Operation(
+export const setName = InternalOperations.Operation(
   "user/set-name",
   {
     on: User,
@@ -72,7 +73,7 @@ export const setName = Ramose.Operation(
   },
 );
 
-export const createCoded = Ramose.Operation(
+export const createCoded = InternalOperations.Operation(
   "user/create-coded",
   {
     schema: Movies,
@@ -88,7 +89,7 @@ export const createCoded = Ramose.Operation(
   },
 );
 
-export const createByPut = Ramose.Operation(
+export const createByPut = InternalOperations.Operation(
   "user/create-put",
   {
     schema: Movies,
@@ -101,7 +102,7 @@ export const createByPut = Ramose.Operation(
   },
 );
 
-export const createShort = Ramose.Operation(
+export const createShort = InternalOperations.Operation(
   "user/create-short",
   {
     schema: Movies,
@@ -114,7 +115,7 @@ export const createShort = Ramose.Operation(
   },
 );
 
-export const updateGhost = Ramose.Operation(
+export const updateGhost = InternalOperations.Operation(
   "user/update-ghost",
   {
     schema: Movies,
@@ -127,7 +128,7 @@ export const updateGhost = Ramose.Operation(
   },
 );
 
-export const putOnBootstrap = Ramose.Operation(
+export const putOnBootstrap = InternalOperations.Operation(
   "user/put-bootstrap",
   {
     schema: Movies,
@@ -140,7 +141,7 @@ export const putOnBootstrap = Ramose.Operation(
   },
 );
 
-export const putOnMovie = Ramose.Operation(
+export const putOnMovie = InternalOperations.Operation(
   "user/put-on-movie",
   {
     schema: Movies,
@@ -153,7 +154,7 @@ export const putOnMovie = Ramose.Operation(
   },
 );
 
-export const putMissingEid = Ramose.Operation(
+export const putMissingEid = InternalOperations.Operation(
   "user/put-missing-eid",
   {
     schema: Movies,
@@ -166,7 +167,7 @@ export const putMissingEid = Ramose.Operation(
   },
 );
 
-export const putDanglingRef = Ramose.Operation(
+export const putDanglingRef = InternalOperations.Operation(
   "user/put-dangling-ref",
   {
     schema: Movies,
@@ -179,7 +180,7 @@ export const putDanglingRef = Ramose.Operation(
   },
 );
 
-export const operations = Ramose.Operations({
+export const operations = InternalOperations.Operations({
   addSession,
   addReefUser,
   addReefIssue,

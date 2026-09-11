@@ -8,7 +8,6 @@ export const REEF_AUTH: AuthConfig = {
 };
 
 export const AUTH_BASE_PATH = "/api/auth";
-export const MINT_PATH = `${AUTH_BASE_PATH}/ramose/token`;
 
 export const DEV_PEER_PORT = 1337;
 export const DEV_API_PORT = 1338;

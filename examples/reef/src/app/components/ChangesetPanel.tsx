@@ -1,10 +1,9 @@
 import { Issue } from "../../domain/schema.ts";
-import type { MutationRef } from "ramose/db";
-import { MINT_PATH } from "../../domain/shared.ts";
+import { AUTH_BASE_PATH } from "../../domain/shared.ts";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useChangesets } from "ramose/react";
 import { ChangesetError, type Changeset } from "ramose/client";
-import type { IssueRow } from "../screens/BoardScreen.tsx";
+import type { IssueRow } from "../entities.ts";
 
 export const ChangesetPanel = (props: {
   readonly previewReady: boolean;
@@ -38,7 +37,7 @@ export const ChangesetPanel = (props: {
     const proposal = await changesets.prepare({
       id: crypto.randomUUID(),
       title: `Move ${backlog.length} backlog ${backlog.length === 1 ? "issue" : "issues"} into Todo`,
-      operations: backlog.map((issue, index) => changesets.operations(Issue).moveIssue(issue.id as MutationRef, {
+      operations: backlog.map((issue, index) => changesets.operations(Issue).moveIssue(issue.id, {
         status: "todo", rank: (index + 1) * 1024,
       })),
     });
@@ -64,7 +63,7 @@ export const ChangesetPanel = (props: {
         <strong>{proposal ? "Proposed board" : "Plan changes before applying them"}</strong>
         <button disabled={busy || proposal !== undefined} onClick={prepare}>Plan next sprint</button>
         <button disabled={busy} onClick={() => void run(async () => {
-          const response = await fetch(MINT_PATH, {
+          const response = await fetch(`${AUTH_BASE_PATH}/ramose/token`, {
             method: "POST", credentials: "include",
             headers: { "content-type": "application/json", "x-reef-agent": "1" }, body: "{}",
           });

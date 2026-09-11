@@ -25,8 +25,8 @@ const auth = () => ({ token: "bearer-a", cacheKey: "account-a" });
 
 const options = (overrides: Partial<ClientOptions> = {}): ClientOptions => ({
   url: "https://data.example.com",
-  root: "app",
-  catalog: Notes,
+  database: "app",
+  schema: Notes,
   auth,
   ...overrides,
 });
@@ -55,11 +55,11 @@ describe("createClient", () => {
       .toThrow(ClientConfigurationError);
     expect(() => createClient(options({ url: "https://a:b@data.example.com" })))
       .toThrow(ClientConfigurationError);
-    expect(() => createClient(options({ root: "" })))
+    expect(() => createClient(options({ database: "" })))
       .toThrow(ClientConfigurationError);
-    expect(() => createClient(options({ root: "app/child" })))
+    expect(() => createClient(options({ database: "app/child" })))
       .toThrow(ClientConfigurationError);
-    expect(() => createClient(options({ catalog: { key: "app" } as never })))
+    expect(() => createClient(options({ schema: { key: "app" } as never })))
       .toThrow(ClientConfigurationError);
     expect(() => createClient(options({ auth: undefined as never })))
       .toThrow(ClientConfigurationError);

@@ -43,7 +43,7 @@ import HistoryRecoveryDemo from "../../components/HistoryRecoveryDemo.astro";
 
 ```ts
 const Project = Ramose.Entity("project", {
-  fields: { slug: Ramose.string().unique() },
+  slug: Ramose.Field.unique(Ramose.string(), "strict"),
 })
 ```
 
@@ -55,7 +55,7 @@ const Project = Ramose.Entity("project", {
 const tasks = useQuery(
   projectDb.query
     .from(Task)
-    .where(Task.done.eq(false)),
+    .where({ done: false }),
 )
 ```
 

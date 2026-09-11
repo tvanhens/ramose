@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as S from "effect/Schema";
-import { Entity, EntityId, Field, Ref, Schema, string } from "../../../src/db/index.ts";
+import { Entity, EntityId, Field, ref, Schema, string } from "../../../src/db/index.ts";
 import { schemaTx } from "../../../src/db/internal.ts";
 import { Connection } from "../../../src/internal/core/conn.ts";
 import { restoreEngineTypeAssertions } from "../../../src/internal/core/tx-provenance.ts";
@@ -12,7 +12,7 @@ import {
   type AuthenticatedCaller, type OperationInvocation,
 } from "../../../src/internal/authorization/index.ts";
 
-const Item = Entity("proposalItem", { name: Field.unique(string(), "strict"), secret: string(), related: Field(Ref.self, { optional: true }) }, {
+const Item = Entity("proposalItem", { name: Field.unique(string(), "strict"), secret: string(), related: Field(ref.self, { optional: true }) }, {
   operations: (Operation) => ({
     rename: Operation({ input: S.Struct({ name: S.String }), output: S.Struct({}),
       run(op, input) { op.self.set(Item.name, input.name); return {}; } }),

@@ -1,22 +1,31 @@
 #!/usr/bin/env bun
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { parseArgs } from "node:util";
+import { isReleaseVersion, updateLockfileVersion, VERSION_FILES } from "./lib/version.ts";
 
-const argv = process.argv.slice(2);
-const noCommit = argv.includes("--no-commit");
-const version = argv.find((arg) => !arg.startsWith("--"));
+const { values, positionals } = parseArgs({
+  args: process.argv.slice(2),
+  allowPositionals: true,
+  options: { "no-commit": { type: "boolean" } },
+});
+if (positionals.length > 1) throw new Error("expected one release version");
+const noCommit = values["no-commit"] === true;
+const version = positionals[0];
 
 if (!version) {
   console.error("usage: bun run release:version <version> [--no-commit]");
   process.exit(1);
 }
 
-if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
+if (!isReleaseVersion(version)) {
   console.error(`invalid version: ${version} (expected e.g. 0.2.0 or 0.2.0-alpha.1, with no leading "v")`);
   process.exit(1);
 }
 
 const manifests = ["package.json", "packages/ramose/package.json"];
+const lockBefore = readFileSync("bun.lock", "utf8");
+const lockAfter = updateLockfileVersion(lockBefore, version);
 
 let changed = 0;
 for (const path of manifests) {
@@ -27,7 +36,9 @@ for (const path of manifests) {
   changed++;
 }
 
-if (changed === 0) {
+if (lockBefore !== lockAfter) writeFileSync("bun.lock", lockAfter);
+
+if (changed === 0 && lockBefore === lockAfter) {
   console.log(`all ${manifests.length} manifests are already at ${version} — nothing to do`);
   process.exit(0);
 }
@@ -41,7 +52,7 @@ if (noCommit) {
 
 const message = `release: v${version}`;
 const add = Bun.spawn({
-  cmd: ["git", "add", "--", ...manifests],
+  cmd: ["git", "add", "--", ...VERSION_FILES],
   stdio: ["inherit", "inherit", "inherit"],
 });
 if ((await add.exited) !== 0) {

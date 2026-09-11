@@ -140,7 +140,7 @@ export interface QueryOrder {
 
 /**
  * The pipe surface's incremental builder for the same body value
- * `Query.q` writes directly. `Row` is a phantom: the row the
+ * `Query.build` writes directly. `Row` is a phantom: the row the
  * pipeline's terminals have shaped so far. `N` is the current focus
  * namespace (`entities(User)` starts as `User`; `follow` moves it).
  * Runtime `ns` is the scan root `entities(...)` planted — membership
@@ -232,7 +232,7 @@ export type AnyQueryObject = QueryObject<any, any>;
  * instead of restating the shape by hand:
  *
  * ```ts
- * const boardQuery = Query.q(() => pipe(entities(Issue), select({ … })));
+ * const boardQuery = Query.build(() => pipe(entities(Issue), select({ … })));
  * type BoardRow = Ramose.Row<typeof boardQuery>;   // one row
  * type BoardRows = Ramose.Rows<typeof boardQuery>; // the readonly array
  * ```
@@ -299,7 +299,7 @@ const runInto = (
     };
   }
   throw new Error(
-    "ramose/query: a Query.q body is a generator of clauses returning the projection, or a function returning a pipeline",
+    "ramose/query: a Query.build body is a generator of clauses returning the projection, or a function returning a pipeline",
   );
 };
 
@@ -757,13 +757,13 @@ export const makeQueryObject = <
 /**
  * Build a query. The body returns the projection; both the pipe and
  * generator spellings denote the same value. Put changing values in the
- * body as literals — `Query.q` takes one argument.
+ * body as literals — `Query.build` takes one argument.
  */
 export function q<B extends () => QueryGen<any> | Pipeline<any>>(
   body: B,
 ): QueryObject<RowFromBody<B>, OutFromBody<B>, IsValueBody<B> extends true ? "value" : "rows"> {
   if (typeof body !== "function") {
-    throw new Error("ramose/query: Query.q(body) takes a generator or a function returning a pipeline");
+    throw new Error("ramose/query: Query.build(body) takes a generator or a function returning a pipeline");
   }
   return makeQueryObject<
     RowFromBody<B>,

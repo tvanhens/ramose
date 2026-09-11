@@ -169,8 +169,8 @@ import { App, ROOT_DATABASE } from "./domain"
 
 export const client = createClient({
   url: import.meta.env.VITE_RAMOSE_URL,
-  root: ROOT_DATABASE,
-  catalog: App,
+  database: ROOT_DATABASE,
+  schema: App,
   auth: getSession,
 })
 

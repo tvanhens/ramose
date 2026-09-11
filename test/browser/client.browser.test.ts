@@ -139,8 +139,8 @@ const seed = async (
 const offlineClient = (name: string, credential = { token: TOKEN, cacheKey: CACHE_KEY }) =>
   createClient({
     url: OFFLINE,
-    root: ROOT,
-    catalog: Notes,
+    database: ROOT,
+    schema: Notes,
     auth: () => credential,
     storageName: name,
   });
@@ -551,8 +551,8 @@ browserTest("a committed value enters a query already being observed", async ({ 
   const client = createClient({
     url: globalThis.location.origin,
 
-    root: "optimistic-fence",
-    catalog: ConformanceSchema,
+    database: "optimistic-fence",
+    schema: ConformanceSchema,
     auth: () => Promise.resolve({ token: "session-credential", cacheKey: "recorded" }),
     storageName: name,
   });
@@ -625,8 +625,8 @@ browserTest("fences a replaced principal before any of its data can be read", as
 
   const client = createClient({
     url: globalThis.location.origin,
-    root: "optimistic-fence",
-    catalog: ConformanceSchema,
+    database: "optimistic-fence",
+    schema: ConformanceSchema,
     auth: () => ({ token: "session-credential", cacheKey: "recorded" }),
     storageName: name,
   });

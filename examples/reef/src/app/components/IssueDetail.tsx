@@ -1,3 +1,4 @@
+import { useMutationFeedback } from "../MutationFeedback.tsx";
 import { useEffect, useState } from "react";
 import type { ClientDatabase } from "ramose/client";
 import type { MutationRef } from "ramose/db";
@@ -7,6 +8,7 @@ import {
   PRIORITIES,
   PRIORITY_LABELS,
   type Priority,
+  Workspace,
 } from "../../domain/schema.ts";
 import type { ReefMutations } from "../ramose.ts";
 import {
@@ -14,57 +16,23 @@ import {
   type IssueRow,
   type Member,
   type PersonRow,
-} from "../screens/BoardScreen.tsx";
+} from "../entities.ts";
 
 type ReefDb = ClientDatabase<ReefMutations>;
-
-type DetailIssue = IssueRow & {
-  readonly data: IssueRow["data"] & {
-    readonly description?: string | undefined;
-    readonly privateNote?: string | undefined;
-    readonly labels?: readonly { readonly id: string }[] | undefined;
-  };
-  readonly mutate: IssueRow["mutate"] & {
-    readonly editIssue: (input: {
-      title?: string;
-      description?: string;
-    }) => unknown;
-    readonly setPriority: (input: { priority: Priority }) => unknown;
-    readonly setAssignee: (input: { sub?: string; name?: string }) => unknown;
-    readonly addLabel: (input: { label: string }) => unknown;
-    readonly removeLabel: (input: { label: string }) => unknown;
-    readonly setPrivateNote: (input: { note: string }) => unknown;
-    readonly deleteIssue: (input: Record<never, never>) => unknown;
-  };
-};
-
-type CommentRow = {
-  readonly id: unknown;
-  readonly data: {
-    readonly body: string;
-    readonly at: Date;
-    readonly author?: { readonly id: string } | undefined;
-  };
-};
-
-type LabelRow = {
-  readonly id: unknown;
-  readonly data: { readonly name: string; readonly color: string };
-};
 
 const LABEL_COLORS = ["#5e6ad2", "#26b5ce", "#4cb782", "#f2c94c", "#eb5757"];
 
 export const IssueDetail = (props: {
   readonly board: ReefDb;
   readonly issue: IssueRow;
-  readonly workspaceId: MutationRef;
-  readonly workspaceSlug: string;
+  readonly workspaceId: MutationRef<typeof Workspace>;
   readonly peopleById: ReadonlyMap<string, PersonRow>;
   readonly members: readonly Member[];
   readonly onClose: () => void;
 }) => {
-  const issue = props.issue as DetailIssue;
-  const issueId = String(issue.id);
+  const track = useMutationFeedback();
+  const issue = props.issue;
+  const issueId = issue.id;
 
   const [title, setTitle] = useState(issue.data.title);
   const [description, setDescription] = useState(issue.data.description ?? "");
@@ -90,16 +58,16 @@ export const IssueDetail = (props: {
 
   const comments = useQuery(issueComments(props.board, issueId), props.board);
   const labels = useQuery(
-    boardLabels(props.board, props.workspaceSlug),
+    boardLabels(props.board, props.workspaceId),
     props.board,
   );
   const allLabels = labels.status === "ready" || labels.status === "stale"
-    ? (labels.data as unknown as readonly LabelRow[])
+    ? labels.data
     : [];
   const attached = new Set((issue.data.labels ?? []).map((label) => label.id));
 
   const commentRows = comments.status === "ready" || comments.status === "stale"
-    ? (comments.data as unknown as readonly CommentRow[])
+    ? comments.data
     : [];
 
   return (
@@ -114,7 +82,7 @@ export const IssueDetail = (props: {
           }}
           onBlur={() => {
             if (dirty.title && title.trim() !== "" && title !== issue.data.title) {
-              issue.mutate.editIssue({ title: title.trim() });
+              track(issue.mutate.editIssue({ title: title.trim() }), "Edit issue");
             }
             setDirty((d) => ({ ...d, title: false }));
           }}
@@ -129,7 +97,7 @@ export const IssueDetail = (props: {
         <select
           value={issue.data.priority}
           onChange={(e) =>
-            issue.mutate.setPriority({ priority: e.target.value as Priority })}
+            track(issue.mutate.setPriority({ priority: e.target.value as Priority }), "Set priority")}
         >
           {PRIORITIES.map((priority) => (
             <option key={priority} value={priority}>
@@ -148,9 +116,9 @@ export const IssueDetail = (props: {
           onChange={(e) => {
             const sub = e.target.value;
             const member = props.members.find((m) => m.sub === sub);
-            issue.mutate.setAssignee(
+            track(issue.mutate.setAssignee(
               sub === "" ? {} : { sub, ...(member ? { name: member.label } : {}) },
-            );
+            ), "Set assignee");
           }}
         >
           <option value="">Unassigned</option>
@@ -174,7 +142,7 @@ export const IssueDetail = (props: {
           }}
           onBlur={() => {
             if (dirty.description && description !== (issue.data.description ?? "")) {
-              issue.mutate.editIssue({ description });
+              track(issue.mutate.editIssue({ description }), "Edit issue");
             }
             setDirty((d) => ({ ...d, description: false }));
           }}
@@ -185,7 +153,7 @@ export const IssueDetail = (props: {
         <span>Labels</span>
         <div className="labels">
           {allLabels.map((label) => {
-            const id = String(label.id);
+            const id = label.id;
             const on = attached.has(id);
             return (
               <button
@@ -194,8 +162,8 @@ export const IssueDetail = (props: {
                 style={{ borderColor: label.data.color }}
                 onClick={() =>
                   on
-                    ? issue.mutate.removeLabel({ label: id })
-                    : issue.mutate.addLabel({ label: id })}
+                    ? track(issue.mutate.removeLabel({ label: id }), "Remove label")
+                    : track(issue.mutate.addLabel({ label: id }), "Add label")}
               >
                 {label.data.name}
               </button>
@@ -209,12 +177,11 @@ export const IssueDetail = (props: {
               if (name === "" || allLabels.some((l) => l.data.name === name)) {
                 return;
               }
-              props.board.mutate.createLabel({
+              track(props.board.mutate.createLabel({
                 workspace: props.workspaceId,
-                workspaceSlug: props.workspaceSlug,
                 name,
                 color: LABEL_COLORS[allLabels.length % LABEL_COLORS.length]!,
-              });
+              }), "Create label");
               setLabelName("");
             }}
           >
@@ -239,7 +206,7 @@ export const IssueDetail = (props: {
           }}
           onBlur={() => {
             if (dirty.note && note !== (issue.data.privateNote ?? "")) {
-              issue.mutate.setPrivateNote({ note });
+              track(issue.mutate.setPrivateNote({ note }), "Set private note");
             }
             setDirty((d) => ({ ...d, note: false }));
           }}
@@ -267,10 +234,10 @@ export const IssueDetail = (props: {
             e.preventDefault();
             const body = comment.trim();
             if (body === "") return;
-            props.board.mutate.createComment({
-              issue: issueId as never,
+            track(props.board.mutate.createComment({
+              issue: issueId,
               body,
-            });
+            }), "Create comment");
             setComment("");
           }}
         >
@@ -285,7 +252,7 @@ export const IssueDetail = (props: {
       <button
         className="danger"
         onClick={() => {
-          issue.mutate.deleteIssue({});
+          track(issue.mutate.deleteIssue({}), "Delete issue");
           props.onClose();
         }}
       >

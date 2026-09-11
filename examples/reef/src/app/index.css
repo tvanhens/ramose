@@ -486,3 +486,7 @@ button:disabled {
 .proposal-actions strong { margin-right: auto; }
 .proposal-panel details { margin: .75rem 0; max-height: 15rem; overflow: auto; }
 .proposal-id { font-size: .75rem; overflow-wrap: anywhere; opacity: .7; }
+.mutation-feedback { position: fixed; bottom: 1rem; right: 1rem; z-index: 100; width: min(28rem, calc(100vw - 2rem)); max-height: 40vh; overflow-y: auto; background: var(--bg, #16171b); border-radius: 8px; box-shadow: 0 4px 24px #0006; }
+.mutation-feedback:empty { display: none; }
+.mutation-feedback > div { padding: .75rem; margin: 0; }
+.mutation-feedback button { float: right; }

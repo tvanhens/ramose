@@ -677,7 +677,7 @@ describe("public barrels stay closed", () => {
   test("authoring is schema-owned and the compiler stays internal", async () => {
     const root = await import("../../../src/index.ts");
     const db = await import("../../../src/db/index.ts");
-    expect("Schema" in root).toBe(true);
+    expect("Schema" in root).toBe(false);
     expect("Schema" in db).toBe(true);
     expect("Policy" in root).toBe(false);
     expect("compileReadAuthorization" in root).toBe(false);

@@ -29,7 +29,7 @@ Ramose uses a small vocabulary consistently. Start here when a familiar database
 | <span id="query"></span>**query** | A typed serializable description of roots, filters, projections, relations, order, cardinality, and paging. | `db.query.from(Task)` |
 | <span id="query-document"></span>**QueryDocument** | The versioned plain-data form of the public query language, used by MCP and non-TypeScript clients. | `{ version: 1, from, where, … }` |
 | <span id="receipt"></span>**receipt** | Durable public record of one queued, committed, or rejected operation invocation. | `receipt.queued`, `receipt.committed` |
-| <span id="reference"></span>**reference** | A typed relation from one entity to another entity or trait in the same database. | `Ramose.Ref(User)` |
+| <span id="reference"></span>**reference** | A typed relation from one entity to another entity or trait in the same database. | `Ramose.ref(User)` |
 | <span id="schema"></span>**schema** | One named code definition containing entities and one applied policy. | `const App = Ramose.Schema("app", { task: Task }); App.applyPolicy(…)` |
 | <span id="targeted-operation"></span>**targeted operation** | An operation invoked on one visible compatible entity. | `entity.mutate.rename(…)` |
 | <span id="targetless-operation"></span>**targetless operation** | An operation invoked on a database rather than an existing entity, commonly for creation. | `db.mutate.createTask(…)` |

@@ -1,9 +1,8 @@
+import { IDENT_NAME_RE, RESERVED_FIELD_KEYS } from "../../src/db/IdentName.ts";
+import { OwnedOperations } from "../../src/db/Operation.ts";
 import { describe, expect, test } from "bun:test";
 import {
   Entity,
-  IDENT_NAME_RE,
-  OwnedOperations,
-  RESERVED_FIELD_KEYS,
   Schema,
   Trait,
   isIdentName,

@@ -14,7 +14,7 @@ Use `db.query.from` for application queries. The builder is bound to the configu
 ```ts
 const openTasks = db.query
   .from(Task)
-  .where({ status: { not: "done" } })
+  .where(Query.not(Query.is(Task.status, "done")))
   .orderBy(Task.createdAt, "desc")
 ```
 
@@ -53,24 +53,24 @@ Forward references follow a field. `.reverse` follows rows pointing back. Option
 ## Query traits
 
 ```ts
-const assigned = db.query.from(Assignable).where({ assignee: me })
+const assigned = db.query.from(Assignable).where({ assignee: me.id })
 ```
 
 A trait root returns every visible concrete composer. Use this for cross-type inboxes or generic tools. If the consumer immediately branches on every concrete type, separate entity queries may be clearer and cheaper.
 
 ## Express filters
 
-The fluent object form covers common equality, inequality, ranges, membership, and boolean combinations:
+Use the object form for equality. Import `Query` from `ramose/db` for other predicates:
 
 ```ts
-const urgent = db.query.from(Task).where({
-  status: { in: ["todo", "doing"] },
-  priority: { gte: 3 },
-  title: { startsWith: "Ship", ignoreCase: true },
-})
+const urgent = db.query.from(Task).where(
+  Query.not(Query.is(Task.status, "done")),
+  Query.gte(Task.priority, 3),
+  Query.startsWith(Task.title, "Ship", { ignoreCase: true }),
+)
 ```
 
-Escalate to `Query.q` and the kernel only for joins, disjunction, recursion, or reusable rule fragments the fluent surface cannot express cleanly. It is another spelling of the same query, not a separate engine.
+Use `Query.build(function* (q) { … })` for relational clauses and aggregate projections. The callback receives the clause builder; `Query.rule` uses the same callback convention for reusable named rules.
 
 ## Ask for one deliberately
 
@@ -89,7 +89,7 @@ Use `.one()` for zero-or-one and `.oneOrFail()` for exactly one. Never rely on a
 const firstPage = db.query
   .from(Task)
   .orderBy(Task.createdAt, "desc")
-  .after({ first: 50 })
+  .limit(50).after(null)
 ```
 
 The returned cursor is opaque and tied to principal, database, query, catalog, and order. Supply it to the same query for the next page. Use offset only for small, stable administrative lists.
@@ -102,14 +102,7 @@ For frequently rendered dashboard totals, consider maintaining a summary entity 
 
 ## Time and history
 
-Select an as-of or history view before executing the query:
-
-```ts
-const pastOpen = projectDb.asOf(version).query.from(Task).where({ done: false })
-const changes = projectDb.history().query.from(Task).where({ id: taskId })
-```
-
-Current policy and grants still apply. Temporal views are read-only.
+The browser client observes the current local view. It does not expose `asOf` or `history` methods. See [History and time](/concepts/time-travel/) for the engine’s temporal semantics and server query support.
 
 ## Keep work bounded
 

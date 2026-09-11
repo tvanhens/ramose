@@ -17,9 +17,7 @@ export function toJson(v: unknown): unknown {
       if (o.vt === ValueTag.Bytes) return { $bytes: bytesToBase64(o.v as Uint8Array) };
       return toJson(o.v);
     }
-    const out: Record<string, unknown> = {};
-    for (const [k, x] of Object.entries(o)) out[k] = toJson(x);
-    return out;
+    return Object.fromEntries(Object.entries(o).map(([k, x]) => [k, toJson(x)]));
   }
   return v;
 }
@@ -34,9 +32,7 @@ export function fromJson(v: unknown): unknown {
     if ("$bytes" in o) return base64ToBytes(String(o.$bytes));
     if ("$uuid" in o) return String(o.$uuid).toLowerCase();
   }
-  const out: Record<string, unknown> = {};
-  for (const [k, x] of Object.entries(o)) out[k] = fromJson(x);
-  return out;
+  return Object.fromEntries(Object.entries(o).map(([k, x]) => [k, fromJson(x)]));
 }
 
 export function stringifyJson(v: unknown): string {

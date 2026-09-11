@@ -60,7 +60,7 @@ import { aggregateSyncStatus, syncState, type SyncState, type SyncStatus } from 
  *
  * `token` is the bearer the server authenticates. `cacheKey` is an
  * application/auth-provider account selector that is stable across ordinary
- * bearer renewal; it is hashed with the server origin and root and never
+ * bearer renewal; it is hashed with the server origin and database route and never
  * transmitted or persisted raw. It nominates a cache candidate and grants no
  * authority: only an exact prior bearer binding, or the current authenticated
  * response, can make a stored replica observable.
@@ -75,8 +75,8 @@ export type AuthProvider = () => AuthCredential | Promise<AuthCredential>;
 
 export type ClientOptions<S extends AnySchemaDefinition = AnySchemaDefinition> = {
   readonly url: string;
-  readonly root: string;
-  readonly catalog: S;
+  readonly database: string;
+  readonly schema: S;
   readonly auth: AuthProvider;
   readonly storageName?: string;
 };
@@ -124,7 +124,7 @@ class RamoseClient implements Client {
   ) {
     this.changesets = clientChangesets({
       signal: this.lifetime.signal,
-      endpoint: `${this.server}/db/${encodeURIComponent(this.options.root)}/changesets`,
+      endpoint: `${this.server}/db/${encodeURIComponent(this.options.database)}/changesets`,
       credential: () => this.credential(),
       operations: () => this.clientOperations(),
       assertLive: () => this.assertLive("changesets"),
@@ -151,7 +151,7 @@ class RamoseClient implements Client {
   private databaseContext(): DatabaseContext {
     return {
       server: this.server,
-      root: this.options.root,
+      root: this.options.database,
       catalog: () => this.catalog(),
       storage: () => this.storage(),
       credential: () => this.credential(),
@@ -253,14 +253,14 @@ class RamoseClient implements Client {
 
   private composition(): CompositionIndex {
     this.compositionIndex ??= compositionFromSchema(
-      completeSchema(this.options.catalog),
+      completeSchema(this.options.schema),
     );
     return this.compositionIndex;
   }
   private clientOperations(): ClientOperations {
     this.operations ??= installClientOperations(
-      this.options.catalog,
-      completeSchema(this.options.catalog),
+      this.options.schema,
+      completeSchema(this.options.schema),
     );
     return this.operations;
   }
@@ -370,7 +370,7 @@ class RamoseClient implements Client {
     if (fenced !== undefined) return undefined;
     return {
       origin: this.server,
-      database: this.options.root,
+      database: this.options.database,
       credential: credential.token,
     };
   }
@@ -383,7 +383,7 @@ class RamoseClient implements Client {
 
   private catalog(): Promise<ClientCatalog> {
     this.catalogBuild ??= installClientCatalog(
-      this.options.catalog,
+      this.options.schema,
       this.clientOperations().installed,
     );
     return this.catalogBuild;
@@ -504,7 +504,7 @@ class RamoseClient implements Client {
 }
 
 /**
- * Bind one server, one configured root route, one installed catalog, and one
+ * Bind one server, one configured database route, one named schema, and one
  * refreshable credential provider.
  *
  * @throws ClientConfigurationError when any of them cannot be bound. None of
@@ -513,12 +513,12 @@ class RamoseClient implements Client {
 export const createClient = <const S extends AnySchemaDefinition>(
   options: ClientOptions<S>,
 ): Client<DatabaseMutations<S>> => {
-  if (!nonEmpty(options?.root)) {
+  if (!nonEmpty(options?.database)) {
     throw new ClientConfigurationError({
-      message: "createClient needs a configured root route",
+      message: "createClient needs a configured database route",
     });
   }
-  if (!isSchemaDefinition(options.catalog)) {
+  if (!isSchemaDefinition(options.schema)) {
     throw new ClientConfigurationError({
       message: "createClient needs a named Ramose schema",
     });
@@ -532,7 +532,7 @@ export const createClient = <const S extends AnySchemaDefinition>(
   try {
     server = replicationActivationAddress({
       server: options.url,
-      root: options.root,
+      root: options.database,
     }).origin;
   } catch (cause) {
     throw new ClientConfigurationError({

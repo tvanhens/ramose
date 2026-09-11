@@ -116,11 +116,14 @@ export function decodeSegment(buf: Uint8Array): DecodedSegment {
   const r = new ByteReader(buf);
   if (r.u32() !== MAGIC) throw new Error("bad segment magic");
   const index = r.u8() as IndexId;
+  if (index > 3) throw new RangeError("invalid segment index");
   const n = r.u32();
+  if (n * 5 + Math.ceil(n / 8) > r.remaining) throw new RangeError("truncated segment");
   const es = new Array<number>(n);
   let prev = 0;
   for (let i = 0; i < n; i++) {
     prev += r.svar();
+    if (!Number.isSafeInteger(prev) || prev < 0) throw new RangeError("invalid segment entity");
     es[i] = prev;
   }
   const as = new Array<number>(n);
@@ -136,6 +139,7 @@ export function decodeSegment(buf: Uint8Array): DecodedSegment {
   prev = 0;
   for (let i = 0; i < n; i++) {
     prev += r.svar();
+    if (!Number.isSafeInteger(prev) || prev < 0) throw new RangeError("invalid segment transaction");
     ts[i] = prev;
   }
   const datoms = new Array<Datom>(n);
@@ -146,5 +150,6 @@ export function decodeSegment(buf: Uint8Array): DecodedSegment {
       datoms[k] = { e: es[k], a: as[k], vt: vts[k], v: vs[k], t: ts[k], op: (b & (1 << j)) !== 0 };
     }
   }
+  if (r.remaining !== 0) throw new RangeError("trailing segment bytes");
   return { index, datoms };
 }

@@ -10,7 +10,7 @@ const Task = Entity("plannedTask", { title: string() }, { operations: (Operation
 const App = Schema("planned-app", { plannedTask: Task });
 
 export const types = async (id: EntityId<typeof Task>) => {
-  const client = createClient({ url: "https://example.com", root: "app", catalog: App, auth: () => ({ token: "token", cacheKey: "key" }) });
+  const client = createClient({ url: "https://example.com", database: "app", schema: App, auth: () => ({ token: "token", cacheKey: "key" }) });
   const operations = client.changesets.operations(Task);
   operations.create({ title: "new" });
   operations.rename(id, { title: "renamed" });

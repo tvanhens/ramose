@@ -1,10 +1,10 @@
 import { Person } from "../domain/schema.ts";
+import { useMutationFeedback, MutationFeedbackProvider } from "./MutationFeedback.tsx";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { RamoseProvider, useQuery, useSyncState } from "ramose/react";
 import {
   authClient,
   clearCachedUser,
-  dropToken,
   readCachedUser,
   writeCachedUser,
   type CachedUser,
@@ -61,13 +61,14 @@ const Shell = (props: {
   readonly userId: string;
   readonly onSignOut: () => void;
 }) => {
+  const track = useMutationFeedback();
   const route = useRoute();
   const db = props.client.open();
   const person = useQuery(db.query.from(Person).where({ sub: props.userId }).one(), db);
   const missingPerson = person.status === "ready" && person.data === null;
   useEffect(() => {
-    if (missingPerson) db.mutate.ensureMe({});
-  }, [db, missingPerson]);
+    if (missingPerson) track(db.mutate.ensureMe({}), "Initialize account").queued.catch(() => undefined);
+  }, [db, missingPerson, track]);
   return (
     <RamoseProvider client={props.client}>
       <div className="shell">
@@ -116,10 +117,11 @@ export const App = () => {
     }
   }, [session.data?.user, settledOut]);
 
-  const client = useMemo(
+  const connection = useMemo(
     () => (userId === undefined ? undefined : openReef(userId)),
     [userId],
   );
+  const client = connection?.client;
   useEffect(() => {
     if (client === undefined) return;
     return () => {
@@ -133,18 +135,18 @@ export const App = () => {
       : <AuthScreen />;
   }
   return (
-    <Shell
+    <MutationFeedbackProvider key={userId}><Shell
       client={client}
       userId={userId}
       userName={user?.name || user?.email || "Signed in"}
       onSignOut={() => {
-        dropToken(userId);
+        connection?.credentials.clear();
         clearCachedUser();
         void authClient.signOut().finally(() => {
           location.hash = "";
           location.reload();
         });
       }}
-    />
+    /></MutationFeedbackProvider>
   );
 };

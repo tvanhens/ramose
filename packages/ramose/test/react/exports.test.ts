@@ -1,10 +1,10 @@
+import type { ReceiptState } from "../../src/client/index.ts";
 import { describe, expect, test } from "bun:test";
 
 import * as ReactAdapter from "../../src/react/index.ts";
 import type {
   QueryState,
   RamoseProviderProps,
-  ReceiptState,
   ReceiptView,
 } from "../../src/react/index.ts";
 
@@ -12,7 +12,6 @@ describe("the ramose/react surface", () => {
   test("exports exactly these values", () => {
     expect(Object.keys(ReactAdapter).sort()).toEqual([
       "RamoseProvider",
-      "toQueryState",
       "useChangesets",
       "useDb",
       "useQuery",
@@ -22,7 +21,7 @@ describe("the ramose/react surface", () => {
     ]);
   });
 
-  test("names the non-idle half of a receipt without reaching for ramose/client", () => {
+  test("adapts client receipt state into a React view", () => {
     const committed: ReceiptState = { status: "committed" };
     const view: ReceiptView = committed;
     const idle: ReceiptView = { status: "idle" };

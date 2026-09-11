@@ -417,7 +417,9 @@ export type OwnedOp<
     readonly self: Self;
     readonly writes: Writes;
   };
-  readonly self: Self extends true ? OwnedTargetHandle<Owner> : undefined;
+  readonly self: Self extends true
+    ? OwnedTargetHandle<Owner> & { readonly eid: Eid<OwnedInvocationEntity<Owner>> }
+    : undefined;
   entity(id: OwnedEntityRef<Owner>): OwnedTargetHandle<Owner>;
   entity<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
     definition: Entity,

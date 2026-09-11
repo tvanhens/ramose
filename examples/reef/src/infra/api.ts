@@ -6,7 +6,7 @@ import { jwt } from "better-auth/plugins/jwt";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import { REEF_DOMAIN, REEF_ORIGIN, pinned } from "./domain.ts";
+import { pinned } from "./domain.ts";
 import {
   AUTH_BASE_PATH,
   DEV_API_PORT,
@@ -23,24 +23,23 @@ export const Api = Cloudflare.Worker(
   "Api",
   {
     main: import.meta.url,
+    workersDev: false,
 
     compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
     dev: { port: DEV_API_PORT },
 
     ...pinned("api"),
-    ...(REEF_DOMAIN ? { domain: REEF_DOMAIN } : {}),
-    assets: {
-      directory: "./examples/reef/dist",
-      notFoundHandling: "single-page-application",
-      runWorkerFirst: ["/api/*"],
-    },
+
   },
   Effect.gen(function* () {
     const auth = yield* BetterAuth({
       basePath: AUTH_BASE_PATH,
       emailAndPassword: { enabled: true },
 
-      trustedOrigins: [DEV_UI_ORIGIN, ...(REEF_ORIGIN ? [REEF_ORIGIN] : [])],
+      trustedOrigins: (request) => [
+        DEV_UI_ORIGIN,
+        ...(request ? [new URL(request.url).origin] : []),
+      ],
 
       databaseHooks: {
         user: {
@@ -82,7 +81,16 @@ export const Api = Cloudflare.Worker(
         const request = yield* HttpServerRequest.HttpServerRequest;
         const path = request.url.split("?")[0] ?? "/";
         if (path.startsWith(`${AUTH_BASE_PATH}/`)) {
-          return yield* auth.fetch;
+          const incoming = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
+          const origin = incoming.headers.get("x-reef-origin");
+          const forwarded = origin === null ? incoming : new Request(
+            new URL(new URL(incoming.url).pathname + new URL(incoming.url).search, origin),
+            incoming,
+          );
+          return yield* auth.fetch.pipe(Effect.provideService(
+            HttpServerRequest.HttpServerRequest,
+            HttpServerRequest.fromWeb(forwarded),
+          ));
         }
         if (path === "/api/health") {
           return yield* json({ ok: true });

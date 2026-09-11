@@ -5,7 +5,7 @@ import {
   EntityId as OperationEntityId,
   Field,
   OperationRejected,
-  Ref,
+  ref,
   Schema,
   Trait,
   bytes,
@@ -228,7 +228,7 @@ export const Item = Entity("nativeItem", {
     }),
     deleteHiddenOther: Operation({
       self: false,
-      input: EffectSchema.Struct({ id: Ref(Other).schema }),
+      input: EffectSchema.Struct({ id: ref(Other).schema }),
       output: EffectSchema.Struct({ name: EffectSchema.String }),
       async run(op, input) {
         const row = await op.pull(input.id, [":nativeOther/name"]) as Record<string, unknown>;

@@ -4,7 +4,7 @@ description: Reference for named schemas, entities, traits, fields, relationship
 ---
 import Next from "../../../components/Next.astro";
 
-This page summarizes the declaration surface exported by `ramose`. Definitions are immutable values; declare and export them at module scope.
+This page summarizes the declaration surface exported by `ramose/db`. Definitions are immutable values; declare and export them at module scope.
 
 *New here? Start with [Schemas and traits](/guides/catalog/).*
 
@@ -30,14 +30,12 @@ Public keys are persistent contract names. Keep them stable once deployed.
 
 ```ts
 const Task = Ramose.Entity("task", {
-  description: "A work item that can be completed",
-  fields: {
-    title: Ramose.string(),
-    done: Ramose.boolean({ default: false }),
-    createdAt: Ramose.timestamp(),
-  },
+  title: Ramose.string(),
+  done: Ramose.boolean({ default: () => false }),
+  createdAt: Ramose.timestamp(),
+}, {
+  doc: "A work item that can be completed",
   traits: [Assignable],
-  operations: (Operation) => ({ /* … */ }),
 })
 ```
 
@@ -47,8 +45,7 @@ An entity definition gives stored records a type, fields, traits, relationships,
 
 ```ts
 const Assignable = Ramose.Trait("assignable", {
-  fields: { assignee: Ramose.ref(Account).optional() },
-  operations: (Operation) => ({ assign: Operation({ /* … */ }) }),
+  assignee: Ramose.ref(Account, { optional: true }),
 })
 ```
 
@@ -67,7 +64,7 @@ Common constructors include:
 | `timestamp()` | ordered instant |
 | `uuid()` | UUID value |
 | `bytes()` | binary data |
-| `Enum([...])` | one declared string value |
+| `enumeration([...])` | one declared string value |
 | `ref(EntityOrTrait)` | stable entity reference |
 
 Field modifiers declare cardinality, optionality, defaults, uniqueness, indexing, and ownership. Exact modifier availability depends on the stored value and relationship kind; TypeScript rejects invalid combinations.

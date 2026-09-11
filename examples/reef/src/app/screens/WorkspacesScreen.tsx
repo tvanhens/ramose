@@ -1,3 +1,4 @@
+import { useMutationFeedback } from "../MutationFeedback.tsx";
 import { useState } from "react";
 import { useDb, useSuspenseQuery } from "ramose/react";
 import { workspaces } from "../../domain/queries.ts";
@@ -5,6 +6,7 @@ import { isWorkspaceSlug, slugify } from "../../domain/shared.ts";
 import type { ReefMutations } from "../ramose.ts";
 
 export const WorkspacesScreen = () => {
+  const track = useMutationFeedback();
   const db = useDb<ReefMutations>();
   const rows = useSuspenseQuery(workspaces(db));
   const [name, setName] = useState("");
@@ -19,7 +21,7 @@ export const WorkspacesScreen = () => {
     }
     setError(undefined);
     setName("");
-    const receipt = db.mutate.createWorkspace({ slug, name: name.trim() });
+    const receipt = track(db.mutate.createWorkspace({ slug, name: name.trim() }), "Create workspace");
     receipt.queued.then(() => {
       location.hash = `#/w/${slug}`;
     }).catch(() => undefined);
@@ -50,7 +52,7 @@ export const WorkspacesScreen = () => {
             >
               <span className="workspace-name">
                 {String(
-                  (workspace.data as { label?: string }).label ??
+                  workspace.data.label ??
                     workspace.data.slug,
                 )}
               </span>

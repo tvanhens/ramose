@@ -1,6 +1,6 @@
 import { fromJson, toJson } from "../../../src/internal/core/json.ts";
 import { expect, test } from "bun:test";
-import { Entity, Schema, Ref, string, float, timestamp, bytes } from "../../../src/db/index.ts";
+import { Entity, Schema, ref, string, float, timestamp, bytes } from "../../../src/db/index.ts";
 import { schemaTx } from "../../../src/db/internal.ts";
 import { lowerQueryObject } from "../../../src/db/query/index.ts";
 import { Connection } from "../../../src/internal/core/conn.ts";
@@ -10,7 +10,7 @@ import { clientQueryFrom } from "../../../src/client/query.ts";
 import { compositionFromSchema } from "../../../src/db/composition.ts";
 
 const Person = Entity("viewPerson", { name: string() });
-const Item = Entity("viewItem", { title: string(), rank: float(), at: timestamp(), payload: bytes(), owner: Ref(Person) });
+const Item = Entity("viewItem", { title: string(), rank: float(), at: timestamp(), payload: bytes(), owner: ref(Person) });
 const App = Schema("query-view", { viewPerson: Person, viewItem: Item });
 
 test("the normal query compiler reads a snapshot with opaque identities, nested references, ordering and cursors", async () => {
