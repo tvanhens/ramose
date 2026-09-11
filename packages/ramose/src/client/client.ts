@@ -1,3 +1,4 @@
+import { clientChangesets, type ClientChangesets } from "./changesets.ts";
 import {
   isSchemaDefinition,
   type AnySchemaDefinition,
@@ -81,6 +82,7 @@ export type ClientOptions<S extends AnySchemaDefinition = AnySchemaDefinition> =
 };
 
 export type Client<Mutations = MutationNamespace> = {
+  readonly changesets: ClientChangesets;
   readonly open: () => ClientDatabase<Mutations>;
   readonly sync: Subscription<SyncState>;
   readonly close: () => Promise<void>;
@@ -96,6 +98,7 @@ const settled = (status: SyncStatus): boolean =>
 const SCOPE_CONFIRMATION_TIMEOUT_MS = 10_000;
 
 class RamoseClient implements Client {
+  private readonly lifetime = new AbortController();
   private readonly syncStore = new Store<SyncState>(syncState("idle"));
   readonly sync = this.syncStore.subscription;
 
@@ -118,7 +121,18 @@ class RamoseClient implements Client {
   constructor(
     private readonly options: ClientOptions,
     private readonly server: string,
-  ) {}
+  ) {
+    this.changesets = clientChangesets({
+      signal: this.lifetime.signal,
+      endpoint: `${this.server}/db/${encodeURIComponent(this.options.database)}/changesets`,
+      credential: () => this.credential(),
+      operations: () => this.clientOperations(),
+      assertLive: () => this.assertLive("changesets"),
+      subscribe: (changed) => this.rootHandle().viewChanges.subscribe(changed),
+    });
+  }
+
+  readonly changesets: ClientChangesets;
 
   open(): ClientDatabase {
     this.assertLive("open");
@@ -470,6 +484,7 @@ class RamoseClient implements Client {
     reason: "closed" | "cleared" | "fenced",
   ): Promise<void> {
     this.terminal = reason;
+    this.lifetime.abort();
     this.releaseActivation?.();
     this.releaseActivation = undefined;
     this.releaseNotices?.();

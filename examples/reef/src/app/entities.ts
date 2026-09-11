@@ -9,5 +9,5 @@ export type Member = {
   readonly label: string;
 };
 
-export const personLabel = (person: PersonRow | undefined): string =>
+export const personLabel = (person: Pick<PersonRow, "data"> | undefined): string =>
   person?.data.name ?? person?.data.email ?? "Someone";

@@ -11,6 +11,6 @@ const operationCatalogs = await Effect.runPromise(
   deployOperationCatalogs(deployment),
 );
 
-export default createServer({ operationCatalogs });
+export default createServer({ operationCatalogs, changesets: { canApprove: (caller) => caller.classes.includes("user") && !caller.classes.includes("agent"), requiresApproval: (caller) => caller.classes.includes("agent") } });
 export { QueryReplicaDO };
 export const TransactorDO = createTransactorDO(operationCatalogs);

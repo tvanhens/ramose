@@ -192,15 +192,24 @@ export const uniqueCanonicalTypeName = (
 const viewKey = (db: Db): string =>
   `${db.basisT}:${db.asOfT ?? ""}:${db.isHistory ? 1 : 0}`;
 
-export const compileReadFilter = (input: CompileReadFilterInput): DatomPredicate => {
-  try {
-    return compilePredicate(input);
-  } catch {
-    return denyAll;
-  }
+export type ReadAccess = {
+  readonly row: (db: Db, eid: number) => Promise<boolean>;
+  readonly field: DatomPredicate;
+  readonly reference: DatomPredicate;
 };
 
-const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
+const deniedAccess: ReadAccess = { row: async () => false, field: denyAll, reference: denyAll };
+
+export const compileReadAccess = (input: CompileReadFilterInput): ReadAccess => {
+  try { return compileAccess(input); } catch { return deniedAccess; }
+};
+
+export const compileReadFilter = (input: CompileReadFilterInput): DatomPredicate => {
+  const access = compileReadAccess(input);
+  return async (db, fact) => await access.field(db, fact) && await access.reference(db, fact);
+};
+
+const compileAccess = (input: CompileReadFilterInput): ReadAccess => {
   const { unit, principal, currentDb, observe } = input;
   const prepared = prepareAuthorizationCatalog(
     {
@@ -211,7 +220,7 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     },
     unit.catalog,
   );
-  if (Result.isFailure(prepared)) return denyAll;
+  if (Result.isFailure(prepared)) return deniedAccess;
   const index = prepared.success;
 
   const attrFields = new Map<number, FieldDescriptor>();
@@ -518,26 +527,54 @@ const compilePredicate = (input: CompileReadFilterInput): DatomPredicate => {
     }
   };
 
-  return async (db, datom) => {
+  const field: DatomPredicate = async (db, datom) => {
     try {
       const entity = await classifyFrom(db, datom.e);
       if (entity === undefined) return false;
-      if (datom.a === RAMOSE_TYPE) {
-        return isRowReadable(db, datom.e);
-      }
-      const field = attrFields.get(datom.a);
-      if (field === undefined) return false;
-      if (!(await isFieldReadable(db, datom.e, entity, field))) return false;
-      if (datom.vt === ValueTag.Ref) {
-        if (typeof datom.v !== "number") return false;
-        if (field.valueType !== "ref") return false;
-        const target = await classifyFrom(db, datom.v);
-        if (target === undefined || !refTargetMatches(field, target)) return false;
-        if (!(await isRowReadable(db, datom.v))) return false;
-      }
-      return true;
-    } catch {
-      return false;
-    }
+      if (datom.a === RAMOSE_TYPE) return isRowReadable(db, datom.e);
+      const descriptor = attrFields.get(datom.a);
+      return descriptor !== undefined && await isFieldReadable(db, datom.e, entity, descriptor);
+    } catch { return false; }
   };
+  const reference: DatomPredicate = async (db, datom) => {
+    try {
+      if (datom.vt !== ValueTag.Ref) return true;
+      if (typeof datom.v !== "number") return false;
+      const descriptor = attrFields.get(datom.a);
+      if (descriptor?.valueType !== "ref") return false;
+      const target = await classifyFrom(db, datom.v);
+      return target !== undefined && refTargetMatches(descriptor, target) && await isRowReadable(db, datom.v);
+    } catch { return false; }
+  };
+  return { field, reference, row: async (db, eid) => {
+    try { return await isRowReadable(db, eid); } catch { return false; }
+  } };
+};
+
+export const proposedReadView = (before: {
+  readonly unit: InstalledCatalogUnitV2;
+  readonly principal: AuthorizationPrincipal;
+  readonly currentDb: Db;
+}, after: {
+  readonly unit: InstalledCatalogUnitV2;
+  readonly principal: AuthorizationPrincipal;
+  readonly currentDb: Db;
+}, current = before): Db => {
+  const live = compileReadAccess(current);
+  const proposed = compileReadAccess(after);
+  const existing = new Map<number, Promise<boolean>>();
+  const exists = (eid: number): Promise<boolean> => {
+    let found = existing.get(eid);
+    if (found === undefined) {
+      found = before.currentDb.first(Index.EAVT, { e: eid, a: RAMOSE_TYPE }).then((fact) => fact !== undefined);
+      existing.set(eid, found);
+    }
+    return found;
+  };
+  return after.currentDb.filter(async (db, fact) => {
+    if (!(await proposed.field(db, fact)) || !(await proposed.reference(db, fact))) return false;
+    if (await exists(fact.e) && !(await live.field(current.currentDb, fact))) return false;
+    return fact.vt !== ValueTag.Ref || typeof fact.v !== "number" || !(await exists(fact.v)) ||
+      await live.row(current.currentDb, fact.v);
+  });
 };

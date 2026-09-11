@@ -317,7 +317,7 @@ export async function gcSweep(
   store: NodeStore & { load(ref: NodeRef): Promise<TreeNode> },
   currentT: number,
   retain: (rootTs: number[]) => number[],
-  opts: { deleteRoots?: boolean; dryRun?: boolean; graceMs?: number } = {},
+  opts: { deleteRoots?: boolean; dryRun?: boolean; graceMs?: number; pinnedRoots?: readonly Roots[] } = {},
 ): Promise<GcResult> {
   const all = await listRoots(bucket);
   const keep = new Set(retain(all));
@@ -327,6 +327,9 @@ export async function gcSweep(
     const rec = await readRootAt(bucket, t);
     if (!rec) continue;
     const roots = recordToRoots(rec);
+    for (const r of [roots.eavt, roots.aevt, roots.avet, roots.vaet]) await reachable(store, r, marked);
+  }
+  for (const roots of opts.pinnedRoots ?? []) {
     for (const r of [roots.eavt, roots.aevt, roots.avet, roots.vaet]) await reachable(store, r, marked);
   }
   let deleted = 0, scanned = 0;

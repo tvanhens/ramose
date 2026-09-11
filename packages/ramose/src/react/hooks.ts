@@ -1,3 +1,4 @@
+import { DatabaseView, type ViewResult } from "../client/view.ts";
 import {
   createContext,
   createElement,
@@ -135,6 +136,12 @@ const observation = <Out>(
  * the first client render after hydration reads the real one.
  */
 export function useQuery<N extends AnyComposer, Row, Out>(
+  query: EntityFocused<N, Row, Out>, database: DatabaseView,
+): QueryState<ViewResult<Row, Out, N>>;
+export function useQuery<Row, Out>(
+  query: QueryObject<Row, Out>, database: DatabaseView,
+): QueryState<ClientValue<Out>>;
+export function useQuery<N extends AnyComposer, Row, Out>(
   query: EntityFocused<N, Row, Out>,
   database?: ClientDatabase,
 ): QueryState<EntityResult<N, Row, Out>>;
@@ -144,14 +151,12 @@ export function useQuery<Row, Out>(
 ): QueryState<ClientValue<Out>>;
 export function useQuery<Row, Out>(
   query: QueryObject<Row, Out>,
-  database?: ClientDatabase,
+  database?: ClientDatabase | DatabaseView,
 ): QueryState<ClientValue<Out>> {
-  const observed = observation<Out>(
-    query,
-    database,
-    useContext(ClientContext),
-    "useQuery",
-  );
+  const client = useContext(ClientContext);
+  const observed = database instanceof DatabaseView
+    ? { store: queryStore(database, queryObservationKey(query), () => database.observe(query)) }
+    : observation<Out>(query, database, client, "useQuery");
   return useSyncExternalStore(
     observed.store.subscribe,
     observed.store.getSnapshot,
@@ -287,3 +292,5 @@ export const useSyncState = (source?: Client | ClientDatabase): SyncState => {
   }
   return useSyncExternalStore(sync.subscribe, sync.getSnapshot, sync.getSnapshot);
 };
+
+export const useChangesets = () => useClient().changesets;

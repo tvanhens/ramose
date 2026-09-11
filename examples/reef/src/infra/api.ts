@@ -63,9 +63,9 @@ export const Api = Cloudflare.Worker(
         // docs:mint-plugin
         ramoseToken({
           auth: REEF_AUTH,
-          policy: { classes: ["user"] },
-          classOf: ({ session }) => ({
-            class: "user",
+          policy: { classes: ["user", "agent"] },
+          classOf: ({ session, ctx }) => ({
+            class: ctx.request?.headers.get("x-reef-agent") === "1" ? "agent" : "user",
             attrs: {
               ...(session.user.name ? { name: session.user.name } : {}),
               ...(session.user.email ? { email: session.user.email } : {}),

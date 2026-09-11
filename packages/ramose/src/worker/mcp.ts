@@ -1,3 +1,8 @@
+import * as Result from "effect/Result";
+import { resolveBoundCatalogDefinition } from "../internal/authorization/database-bindings.ts";
+import { operationGrantAllows } from "../internal/authorization/operation-grant.ts";
+import { encodeOperationVersionToken } from "../mcp/contract.ts";
+import { requestChangeset } from "./changesets.ts";
 import * as Effect from "effect/Effect";
 import {
   constructAuthorizedResolvedRequestContext,
@@ -19,9 +24,10 @@ import type { RamoseEnv } from "../RamoseEnv.ts";
 import type { RuntimeBoundaries } from "../internal/runtime-boundaries.ts";
 import { acquireCurrentDb, queryMaxCells } from "./authorized-read.ts";
 import { invokeAuthoritativeOperation } from "./authorized-operation.ts";
-import { Internal, OperationRejected, UpstreamError, Unauthorized } from "./errors.ts";
+import { BadRequest, ChangesetRejected, Internal, OperationRejected, UpstreamError, Unauthorized } from "./errors.ts";
 
 export type McpRouteInput = {
+  readonly requiresApproval?: boolean;
   readonly env: RamoseEnv;
   readonly request: Request;
   readonly bindings: DatabaseCatalogBindings;
@@ -66,6 +72,10 @@ const withAuthorizedDatabase = async <A>(
 };
 
 const mutateTransportFailure = (cause: unknown): never => {
+  if (cause instanceof BadRequest) throw toolFailure("invalid_input", "invalid changeset request");
+  if (cause instanceof ChangesetRejected) {
+    throw toolFailure("operation_rejected", cause.code);
+  }
   if (cause instanceof OperationRejected) {
     throw toolFailure("operation_rejected", cause.message);
   }
@@ -83,6 +93,33 @@ const mutateTransportFailure = (cause: unknown): never => {
 };
 
 const mcpTools = (input: McpRouteInput) => ({
+  changeset: async (raw: unknown) => {
+    const args = requireArgs(raw);
+    if (args.action === "describe") return withAuthorizedDatabase(input, async (target) => {
+      const deployed = Result.getOrThrow(resolveBoundCatalogDefinition(input.bindings, target.route));
+      const available = deployed.definition.operations.filter((binding) => operationGrantAllows(target.context.unit, binding.descriptor, input.caller, target.context.principal.subject));
+      return { truncated: available.length > 100, operations: available.slice(0, 100).map((binding) => ({
+          owner: binding.descriptor.id.owner, name: binding.descriptor.id.localName,
+          version: encodeOperationVersionToken(binding.descriptor.version),
+          target: binding.descriptor.id.target, input: binding.descriptor.input,
+          description: binding.descriptor.doc,
+        })) };
+    });
+    if (args.action !== "list" && args.action !== "append" && args.action !== "query" && args.action !== "prepare" && args.action !== "inspect" && args.action !== "discard") {
+      throw toolFailure("invalid_input", "agents can describe, query, prepare, inspect, or discard proposals; approval belongs in the application");
+    }
+    const operations = Array.isArray(args.operations) ? args.operations.map((raw) => {
+      const parsed = parseMutateArgs({ ...requireArgs(raw), invocationId: "changeset" });
+      return { operation: { owner: parsed.operation.owner, localName: parsed.operation.name },
+        operationVersion: decodeOperationVersionToken(parsed.operation.version), input: parsed.input,
+        ...(requireArgs(raw).target === undefined ? {} : { target: requireArgs(raw).target }) };
+    }) : undefined;
+    return withAuthorizedDatabase(input, async (target) => requestChangeset(
+      input.env, new URL(input.request.url).origin, target.route.database,
+      target.route.deployed.catalogKey, target.route.deployed.unitHash, input.caller,
+      { ...args, operations },
+    )).catch(mutateTransportFailure);
+  },
   describe: (raw: unknown) => {
     requireArgs(raw ?? {});
     return withAuthorizedDatabase(input, (target) =>
@@ -97,6 +134,7 @@ const mcpTools = (input: McpRouteInput) => ({
       }));
   },
   mutate: async (raw: unknown) => {
+    if (input.requiresApproval) throw inaccessible();
     const args = parseMutateArgs(raw);
     const operationVersion = decodeOperationVersionToken(args.operation.version)!;
     const resolved = await withAuthorizedDatabase(input, (target) => {
@@ -151,7 +189,11 @@ export const mcpResponse = (
   Effect.tryPromise({
     try: async () => {
       const { handleMcpRequest } = await import("../mcp/server.ts");
-      const response = await handleMcpRequest(input.request, mcpTools(input));
+      const tools = mcpTools(input);
+      const response = await handleMcpRequest(input.request, {
+        describe: tools.describe, query: tools.query, changeset: tools.changeset,
+        ...(input.requiresApproval ? {} : { mutate: tools.mutate }),
+      });
       const headers = new Headers(response.headers);
       for (const [name, value] of Object.entries(input.headers)) {
         headers.set(name, value);

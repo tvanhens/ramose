@@ -17,7 +17,8 @@ import {
 export type KernelTools = {
   readonly describe: (args: unknown) => Promise<unknown>;
   readonly query: (args: unknown) => Promise<unknown>;
-  readonly mutate: (args: unknown) => Promise<unknown>;
+  readonly mutate?: (args: unknown) => Promise<unknown>;
+  readonly changeset?: (args: unknown) => Promise<unknown>;
 };
 
 const EXPERIMENTAL =
@@ -26,13 +27,15 @@ const EXPERIMENTAL =
 
 const INSTRUCTIONS = `${EXPERIMENTAL}
 
-Three tools reach this application's whole authorized database surface.
+Use the application's authorized tools to read data and prepare work.
 
 1. describe — visible entity names and invocable operations.
 2. query — read rows of one entity with equality filters and a field projection.
 3. mutate — invoke one discovered operation with the version describe returned
    and your own invocationId. Repeating the same invocationId replays the first
    outcome exactly rather than acting twice.
+
+Use changeset to prepare, inspect, or discard a reviewable proposal. A human approves it in the application.
 
 Anything you cannot see is reported as if it did not exist.`;
 
@@ -135,6 +138,30 @@ const TOOLS = Object.freeze([
   },
 ]);
 
+const CHANGESET_TOOL = {
+  name: "changeset",
+  title: "Prepare a reviewable proposal",
+  description: "Prepare up to 100 operations in an isolated draft, inspect its changes, or discard it. First use action describe to discover authorized transaction operations and inputs. Use action query to get entity handles from live data (omit id) or a draft (include id). Use the versions from action describe. Return the proposal id and revision to the user for review in the app. To revise, provide its current revision. Use append to add operations to an existing draft while preserving newly created entity handles; prepare replaces its operations. Never claims to have changed live data.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      action: { enum: ["describe", "list", "query", "append", "prepare", "inspect", "discard"] },
+      id: { type: "string", description: "Proposal id. Omit for describe and live queries; include for draft queries." },
+      after: { type: "string", description: "Pagination cursor returned by list." },
+      limit: { type: "integer", minimum: 1, maximum: 100 },
+      query: TOOLS[1]!.inputSchema.properties.query,
+      revision: { type: "string" },
+      title: { type: "string", maxLength: 200 },
+      reviewers: { type: "array", items: { type: "string" }, maxItems: 32, description: "Subjects explicitly invited to review this proposal. Their own database permissions still apply." },
+      operations: { type: "array", minItems: 1, maxItems: 100,
+        items: { type: "object", properties: {
+          operation: TOOLS[2]!.inputSchema.properties.operation,
+          input: { type: "object" }, target: { type: "string" },
+        }, required: ["operation", "input"], additionalProperties: false } },
+    }, required: ["action"], additionalProperties: false,
+  },
+};
+
 const INERT_VALIDATOR: jsonSchemaValidator = {
   getValidator: () => () => ({
     valid: false,
@@ -165,7 +192,7 @@ export const handleMcpRequest = async (
       jsonSchemaValidator: INERT_VALIDATOR,
     },
   );
-  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: TOOLS }));
+  server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [...TOOLS.filter((tool) => tools[tool.name as keyof KernelTools] !== undefined), ...(tools.changeset === undefined ? [] : [CHANGESET_TOOL])] }));
   server.setRequestHandler(CallToolRequestSchema, async (call) => {
     const body = tools[call.params.name as keyof KernelTools];
     if (body === undefined || !Object.hasOwn(tools, call.params.name)) {

@@ -44,3 +44,7 @@ export {
   type ClientLocalDataFailure,
   type DatabaseReceiverFailure,
 } from "./errors.ts";
+
+export { ChangesetError, type Changeset, type ChangesetChange, type ChangesetOperation, type ChangesetProposal, type ClientChangesets, type ChangesetPage, type ChangesetListOptions } from "./changesets.ts";
+
+export type { DatabaseView, ViewEntity, ViewResult } from "./view.ts";

@@ -1,0 +1,168 @@
+---
+title: Review agent changes before applying them
+description: Let an agent prepare a durable proposal, inspect its resulting data, and apply an approved revision atomically.
+---
+
+import Learn from "../../../components/Learn.astro";
+import Next from "../../../components/Next.astro";
+
+A changeset is an isolated proposal containing up to 100 authorized operations in one database. Its operations run against a draft value. Live queries and replicas remain unchanged until an authorized reviewer commits the proposal's exact revision.
+
+Use changesets for bulk edits, sprint planning, and agent work that needs review. The Reef example includes a proposed board, a changes list, approval, and restricted agent credentials.
+
+<Learn learn={["How to prepare and query a durable draft", "How to separate agent access from human approval", "How revisions, conflicts, and retries work"]} before={[{ href: "/concepts/operations/", label: "Operations" }]} minutes={10} />
+
+## Author database transactions
+
+Every operation is a database transaction and can participate in a changeset. Its body reads a database value and stages writes:
+
+```ts
+const Task = Ramose.Entity("task", { title: Ramose.string() }, {
+  operations: (Operation) => ({
+    rename: Operation({
+      input: S.Struct({ title: S.String }),
+      output: S.Struct({}),
+      run(op, input) {
+        op.self.set(Task.title, input.title)
+        return {}
+      },
+    }),
+  }),
+})
+```
+
+Preparation uses the authoritative operation body and its normal input, field, reference, and output validation. It does not use the optimistic projection. A failed operation rejects the whole preparation without changing live data or replacing the previous revision.
+
+Operations expose database reads and writes, the caller, and an authoritative clock. There is no effect callback or environment access. Keep network requests, messages, payments, and other external work outside transaction bodies. To request external work durably, write an application record in the transaction and process it separately with a consumer that safely handles retries.
+
+Application callbacks and codecs are trusted code and must obey this transaction model. Ramose does not sandbox arbitrary JavaScript or prevent a developer from importing an external client.
+
+## Separate agent credentials from approval
+
+Configure the Worker with predicates over verified identity claims:
+
+```ts
+export default createServer({
+  operationCatalogs,
+  changesets: {
+    requiresApproval: (caller) => caller.classes.includes("agent"),
+    canApprove: (caller) => caller.classes.includes("user"),
+  },
+})
+```
+
+Approval is denied by default. `requiresApproval` takes precedence over `canApprove`: restricted callers cannot approve, use the normal HTTP operation endpoint, or invoke MCP `mutate`. Their operation grants still determine what they may propose. Their read policy determines what they may inspect.
+
+Issue agent credentials through a trusted authentication flow. Use a restricted class or claim. Credentials may share the reviewer’s subject, or the author may explicitly invite other subjects with `reviewers` when preparing a proposal. Never give an agent the reviewer's unrestricted bearer token. Invitations grant access to the proposal, not to database records or operations. Reviewers still need their own read and operation permissions and the application’s approval grant.
+
+The schema must admit both classes and grant the intended reads and operations. Policy `anyOf` combines alternatives:
+
+```ts
+App.applyPolicy({ roles: ["user", "agent"] }, ({ policy, session, anyOf }) => {
+  const signedIn = anyOf(session.hasRole("user"), session.hasRole("agent"))
+  policy.task.read.where(signedIn)
+  policy.task.operations.rename.where(signedIn)
+})
+```
+
+## Prepare, inspect, and approve
+
+The existing client exposes `client.changesets`. React components can obtain it with `useChangesets()` under `RamoseProvider`.
+
+```ts
+const changesets = client.changesets
+const proposal = await changesets.prepare({
+  id: crypto.randomUUID(),
+  title: "Rename the task",
+  operations: [changesets.operations(Task).rename(task.id, { title: "Ready for review" })],
+})
+
+const reviewed = await client.changesets.inspect(proposal.id)
+// Render reviewed.changes and let the user review the proposal.
+await client.changesets.commit(reviewed.id, reviewed.revision)
+```
+
+`prepare` and `append` return a new opaque `revision`. Commit and discard require that revision. Replacing a proposal requires its current revision and invalidates the previous one. An identical retry of the most recent preparation or append returns that revision without executing its bodies again.
+
+Commit persists the final changes and completion record together as one database version. The transaction timestamp records approval time. Operations are not rerun at commit, so clocks, generated values, and computed results cannot silently change after review. The server rechecks the current caller's operation grants and targets. Concurrent or repeated commits of the same revision return the completed result without applying it twice.
+
+```ts
+await client.changesets.discard(proposal.id, proposal.revision)
+```
+
+## Query and extend a proposal
+
+Open a read-only database view bound to the exact proposal revision. It uses the same typed query builder as the live database, including relationships, projections, ordering, and cursors:
+
+```ts
+const draft = client.changesets.open(proposal.id, proposal.revision)
+const tasks = await draft.read(draft.query.from(Task).orderBy(Task.title))
+
+const revised = await client.changesets.append(proposal.id, proposal.revision, [
+  client.changesets.operations(Task).rename(tasks[0].id, { title: "Revised proposal" }),
+])
+```
+
+In React, pass the view to `useQuery(query, draft)`. A draft entity has `id` and `data`; it has no live mutation methods or optimistic state. Queries always read the bound revision. Live changes revalidate permissions while the preview continues reading its saved database revision. Proposal replacement, discard, and expiry also update subscriptions. A replaced or closed revision produces an error instead of combining revisions. A read that began before a concurrent update still describes its captured snapshot, and approval always checks freshness again.
+
+`changesets.operations(Owner)` builds proposals with the declared input types. Targeted operations take an entity handle followed by input; targetless operations take input alone.
+
+Append preserves entities created by earlier draft operations. Replacing the entire proposal with `prepare` allocates new handles. Discarded or expired draft allocations are never reused for unrelated entities.
+
+Preview queries and diffs use the current caller's permissions. A draft cannot widen access to existing hidden facts by changing their permission dependencies. New records must satisfy draft read rules. References to new records are checked in the proposed state; existing targets must also remain readable under live permissions. Applications should show the visible diff alongside their preview.
+
+## Connect an agent
+
+Connect an MCP client to `/db/<root>/mcp` using a restricted bearer. The `changeset` tool supports:
+
+| Action | Purpose |
+| --- | --- |
+| `describe` | Discover authorized operations, input shapes, versions, and target requirements. |
+| `query` | Read live data without `id`, or a proposal with `id`. |
+| `prepare` | Create a proposal, or replace one using its current revision. |
+| `append` | Add operations using the proposal's current revision. |
+| `inspect` | Read its status and visible changes. |
+| `discard` | Discard the specified revision. |
+
+Each proposed operation carries `{ operation: { owner, name, version }, input, target? }`. Use the opaque version from `changeset` discovery and entity handles from its queries. There is no MCP approval action. The agent should return the proposal id for the user to open in the application.
+
+In Reef, **Copy agent token** copies a credential valid for 15 minutes. Connect it to `/db/reef/mcp`, ask the agent to prepare work, and open the proposal from the review inbox. You can also paste its proposal id into **Review**. **Plan next sprint** demonstrates the same lifecycle without requiring an agent.
+
+## Snapshots, conflicts, and limits
+
+Database values are immutable snapshots. Forks share unchanged index data and apply their own transactions, so later writes and indexing cannot change a captured value. Changesets retain durable revisions containing shared immutable index roots, a transaction tail, catalog identity, and the original entity/trait composition. Reopening a revision does not borrow the current deployment’s composition. Revision ownership is independent of proposals: multiple owners can retain the same revision, and releasing one does not release the others. Garbage collection retains the referenced storage, and previews survive indexing and process restarts. Preparation reserves entity identities briefly, then evaluates operations outside the live write queue.
+
+Any intervening live database write makes a draft stale. A stale draft remains readable and can be appended to against its saved base, but cannot commit. Inspection reports `stale: true` and includes its visible diff. Prepare a fresh proposal from live data and review its new revision. There is no automatic merge.
+
+Changing the deployed catalog also invalidates a draft's execution binding. Rediscover operations and prepare a new proposal after deployment changes.
+
+| Limit | Value |
+| --- | --- |
+| Database scope | One database per proposal |
+| Operations | 100 across all appends |
+| Generated facts | 10,000 across all steps |
+| Stored proposal | Approximately 1 MB, including replay material |
+| HTTP request body | 64 KiB |
+| Active drafts per subject | 32 per database |
+| Retention | 24 hours after initial preparation |
+| MCP query rows | At most 200, with `truncated` reported |
+| Typed view query budget | At most 100,000 intermediate cells |
+
+Drafts and completion records survive Worker and Durable Object restarts. A scheduled Durable Object alarm releases proposal payloads and revision ownership after retention expires, even when no new request arrives. Small metadata records remain to identify expired proposals and prevent reuse of their IDs; retries no longer return an expired completion record. Changeset requests require a network connection and are not placed in the browser's offline mutation queue.
+
+HTTP clients use `POST /db/<root>/changesets`. Conflict codes include `changeset_stale`, `changeset_revision_conflict`, `changeset_closed`, `changeset_expired`, `changeset_limit`, `changeset_too_large`, and `operation_changed`. `ChangesetError` exposes the HTTP status and code in the client. MCP reports a rejected proposal through its tool error envelope.
+
+### Review inbox and subscriptions
+
+`client.changesets.list({ after, limit })` returns a page of proposals authored by or explicitly shared with the current subject: `{ items, nextCursor, version }`. Omit `after` for the first page; pass `nextCursor` to load another. Pages default to 50 items and allow at most 100.
+
+`client.changesets.observe({ after, limit })` returns an external store with `subscribe` and `getSnapshot`, suitable for React’s `useSyncExternalStore`. Use `observe({ id })` to follow a specific proposal independently of inbox pagination. Its query snapshot contains a page of metadata, including revision, status, expiry, and commit freshness. Status can be `draft`, `committed`, `discarded`, or `expired`.
+
+Subscriptions use authenticated long polling. The server responds when proposal state or the live database changes, on expiry, or after 25 seconds. The client retries transient failures and cancels its subscription request when the last subscriber leaves. Applications should disable approval while review state is unavailable or stale.
+
+Pass `reviewers: [subjectId]` to `prepare` to invite another person. Only the author may replace or append to the proposal. Invited reviewers may inspect, discard, and—if permitted by the application—approve it. MCP’s `list` action discovers accessible proposals.
+
+<Next links={[
+  { href: "/guides/permissions/", label: "Grant operations", why: "control what each caller may propose and inspect" },
+  { href: "/guides/mcp/", label: "Connect MCP clients", why: "expose the catalog and changeset tool to agents" },
+]} />

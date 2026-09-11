@@ -98,6 +98,31 @@ export type QueryResultV1 = {
   readonly truncated: boolean;
 };
 
+export const runEntityQueryDocument = async (
+  context: AuthorizedRequestContext,
+  caller: AuthenticatedCaller,
+  document: QueryDocumentV1,
+  maxCells = 100_000,
+): Promise<{ readonly rows: readonly { readonly entity: number; readonly data: Record<string, unknown> }[]; readonly truncated: boolean }> => {
+  const lowered = lowerQueryDocument(context, caller, document);
+  if (lowered === undefined) return { rows: [], truncated: false };
+  const result = await runOneShotRead(context.filteredDb, {
+    kind: "query",
+    query: { ...lowered.query, find: [[["pull", "?e", [":db/id", ...lowered.fields.map((field) => field.ident)]], "..."]] },
+    inputs: lowered.inputs,
+  }, { maxCells: Math.min(maxCells, 100_000) });
+  const pulled = Array.isArray(result) ? result as Record<string, unknown>[] : [];
+  return {
+    rows: pulled.flatMap((row) => {
+      if (typeof row[":db/id"] !== "number") return [];
+      const data = Object.fromEntries(lowered.fields.flatMap((field) => row[field.ident] === undefined
+        ? [] : [[field.name, toJson(row[field.ident])]]));
+      return Object.keys(data).length === 0 ? [] : [{ entity: row[":db/id"], data }];
+    }),
+    truncated: pulled.length >= lowered.limit,
+  };
+};
+
 const composedTraits = (
   catalog: AuthorizedRequestContext["unit"]["catalog"],
   entity: string,

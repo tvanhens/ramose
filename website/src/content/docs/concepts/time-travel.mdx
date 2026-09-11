@@ -19,7 +19,7 @@ An as-of query asks what the database looked like at or before an earlier versio
 
 Temporal selection is an engine capability; the browser client currently exposes only the current local view.
 
-As-of views are read-only. They are not branches and do not rewind the current database. Recovery is an explicit current operation that reads the desired past state, validates it, and writes a new present.
+As-of views are read-only. They do not rewind the current database. Use [changesets](/guides/changesets/) to prepare an isolated, writable proposal based on current state. Recovery is an explicit current operation that reads the desired past state, validates it, and writes a new present.
 
 ## History
 

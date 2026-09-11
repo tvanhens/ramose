@@ -221,6 +221,7 @@ export type PolicyContext<
   readonly actor: PolicyOperand<"me">;
   readonly session: PolicySession<Roles, Claims>;
   readonly allOf: (first: AuthExpr, ...rest: readonly AuthExpr[]) => AuthExpr;
+  readonly anyOf: (first: AuthExpr, ...rest: readonly AuthExpr[]) => AuthExpr;
 };
 
 export type PolicyDefinition<
@@ -504,6 +505,7 @@ export function collectSchemaPolicy<Es extends EntityMap>(
     actor: policyOperand<"me", unknown>({ _tag: "me" }),
     session: sessionFor(roles, claims),
     allOf: (first, ...rest) => all(first, ...rest),
+    anyOf: (first, ...rest) => any(first, ...rest),
   });
   if (
     (typeof callbackResult === "object" || typeof callbackResult === "function") &&

@@ -5,19 +5,23 @@ import { PREDICATES, compareJs, sortKeys, sortRows, vkey } from "./builtins.ts";
 import { parsePullPattern } from "./parse.ts";
 
 const DEFAULT_LIMIT = 1000;
+class PullCache extends Map<string, Record<string, unknown> | null> {
+  constructor(readonly reference: (eid: number) => unknown = (eid) => eid) { super(); }
+}
 
 export async function pull(db: Db, eid: number, pattern: PullPattern | string | unknown[]): Promise<Record<string, unknown> | null> {
   const pat = normalizePattern(pattern);
-  return pullOne(db, eid, pat, new Map());
+  return pullOne(db, eid, pat, new PullCache());
 }
 
 export async function pullMany(
   db: Db,
   eids: readonly number[],
   pattern: PullPattern | string | unknown[],
+  reference?: (eid: number) => unknown,
 ): Promise<(Record<string, unknown> | null)[]> {
   const pat = normalizePattern(pattern);
-  const cache = new Map<string, Record<string, unknown> | null>();
+  const cache = new PullCache(reference);
   const out: (Record<string, unknown> | null)[] = [];
   for (const e of eids) out.push(await pullOne(db, e, pat, cache));
   return out;
@@ -49,7 +53,7 @@ async function pullOne(
   db: Db,
   eid: number,
   pattern: PullPattern,
-  cache: Map<string, Record<string, unknown> | null>,
+  cache: PullCache,
   path: Set<number> = new Set(),
   depthLeft: Map<string, number> = new Map(),
 ): Promise<Record<string, unknown> | null> {
@@ -62,12 +66,12 @@ async function pullOne(
   let any = false;
 
   if (hasWildcard) {
-    result[":db/id"] = eid;
+    result[":db/id"] = cache.reference(eid);
     any = datoms.length > 0;
     for (const d of datoms) {
       const attr = db.attr(d.a);
       const name = attr?.ident ?? String(d.a);
-      const val = d.vt === ValueTag.Ref ? { ":db/id": d.v } : datomJsValue(d);
+      const val = d.vt === ValueTag.Ref ? { ":db/id": cache.reference(d.v as number) } : datomJsValue(d);
       if (attr?.cardinality === "many") ((result[name] ??= []) as unknown[]).push(val);
       else result[name] = val;
     }
@@ -77,7 +81,7 @@ async function pullOne(
   for (const spec of pattern) {
     if (spec.kind === "wildcard") continue;
     if (spec.attr === ":db/id") {
-      result[spec.as ?? ":db/id"] = eid;
+      result[spec.as ?? ":db/id"] = cache.reference(eid);
       any = any || datoms.length > 0;
       continue;
     }
@@ -136,12 +140,12 @@ async function pullOne(
       const other = el.eid!;
       if (subPattern) {
         if (nextPath.has(other) && spec.recursion !== undefined) {
-          vals.push({ ":db/id": other });
+          vals.push({ ":db/id": cache.reference(other) });
         } else {
           const sub = await pullOne(db, other, subPattern, cache, nextPath, nextDepth);
           if (sub) vals.push(sub);
         }
-      } else vals.push({ ":db/id": other });
+      } else vals.push({ ":db/id": cache.reference(other) });
     }
     vals = vals.filter((v) => v !== null && v !== undefined);
     if (vals.length === 0) {
@@ -272,17 +276,17 @@ async function refOrValue(
   db: Db,
   d: Datom,
   sub: PullPattern | undefined,
-  cache: Map<string, Record<string, unknown> | null>,
+  cache: PullCache,
   path: Set<number>,
   depth: Map<string, number>,
   recursive: boolean,
 ): Promise<unknown> {
   if (d.vt !== ValueTag.Ref) return datomJsValue(d);
   const target = d.v as number;
-  if (!sub) return { ":db/id": target };
-  if (recursive && path.has(target)) return { ":db/id": target };
+  if (!sub) return { ":db/id": cache.reference(target) };
+  if (recursive && path.has(target)) return { ":db/id": cache.reference(target) };
   const r = await pullOne(db, target, sub, cache, path, depth);
-  return r ?? { ":db/id": target };
+  return r ?? { ":db/id": cache.reference(target) };
 }
 
 function reverseName(attr: string): string {

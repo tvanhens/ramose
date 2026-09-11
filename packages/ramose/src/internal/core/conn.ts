@@ -146,6 +146,24 @@ export class Connection {
     return c;
   }
 
+  static fromSnapshot(snapshot: Db, store: NodeStore, options: Omit<ConnectionOptions, "store" | "composition"> = {}): Connection {
+    if (snapshot.filters.length > 0 || snapshot.isHistory || snapshot.asOfT !== undefined) {
+      throw new Error("a writable fork requires an unfiltered database snapshot");
+    }
+    const copy = new Connection({ ...options, store, ...(snapshot.composition === undefined ? {} : { composition: snapshot.composition }) });
+    copy.roots = snapshot.roots;
+    copy.rootHistory.push(snapshot.roots);
+    copy.schema = snapshot.schema.clone();
+    copy.basisT = snapshot.basisT;
+    copy.nextEid = snapshot.nextEid;
+    copy.novelty = snapshot.novelty.fork();
+    return copy;
+  }
+
+  fork(): Connection {
+    return Connection.fromSnapshot(this.db(), this.store, { now: this.now, ...(this.build === undefined ? {} : { build: this.build }) });
+  }
+
   db(): Db {
     return new Db({
       store: this.store,
@@ -170,6 +188,11 @@ export class Connection {
   get schemaView(): Schema {
     return this.schema;
   }
+  reserveEntityIds(next: number): void {
+    if (!Number.isSafeInteger(next) || next < this.nextEid) throw new RangeError("invalid entity reservation");
+    this.nextEid = next;
+  }
+
   get nextEntityId(): number {
     return this.nextEid;
   }

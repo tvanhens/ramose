@@ -152,6 +152,12 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
   ).pipe(
     Effect.mapError(() => deny()),
   );
+  return yield* decodeOperationRequest(body);
+});
+
+export const decodeOperationRequest = Effect.fn("decodeOperationRequest")(function* (
+  body: Record<string, unknown>,
+): Effect.fn.Return<ParsedOperationRequest, BadRequest> {
   const operation = body.operation;
   if (typeof operation !== "object" || operation === null || Array.isArray(operation)) {
     return yield* bad("body.operation must be { owner, localName }");
@@ -215,7 +221,7 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
   };
 });
 
-const deriveEntityIdScope = async (
+export const deriveEntityIdScope = async (
   env: RamoseEnv,
   database: string,
   origin: string,

@@ -1,3 +1,4 @@
+import { registerChangesets } from "./changesets.ts";
 import { setDefaultTimeout } from "bun:test";
 import { registerAuthContract } from "../contracts/auth.contract.ts";
 import { registerOperationsContract } from "../contracts/operations.contract.ts";
@@ -36,3 +37,5 @@ registerCas({ urls: localUrls });
 registerStorage({ urls: localUrls });
 registerTransactor({ urls: localUrls });
 registerBetterAuth({ urls: localUrls });
+
+registerChangesets({ urls: localUrls });

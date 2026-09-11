@@ -927,7 +927,7 @@ export const refine =
 
 export type QueryLowering = {
   readonly entity?: ((eid: number) => unknown) | undefined;
-  readonly resolveEntity?: ((id: unknown) => number | undefined) | undefined;
+  readonly resolveEntity?: ((id: unknown) => unknown) | undefined;
 };
 
 export const symbolicIdentityLowering = (): {

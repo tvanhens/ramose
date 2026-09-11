@@ -113,7 +113,7 @@ export const registerMcp = (ctx: { urls: () => LocalUrls }) => {
 
       const listed = await rpc(base, database, "tools/list", {}, member);
       expect(listed.body.result.tools.map((tool: any) => tool.name).sort())
-        .toEqual(["describe", "mutate", "query"]);
+        .toEqual(["changeset", "describe", "mutate", "query"]);
     });
 
     test("describe projects only what this principal may see", async () => {

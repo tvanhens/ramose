@@ -24,6 +24,8 @@ export class UpstreamError extends Data.TaggedError("UpstreamError")<{
   readonly body: string;
   readonly headers?: Record<string, string>;
 }> {}
+export class ChangesetRejected extends Data.TaggedError("ChangesetRejected")<{ readonly code: string }> {}
+
 export class Internal extends Data.TaggedError("Internal")<{
   readonly message: string;
   readonly trace?: string | undefined;
@@ -34,6 +36,7 @@ export type RamoseError =
   | BadRequest
   | Unauthorized
   | UpstreamError
+  | ChangesetRejected
   | QueryBudgetExceeded
   | Internal
   | OperationRejected;
@@ -43,6 +46,7 @@ const TAGS = new Set([
   "BadRequest",
   "Unauthorized",
   "UpstreamError",
+  "ChangesetRejected",
   "QueryBudgetExceeded",
   "Internal",
   "OperationRejected",
@@ -97,6 +101,8 @@ export function toHttp(error: RamoseError): HttpError {
         status: error.status ?? 401,
         body: { error: "unauthorized" },
       };
+    case "ChangesetRejected":
+      return { status: 409, body: { error: "changeset rejected", code: error.code } };
     case "UpstreamError":
       if (error.status === 401 || error.status === 403) {
         return { status: error.status, body: { error: "unauthorized" } };

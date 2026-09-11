@@ -44,10 +44,7 @@ export const ping = InternalOperations.Operation(
     input: Schema.Struct({}),
     output: Schema.Struct({ n: Schema.Finite }),
   },
-  async (op) => {
-    const n = await op.effect("count", () => 1);
-    return { n };
-  },
+  () => ({ n: 1 }),
 );
 
 export const createNamed = InternalOperations.Operation(

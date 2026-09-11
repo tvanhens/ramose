@@ -80,6 +80,9 @@ Run `bun run dev:reef:ui` in a second terminal for its React app. See
 Browser tests serve recorded replication frames with Vitest and exercise real
 Chromium APIs. They do not need a separately running example.
 
+Run `bun run test:reef` to
+exercise the proposal review flow in Chromium against the real local Workers.
+
 ## Cloudflare e2e
 
 `bun run test:e2e:cf` deploys a temporary stage, runs the e2e suite, and removes

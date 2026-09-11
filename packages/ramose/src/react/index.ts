@@ -1,6 +1,7 @@
 export {
   RamoseProvider,
   useDb,
+  useChangesets,
   useQuery,
   useReceipt,
   useSuspenseQuery,

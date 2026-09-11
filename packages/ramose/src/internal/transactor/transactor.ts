@@ -1,3 +1,6 @@
+import { ChangesetService, decodeChangesetCommand, type ChangesetCommand } from "../changesets/service.ts";
+import { changesetConflict, changesetSubject } from "../authorization/changesets.ts";
+import type { AuthenticatedCaller } from "../authorization/request.ts";
 import {
   Connection,
   type Datom,
@@ -132,6 +135,7 @@ export interface TransactorStats {
   fenceMs: number;
 }
 
+
 interface Pending {
   tx: TxData;
   principal?: Principal | undefined;
@@ -142,6 +146,9 @@ interface Pending {
   resolve: (r: TxAck | OperationAck) => void;
   reject: (e: unknown) => void;
 }
+
+type SerialTask = { readonly task: () => Promise<void>; readonly reject: (cause: unknown) => void };
+type QueueEntry = Pending | SerialTask;
 
 type SealingContext = {
   readonly sealing: ServerSealingKey;
@@ -177,7 +184,7 @@ export class Transactor {
   private store!: R2NodeStore;
   private rootRecord!: RootRecord;
   private logWatermark = 0;
-  private queue: Pending[] = [];
+  private queue: QueueEntry[] = [];
   private committing = false;
   private indexer!: Indexer;
   private txSinceIndex = 0;
@@ -227,6 +234,7 @@ export class Transactor {
 
   private async boot(): Promise<void> {
     const sql = this.host.sql;
+    this.proposalService.initialize();
     sql.exec(`CREATE TABLE IF NOT EXISTS log (t INTEGER PRIMARY KEY, tx_instant INTEGER NOT NULL, datoms BLOB NOT NULL)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS operation_receipts (
@@ -275,6 +283,7 @@ export class Transactor {
       retainRoots: c.retainRoots,
     }, this.boundaries);
     if (this.conn.t > roots.t) await this.indexer.schedule();
+    await this.proposalService.schedule();
     this.log.info("boot", { t: this.conn.t, rootT: roots.t, novelty: this.conn.noveltyCount, nextEid: this.conn.nextEntityId, fresh: !this.getMeta("root") });
   }
 
@@ -512,7 +521,7 @@ export class Transactor {
   }
 
   private decideInvocationEpoch(
-    p: Pending,
+    p: Pick<Pending, "operation" | "sealing">,
     inputHandles: InputHandlePaths,
   ):
     | { readonly _tag: "Agreed"; readonly context: SealingContext | undefined }
@@ -553,7 +562,7 @@ export class Transactor {
   }
 
   private async resolveInvocationTarget(
-    p: Pending,
+    p: Pick<Pending, "operation">,
     context: SealingContext | undefined,
   ): Promise<AuthoritativeOperationInvocation | undefined> {
     const invocation = p.operation!;
@@ -623,6 +632,99 @@ export class Transactor {
         void this.commitLoop();
       }
     });
+  }
+
+  private serialized<A>(run: () => Promise<A>): Promise<A> {
+    if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
+    return new Promise((resolve, reject) => {
+      this.queue.push({ reject, task: async () => {
+        try { resolve(await run()); } catch (cause) { reject(cause); }
+      } });
+      if (!this.committing) {
+        this.committing = true;
+        void this.commitLoop();
+      }
+    });
+  }
+
+  private proposalHandler: ChangesetService | undefined;
+
+  private get proposalService(): ChangesetService {
+    if (this.proposalHandler !== undefined) return this.proposalHandler;
+    const owner = this;
+    return this.proposalHandler = new ChangesetService({
+    get sql() { return owner.host.sql; },
+    get database() { return safeName(owner.host) ?? ""; },
+    schedule: (deadline) => this.scheduleAlarm(deadline),
+    serialized: (run) => this.serialized(run),
+    current: () => this.conn,
+    checkpoint: () => this.boundaries.checkpoint("changeset.prepare"),
+    transactionSync: (run) => this.host.transactionSync(run),
+    reserve: (next) => this.setMeta("next_eid", next),
+    resolve: (operations, caller) => this.resolveChangesetOperations(operations, caller),
+    commit: async (entry, caller, persist) => {
+      const next = this.conn.fork();
+      next.applyDatoms(entry.datoms);
+      await this.boundaries.checkpoint("changeset.commit");
+      changesetSubject(caller, this.operationRuntime!.now());
+      this.host.transactionSync(() => {
+        this.boundaries.checkpointSync("changeset.commit.write");
+        this.appendLogRow(entry);
+        this.setMeta("next_eid", next.nextEntityId);
+        persist();
+      });
+      this.conn.applyDatoms(entry.datoms);
+      this.txSinceIndex++;
+      this.stats.txs++;
+      this.broadcast(txFrame(entry));
+      await this.indexer.maybeSchedule();
+    },
+  });
+  }
+
+  private async resolveChangesetOperations(rawOperations: readonly AuthoritativeOperationInvocation[], caller: AuthenticatedCaller): Promise<readonly AuthoritativeOperationInvocation[]> {
+    const runtime = this.operationRuntime!;
+    const operations: AuthoritativeOperationInvocation[] = [];
+    for (const raw of rawOperations) {
+      const invocation = { ...raw, caller };
+      if (invocation.database !== safeName(this.host)) throw opaqueOperationDenial();
+      const resolved = await Effect.runPromise(resolveOperationCatalog(runtime, invocation));
+      this.bindComposition(resolved.deployed.definition.unitHash, resolved.deployed.definition.composition);
+      const inputShape = deployedOperationInputWireShape(resolved, invocation.owner, invocation.localName);
+      if (inputShape === undefined) throw opaqueOperationDenial();
+      const paths = inputEntityRefHandles(inputShape, invocation.input);
+      const sealing = this.needsSealingKey(invocation) ? await runtime.sealing?.() : undefined;
+      const pending = { operation: invocation, sealing };
+      const epoch = this.decideInvocationEpoch(pending, paths);
+      if (epoch._tag !== "Agreed") throw changesetConflict("invocation_update_required");
+      const target = await this.resolveInvocationTarget(pending, epoch.context);
+      if (target === undefined) throw changesetConflict("invocation_update_required");
+      const operation = await this.resolveInvocationInput(target, epoch.context, paths);
+      if (operation === undefined) throw changesetConflict("invocation_update_required");
+      operations.push(operation);
+    }
+    return operations;
+  }
+
+  retainedRevisionRoots() { return this.proposalService.revisions.roots(); }
+
+  private async changeset(command: ChangesetCommand): Promise<unknown> {
+    const runtime = this.operationRuntime;
+    if (runtime === undefined) throw opaqueOperationDenial();
+    if (command.action === "watch" || command.action === "list") return this.proposalService.execute(this.conn, runtime, command);
+    if (command.action === "inspect" || command.action === "query" || command.action === "read") {
+      const snapshot = await this.serialized(async () => {
+        const stored = this.proposalService.load(command.id);
+        const release = stored?.baseRevision === undefined ? () => {} : this.proposalService.revisions.retain(stored.baseRevision);
+        return { connection: this.conn.fork(), stored, release };
+      });
+      try {
+        await this.boundaries.checkpoint("changeset.read");
+        return await this.proposalService.execute(snapshot.connection, runtime, command, snapshot);
+      } finally { snapshot.release(); }
+    }
+    if (command.action === "prepare" || command.action === "append") return this.proposalService.execute(this.conn.fork(), runtime, command);
+    return this.serialized(() => this.proposalService.execute(this.conn, runtime, command));
   }
 
   async provisionCatalog(definition: InstalledCatalogDefinition): Promise<number> {
@@ -710,12 +812,16 @@ export class Transactor {
   }
 
   private takeBatch(): Pending[] {
+    const batch: Pending[] = [];
     const max = this.host.config.maxBatch;
-    if (this.queue[0]?.operation !== undefined) return this.queue.splice(0, 1);
-    const operationAt = this.queue.findIndex((pending) => pending.operation !== undefined);
-    const available = operationAt < 0 ? this.queue.length : operationAt;
-    const count = max > 0 ? Math.min(available, max) : available;
-    return this.queue.splice(0, count);
+    while (this.queue.length > 0 && (max <= 0 || batch.length < max)) {
+      const next = this.queue[0]!;
+      if ("task" in next || (next.operation !== undefined && batch.length > 0)) break;
+      this.queue.shift();
+      batch.push(next);
+      if (next.operation !== undefined) break;
+    }
+    return batch;
   }
 
   private async commitLoop(): Promise<void> {
@@ -724,6 +830,12 @@ export class Transactor {
       const fences = this.host.config.timingYields;
       while (this.queue.length > 0 && this.dead === undefined) {
         await yieldToEventLoop();
+        const next = this.queue[0];
+        if (next !== undefined && "task" in next) {
+          this.queue.shift();
+          await next.task();
+          continue;
+        }
         let fenceMs = 0;
         if (fences) {
           const tFence = performance.now();
@@ -1162,6 +1274,7 @@ export class Transactor {
   }
 
   private broadcast(frame: unknown): void {
+    this.proposalHandler?.notify();
     const msg = JSON.stringify(frame);
     this.stats.broadcasts++;
     for (const ws of this.host.sockets()) {
@@ -1202,9 +1315,22 @@ export class Transactor {
     for (const e of this.readLogEntries(from, t)) ws.send(JSON.stringify(txFrame(e)));
   }
 
+  private alarmQueue: Promise<unknown> = Promise.resolve();
+
+  scheduleAlarm(deadline: number): Promise<void> {
+    const next = this.alarmQueue.then(async () => {
+      const existing = await this.host.getAlarm();
+      if (existing === null || deadline < existing) await this.host.setAlarm(deadline);
+    });
+    this.alarmQueue = next.catch(() => {});
+    return next;
+  }
+
   async onAlarm(): Promise<void> {
     await this.init();
+    await this.serialized(async () => this.proposalService.expire(this.host.now()));
     await this.indexer.onAlarm();
+    await this.proposalService.schedule();
   }
 
   info() {
@@ -1268,6 +1394,12 @@ export class Transactor {
 
   private async route(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
+    if (path === "/changesets" && request.method === "POST") {
+      let command: ChangesetCommand;
+      try { command = decodeChangesetCommand(await request.json()); }
+      catch { throw new BadRequest({ message: "invalid changeset command" }); }
+      return json(await this.changeset(command));
+    }
     if (path === "/invoke" && request.method === "POST") {
       const body = await request.json() as { invocation?: unknown };
       const raw = body?.invocation;

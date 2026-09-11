@@ -480,6 +480,12 @@ button:disabled {
   flex: 1;
 }
 
+.proposal-panel { margin: 0 0 1rem; padding: 1rem; border: 1px solid #6366f1; border-radius: 10px; background: #6366f10d; }
+.proposal-panel p { margin: .75rem 0; }
+.proposal-actions, .proposal-actions form { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; }
+.proposal-actions strong { margin-right: auto; }
+.proposal-panel details { margin: .75rem 0; max-height: 15rem; overflow: auto; }
+.proposal-id { font-size: .75rem; overflow-wrap: anywhere; opacity: .7; }
 .mutation-feedback { position: fixed; bottom: 1rem; right: 1rem; z-index: 100; width: min(28rem, calc(100vw - 2rem)); max-height: 40vh; overflow-y: auto; background: var(--bg, #16171b); border-radius: 8px; box-shadow: 0 4px 24px #0006; }
 .mutation-feedback:empty { display: none; }
 .mutation-feedback > div { padding: .75rem; margin: 0; }

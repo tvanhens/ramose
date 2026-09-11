@@ -24,6 +24,7 @@ AppSchema.applyPolicy(() => {});
 describe("the ramose/client surface", () => {
   test("exports exactly the client, its authoring surface, and its errors", () => {
     expect(Object.keys(Client).sort()).toEqual([
+      "ChangesetError",
       "ClientClosedError",
       "ClientConfigurationError",
       "ClientLocalDataError",
